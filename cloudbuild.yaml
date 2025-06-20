@@ -7,7 +7,21 @@ steps:
   
   - name: 'gcr.io/cloud-builders/docker'
     args: ['push', 'gcr.io/gemkom-backend-463510/gemkom-backend']
-  
+
+  - name: 'gcr.io/cloud-builders/docker'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        docker run --rm \
+        -e DB_NAME=$_DB_NAME \
+        -e DB_USER=$_DB_USER \
+        -e DB_PASSWORD=$_DB_PASSWORD \
+        -e DB_HOST=$_DB_HOST \
+        -e DB_PORT=$_DB_PORT \
+        gcr.io/gemkom-backend-463510/gemkom-backend \
+        python manage.py migrate
+
   - name: 'gcr.io/cloud-builders/gcloud'
     args:
       [
