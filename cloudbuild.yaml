@@ -1,0 +1,19 @@
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'gcr.io/gemkom-backend-463510/mydjangoapp', '.']
+  
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/gemkom-backend-463510/mydjangoapp']
+  
+  - name: 'gcr.io/cloud-builders/gcloud'
+    args:
+      [
+        'run', 'deploy', 'mydjangoapp',
+        '--image', 'gcr.io/gemkom-backend-463510/mydjangoapp',
+        '--region', 'europe-west3',
+        '--platform', 'managed',
+        '--allow-unauthenticated'
+      ]
+
+images:
+  - 'gcr.io/gemkom-backend-463510/mydjangoapp'

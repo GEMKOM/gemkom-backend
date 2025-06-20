@@ -1,13 +1,60 @@
-# Ignore virtual environment
-venv/
-
-# Ignore environment variables
-.env
-
-# Python cache files
+# Python
 __pycache__/
 *.py[cod]
+*.pyo
+*.pyd
+*.pyc
+*.p~
 
-# Editor/IDE files
+
+# Environment
+venv/
+.env
+.env.*
+
+# Django
+*.sqlite3
+db.sqlite3
+/media/
+staticfiles/
+static/
+
+# VSCode
 .vscode/
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+
+# Coverage & testing
+htmlcov/
+.coverage
+.tox/
+.pytest_cache/
+
+# Docker
+*.pid
+*.bak
 *.swp
+docker-compose.override.yml
+
+# PyInstaller
+*.spec
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Pipenv
+Pipfile.lock
+
+# mypy
+.mypy_cache/
+.dmypy.json
