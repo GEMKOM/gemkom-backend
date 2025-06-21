@@ -1,4 +1,5 @@
 import base64
+import urllib.parse
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -59,7 +60,7 @@ class JiraProxyView(APIView):
 
             response = requests.request(
                 method=request.method,
-                url=proxy_url,
+                url = urllib.parse.unquote(proxy_url),
                 headers=headers,
                 data=body
             )
