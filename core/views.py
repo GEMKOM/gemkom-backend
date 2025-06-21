@@ -26,7 +26,7 @@ class TimerNowView(APIView):
     def get(self, request):
         return Response({"now": int(now().timestamp() * 1000)})
 
-@permission_classes([IsAuthenticated])
+
 class JiraProxyView(APIView):
     def dispatch(self, request, *args, **kwargs):
         # Optional: allow unauthenticated access if needed
