@@ -10,6 +10,10 @@ from config import settings
 import requests
 from rest_framework.decorators import permission_classes
 from rest_framework.permissions import IsAuthenticated
+import logging
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 @permission_classes([IsAuthenticated])
 class DBTestView(APIView):
@@ -41,6 +45,8 @@ class JiraProxyView(APIView):
 
     def proxy(self, request):
         proxy_url = request.query_params.get("url")
+        logger.info(f"Raw proxy_url from request: {proxy_url}")
+        logger.info(f"Decoded proxy_url: {urllib.parse.unquote(proxy_url)}")
         if not proxy_url:
             return Response({"error": "Missing ?url="}, status=400)
 
@@ -60,7 +66,7 @@ class JiraProxyView(APIView):
 
             response = requests.request(
                 method=request.method,
-                url = urllib.parse.unquote(proxy_url),
+                url = proxy_url,
                 headers=headers,
                 data=body
             )
