@@ -26,7 +26,6 @@ class TimerNowView(APIView):
     def get(self, request):
         return Response({"now": int(now().timestamp() * 1000)})
 
-
 @permission_classes([IsAuthenticated])
 class JiraProxyView(APIView):
     def dispatch(self, request, *args, **kwargs):
@@ -54,7 +53,8 @@ class JiraProxyView(APIView):
             body = request.body if request.method != "GET" else None
             headers = {
                 "Authorization": f"Basic {encoded_auth}",
-                "Content-Type": "application/json"
+                "Content-Type": "application/json",
+                "Accept": "application/json"
             }
 
             response = requests.request(
