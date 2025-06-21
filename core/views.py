@@ -65,7 +65,7 @@ class JiraProxyView(APIView):
 
             parsed = urllib.parse.urlparse(decoded_url)
             query_dict = {k: v[0] if len(v) == 1 else v for k, v in urllib.parse.parse_qs(parsed.query).items()}
-
+            logger.info(query_dict)
             response = requests.request(
                 method=request.method,
                 url=f"{parsed.scheme}://{parsed.netloc}{parsed.path}",
