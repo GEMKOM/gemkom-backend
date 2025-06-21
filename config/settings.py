@@ -24,6 +24,9 @@ STATIC_ROOT = os.path.join(BASE_DIR, 'static')
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = 'django-insecure-z^bajcf(fei!$y9cny6pttc0+o&n981_@ur0(0af6390ionx-n'
 
+JIRA_EMAIL = 'ocalik@gemkom.com.tr'
+JIRA_API_TOKEN = 'https://gemkom-backend-716746493353.europe-west3.run.app/jira/callback/'
+
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
