@@ -32,9 +32,18 @@ class TimerNowView(APIView):
         return Response({"now": int(now().timestamp() * 1000)})
 
 
+CORS_HEADERS = {
+    "Access-Control-Allow-Origin": "*",  # Or use your frontend URL for tighter security
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+}
+
+
 class JiraProxyView(APIView):
     def dispatch(self, request, *args, **kwargs):
-        # Optional: allow unauthenticated access if needed
+        # Allow preflight OPTIONS requests
+        if request.method == "OPTIONS":
+            return Response(status=204, headers=CORS_HEADERS)
         return super().dispatch(request, *args, **kwargs)
 
     def get(self, request):
@@ -46,10 +55,14 @@ class JiraProxyView(APIView):
     def proxy(self, request):
         proxy_url = request.query_params.get("url")
         if not proxy_url:
-            return Response({"error": "Missing ?url="}, status=400)
+            return Response({"error": "Missing ?url="}, status=400, headers=CORS_HEADERS)
 
         jira_email = settings.JIRA_EMAIL
         jira_token = settings.JIRA_API_TOKEN
+
+        # Handle case where token might be a tuple from .env loading
+        if isinstance(jira_token, tuple):
+            jira_token = jira_token[0]
 
         auth_str = f"{jira_email}:{jira_token}"
         encoded_auth = base64.b64encode(auth_str.encode()).decode()
@@ -66,11 +79,12 @@ class JiraProxyView(APIView):
                 url=proxy_url,
                 headers=headers,
                 data=body
-             )
-
-            return Response(
-                data=response.json() if response.headers.get("content-type", "").startswith("application/json") else response.text,
-                status=response.status_code
             )
+
+            content_type = response.headers.get("content-type", "")
+            content = response.json() if content_type.startswith("application/json") else response.text
+
+            return Response(data=content, status=response.status_code, headers=CORS_HEADERS)
+
         except Exception as e:
-            return Response({"error": str(e)}, status=500)
+            return Response({"error": str(e)}, status=500, headers=CORS_HEADERS)
