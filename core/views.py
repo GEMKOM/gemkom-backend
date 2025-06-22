@@ -74,16 +74,18 @@ class JiraProxyView(APIView):
                 "Content-Type": "application/json",
                 "Accept": 'application/json',
             }
-
+            logger.info(f"Proxying request to {proxy_url}")
+            logger.info(f"Request method: {request.method}")
+            logger.info(f"Request body: {request.body}")
             response = requests.request(
                 method=request.method,
                 url=proxy_url,
                 headers=headers,
                 data=body
             )
-            logger.info("Jira response headers:", response.headers)
-            logger.info("Jira response status:", response.status_code)
-            logger.info("Jira response content-type:", response.headers.get("content-type"))
+            logger.info(f"Jira response headers:{response.headers}")
+            logger.info(f"Jira response status:{response.status_code}")
+            logger.info(f"Jira response content-type:{response.headers.get('content-type')}")
             content_type = response.headers.get("content-type", "")
             try:
                 content = response.json() if content_type.startswith("application/json") else response.text
