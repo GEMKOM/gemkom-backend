@@ -45,7 +45,6 @@ class JiraProxyView(APIView):
 
     def proxy(self, request):
         proxy_url = request.query_params.get("url")
-        decoded_url = urllib.parse.unquote(proxy_url)
         if not proxy_url:
             return Response({"error": "Missing ?url="}, status=400)
 
@@ -59,18 +58,13 @@ class JiraProxyView(APIView):
             body = request.body if request.method != "GET" else None
             headers = {
                 "Authorization": f"Basic {encoded_auth}",
-                "Content-Type": "application/json",
-                "Accept": "application/json"
+                "Content-Type": "application/json"
             }
 
-            parsed = urllib.parse.urlparse(decoded_url)
-            query_dict = {k: v[0] if len(v) == 1 else v for k, v in urllib.parse.parse_qs(parsed.query).items()}
-            logger.info(query_dict)
             response = requests.request(
                 method=request.method,
-                url=f"{parsed.scheme}://{parsed.netloc}{parsed.path}",
+                url=proxy_url,
                 headers=headers,
-                params=query_dict,
                 data=body
              )
 
