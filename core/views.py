@@ -71,7 +71,8 @@ class JiraProxyView(APIView):
             body = request.body if request.method != "GET" else None
             headers = {
                 "Authorization": f"Basic {encoded_auth}",
-                "Content-Type": "application/json"
+                "Content-Type": "application/json",
+                "Accept": 'application/json',
             }
 
             response = requests.request(
@@ -80,11 +81,17 @@ class JiraProxyView(APIView):
                 headers=headers,
                 data=body
             )
-
+            logger.info("Jira response headers:", response.headers)
+            logger.info("Jira response status:", response.status_code)
+            logger.info("Jira response content-type:", response.headers.get("content-type"))
             content_type = response.headers.get("content-type", "")
-            content = response.json() if content_type.startswith("application/json") else response.text
-
-            return Response(data=content, status=response.status_code, headers=CORS_HEADERS)
+            try:
+                content = response.json() if content_type.startswith("application/json") else response.text
+            except ValueError:
+                content = response.text
+            response_headers = dict(CORS_HEADERS)
+            response_headers["Content-Type"] = content_type or "application/json"
+            return Response(data=content, status=response.status_code, headers=response_headers)
 
         except Exception as e:
             return Response({"error": str(e)}, status=500, headers=CORS_HEADERS)
