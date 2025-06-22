@@ -1,5 +1,6 @@
 import base64
 import urllib.parse
+from django.http import HttpResponse
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -39,61 +40,62 @@ CORS_HEADERS = {
 }
 
 
-class JiraProxyView(APIView):
-    def dispatch(self, request, *args, **kwargs):
-        # Allow preflight OPTIONS requests
-        if request.method == "OPTIONS":
-            return Response(status=204, headers=CORS_HEADERS)
-        return super().dispatch(request, *args, **kwargs)
+def proxy(self, request):
+    proxy_url = request.query_params.get("url")
+    if not proxy_url:
+        return HttpResponse(
+            content='{"error": "Missing ?url="}',
+            status=400,
+            content_type="application/json",
+            headers=CORS_HEADERS
+        )
 
-    def get(self, request):
-        return self.proxy(request)
+    jira_email = settings.JIRA_EMAIL
+    jira_token = settings.JIRA_API_TOKEN
 
-    def post(self, request):
-        return self.proxy(request)
+    if isinstance(jira_token, tuple):
+        jira_token = jira_token[0]
 
-    def proxy(self, request):
-        proxy_url = request.query_params.get("url")
-        if not proxy_url:
-            return Response({"error": "Missing ?url="}, status=400, headers=CORS_HEADERS)
+    auth_str = f"{jira_email}:{jira_token}"
+    encoded_auth = base64.b64encode(auth_str.encode()).decode()
 
-        jira_email = settings.JIRA_EMAIL
-        jira_token = settings.JIRA_API_TOKEN
+    try:
+        body = request.body if request.method != "GET" else None
+        headers = {
+            "Authorization": f"Basic {encoded_auth}",
+            "Content-Type": "application/json"
+        }
 
-        # Handle case where token might be a tuple from .env loading
-        if isinstance(jira_token, tuple):
-            jira_token = jira_token[0]
+        response = requests.request(
+            method=request.method,
+            url=proxy_url,
+            headers=headers,
+            data=body
+        )
 
-        auth_str = f"{jira_email}:{jira_token}"
-        encoded_auth = base64.b64encode(auth_str.encode()).decode()
+        content_type = response.headers.get("content-type", "application/json")
 
-        try:
-            body = request.body if request.method != "GET" else None
-            headers = {
-                "Authorization": f"Basic {encoded_auth}",
-                "Content-Type": "application/json",
-                "Accept": 'application/json',
-            }
-            logger.info(f"Proxying request to {proxy_url}")
-            logger.info(f"Request method: {request.method}")
-            logger.info(f"Request body: {request.body}")
-            response = requests.request(
-                method=request.method,
-                url=proxy_url,
-                headers=headers,
-                data=body
+        # Prepare headers
+        response_headers = dict(CORS_HEADERS)
+        response_headers["Content-Type"] = content_type
+
+        # Handle 204 No Content explicitly
+        if response.status_code == 204:
+            return HttpResponse(
+                status=204,
+                headers=response_headers
             )
-            logger.info(f"Jira response headers:{response.headers}")
-            logger.info(f"Jira response status:{response.status_code}")
-            logger.info(f"Jira response content-type:{response.headers.get('content-type')}")
-            content_type = response.headers.get("content-type", "")
-            try:
-                content = response.json() if content_type.startswith("application/json") else response.text
-            except ValueError:
-                content = response.text
-            response_headers = dict(CORS_HEADERS)
-            response_headers["Content-Type"] = content_type or "application/json"
-            return Response(data=content, status=response.status_code, headers=response_headers)
 
-        except Exception as e:
-            return Response({"error": str(e)}, status=500, headers=CORS_HEADERS)
+        return HttpResponse(
+            content=response.content,
+            status=response.status_code,
+            headers=response_headers
+        )
+
+    except Exception as e:
+        return HttpResponse(
+            content=f'{{"error": "{str(e)}"}}',
+            status=500,
+            content_type="application/json",
+            headers=CORS_HEADERS
+        )
