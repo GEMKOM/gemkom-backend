@@ -2,11 +2,13 @@ from rest_framework import serializers
 from .models import Timer
 
 class TimerSerializer(serializers.ModelSerializer):
+    username = serializers.CharField(source='user.username', read_only=True)
     class Meta:
         model = Timer
         fields = [
             'id',
             'user',  # required by model, but will be auto-assigned
+            'username',
             'issue_key',
             'start_time',
             'finish_time',
