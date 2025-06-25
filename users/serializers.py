@@ -26,11 +26,12 @@ class UserCreateSerializer(serializers.ModelSerializer):
         user.set_password("Gemkom.")
         user.save()
 
-        UserProfile.objects.create(
-            user=user,
-            team=team,
-            must_reset_password=True
-        )
+        profile = user.profile  # Assumes related_name='profile' on OneToOneField
+        profile.team = team
+        profile.must_reset_password = True
+        profile.save()
+
+        return user
 
         return user
     
