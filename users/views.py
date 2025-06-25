@@ -7,7 +7,6 @@ from .serializers import PasswordResetSerializer, UserCreateSerializer, UserList
 from rest_framework.permissions import IsAuthenticated
 
 class UserListView(APIView):
-    permission_classes = [IsAuthenticated]  # Optional: Require login
 
     def get(self, request):
         users = User.objects.all().select_related('profile')
