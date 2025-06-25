@@ -5,10 +5,11 @@ from .models import UserProfile
 class UserListSerializer(serializers.ModelSerializer):
     team = serializers.CharField(source='profile.team')
     is_admin = serializers.BooleanField(source='profile.is_admin')
+    must_reset_password = serializers.BooleanField(source='profile.must_reset_password')
 
     class Meta:
         model = User
-        fields = ['username', 'team', 'is_admin']
+        fields = ['username', 'team', 'is_admin', 'must_reset_password']
 
 
 class UserCreateSerializer(serializers.ModelSerializer):
