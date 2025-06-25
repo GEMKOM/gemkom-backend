@@ -36,3 +36,17 @@ class UserCreateSerializer(serializers.ModelSerializer):
         )
 
         return user
+    
+class PasswordResetSerializer(serializers.Serializer):
+    new_password = serializers.CharField(write_only=True, min_length=8)
+
+    def validate_new_password(self, value):
+        # Add any custom password validation here
+        return value
+
+    def save(self, user):
+        user.set_password(self.validated_data['new_password'])
+        user.save()
+        profile = user.profile
+        profile.must_reset_password = False
+        profile.save()

@@ -3,7 +3,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 
 from users.permissions import IsAdmin
-from .serializers import UserCreateSerializer, UserListSerializer
+from .serializers import PasswordResetSerializer, UserCreateSerializer, UserListSerializer
 from rest_framework.permissions import IsAuthenticated
 
 class UserListView(APIView):
@@ -29,4 +29,18 @@ class AdminCreateUserView(APIView):
         if serializer.is_valid():
             serializer.save()
             return Response({"message": "User created successfully"}, status=201)
+        return Response(serializer.errors, status=400)
+    
+
+class ForcedPasswordResetView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        if not request.user.profile.must_reset_password:
+            return Response({"detail": "Password reset not required."}, status=403)
+
+        serializer = PasswordResetSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save(user=request.user)
+            return Response({"detail": "Password updated successfully."}, status=200)
         return Response(serializer.errors, status=400)
