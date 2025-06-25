@@ -1,7 +1,9 @@
 from django.contrib.auth.models import User
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from .serializers import UserListSerializer
+
+from users.permissions import IsAdmin
+from .serializers import UserCreateSerializer, UserListSerializer
 from rest_framework.permissions import IsAuthenticated
 
 class UserListView(APIView):
@@ -18,3 +20,13 @@ class CurrentUserView(APIView):
     def get(self, request):
         serializer = UserListSerializer(request.user)
         return Response(serializer.data)
+    
+class AdminCreateUserView(APIView):
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def post(self, request):
+        serializer = UserCreateSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response({"message": "User created successfully"}, status=201)
+        return Response(serializer.errors, status=400)
