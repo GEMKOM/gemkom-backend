@@ -14,7 +14,6 @@ class UserListSerializer(serializers.ModelSerializer):
 
 class UserCreateSerializer(serializers.ModelSerializer):
     team = serializers.CharField(write_only=True)
-    password = serializers.CharField(write_only=True)
 
     class Meta:
         model = User
@@ -22,10 +21,9 @@ class UserCreateSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         team = validated_data.pop('team')
-        password = validated_data.pop('password')
 
         user = User.objects.create(username=validated_data['username'])
-        user.set_password(password)
+        user.set_password("Gemkom.")
         user.save()
 
         UserProfile.objects.create(
