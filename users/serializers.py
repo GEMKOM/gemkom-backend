@@ -14,7 +14,6 @@ class UserListSerializer(serializers.ModelSerializer):
 
 class UserCreateSerializer(serializers.ModelSerializer):
     team = serializers.CharField(write_only=True)
-    is_admin = serializers.BooleanField(write_only=True)
     password = serializers.CharField(write_only=True)
 
     class Meta:
