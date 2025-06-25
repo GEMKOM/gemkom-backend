@@ -53,13 +53,19 @@ class TimerListView(MachiningProtectedView):
         elif request.GET.get("is_active") == "false":
             query &= Q(finish_time__isnull=False)
 
-        # Handle user filtering
+        # Determine if user is admin/superuser
+        is_admin = request.user.is_superuser or getattr(request.user, "is_admin", False)
+
         user_param = request.GET.get("user")
-        if user_param and (request.user.is_superuser or getattr(request.user, "is_admin", False)):
-            query &= Q(user__username=user_param)
+        if is_admin:
+            if user_param:
+                query &= Q(user__username=user_param)
+            # else: no user filtering, show all
         else:
+            # Non-admins can only see their own timers
             query &= Q(user=request.user)
 
+        # Optional issue_key filter
         if "issue_key" in request.GET:
             query &= Q(issue_key=request.GET["issue_key"])
 
