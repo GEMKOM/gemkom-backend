@@ -2,6 +2,7 @@ from django.contrib.auth.models import User
 from rest_framework.views import APIView
 from rest_framework.response import Response
 
+from users.models import UserProfile
 from users.permissions import IsAdmin
 from .serializers import PasswordResetSerializer, UserCreateSerializer, UserListSerializer
 from rest_framework.permissions import IsAuthenticated
@@ -42,3 +43,11 @@ class ForcedPasswordResetView(APIView):
             serializer.save(user=request.user)
             return Response({"detail": "Password updated successfully."}, status=200)
         return Response(serializer.errors, status=400)
+    
+class TeamChoicesView(APIView):
+    permission_classes = [IsAdmin]  # Optional
+
+    def get(self, request):
+        return Response([
+            {"value": k, "label": v} for k, v in UserProfile.TEAM_CHOICES
+        ])
