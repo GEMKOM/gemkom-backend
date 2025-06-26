@@ -72,54 +72,47 @@ class JiraProxyView(APIView):
         encoded_auth = base64.b64encode(auth_str.encode()).decode()
 
         try:
-            # Determine Content-Type
             incoming_content_type = request.headers.get("Content-Type", "").lower()
-            is_json = "application/json" in incoming_content_type
-            is_form = "application/x-www-form-urlencoded" in incoming_content_type or "multipart/form-data" in incoming_content_type
-
-            # Extract body accordingly
-            if request.method == "GET":
-                body = None
-            elif is_json:
-                body = request.body
-            elif is_form:
-                body = request.body  # already in appropriate encoded format
-            else:
-                body = request.body  # fallback for anything else
-
+            is_attachment = "/rest/api/3/issue/" in proxy_url and "/attachments" in proxy_url
             headers = {
                 "Authorization": f"Basic {encoded_auth}",
             }
 
-            if "/rest/api/3/issue/" in proxy_url and "/attachments" in proxy_url:
+            if is_attachment:
                 headers["X-Atlassian-Token"] = "no-check"
-            # Only set Content-Type if it's NOT multipart/form-data
-            if not incoming_content_type.startswith("multipart/form-data"):
-                headers["Content-Type"] = incoming_content_type
+                uploaded_file = request.FILES.get("file")
+                if not uploaded_file:
+                    return HttpResponse('{"error": "No file uploaded"}', status=400, content_type="application/json", headers=CORS_HEADERS)
 
-            response = requests.request(
-                method=request.method,
-                url=proxy_url,
-                headers=headers,
-                data=body,
-            )
+                files = {
+                    "file": (uploaded_file.name, uploaded_file.read(), uploaded_file.content_type),
+                }
+
+                response = requests.post(
+                    proxy_url,
+                    headers=headers,
+                    files=files
+                )
+            else:
+                # Handle normal JSON or form request
+                body = request.body if request.method != "GET" else None
+                if not incoming_content_type.startswith("multipart/form-data"):
+                    headers["Content-Type"] = incoming_content_type
+
+                response = requests.request(
+                    method=request.method,
+                    url=proxy_url,
+                    headers=headers,
+                    data=body
+                )
 
             content_type = response.headers.get("content-type", "application/json")
-
-            # Prepare headers
-            response_headers = dict(CORS_HEADERS)
-            response_headers["Content-Type"] = content_type
-
-            if response.status_code == 204:
-                return HttpResponse(
-                    status=204,
-                    headers=response_headers
-                )
 
             return HttpResponse(
                 content=response.content,
                 status=response.status_code,
-                headers=response_headers
+                content_type=content_type,
+                headers=CORS_HEADERS
             )
 
         except Exception as e:
@@ -129,3 +122,4 @@ class JiraProxyView(APIView):
                 content_type="application/json",
                 headers=CORS_HEADERS
             )
+
