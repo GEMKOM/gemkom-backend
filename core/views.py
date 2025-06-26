@@ -34,8 +34,8 @@ class TimerNowView(APIView):
 
 CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",  # Or use your frontend URL for tighter security
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS, PUT, DELETE",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Atlassian-Token",
 }
 
 
@@ -75,8 +75,11 @@ class JiraProxyView(APIView):
             body = request.body if request.method != "GET" else None
             headers = {
                 "Authorization": f"Basic {encoded_auth}",
-                "Content-Type": "application/json"
             }
+            # Forward all headers except Host and Content-Length
+            for k, v in request.headers.items():
+                if k.lower() not in ["content-length", "authorization"]:
+                    headers[k] = v
 
             response = requests.request(
                 method=request.method,
