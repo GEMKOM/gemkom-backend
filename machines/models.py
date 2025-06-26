@@ -17,9 +17,9 @@ class Machine(models.Model):
 
     name = models.CharField(max_length=255)
     machine_type = models.CharField(max_length=10, choices=MACHINE_TYPES)
-    used_in = models.CharField(max_length=50, default="machining")
+    used_in = models.CharField(max_length=50)
     jira_id = models.IntegerField(null=True, blank=True)
-    is_active = models.BooleanField(default=True)
+    is_active = models.BooleanField(null=True, blank=True, default=True)
     properties = models.JSONField(default=dict)  # Store dynamic properties here
 
     def __str__(self):
