@@ -1,5 +1,4 @@
 from django.db import models
-
 # Create your models here.
 class Machine(models.Model):
     MACHINE_TYPES = [
@@ -15,26 +14,9 @@ class Machine(models.Model):
         ('ECT', 'ESAB Sac Kesim Tezgahı'),
     ]
 
-
-    machine_type = models.CharField(max_length=50, choices=MACHINE_TYPES)
-    is_cnc = models.BooleanField(default=False)
-    model_name = models.CharField(max_length=100)
-
-    axis_x = models.IntegerField(help_text="mm")
-    axis_y = models.IntegerField(help_text="mm")
-    axis_z = models.IntegerField(help_text="mm")
-    axis_w = models.IntegerField(help_text="mm")
-    table_dimensions = models.CharField(max_length=100)  # Keep as text, due to complex format
-    table_load_capacity = models.IntegerField(help_text="kg")
-    spindle_rpm = models.IntegerField(help_text="rpm")
-    spindle_type = models.CharField(max_length=50)
-    tool_magazine_capacity = models.IntegerField(help_text="adet")
-    holder_type = models.CharField(max_length=50)
-    rapid_traverse_speed = models.FloatField(help_text="m/dk")
-    control_unit = models.CharField(max_length=100)
-    drilling_tolerance = models.FloatField(help_text="± mm")
-    surface_tolerance = models.FloatField(help_text="± mm")
-    production_year = models.PositiveIntegerField()
+    name = models.CharField(max_length=255)
+    machine_type = models.CharField(max_length=10, choices=MACHINE_TYPES)
+    properties = models.JSONField(default=dict)  # Store dynamic properties here
 
     def __str__(self):
-        return f"{self.machine_type} - {self.model_name}"
+        return self.name

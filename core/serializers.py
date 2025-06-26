@@ -6,7 +6,7 @@ class MachineListSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Machine
-        fields = [field.name for field in Machine._meta.fields] + ['machine_type_label']
+        fields = ['id', 'name', 'machine_type', 'machine_type_label', 'properties']
 
     def get_machine_type_label(self, obj):
         return obj.get_machine_type_display()
