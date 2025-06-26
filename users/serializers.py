@@ -6,10 +6,14 @@ class UserListSerializer(serializers.ModelSerializer):
     team = serializers.CharField(source='profile.team')
     is_admin = serializers.BooleanField(source='profile.is_admin')
     must_reset_password = serializers.BooleanField(source='profile.must_reset_password')
+    team_label = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ['username', 'is_superuser', 'team', 'is_admin', 'must_reset_password']
+        fields = ['username', 'is_superuser', 'team', 'team_label', 'is_admin', 'must_reset_password']
+
+    def get_team_label(self, obj):
+        return obj.profile.get_team_display()
 
 
 class UserCreateSerializer(serializers.ModelSerializer):
