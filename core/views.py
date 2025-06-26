@@ -78,7 +78,7 @@ class JiraProxyView(APIView):
             }
             # Forward all headers except Host and Content-Length
             for k, v in request.headers.items():
-                if k.lower() not in ["host", "content-length", "authorization"]:
+                if k.lower() not in ["host", "content-length"]:
                     headers[k] = v
 
             response = requests.request(
