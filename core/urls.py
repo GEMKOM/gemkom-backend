@@ -1,5 +1,5 @@
 from django.urls import path
-from .views import DBTestView, JiraProxyView, TimerNowView
+from .views import DBTestView, JiraProxyView, MachineListView, TimerNowView
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 urlpatterns = [
@@ -8,4 +8,5 @@ urlpatterns = [
     path("token/", TokenObtainPairView.as_view(), name="token_obtain_pair"),
     path("token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
     path("jira/proxy/", JiraProxyView.as_view(), name="jira-proxy"),
+    path("machines/", MachineListView.as_view(), name="machine-list"),
 ]

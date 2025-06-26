@@ -1,5 +1,7 @@
 import base64
 from django.http import HttpResponse
+from core.models import Machine
+from core.serializers import MachineListSerializer
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -11,6 +13,8 @@ import requests
 from rest_framework.decorators import permission_classes
 from rest_framework.permissions import IsAuthenticated
 import logging
+
+from users.permissions import IsAdmin
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -111,3 +115,11 @@ class JiraProxyView(APIView):
                 content_type="application/json",
                 headers=CORS_HEADERS
             )
+        
+
+class MachineListView(APIView):
+    permission_classes = [IsAuthenticated, IsAdmin]
+    def get(self, request):
+        machines = Machine.objects.all()
+        serializer = MachineListSerializer(machines, many=True)
+        return Response(serializer.data)

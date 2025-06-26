@@ -1,9 +1,9 @@
-from rest_framework import generics, status
 from rest_framework.response import Response
 from machining.permissions import MachiningProtectedView
 from .models import Timer
 from .serializers import TimerSerializer
 from django.db.models import Q
+
 
 class TimerStartView(MachiningProtectedView):
     def post(self, request):
@@ -71,5 +71,3 @@ class TimerListView(MachiningProtectedView):
 
         timers = Timer.objects.filter(query).order_by("-start_time")
         return Response(TimerSerializer(timers, many=True).data)
-
-
