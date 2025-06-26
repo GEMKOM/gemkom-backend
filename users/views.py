@@ -4,7 +4,7 @@ from rest_framework.response import Response
 
 from users.models import UserProfile
 from users.permissions import IsAdmin
-from .serializers import PasswordResetSerializer, UserCreateSerializer, UserListSerializer
+from .serializers import PasswordResetSerializer, UserCreateSerializer, UserListSerializer, UserUpdateSerializer
 from rest_framework.permissions import IsAuthenticated
 
 class UserListView(APIView):
@@ -19,6 +19,13 @@ class CurrentUserView(APIView):
     def get(self, request):
         serializer = UserListSerializer(request.user)
         return Response(serializer.data)
+    
+    def put(self, request):
+        serializer = UserUpdateSerializer(request.user, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response({"message": "User updated successfully."})
+        return Response(serializer.errors, status=400)
     
 class AdminCreateUserView(APIView):
     permission_classes = [IsAuthenticated, IsAdmin]

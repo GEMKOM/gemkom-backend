@@ -54,3 +54,23 @@ class PasswordResetSerializer(serializers.Serializer):
         profile = user.profile
         profile.must_reset_password = False
         profile.save()
+
+class UserUpdateSerializer(serializers.ModelSerializer):
+    jira_api_token = serializers.CharField(source="profile.jira_api_token", allow_blank=True, required=False)
+
+    class Meta:
+        model = User
+        fields = ['first_name', 'last_name', 'email', 'jira_api_token']
+
+    def update(self, instance, validated_data):
+        profile_data = validated_data.pop('profile', {})
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+
+        profile = instance.profile
+        for attr, value in profile_data.items():
+            setattr(profile, attr, value)
+        profile.save()
+
+        return instance
