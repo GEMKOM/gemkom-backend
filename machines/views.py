@@ -38,7 +38,7 @@ class MachineUpdateView(APIView):
         return Response(serializer.errors, status=400)
 
 class MachineListView(APIView):
-    permission_classes = [IsAuthenticated, IsAdmin]
+    permission_classes = [IsAuthenticated]
     def get(self, request):
         query = Q()
         used_in = request.GET.get("used_in")
