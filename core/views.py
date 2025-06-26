@@ -89,8 +89,11 @@ class JiraProxyView(APIView):
 
             headers = {
                 "Authorization": f"Basic {encoded_auth}",
-                "Content-Type": incoming_content_type
             }
+
+            # Only set Content-Type if it's NOT multipart/form-data
+            if not incoming_content_type.startswith("multipart/form-data"):
+                headers["Content-Type"] = incoming_content_type
 
             response = requests.request(
                 method=request.method,
