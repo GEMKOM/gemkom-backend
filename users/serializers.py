@@ -13,7 +13,9 @@ class UserListSerializer(serializers.ModelSerializer):
         fields = ['username', 'is_superuser', 'team', 'team_label', 'is_admin', 'must_reset_password']
 
     def get_team_label(self, obj):
-        return obj.profile.get_team_display()
+        if hasattr(obj, 'profile') and obj.profile.team:
+            return obj.profile.get_team_display()
+        return None
 
 
 class UserCreateSerializer(serializers.ModelSerializer):
