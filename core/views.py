@@ -91,6 +91,8 @@ class JiraProxyView(APIView):
                 "Authorization": f"Basic {encoded_auth}",
             }
 
+            if "/rest/api/3/issue/" in proxy_url and "/attachments" in proxy_url:
+                headers["X-Atlassian-Token"] = "no-check"
             # Only set Content-Type if it's NOT multipart/form-data
             if not incoming_content_type.startswith("multipart/form-data"):
                 headers["Content-Type"] = incoming_content_type
