@@ -16,6 +16,7 @@ class Machine(models.Model):
 
     name = models.CharField(max_length=255)
     machine_type = models.CharField(max_length=10, choices=MACHINE_TYPES)
+    used_in = models.CharField(max_length=50, default="machining")
     properties = models.JSONField(default=dict)  # Store dynamic properties here
 
     def __str__(self):

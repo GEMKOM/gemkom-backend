@@ -15,6 +15,7 @@ from rest_framework.permissions import IsAuthenticated
 import logging
 
 from users.permissions import IsAdmin
+from django.db.models import Q
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -120,6 +121,10 @@ class JiraProxyView(APIView):
 class MachineListView(APIView):
     permission_classes = [IsAuthenticated, IsAdmin]
     def get(self, request):
-        machines = Machine.objects.all()
+        query = Q()
+        used_in = request.GET.get("used_in")
+        if used_in:
+            query &= Q(used_in=used_in)
+        machines = Machine.objects.filter(query).order_by("-machine_type")
         serializer = MachineListSerializer(machines, many=True)
         return Response(serializer.data)
