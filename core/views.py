@@ -75,11 +75,8 @@ class JiraProxyView(APIView):
             body = request.body if request.method != "GET" else None
             headers = {
                 "Authorization": f"Basic {encoded_auth}",
+                "Content-Type": "application/json"
             }
-            # Forward all headers except Host and Content-Length
-            for k, v in request.headers.items():
-                if k.lower() not in ["host", "content-length"]:
-                    headers[k] = v
 
             response = requests.request(
                 method=request.method,
