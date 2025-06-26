@@ -72,31 +72,17 @@ class JiraProxyView(APIView):
         encoded_auth = base64.b64encode(auth_str.encode()).decode()
 
         try:
-            # Determine Content-Type
-            incoming_content_type = request.headers.get("Content-Type", "").lower()
-            is_json = "application/json" in incoming_content_type
-            is_form = "application/x-www-form-urlencoded" in incoming_content_type or "multipart/form-data" in incoming_content_type
-
-            # Extract body accordingly
-            if request.method == "GET":
-                body = None
-            elif is_json:
-                body = request.body
-            elif is_form:
-                body = request.body  # already in appropriate encoded format
-            else:
-                body = request.body  # fallback for anything else
-
+            body = request.body if request.method != "GET" else None
             headers = {
                 "Authorization": f"Basic {encoded_auth}",
-                "Content-Type": incoming_content_type
+                "Content-Type": "application/json"
             }
 
             response = requests.request(
                 method=request.method,
                 url=proxy_url,
                 headers=headers,
-                data=body,
+                data=body
             )
 
             content_type = response.headers.get("content-type", "application/json")
@@ -105,6 +91,7 @@ class JiraProxyView(APIView):
             response_headers = dict(CORS_HEADERS)
             response_headers["Content-Type"] = content_type
 
+            # Handle 204 No Content explicitly
             if response.status_code == 204:
                 return HttpResponse(
                     status=204,
