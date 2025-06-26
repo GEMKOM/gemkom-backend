@@ -16,6 +16,7 @@ class UserProfile(models.Model):
     team = models.CharField(max_length=50, choices=TEAM_CHOICES, null=True, blank=True)
     is_admin = models.BooleanField(default=False)
     must_reset_password = models.BooleanField(default=False)
-    
+    jira_api_token = models.CharField(max_length=255, blank=True, null=True)
+
     def __str__(self):
         return self.user.username

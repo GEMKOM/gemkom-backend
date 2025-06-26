@@ -42,8 +42,11 @@ class MachineListView(APIView):
     def get(self, request):
         query = Q()
         used_in = request.GET.get("used_in")
+        is_active = request.GET.get("is_active")
         if used_in:
             query &= Q(used_in=used_in)
+        if is_active:
+            query &= Q(is_active=is_active)
         machines = Machine.objects.filter(query).order_by("-machine_type")
         serializer = MachineListSerializer(machines, many=True)
         return Response(serializer.data)

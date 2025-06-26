@@ -38,7 +38,7 @@ CORS_HEADERS = {
     "Access-Control-Allow-Headers": "Content-Type, Authorization",
 }
 
-
+@permission_classes([IsAuthenticated])
 class JiraProxyView(APIView):
     def dispatch(self, request, *args, **kwargs):
         # Allow preflight OPTIONS requests
@@ -62,11 +62,16 @@ class JiraProxyView(APIView):
                 headers=CORS_HEADERS
             )
 
-        jira_email = settings.JIRA_EMAIL
-        jira_token = settings.JIRA_API_TOKEN
+        user = request.user
+        profile = getattr(user, 'userprofile', None)
 
-        if isinstance(jira_token, tuple):
-            jira_token = jira_token[0]
+        jira_email = getattr(user, 'email', None)
+        jira_token = getattr(profile, 'jira_api_token', None)
+
+        if not jira_email or not jira_token:
+            logger.error(f"No access: {jira_email} : {jira_token}")
+            # jira_email = settings.JIRA_EMAIL
+            # jira_token = settings.JIRA_API_TOKEN
 
         auth_str = f"{jira_email}:{jira_token}"
         encoded_auth = base64.b64encode(auth_str.encode()).decode()
