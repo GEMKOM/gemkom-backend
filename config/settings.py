@@ -52,6 +52,7 @@ INSTALLED_APPS = [
     'core',
     'corsheaders',
     'machining',
+    'machines',
 ]
 
 MIDDLEWARE = [

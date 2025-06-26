@@ -1,5 +1,10 @@
-from core.models import Machine
+from machines.models import Machine
 from rest_framework import serializers
+
+class MachineSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Machine
+        fields = '__all__'  # Includes all fields, including JSON and label
 
 class MachineListSerializer(serializers.ModelSerializer):
     machine_type_label = serializers.SerializerMethodField()
