@@ -38,7 +38,6 @@ CORS_HEADERS = {
     "Access-Control-Allow-Headers": "Content-Type, Authorization",
 }
 
-@permission_classes([IsAuthenticated])
 class JiraProxyView(APIView):
     def dispatch(self, request, *args, **kwargs):
         # Allow preflight OPTIONS requests
