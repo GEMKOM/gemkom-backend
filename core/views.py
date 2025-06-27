@@ -62,6 +62,7 @@ class JiraProxyView(APIView):
             )
 
         user = request.user
+        logger.info(user)
         profile = getattr(user, 'profile', None)
 
         jira_email = getattr(user, 'email', None)
