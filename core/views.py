@@ -10,7 +10,6 @@ from config import settings
 import requests
 from rest_framework.decorators import permission_classes
 from rest_framework.permissions import IsAuthenticated
-from rest_framework_simplejwt.authentication import JWTAuthentication
 import logging
 
 logger = logging.getLogger(__name__)
@@ -40,7 +39,7 @@ CORS_HEADERS = {
 }
 
 class JiraProxyView(APIView):
-    authentication_classes = [JWTAuthentication]
+
     permission_classes = [IsAuthenticated]
     def dispatch(self, request, *args, **kwargs):
         # Allow preflight OPTIONS requests
@@ -65,14 +64,12 @@ class JiraProxyView(APIView):
             )
 
         user = request.user
-        logger.info(user)
         profile = getattr(user, 'profile', None)
 
         jira_email = getattr(user, 'email', None)
         jira_token = getattr(profile, 'jira_api_token', None)
         
         if (not jira_email or not jira_token) and not (user.is_superuser or user.profile.is_admin):
-            logger.info("INSIDE IF")
             jira_email = settings.JIRA_EMAIL
             jira_token = settings.JIRA_API_TOKEN
 

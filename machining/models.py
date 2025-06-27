@@ -5,7 +5,8 @@ from django.db import models
 from django.contrib.auth.models import User
 
 class Timer(models.Model):
-    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='started_timers')
+    stopped_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='stopped_timers')
     issue_key = models.CharField(max_length=255)
     start_time = models.BigIntegerField()
     finish_time = models.BigIntegerField(null=True, blank=True)
