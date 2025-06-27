@@ -3,6 +3,8 @@ from .models import Timer
 
 class TimerSerializer(serializers.ModelSerializer):
     username = serializers.CharField(source='user.username', read_only=True)
+    stopped_by_first_name = serializers.CharField(source='stopped_by.first_name', read_only=True)
+    stopped_by_last_name = serializers.CharField(source='stopped_by.last_name', read_only=True)
     class Meta:
         model = Timer
         fields = [
@@ -20,6 +22,9 @@ class TimerSerializer(serializers.ModelSerializer):
             'position_no',
             'quantity',
             'manual_entry',
+            'stopped_by',
+            'stopped_by_first_name',
+            'stopped_by_last_name',
         ]
         read_only_fields = ['id', 'user']  # don't allow frontend to set user
 
