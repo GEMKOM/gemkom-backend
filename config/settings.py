@@ -30,7 +30,7 @@ JIRA_API_TOKEN = os.getenv('JIRA_API_TOKEN')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ['https://gemkom-backend-716746493353.europe-west3.run.app']  # for now
+ALLOWED_HOSTS = ['gemkom-backend-716746493353.europe-west3.run.app']  # for now
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
