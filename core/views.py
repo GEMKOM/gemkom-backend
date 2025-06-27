@@ -75,6 +75,7 @@ class JiraProxyView(APIView):
 
         logger.info(jira_email)
         logger.info(jira_token)
+        logger.info(settings.JIRA_EMAIL)
         auth_str = f"{jira_email}:{jira_token}"
         encoded_auth = base64.b64encode(auth_str.encode()).decode()
 
