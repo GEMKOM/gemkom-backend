@@ -1,3 +1,5 @@
+import re
+import unicodedata
 from django.contrib.auth.models import User
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -5,7 +7,7 @@ from rest_framework.response import Response
 from users.models import UserProfile
 from users.permissions import IsAdmin
 from .serializers import PasswordResetSerializer, UserCreateSerializer, UserListSerializer, UserUpdateSerializer
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, IsAdminUser
 
 class UserListView(APIView):
     def get(self, request):
@@ -57,3 +59,41 @@ class TeamChoicesView(APIView):
         return Response([
             {"value": k, "label": v} for k, v in UserProfile.TEAM_CHOICES
         ])
+    
+class AdminBulkCreateUsers(APIView):
+    permission_classes = [IsAdminUser]  # Only superusers or staff with is_staff=True
+
+    def post(self, request):
+        names = request.data.get("names")
+        team = request.data.get("team")
+
+        if not names or not isinstance(names, list):
+            return Response({"error": "'names' must be a list of full names."}, status=400)
+        if not team or not isinstance(team, str):
+            return Response({"error": "'team' must be a string."}, status=400)
+
+        def normalize_name(name):
+            normalized = unicodedata.normalize("NFD", name)
+            ascii_str = re.sub(r"[\u0300-\u036f]", "", normalized)
+            return re.sub(r"[^a-zA-Z0-9]", "", ascii_str).lower()
+
+        created_users = []
+        skipped_users = []
+
+        for full_name in names:
+            username = normalize_name(full_name)
+            if User.objects.filter(username=username).exists():
+                skipped_users.append(username)
+                continue
+
+            serializer = UserCreateSerializer(data={"username": username, "team": team})
+            if serializer.is_valid():
+                serializer.save()
+            created_users.append(username)
+
+        return Response({
+            "created": created_users,
+            "skipped": skipped_users,
+            "total_created": len(created_users),
+            "message": "Users seeded successfully."
+        }, status=201)

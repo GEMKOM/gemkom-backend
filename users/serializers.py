@@ -29,10 +29,10 @@ class UserCreateSerializer(serializers.ModelSerializer):
         team = validated_data.pop('team')
 
         user = User.objects.create(username=validated_data['username'])
-        user.set_password("Gemkom.")
+        user.set_password("gemkom2025.")
         user.save()
 
-        profile = user.profile  # Assumes related_name='profile' on OneToOneField
+        profile, _ = UserProfile.objects.get_or_create(user=user)  # Assumes related_name='profile' on OneToOneField
         profile.team = team
         profile.must_reset_password = True
         profile.save()
