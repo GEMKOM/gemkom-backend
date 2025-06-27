@@ -68,10 +68,9 @@ class JiraProxyView(APIView):
         jira_email = getattr(user, 'email', None)
         jira_token = getattr(profile, 'jira_api_token', None)
 
-        if not jira_email or not jira_token:
-            logger.error(f"No access: {jira_email} : {jira_token}")
-            # jira_email = settings.JIRA_EMAIL
-            # jira_token = settings.JIRA_API_TOKEN
+        if (not jira_email or not jira_token) and not (user.is_superuser or user.profile.is_admin):
+            jira_email = settings.JIRA_EMAIL
+            jira_token = settings.JIRA_API_TOKEN
 
         auth_str = f"{jira_email}:{jira_token}"
         encoded_auth = base64.b64encode(auth_str.encode()).decode()
