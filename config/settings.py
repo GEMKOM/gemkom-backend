@@ -30,7 +30,7 @@ JIRA_API_TOKEN = os.getenv('JIRA_API_TOKEN')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ['*']  # for now
+ALLOWED_HOSTS = ['https://gemkom-backend-716746493353.europe-west3.run.app']  # for now
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
@@ -73,6 +73,11 @@ CORS_ALLOWED_ORIGINS = [
     "http://127.0.0.1:8080",
     "http://localhost:8080",
 ]
+
+CSRF_TRUSTED_ORIGINS = ['https://gemkom-backend-716746493353.europe-west3.run.app']
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+SESSION_COOKIE_SECURE = True
+CSRF_COOKIE_SECURE = True
 
 ROOT_URLCONF = 'config.urls'
 
