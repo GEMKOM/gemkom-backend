@@ -56,9 +56,17 @@ class MachineFaultListCreateView(APIView):
 
     def get(self, request):
         query = Q()
-        machine_id = request.GET.get("machine_id")  
+        user = request.user
+        profile = getattr(user, 'profile', None)
+
+        # Restrict non-admin, non-maintenance users to their own faults
+        if not user.is_superuser and not getattr(profile, 'is_admin', False) and getattr(profile, 'team', '') != 'maintenance':
+            query &= Q(reported_by=user)
+
+        machine_id = request.GET.get("machine_id")
         if machine_id:
             query &= Q(machine=machine_id)
+
         faults = MachineFault.objects.filter(query)
         serializer = MachineFaultSerializer(faults, many=True)
         return Response(serializer.data)
