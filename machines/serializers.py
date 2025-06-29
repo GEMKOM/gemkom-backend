@@ -18,7 +18,12 @@ class MachineListSerializer(serializers.ModelSerializer):
         return obj.get_machine_type_display()
     
     def get_is_under_maintenance(self, obj):
-        return MachineFault.objects.filter(machine=obj, resolved_at__isnull=True).exists()
+        return MachineFault.objects.filter(
+            machine=obj,
+            resolved_at__isnull=True,
+            is_breaking=True
+        ).exists()
+
     
 class MachineFaultSerializer(serializers.ModelSerializer):
     machine_name = serializers.CharField(source='machine.name', read_only=True)
@@ -27,5 +32,5 @@ class MachineFaultSerializer(serializers.ModelSerializer):
     class Meta:
         model = MachineFault
         fields = ['id', 'machine', 'machine_name', 'description', 'reported_by', 'reported_by_username',
-                  'reported_at', 'resolved_at']
+                  'reported_at', 'resolved_at', 'is_breaking']
         read_only_fields = ['id', 'reported_by', 'reported_at']

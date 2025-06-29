@@ -36,6 +36,7 @@ class MachineFault(models.Model):
     description = models.TextField()
     reported_at = models.DateTimeField(auto_now_add=True)
     resolved_at = models.DateTimeField(null=True, blank=True)
+    is_breaking = models.BooleanField(default=True)
 
     class Meta:
         ordering = ['-reported_at']
