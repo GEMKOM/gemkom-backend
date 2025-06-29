@@ -36,11 +36,10 @@ class MachineFault(models.Model):
     description = models.TextField()
     reported_at = models.DateTimeField(auto_now_add=True)
     resolved_at = models.DateTimeField(null=True, blank=True)
-    is_resolved = models.BooleanField(default=False)
 
     class Meta:
         ordering = ['-reported_at']
 
     def __str__(self):
-        return f"{self.machine.name} - {'Resolved' if self.is_resolved else 'Unresolved'}"
+        return f"{self.machine.name} - {'Resolved' if self.resolved_at else 'Unresolved'}"
     

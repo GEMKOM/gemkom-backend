@@ -55,7 +55,11 @@ class MachineFaultListCreateView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        faults = MachineFault.objects.all()
+        query = Q()
+        machine_id = request.GET.get("machine_id")  
+        if machine_id:
+            query &= Q(machine=machine_id)
+        faults = MachineFault.objects.filter(query)
         serializer = MachineFaultSerializer(faults, many=True)
         return Response(serializer.data)
 
