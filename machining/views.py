@@ -20,9 +20,10 @@ class TimerStopView(MachiningProtectedView):
         timer_id = request.data.get("timer_id")
         try:
             timer = Timer.objects.get(id=timer_id)
-
-            if timer.user != request.user:
-                return Response("Permission denied for this timer.", status=403)
+            is_admin = request.user.is_superuser or getattr(request.user, "is_admin", False)
+            if not is_admin:
+                if timer.user != request.user:
+                    return Response("Permission denied for this timer.", status=403)
 
             for field in ['finish_time', 'comment', 'synced_to_jira', 'machine']:
                 if field in request.data:
