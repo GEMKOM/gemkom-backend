@@ -1,4 +1,5 @@
 from django.db import models
+from django.contrib.auth.models import User
 
 # Create your models here.
 class Machine(models.Model):
@@ -20,7 +21,27 @@ class Machine(models.Model):
     used_in = models.CharField(max_length=50)
     jira_id = models.IntegerField(null=True, blank=True)
     is_active = models.BooleanField(null=True, blank=True, default=True)
+    is_under_maintenance = models.BooleanField(default=False)
     properties = models.JSONField(default=dict)  # Store dynamic properties here
 
     def __str__(self):
         return self.name
+    
+    @property
+    def is_available(self):
+        return not self.faults.filter(is_resolved=False).exists()
+    
+class MachineFault(models.Model):
+    machine = models.ForeignKey('Machine', on_delete=models.CASCADE, related_name='faults')
+    reported_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
+    description = models.TextField()
+    reported_at = models.DateTimeField(auto_now_add=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    is_resolved = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ['-reported_at']
+
+    def __str__(self):
+        return f"{self.machine.name} - {'Resolved' if self.is_resolved else 'Unresolved'}"
+    

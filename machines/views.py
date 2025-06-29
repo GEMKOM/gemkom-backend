@@ -3,8 +3,8 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.shortcuts import get_object_or_404
 
-from machines.models import Machine
-from machines.serializers import MachineListSerializer, MachineSerializer
+from machines.models import Machine, MachineFault
+from machines.serializers import MachineFaultSerializer, MachineListSerializer, MachineSerializer
 from users.permissions import IsAdmin
 from django.db.models import Q
 
@@ -51,3 +51,41 @@ class MachineListView(APIView):
         serializer = MachineListSerializer(machines, many=True)
         return Response(serializer.data)
     
+class MachineFaultListCreateView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        faults = MachineFault.objects.all()
+        serializer = MachineFaultSerializer(faults, many=True)
+        return Response(serializer.data)
+
+    def post(self, request):
+        serializer = MachineFaultSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save(reported_by=request.user)
+            return Response(serializer.data, status=201)
+        return Response(serializer.errors, status=400)
+
+class MachineFaultDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get_object(self, pk):
+        return get_object_or_404(MachineFault, pk=pk)
+
+    def get(self, request, pk):
+        fault = self.get_object(pk)
+        serializer = MachineFaultSerializer(fault)
+        return Response(serializer.data)
+
+    def put(self, request, pk):
+        fault = self.get_object(pk)
+        serializer = MachineFaultSerializer(fault, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()  # No reported_by update here
+            return Response(serializer.data)
+        return Response(serializer.errors, status=400)
+
+    def delete(self, request, pk):
+        fault = self.get_object(pk)
+        fault.delete()
+        return Response(status=204)
