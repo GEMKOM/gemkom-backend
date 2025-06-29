@@ -21,7 +21,6 @@ class Machine(models.Model):
     used_in = models.CharField(max_length=50)
     jira_id = models.IntegerField(null=True, blank=True)
     is_active = models.BooleanField(null=True, blank=True, default=True)
-    is_under_maintenance = models.BooleanField(default=False)
     properties = models.JSONField(default=dict)  # Store dynamic properties here
 
     def __str__(self):
