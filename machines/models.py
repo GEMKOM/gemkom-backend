@@ -38,6 +38,7 @@ class MachineFault(models.Model):
     resolved_at = models.DateTimeField(null=True, blank=True)
     is_breaking = models.BooleanField(default=False)
     is_maintenance = models.BooleanField(default=False)
+    resolution_description = models.TextField(default="")
 
     class Meta:
         ordering = ['-reported_at']

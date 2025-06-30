@@ -32,5 +32,5 @@ class MachineFaultSerializer(serializers.ModelSerializer):
     class Meta:
         model = MachineFault
         fields = ['id', 'machine', 'machine_name', 'description', 'reported_by', 'reported_by_username',
-                  'reported_at', 'resolved_at', 'is_breaking', 'is_maintenance']
+                  'reported_at', 'resolved_at', 'is_breaking', 'is_maintenance', 'resolution_description']
         read_only_fields = ['id', 'reported_by', 'reported_at']
