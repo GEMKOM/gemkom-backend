@@ -28,9 +28,10 @@ class MachineListSerializer(serializers.ModelSerializer):
 class MachineFaultSerializer(serializers.ModelSerializer):
     machine_name = serializers.CharField(source='machine.name', read_only=True)
     reported_by_username = serializers.CharField(source='reported_by.username', read_only=True)
+    resolved_by_username = serializers.CharField(source='resolved_by.username', read_only=True)
 
     class Meta:
         model = MachineFault
         fields = ['id', 'machine', 'machine_name', 'description', 'reported_by', 'reported_by_username',
-                  'reported_at', 'resolved_at', 'is_breaking', 'is_maintenance', 'resolution_description']
+                  'reported_at', 'resolved_at', 'is_breaking', 'is_maintenance', 'resolution_description', 'resolved_by', 'resolved_by_username']
         read_only_fields = ['id', 'reported_by', 'reported_at']
