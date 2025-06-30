@@ -32,10 +32,11 @@ class Machine(models.Model):
     
 class MachineFault(models.Model):
     machine = models.ForeignKey('Machine', on_delete=models.CASCADE, related_name='faults')
-    reported_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
+    reported_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='faults_reported')
     description = models.TextField()
     reported_at = models.DateTimeField(auto_now_add=True)
     resolved_at = models.DateTimeField(null=True, blank=True)
+    resolved_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='faults_resolved')
     is_breaking = models.BooleanField(default=False)
     is_maintenance = models.BooleanField(default=False)
     resolution_description = models.TextField(default="")
