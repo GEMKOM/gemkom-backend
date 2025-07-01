@@ -10,7 +10,7 @@ class UserListSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ['username', 'first_name', 'last_name', 'email', 'is_superuser', 'team', 'team_label', 'is_admin', 'must_reset_password']
+        fields = ['username', 'first_name', 'last_name', 'email', 'is_superuser', 'team', 'team_label', 'is_admin', 'is_lead', 'must_reset_password']
 
     def get_team_label(self, obj):
         if hasattr(obj, 'profile') and obj.profile.team:
