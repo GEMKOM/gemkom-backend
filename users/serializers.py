@@ -6,6 +6,7 @@ class UserListSerializer(serializers.ModelSerializer):
     team = serializers.CharField(source='profile.team')
     is_admin = serializers.BooleanField(source='profile.is_admin')
     must_reset_password = serializers.BooleanField(source='profile.must_reset_password')
+    is_lead = serializers.BooleanField(source='profile.is_lead')
     team_label = serializers.SerializerMethodField()
 
     class Meta:
