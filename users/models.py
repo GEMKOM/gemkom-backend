@@ -10,6 +10,8 @@ class UserProfile(models.Model):
         ('welding', 'Kaynaklı İmalat'),
         ('planning', 'Planlama'),
         ('manufacturing', 'İmalat'),
+        ('maintenance', "Bakım"),
+        ('rollingmill', 'Haddehane')
         # Add more as needed
     ]
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
