@@ -11,7 +11,7 @@ class UserProfile(models.Model):
         ('planning', 'Planlama'),
         ('manufacturing', 'İmalat'),
         ('maintenance', "Bakım"),
-        ('rollingmill', 'Haddehane')
+        ('rollingmill', 'Haddehane'),
         ('qualitycontrol', 'Kalite Kontrol')
         # Add more as needed
     ]
