@@ -11,7 +11,7 @@ from rest_framework.permissions import IsAuthenticated, IsAdminUser
 
 class UserListView(APIView):
     def get(self, request):
-        users = User.objects.all().select_related('profile')
+        users = User.objects.all().select_related('profile').order_by('username')
         serializer = UserListSerializer(users, many=True)
         return Response(serializer.data)
 
