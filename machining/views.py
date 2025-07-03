@@ -155,7 +155,7 @@ class TimerReportView(APIView):
         valid_groups = {
             'user': 'user__username',
             'machine': 'machine',
-            'job_no': 'job_no',
+            'job_no': 'issue_key__job_no',
             'issue_key': 'issue_key',
         }
         group_field = valid_groups.get(group_by)
