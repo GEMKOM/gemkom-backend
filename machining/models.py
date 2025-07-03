@@ -21,7 +21,7 @@ class Task(models.Model):
 class Timer(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='started_timers')
     stopped_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='stopped_timers')
-    issue_key = models.ForeignKey(Task, on_delete=models.CASCADE, to_field='key', db_column='issue_key', related_name='timers')
+    issue_key = models.CharField(max_length=255)
     start_time = models.BigIntegerField()
     finish_time = models.BigIntegerField(null=True, blank=True)
     synced_to_jira = models.BooleanField(default=False)
