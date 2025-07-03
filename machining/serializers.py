@@ -5,6 +5,10 @@ class TimerSerializer(serializers.ModelSerializer):
     username = serializers.CharField(source='user.username', read_only=True)
     stopped_by_first_name = serializers.CharField(source='stopped_by.first_name', read_only=True)
     stopped_by_last_name = serializers.CharField(source='stopped_by.last_name', read_only=True)
+    job_no = serializers.CharField(source='issue_key.job_no', read_only=True)
+    image_no = serializers.CharField(source='issue_key.image_no', read_only=True)
+    position_no = serializers.CharField(source='issue_key.position_no', read_only=True)
+    quantity = serializers.IntegerField(source='issue_key.quantity', read_only=True)
     class Meta:
         model = Timer
         fields = [
