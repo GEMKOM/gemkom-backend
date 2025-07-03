@@ -6,7 +6,7 @@ from .models import Timer
 from .serializers import TimerSerializer
 from django.db.models import Q
 from rest_framework.views import APIView
-from rest_framework.generics import RetrieveUpdateAPIView
+from rest_framework.generics import RetrieveUpdateDestroyAPIView
 
 
 class TimerStartView(MachiningProtectedView):
@@ -25,18 +25,28 @@ class TimerStopView(MachiningProtectedView):
         try:
             timer = Timer.objects.get(id=timer_id)
             is_admin = request.user.is_superuser or getattr(request.user, "is_admin", False)
-            if not is_admin:
-                if timer.user != request.user:
-                    return Response("Permission denied for this timer.", status=403)
 
+            if not is_admin and timer.user != request.user:
+                return Response("Permission denied for this timer.", status=403)
+
+            was_running = timer.finish_time is None
+            finish_time_from_request = request.data.get("finish_time")
+
+            # Update allowed fields
             for field in ['finish_time', 'comment', 'synced_to_jira', 'machine']:
                 if field in request.data:
                     setattr(timer, field, request.data[field])
 
+            # ✅ Automatically set stopped_by
+            if was_running and finish_time_from_request:
+                timer.stopped_by = request.user
+
             timer.save()
             return Response("Timer stopped and updated.", status=200)
+
         except Timer.DoesNotExist:
             return Response("Timer not found.", status=404)
+
 
 class TimerManualEntryView(MachiningProtectedView):
     def post(self, request):
@@ -102,7 +112,7 @@ class TimerListView(MachiningProtectedView):
         return Response(TimerSerializer(timers, many=True).data)
 
 
-class TimerDetailView(RetrieveUpdateAPIView):
+class TimerDetailView(RetrieveUpdateDestroyAPIView):
     queryset = Timer.objects.all()
     serializer_class = TimerSerializer
     permission_classes = [IsMachiningUserOrAdmin]
@@ -115,6 +125,7 @@ class TimerDetailView(RetrieveUpdateAPIView):
 
     def perform_update(self, serializer):
         serializer.save(stopped_by=self.request.user if self.request.data.get("finish_time") else serializer.instance.stopped_by)
+
 
 class TimerReportView(APIView):
     permission_classes = [IsAdmin]
