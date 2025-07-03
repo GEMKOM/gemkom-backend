@@ -1,5 +1,11 @@
 from django.urls import path
 from .views import TimerDetailView, TimerReportView, TimerStartView, TimerStopView, TimerManualEntryView, TimerListView
+from rest_framework.routers import DefaultRouter
+from .views import TaskViewSet, MarkTaskCompletedView
+
+router = DefaultRouter()
+router.register(r'tasks', TaskViewSet, basename='task')
+
 
 urlpatterns = [
     path("timers/start/", TimerStartView.as_view()),
@@ -8,5 +14,6 @@ urlpatterns = [
     path("timers/", TimerListView.as_view()),
     path("timer-report/", TimerReportView.as_view()),
     path('timers/<int:pk>/', TimerDetailView.as_view(), name='timer-detail'),
+    path('tasks/mark-completed/', MarkTaskCompletedView.as_view(), name='mark-task-completed'),
 
 ]

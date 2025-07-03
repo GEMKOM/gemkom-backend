@@ -12,6 +12,9 @@ from rest_framework.decorators import permission_classes
 from rest_framework.permissions import IsAuthenticated
 import logging
 
+from core.permissions import IsJiraAutomation
+from machining.models import Task
+
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
@@ -116,3 +119,35 @@ class JiraProxyView(APIView):
                 content_type="application/json",
                 headers=CORS_HEADERS
             )
+
+class JiraIssueCreatedWebhook(APIView):
+    permission_classes = [IsJiraAutomation]
+
+    def post(self, request):
+        issue = request.data.get("issue", {})
+        fields = issue.get("fields", {})
+        key = issue.get("key")
+        summary = fields.get("summary", "")
+
+        # Optional: parse job_no, image_no, etc. from description or custom fields
+        description = fields.get("description", "")
+        job_no = fields.get("customfield_10117")  # Example custom field ID
+        image_no = fields.get("customfield_10184")
+        position_no = fields.get("customfield_10185")
+        quantity = fields.get("customfield_10187")
+
+        if not key:
+            return Response({"error": "Missing issue key"}, status=400)
+
+        Task.objects.update_or_create(
+            key=key,
+            defaults={
+                "name": summary,
+                "job_no": job_no,
+                "image_no": image_no,
+                "position_no": position_no,
+                "quantity": quantity,
+            }
+        )
+
+        return Response({"status": "Task created/updated"}, status=201)

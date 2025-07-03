@@ -24,6 +24,8 @@ SECRET_KEY = 'django-insecure-z^bajcf(fei!$y9cny6pttc0+o&n981_@ur0(0af6390ionx-n
 JIRA_EMAIL = 'ocalik@gemkom.com.tr'
 JIRA_API_TOKEN = os.getenv('JIRA_API_TOKEN')
 
+JIRA_AUTOMATION_TOKEN = os.getenv('JIRA_AUTOMATION_TOKEN')
+
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
@@ -32,7 +34,8 @@ ALLOWED_HOSTS = ['gemkom-backend-716746493353.europe-west3.run.app']  # for now
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "rest_framework_simplejwt.authentication.JWTAuthentication",
-    ]
+    ],
+    'DEFAULT_FILTER_BACKENDS': ['django_filters.rest_framework.DjangoFilterBackend']
 }
 
 # Application definition

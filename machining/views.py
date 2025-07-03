@@ -1,13 +1,15 @@
+import time
 from rest_framework.response import Response
 from django.db.models import F, Sum, ExpressionWrapper, FloatField
 from machining.permissions import MachiningProtectedView
 from users.permissions import IsAdmin, IsMachiningUserOrAdmin
-from .models import Timer
-from .serializers import TimerSerializer
+from .models import Task, Timer
+from .serializers import TaskSerializer, TimerSerializer
 from django.db.models import Q
 from rest_framework.views import APIView
 from rest_framework.generics import RetrieveUpdateDestroyAPIView
-
+from rest_framework.viewsets import ModelViewSet
+from django_filters.rest_framework import DjangoFilterBackend
 
 class TimerStartView(MachiningProtectedView):
     def post(self, request):
@@ -128,6 +130,15 @@ class TimerDetailView(RetrieveUpdateDestroyAPIView):
     def perform_update(self, serializer):
         serializer.save(stopped_by=self.request.user if self.request.data.get("finish_time") else serializer.instance.stopped_by)
 
+    def destroy(self, request, *args, **kwargs):
+        user = request.user
+        is_admin = user.is_superuser or (hasattr(user, 'profile') and user.profile.is_admin)
+
+        if not is_admin:
+            return Response({"error": "You are not allowed to delete this timer."}, status=403)
+
+        return super().destroy(request, *args, **kwargs)
+
 
 class TimerReportView(APIView):
     permission_classes = [IsAdmin]
@@ -186,3 +197,29 @@ class TimerReportView(APIView):
         ).order_by(group_field)
 
         return Response(report)
+    
+
+
+class TaskViewSet(ModelViewSet):
+    queryset = Task.objects.all()
+    serializer_class = TaskSerializer
+    filter_backends = [DjangoFilterBackend]
+    permission_classes = [IsMachiningUserOrAdmin]
+
+
+class MarkTaskCompletedView(APIView):
+    permission_classes = [IsMachiningUserOrAdmin]
+
+    def post(self, request):
+        task_key = request.data.get('key')
+        if not task_key:
+            return Response({'error': 'Task key is required.'}, status=400)
+
+        try:
+            task = Task.objects.get(key=task_key)
+            task.completed_by = request.user
+            task.completion_date = int(time.time() * 1000)  # current time in ms
+            task.save()
+            return Response({'status': 'Task marked as completed.'})
+        except Task.DoesNotExist:
+            return Response({'error': 'Task not found.'}, status=404)

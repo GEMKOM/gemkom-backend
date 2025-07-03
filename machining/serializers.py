@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Timer
+from .models import Task, Timer
 
 class TimerSerializer(serializers.ModelSerializer):
     username = serializers.CharField(source='user.username', read_only=True)
@@ -31,3 +31,14 @@ class TimerSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         validated_data['user'] = self.context['request'].user
         return super().create(validated_data)
+    
+class TaskSerializer(serializers.ModelSerializer):
+    completed_by_username = serializers.CharField(source='completed_by.username', read_only=True)
+
+    class Meta:
+        model = Task
+        fields = [
+            'key', 'name', 'job_no', 'image_no', 'position_no', 'quantity',
+            'completion_date', 'completed_by', 'completed_by_username'
+        ]
+        read_only_fields = ['completed_by', 'completion_date']
