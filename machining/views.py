@@ -60,6 +60,8 @@ class TimerManualEntryView(MachiningProtectedView):
 
 class TimerListView(MachiningProtectedView):
     def get(self, request):
+        ordering = request.GET.get("ordering", "-finish_time")
+
         query = Q()
 
         # Optional filtering by active/inactive timers
@@ -108,7 +110,7 @@ class TimerListView(MachiningProtectedView):
         if "job_no" in request.GET:
             query &= Q(job_no=request.GET["job_no"])
 
-        timers = Timer.objects.filter(query).order_by("-start_time")
+        timers = Timer.objects.filter(query).order_by(ordering)
         return Response(TimerSerializer(timers, many=True).data)
 
 
