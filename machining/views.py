@@ -1,11 +1,12 @@
 from rest_framework.response import Response
 from django.db.models import F, Sum, ExpressionWrapper, FloatField
 from machining.permissions import MachiningProtectedView
-from users.permissions import IsAdmin
+from users.permissions import IsAdmin, IsMachiningUserOrAdmin
 from .models import Timer
 from .serializers import TimerSerializer
 from django.db.models import Q
 from rest_framework.views import APIView
+from rest_framework.generics import RetrieveUpdateAPIView
 
 
 class TimerStartView(MachiningProtectedView):
@@ -58,25 +59,62 @@ class TimerListView(MachiningProtectedView):
             query &= Q(finish_time__isnull=False)
 
         profile = getattr(request.user, 'profile', None)
-        # Determine if user is admin/superuser
         is_admin = request.user.is_superuser or getattr(profile, "is_admin", False)
 
         user_param = request.GET.get("user")
         if is_admin:
             if user_param:
                 query &= Q(user__username=user_param)
-            # else: no user filtering, show all
         else:
-            # Non-admins can only see their own timers
             query &= Q(user=request.user)
 
         # Optional issue_key filter
         if "issue_key" in request.GET:
             query &= Q(issue_key=request.GET["issue_key"])
 
+        # ✅ Optional start_time range filter (timestamps in seconds or ms)
+        start_after = request.GET.get("start_after")
+        start_before = request.GET.get("start_before")
+
+        if start_after:
+            try:
+                start_after_ts = int(start_after)
+                if start_after_ts < 1_000_000_000_000:  # if seconds, convert to ms
+                    start_after_ts *= 1000
+                query &= Q(start_time__gte=start_after_ts)
+            except ValueError:
+                return Response({"error": "Invalid start_after timestamp"}, status=400)
+
+        if start_before:
+            try:
+                start_before_ts = int(start_before)
+                if start_before_ts < 1_000_000_000_000:  # if seconds, convert to ms
+                    start_before_ts *= 1000
+                query &= Q(start_time__lte=start_before_ts)
+            except ValueError:
+                return Response({"error": "Invalid start_before timestamp"}, status=400)
+
+        # ✅ Optional job_no filter (exact match)
+        if "job_no" in request.GET:
+            query &= Q(job_no=request.GET["job_no"])
+
         timers = Timer.objects.filter(query).order_by("-start_time")
         return Response(TimerSerializer(timers, many=True).data)
 
+
+class TimerDetailView(RetrieveUpdateAPIView):
+    queryset = Timer.objects.all()
+    serializer_class = TimerSerializer
+    permission_classes = [IsMachiningUserOrAdmin]
+
+    def get_queryset(self):
+        user = self.request.user
+        if user.is_superuser or (hasattr(user, 'profile') and user.profile.is_admin):
+            return Timer.objects.all()
+        return Timer.objects.filter(user=user)
+
+    def perform_update(self, serializer):
+        serializer.save(stopped_by=self.request.user if self.request.data.get("finish_time") else serializer.instance.stopped_by)
 
 class TimerReportView(APIView):
     permission_classes = [IsAdmin]
