@@ -125,7 +125,7 @@ class TimerReportView(APIView):
 
         # Calculate duration (seconds), convert to hours
         duration_expr = ExpressionWrapper(
-            (F('finish_time') - F('start_time')) / 3600.0,
+            (F('finish_time') - F('start_time')) / (1000 * 3600.0),
             output_field=FloatField()
         )
 
