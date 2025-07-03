@@ -1,8 +1,11 @@
 from rest_framework.response import Response
+from django.db.models import F, Sum, ExpressionWrapper, FloatField
 from machining.permissions import MachiningProtectedView
+from users.permissions import IsAdmin
 from .models import Timer
 from .serializers import TimerSerializer
 from django.db.models import Q
+from rest_framework.views import APIView
 
 
 class TimerStartView(MachiningProtectedView):
@@ -54,8 +57,9 @@ class TimerListView(MachiningProtectedView):
         elif request.GET.get("is_active") == "false":
             query &= Q(finish_time__isnull=False)
 
+        profile = getattr(request.user, 'profile', None)
         # Determine if user is admin/superuser
-        is_admin = request.user.is_superuser or getattr(request.user, "is_admin", False)
+        is_admin = request.user.is_superuser or getattr(profile, "is_admin", False)
 
         user_param = request.GET.get("user")
         if is_admin:
@@ -72,3 +76,61 @@ class TimerListView(MachiningProtectedView):
 
         timers = Timer.objects.filter(query).order_by("-start_time")
         return Response(TimerSerializer(timers, many=True).data)
+
+
+class TimerReportView(APIView):
+    permission_classes = [IsAdmin]
+
+    def get(self, request):
+        # Optional query params
+        group_by = request.query_params.get('group_by', 'user')  # user, machine, job_no
+        synced_only = request.query_params.get('synced_only') == 'true'
+        manual_only = request.query_params.get('manual_only') == 'true'
+        start_after = request.query_params.get('start_after')
+        start_before = request.query_params.get('start_before')
+
+        # Valid group_by fields
+        valid_groups = {
+            'user': 'user__username',
+            'machine': 'machine',
+            'job_no': 'job_no',
+        }
+        group_field = valid_groups.get(group_by)
+        if not group_field:
+            return Response({'error': 'Invalid group_by value'}, status=400)
+
+        # Base queryset
+        timers = Timer.objects.all()
+
+        # Filters
+        if synced_only:
+            timers = timers.filter(synced_to_jira=True)
+        if manual_only:
+            timers = timers.filter(manual_entry=True)
+        if start_after:
+            try:
+                start_after_ts = int(start_after)
+                timers = timers.filter(start_time__gte=start_after_ts)
+            except ValueError:
+                return Response({'error': 'start_after must be a timestamp'}, status=400)
+        if start_before:
+            try:
+                start_before_ts = int(start_before)
+                timers = timers.filter(start_time__lte=start_before_ts)
+            except ValueError:
+                return Response({'error': 'start_before must be a timestamp'}, status=400)
+
+        # Only consider timers that are stopped
+        timers = timers.exclude(finish_time__isnull=True)
+
+        # Calculate duration (seconds), convert to hours
+        duration_expr = ExpressionWrapper(
+            (F('finish_time') - F('start_time')) / 3600.0,
+            output_field=FloatField()
+        )
+
+        report = timers.values(group_field).annotate(
+            total_hours=Sum(duration_expr)
+        ).order_by(group_field)
+
+        return Response(report)
