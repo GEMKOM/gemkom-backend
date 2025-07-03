@@ -192,9 +192,14 @@ class TimerReportView(APIView):
             output_field=FloatField()
         )
 
-        report = timers.values(group_field).annotate(
-            total_hours=Sum(duration_expr)
-        ).order_by(group_field)
+        report = (
+            timers
+            .values(group_field)
+            .annotate(total_hours=Sum(duration_expr))
+            .annotate(group=F(group_field))  # flatten to 'group'
+            .values('group', 'total_hours')
+            .order_by('group')
+        )
 
         return Response(report)
     
