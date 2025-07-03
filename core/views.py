@@ -121,6 +121,7 @@ class JiraProxyView(APIView):
             )
 
 class JiraIssueCreatedWebhook(APIView):
+    authentication_classes = []
     permission_classes = [IsJiraAutomation]
 
     def post(self, request):
