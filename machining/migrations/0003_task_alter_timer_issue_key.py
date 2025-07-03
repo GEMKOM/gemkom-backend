@@ -25,10 +25,5 @@ class Migration(migrations.Migration):
                 ('completion_date', models.BigIntegerField(blank=True, null=True)),
                 ('completed_by', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, to=settings.AUTH_USER_MODEL)),
             ],
-        ),
-        migrations.AlterField(
-            model_name='timer',
-            name='issue_key',
-            field=models.ForeignKey(db_column='issue_key', on_delete=django.db.models.deletion.CASCADE, related_name='timers', to='machining.task'),
-        ),
+        )
     ]
