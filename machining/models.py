@@ -4,6 +4,8 @@ from django.db import models
 from django.db import models
 from django.contrib.auth.models import User
 
+from machines.models import Machine
+
 class Task(models.Model):
     key = models.CharField(max_length=255, primary_key=True)  # Matches Timer.issue_key
     name = models.CharField(max_length=255)
@@ -28,6 +30,7 @@ class Timer(models.Model):
     manual_entry = models.BooleanField(default=False)
     comment = models.TextField(null=True, blank=True)
     machine = models.CharField(max_length=255, null=True, blank=True)
+    machine_fk = models.ForeignKey(Machine, on_delete=models.SET_NULL, null=True, blank=True, related_name='machine_timers')
     
 
     class Meta:
