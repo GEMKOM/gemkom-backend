@@ -17,3 +17,5 @@ urlpatterns = [
     path('tasks/mark-completed/', MarkTaskCompletedView.as_view(), name='mark-task-completed'),
 
 ]
+
+urlpatterns += router.urls
