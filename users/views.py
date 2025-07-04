@@ -3,17 +3,20 @@ import unicodedata
 from django.contrib.auth.models import User
 from rest_framework.views import APIView
 from rest_framework.response import Response
+from django_filters.rest_framework import DjangoFilterBackend
+from rest_framework.generics import ListAPIView
 
+from users.filters import UserFilter
 from users.models import UserProfile
 from users.permissions import IsAdmin
 from .serializers import PasswordResetSerializer, UserCreateSerializer, UserListSerializer, UserUpdateSerializer
 from rest_framework.permissions import IsAuthenticated, IsAdminUser
 
-class UserListView(APIView):
-    def get(self, request):
-        users = User.objects.all().select_related('profile').order_by('username')
-        serializer = UserListSerializer(users, many=True)
-        return Response(serializer.data)
+class UserListView(ListAPIView):
+    queryset = User.objects.all().select_related('profile').order_by('username')
+    serializer_class = UserListSerializer
+    filter_backends = [DjangoFilterBackend]
+    filterset_class = UserFilter
 
 class CurrentUserView(APIView):
     permission_classes = [IsAuthenticated]
