@@ -79,7 +79,7 @@ class TimerListView(MachiningProtectedView):
         if is_admin:
             if user_param:
                 query &= Q(user__username=user_param)
-        else:
+        elif "is_active" in request.GET:
             query &= Q(user=request.user)
 
         # Optional issue_key filter
