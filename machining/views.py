@@ -1,6 +1,7 @@
 import time
 from rest_framework.response import Response
 from django.db.models import F, Sum, ExpressionWrapper, FloatField
+from machining.filters import TaskFilter
 from machining.permissions import MachiningProtectedView
 from users.permissions import IsAdmin, IsMachiningUserOrAdmin
 from .models import Task, Timer
@@ -210,6 +211,7 @@ class TaskViewSet(ModelViewSet):
     serializer_class = TaskSerializer
     filter_backends = [DjangoFilterBackend]
     permission_classes = [IsMachiningUserOrAdmin]
+    filterset_class = TaskFilter
 
 
 class MarkTaskCompletedView(APIView):
