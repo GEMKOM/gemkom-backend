@@ -22,7 +22,8 @@ class TimerSerializer(serializers.ModelSerializer):
             'finish_time',
             'synced_to_jira',
             'comment',
-            'machine',         # This will now be the machine FK ID
+            'machine',
+            'machine_fk',        # This will now be the machine FK ID
             'machine_name',    # ✅ Human-readable name
             'job_no',
             'image_no',
