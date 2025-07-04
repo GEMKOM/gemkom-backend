@@ -76,11 +76,8 @@ class TimerListView(MachiningProtectedView):
         is_admin = request.user.is_superuser or getattr(profile, "is_admin", False)
 
         user_param = request.GET.get("user")
-        if is_admin:
-            if user_param:
-                query &= Q(user__username=user_param)
-        elif "is_active" in request.GET:
-            query &= Q(user=request.user)
+        if user_param:
+            query &= Q(user__username=user_param)
 
         # Optional issue_key filter
         if "issue_key" in request.GET:
