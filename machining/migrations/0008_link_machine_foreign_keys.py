@@ -2,6 +2,17 @@
 
 from django.db import migrations
 
+def link_machines(apps, schema_editor):
+    Timer = apps.get_model('yourapp', 'Timer')
+    Machine = apps.get_model('yourapp', 'Machine')
+
+    for timer in Timer.objects.exclude(machine__isnull=True).exclude(machine=''):
+        try:
+            machine_obj = Machine.objects.get(name=timer.machine)
+            timer.machine_fk = machine_obj
+            timer.save()
+        except Machine.DoesNotExist:
+            pass  # Or log these for manual fixing later
 
 class Migration(migrations.Migration):
 
@@ -10,4 +21,5 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
+        migrations.RunPython(link_machines, migrations.RunPython.noop),
     ]
