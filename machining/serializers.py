@@ -9,18 +9,21 @@ class TimerSerializer(serializers.ModelSerializer):
     image_no = serializers.CharField(source='issue_key.image_no', read_only=True)
     position_no = serializers.CharField(source='issue_key.position_no', read_only=True)
     quantity = serializers.IntegerField(source='issue_key.quantity', read_only=True)
+    machine_name = serializers.CharField(source='machine_fk.name', read_only=True)  # ✅ add this line
+
     class Meta:
         model = Timer
         fields = [
             'id',
-            'user',  # required by model, but will be auto-assigned
+            'user',
             'username',
             'issue_key',
             'start_time',
             'finish_time',
             'synced_to_jira',
             'comment',
-            'machine',
+            'machine',         # This will now be the machine FK ID
+            'machine_name',    # ✅ Human-readable name
             'job_no',
             'image_no',
             'position_no',
@@ -30,7 +33,7 @@ class TimerSerializer(serializers.ModelSerializer):
             'stopped_by_first_name',
             'stopped_by_last_name',
         ]
-        read_only_fields = ['id', 'user']  # don't allow frontend to set user
+        read_only_fields = ['id', 'user']
 
     def create(self, validated_data):
         validated_data['user'] = self.context['request'].user
