@@ -9,10 +9,11 @@ class MachineSerializer(serializers.ModelSerializer):
 class MachineListSerializer(serializers.ModelSerializer):
     machine_type_label = serializers.SerializerMethodField()
     is_under_maintenance = serializers.SerializerMethodField()
+    has_active_timer = serializers.SerializerMethodField()
 
     class Meta:
         model = Machine
-        fields = ['id', 'name', 'machine_type', 'used_in', 'machine_type_label', 'is_active', 'is_under_maintenance', 'jira_id', 'properties']
+        fields = ['id', 'name', 'machine_type', 'used_in', 'machine_type_label', 'is_active', 'has_active_timer', 'is_under_maintenance', 'jira_id', 'properties']
 
     def get_machine_type_label(self, obj):
         return obj.get_machine_type_display()
@@ -23,6 +24,10 @@ class MachineListSerializer(serializers.ModelSerializer):
             resolved_at__isnull=True,
             is_breaking=True
         ).exists()
+
+    def get_has_active_timer(self, obj):
+        from machining.models import Timer  # again, for safety
+        return Timer.objects.filter(machine=obj, finish_time__isnull=True).exists()
 
     
 class MachineFaultSerializer(serializers.ModelSerializer):
