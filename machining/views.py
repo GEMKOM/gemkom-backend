@@ -230,3 +230,20 @@ class MarkTaskCompletedView(APIView):
             return Response({'status': 'Task marked as completed.'})
         except Task.DoesNotExist:
             return Response({'error': 'Task not found.'}, status=404)
+
+class UnmarkTaskCompletedView(APIView):
+    permission_classes = [IsAdmin]
+
+    def post(self, request):
+        task_key = request.data.get('key')
+        if not task_key:
+            return Response({'error': 'Task key is required.'}, status=400)
+
+        try:
+            task = Task.objects.get(key=task_key)
+            task.completed_by = None
+            task.completion_date = None
+            task.save()
+            return Response({'status': 'Task completion removed.'})
+        except Task.DoesNotExist:
+            return Response({'error': 'Task not found.'}, status=404)
