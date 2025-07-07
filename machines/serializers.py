@@ -27,7 +27,7 @@ class MachineListSerializer(serializers.ModelSerializer):
 
     def get_has_active_timer(self, obj):
         from machining.models import Timer  # again, for safety
-        return Timer.objects.filter(machine=obj, finish_time__isnull=True).exists()
+        return Timer.objects.filter(machine_fk=obj, finish_time__isnull=True).exists()
 
     
 class MachineFaultSerializer(serializers.ModelSerializer):
