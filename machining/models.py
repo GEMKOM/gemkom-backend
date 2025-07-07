@@ -15,6 +15,7 @@ class Task(models.Model):
     quantity = models.IntegerField(null=True, blank=True)
     completed_by = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL)
     completion_date = models.BigIntegerField(null=True, blank=True)
+    is_hold_task = models.BooleanField(default=False)
 
     def __str__(self):
         return self.name
