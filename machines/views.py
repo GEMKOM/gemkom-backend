@@ -52,6 +52,14 @@ class MachineListView(APIView):
         serializer = MachineListSerializer(machines, many=True)
         return Response(serializer.data)
     
+class MachineDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        machine = get_object_or_404(Machine, pk=pk)
+        serializer = MachineListSerializer(machine)
+        return Response(serializer.data)
+    
 class MachineFaultListCreateView(APIView):
     permission_classes = [IsAuthenticated]
 
