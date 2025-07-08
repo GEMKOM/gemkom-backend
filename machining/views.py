@@ -5,7 +5,7 @@ from machining.filters import TaskFilter
 from machining.permissions import MachiningProtectedView
 from users.permissions import IsAdmin, IsMachiningUserOrAdmin
 from .models import Task, Timer
-from .serializers import TaskSerializer, TimerSerializer
+from .serializers import HoldTaskSerializer, TaskSerializer, TimerSerializer
 from django.db.models import Q
 from rest_framework.views import APIView
 from rest_framework.generics import RetrieveUpdateDestroyAPIView
@@ -220,7 +220,7 @@ class TaskViewSet(ModelViewSet):
 
 class HoldTaskViewSet(ModelViewSet):
     queryset = Task.objects.all()
-    serializer_class = TaskSerializer
+    serializer_class = HoldTaskSerializer
     filter_backends = [DjangoFilterBackend]
     permission_classes = [IsAuthenticated]
     filterset_class = TaskFilter

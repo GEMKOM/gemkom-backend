@@ -2,6 +2,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 
 from machines.models import Machine, MachineFault
 from machines.serializers import MachineFaultSerializer, MachineListSerializer, MachineSerializer
@@ -93,7 +94,13 @@ class MachineFaultDetailView(APIView):
         fault = self.get_object(pk)
         serializer = MachineFaultSerializer(fault, data=request.data, partial=True)
         if serializer.is_valid():
-            serializer.save()  # No reported_by update here
+            if not fault.resolved_at:
+                serializer.save(
+                    resolved_by=request.user,
+                    resolved_at=timezone.now()
+                )
+            else:
+                serializer.save()
             return Response(serializer.data)
         return Response(serializer.errors, status=400)
 
