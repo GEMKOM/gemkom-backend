@@ -11,6 +11,7 @@ from rest_framework.views import APIView
 from rest_framework.generics import RetrieveUpdateDestroyAPIView
 from rest_framework.viewsets import ModelViewSet
 from django_filters.rest_framework import DjangoFilterBackend
+from rest_framework.permissions import IsAuthenticated
 
 class TimerStartView(MachiningProtectedView):
     def post(self, request):
@@ -215,6 +216,17 @@ class TaskViewSet(ModelViewSet):
 
     def get_queryset(self):
         return Task.objects.filter(is_hold_task=False)
+    
+
+class HoldTaskViewSet(ModelViewSet):
+    queryset = Task.objects.all()
+    serializer_class = TaskSerializer
+    filter_backends = [DjangoFilterBackend]
+    permission_classes = [IsAuthenticated]
+    filterset_class = TaskFilter
+
+    def get_queryset(self):
+        return Task.objects.filter(is_hold_task=True)
 
 
 class MarkTaskCompletedView(APIView):

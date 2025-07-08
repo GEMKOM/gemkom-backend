@@ -50,3 +50,13 @@ class TaskSerializer(serializers.ModelSerializer):
             'completion_date', 'completed_by', 'completed_by_username'
         ]
         read_only_fields = ['completed_by', 'completion_date']
+
+
+class HoldTaskSerializer(serializers.ModelSerializer):
+
+    class Meta:
+        model = Task
+        fields = [
+            'key', 'name', 'job_no'
+        ]
+        read_only_fields = ['key', 'name', 'job_no']
