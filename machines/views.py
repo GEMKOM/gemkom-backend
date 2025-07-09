@@ -66,7 +66,7 @@ class MachineDetailView(APIView):
     def delete(self, request, pk):
         machine = self.get_object(pk)
         machine.delete()
-        return Response({"detail": "Machine deleted successfully."}, status=204)
+        return Response({"detail": "Machine deleted successfully."}, status=200)
     
 class MachineTypeChoicesView(APIView):
     permission_classes = [IsAdmin]  # Optional
