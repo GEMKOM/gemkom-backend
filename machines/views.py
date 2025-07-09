@@ -11,35 +11,12 @@ from django.db.models import Q
 
 # Create your views here.
 
-class MachineCreateView(APIView):
-    permission_classes = [IsAuthenticated, IsAdmin]
-    def post(self, request):
-        serializer = MachineSerializer(data=request.data)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data, status=200)
-        return Response(serializer.errors, status=400)
-    
-class MachineUpdateView(APIView):
-    permission_classes = [IsAuthenticated, IsAdmin]
-    def put(self, request, pk):
-        machine = get_object_or_404(Machine, pk=pk)
-        serializer = MachineSerializer(machine, data=request.data)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors, status=400)
+class MachineListCreateView(APIView):
+    def get_permissions(self):
+        if self.request.method == 'POST':
+            return [IsAuthenticated(), IsAdmin()]
+        return [IsAuthenticated()]
 
-    def patch(self, request, pk):
-        machine = get_object_or_404(Machine, pk=pk)
-        serializer = MachineSerializer(machine, data=request.data, partial=True)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors, status=400)
-
-class MachineListView(APIView):
-    permission_classes = [IsAuthenticated]
     def get(self, request):
         query = Q()
         used_in = request.GET.get("used_in")
@@ -51,14 +28,45 @@ class MachineListView(APIView):
         machines = Machine.objects.filter(query).order_by("-machine_type")
         serializer = MachineListSerializer(machines, many=True)
         return Response(serializer.data)
+
+    def post(self, request):
+        serializer = MachineSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=200)
+        return Response(serializer.errors, status=400)
     
 class MachineDetailView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get_object(self, pk):
+        return get_object_or_404(Machine, pk=pk)
 
     def get(self, request, pk):
-        machine = get_object_or_404(Machine, pk=pk)
+        machine = self.get_object(pk)
         serializer = MachineListSerializer(machine)
         return Response(serializer.data)
+
+    def put(self, request, pk):
+        machine = self.get_object(pk)
+        serializer = MachineSerializer(machine, data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=400)
+
+    def patch(self, request, pk):
+        machine = self.get_object(pk)
+        serializer = MachineSerializer(machine, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=400)
+
+    def delete(self, request, pk):
+        machine = self.get_object(pk)
+        machine.delete()
+        return Response({"detail": "Machine deleted successfully."}, status=204)
     
 class MachineTypeChoicesView(APIView):
     permission_classes = [IsAdmin]  # Optional
