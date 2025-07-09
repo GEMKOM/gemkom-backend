@@ -23,6 +23,6 @@ class IsAdmin(BasePermission):
             and user.is_authenticated
             and (
                 user.is_superuser
-                or getattr(user, "is_admin", False)
+                or (hasattr(user, 'profile') and getattr(user.profile, 'is_admin', False))
             )
         )

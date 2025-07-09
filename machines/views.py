@@ -69,7 +69,7 @@ class MachineDetailView(APIView):
         return Response({"detail": "Machine deleted successfully."}, status=200)
     
 class MachineTypeChoicesView(APIView):
-    permission_classes = [IsAdmin]  # Optional
+    permission_classes = [IsAuthenticated, IsAdmin]  # Optional
 
     def get(self, request):
         return Response([
