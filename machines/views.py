@@ -60,6 +60,14 @@ class MachineDetailView(APIView):
         serializer = MachineListSerializer(machine)
         return Response(serializer.data)
     
+class MachineTypeChoicesView(APIView):
+    permission_classes = [IsAdmin]  # Optional
+
+    def get(self, request):
+        return Response([
+            {"value": k, "label": v} for k, v in Machine.MACHINE_TYPES
+        ])
+    
 class MachineFaultListCreateView(APIView):
     permission_classes = [IsAuthenticated]
 
