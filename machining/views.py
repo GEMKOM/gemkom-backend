@@ -12,7 +12,7 @@ from rest_framework.generics import RetrieveUpdateDestroyAPIView
 from rest_framework.viewsets import ModelViewSet
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.permissions import IsAuthenticated
-from rest_framework.pagination import PageNumberPagination
+from config.pagination import CustomPageNumberPagination  # ✅ Use your custom paginator
 
 class TimerStartView(MachiningProtectedView):
     def post(self, request):
@@ -69,7 +69,6 @@ class TimerListView(MachiningProtectedView):
 
         query = Q()
 
-        # Optional filtering by active/inactive timers
         if request.GET.get("is_active") == "true":
             query &= Q(finish_time__isnull=True)
         elif request.GET.get("is_active") == "false":
@@ -77,46 +76,37 @@ class TimerListView(MachiningProtectedView):
 
         profile = getattr(request.user, 'profile', None)
         is_admin = request.user.is_superuser or getattr(profile, "is_admin", False)
-
         user_param = request.GET.get("user")
-        if is_admin:
-            if user_param:
-                query &= Q(user__username=user_param)
+
+        if is_admin and user_param:
+            query &= Q(user__username=user_param)
         else:
             query &= Q(user=request.user)
 
-        # Optional issue_key filter
         if "issue_key" in request.GET:
             query &= Q(issue_key=request.GET["issue_key"])
 
-        # ✅ Optional start_time range filter (timestamps in seconds or ms)
         start_after = request.GET.get("start_after")
         start_before = request.GET.get("start_before")
+        try:
+            if start_after:
+                ts = int(start_after)
+                if ts < 1_000_000_000_000:
+                    ts *= 1000
+                query &= Q(start_time__gte=ts)
+            if start_before:
+                ts = int(start_before)
+                if ts < 1_000_000_000_000:
+                    ts *= 1000
+                query &= Q(start_time__lte=ts)
+        except ValueError:
+            return Response({"error": "Invalid timestamp"}, status=400)
 
-        if start_after:
-            try:
-                start_after_ts = int(start_after)
-                if start_after_ts < 1_000_000_000_000:  # if seconds, convert to ms
-                    start_after_ts *= 1000
-                query &= Q(start_time__gte=start_after_ts)
-            except ValueError:
-                return Response({"error": "Invalid start_after timestamp"}, status=400)
-
-        if start_before:
-            try:
-                start_before_ts = int(start_before)
-                if start_before_ts < 1_000_000_000_000:  # if seconds, convert to ms
-                    start_before_ts *= 1000
-                query &= Q(start_time__lte=start_before_ts)
-            except ValueError:
-                return Response({"error": "Invalid start_before timestamp"}, status=400)
-
-        # ✅ Optional job_no filter (exact match)
         if "job_no" in request.GET:
             query &= Q(job_no=request.GET["job_no"])
 
         timers = Timer.objects.filter(query).order_by(ordering)
-        paginator = PageNumberPagination()
+        paginator = CustomPageNumberPagination()  # ✅ use your custom paginator
         page = paginator.paginate_queryset(timers, request)
         serializer = TimerSerializer(page, many=True)
         return paginator.get_paginated_response(serializer.data)
