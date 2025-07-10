@@ -12,6 +12,7 @@ from rest_framework.generics import RetrieveUpdateDestroyAPIView
 from rest_framework.viewsets import ModelViewSet
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.pagination import PageNumberPagination
 
 class TimerStartView(MachiningProtectedView):
     def post(self, request):
@@ -115,7 +116,10 @@ class TimerListView(MachiningProtectedView):
             query &= Q(job_no=request.GET["job_no"])
 
         timers = Timer.objects.filter(query).order_by(ordering)
-        return Response(TimerSerializer(timers, many=True).data)
+        paginator = PageNumberPagination()
+        page = paginator.paginate_queryset(timers, request)
+        serializer = TimerSerializer(page, many=True)
+        return paginator.get_paginated_response(serializer.data)
 
 
 class TimerDetailView(RetrieveUpdateDestroyAPIView):
