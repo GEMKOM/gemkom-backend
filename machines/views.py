@@ -3,6 +3,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+import requests
 
 from machines.models import Machine, MachineFault
 from machines.serializers import MachineFaultSerializer, MachineListSerializer, MachineSerializer
@@ -102,9 +103,38 @@ class MachineFaultListCreateView(APIView):
     def post(self, request):
         serializer = MachineFaultSerializer(data=request.data)
         if serializer.is_valid():
-            serializer.save(reported_by=request.user)
+            fault = serializer.save(reported_by=request.user)
+            self.send_telegram_notification(fault, request.user)
             return Response(serializer.data, status=201)
         return Response(serializer.errors, status=400)
+    
+
+    def send_telegram_notification(self, fault, user):
+        BOT_TOKEN = "8098242580:AAF6QsnKzuxeo5c5PKY1qjeYRfvDLU6HIdA"
+        CHAT_ID = "-4944950975"
+
+        reported_at = timezone.localtime(fault.reported_at).strftime("%d.%m.%Y %H:%M")
+        machine_name = fault.machine.name if fault.machine else "Bilinmiyor"
+        description = fault.description or "Yok"
+        talep_eden = user.get_full_name() or user.username
+        message = f"""🛠 *Yeni Bakım Talebi*
+            👤 *Talep Eden:* {talep_eden}
+            🖥 *Makine:* {machine_name}  
+            📄 *Açıklama:* {description}  
+            📅 *Tarih:* {reported_at}
+        """
+
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": CHAT_ID,
+            "text": message,
+            "parse_mode": "Markdown"
+        }
+
+        try:
+            requests.post(url, data=payload, timeout=5)
+        except requests.RequestException as e:
+            print("Telegram bildirim hatası:", e)
 
 class MachineFaultDetailView(APIView):
     permission_classes = [IsAuthenticated]
