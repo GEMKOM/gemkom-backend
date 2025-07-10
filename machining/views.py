@@ -104,7 +104,7 @@ class TimerListView(MachiningProtectedView):
             return Response({"error": "Invalid timestamp"}, status=400)
 
         if "job_no" in request.GET:
-            query &= Q(job_no=request.GET["job_no"])
+            query &= Q(issue_key__job_no=request.GET["job_no"])
 
         timers = Timer.objects.filter(query).order_by(ordering)
         paginator = CustomPageNumberPagination()  # ✅ use your custom paginator
