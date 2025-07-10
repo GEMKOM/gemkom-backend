@@ -152,10 +152,11 @@ class MachineFaultDetailView(APIView):
         serializer = MachineFaultSerializer(fault, data=request.data, partial=True)
         if serializer.is_valid():
             if not fault.resolved_at:
-                serializer.save(
+                updated_fault = serializer.save(
                     resolved_by=request.user,
                     resolved_at=timezone.now()
                 )
+                self.send_resolution_notification(updated_fault, request.user)
             else:
                 serializer.save()
             return Response(serializer.data)
@@ -165,3 +166,31 @@ class MachineFaultDetailView(APIView):
         fault = self.get_object(pk)
         fault.delete()
         return Response(status=204)
+    
+    def send_resolution_notification(self, fault, user):
+        BOT_TOKEN = "8098242580:AAF6QsnKzuxeo5c5PKY1qjeYRfvDLU6HIdA"
+        CHAT_ID = "-4944950975"
+
+        resolved_at = timezone.localtime(fault.resolved_at).strftime("%d.%m.%Y %H:%M")
+        machine_name = fault.machine.name if fault.machine else "Bilinmiyor"
+        description = fault.description or "Yok"
+        resolved_by = user.get_full_name() or user.username
+
+        message = f"""✅ *Bakım Talebi Çözüldü*
+            👤 *Çözen:* {resolved_by}  
+            🖥 *Makine:* {machine_name}  
+            📄 *Açıklama:* {description}  
+            📅 *Çözüm Tarihi:* {resolved_at}
+        """
+
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": CHAT_ID,
+            "text": message,
+            "parse_mode": "Markdown"
+        }
+
+        try:
+            requests.post(url, data=payload, timeout=5)
+        except requests.RequestException as e:
+            print("Telegram çözüm bildirimi hatası:", e)
