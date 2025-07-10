@@ -37,7 +37,10 @@ class MachineListCreateView(APIView):
         return Response(serializer.errors, status=400)
     
 class MachineDetailView(APIView):
-    permission_classes = [IsAuthenticated, IsAdmin]
+    def get_permissions(self):
+        if self.request.method in ['POST', 'PATCH', 'PUT']:
+            return [IsAuthenticated(), IsAdmin()]
+        return [IsAuthenticated()]
 
     def get_object(self, pk):
         return get_object_or_404(Machine, pk=pk)
