@@ -26,6 +26,8 @@ JIRA_API_TOKEN = os.getenv('JIRA_API_TOKEN')
 
 JIRA_AUTOMATION_TOKEN = os.getenv('JIRA_AUTOMATION_TOKEN')
 
+TELEGRAM_MAINTENANCE_BOT_TOKEN = os.getenv('TELEGRAM_MAINTENANCE_BOT_TOKEN')
+
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 

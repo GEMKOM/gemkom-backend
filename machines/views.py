@@ -1,3 +1,4 @@
+from config.settings import TELEGRAM_MAINTENANCE_BOT_TOKEN
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
@@ -110,7 +111,6 @@ class MachineFaultListCreateView(APIView):
     
 
     def send_telegram_notification(self, fault, user):
-        BOT_TOKEN = "8098242580:AAF6QsnKzuxeo5c5PKY1qjeYRfvDLU6HIdA"
         CHAT_ID = "-4944950975"
 
         reported_at = timezone.localtime(fault.reported_at).strftime("%d.%m.%Y %H:%M")
@@ -124,7 +124,7 @@ class MachineFaultListCreateView(APIView):
             📅 *Tarih:* {reported_at}
         """
 
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        url = f"https://api.telegram.org/bot{TELEGRAM_MAINTENANCE_BOT_TOKEN}/sendMessage"
         payload = {
             "chat_id": CHAT_ID,
             "text": message,
@@ -168,7 +168,6 @@ class MachineFaultDetailView(APIView):
         return Response(status=204)
     
     def send_resolution_notification(self, fault, user):
-        BOT_TOKEN = "8098242580:AAF6QsnKzuxeo5c5PKY1qjeYRfvDLU6HIdA"
         CHAT_ID = "-4944950975"
 
         resolved_at = timezone.localtime(fault.resolved_at).strftime("%d.%m.%Y %H:%M")
@@ -183,7 +182,7 @@ class MachineFaultDetailView(APIView):
             📅 *Çözüm Tarihi:* {resolved_at}
         """
 
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        url = f"https://api.telegram.org/bot{TELEGRAM_MAINTENANCE_BOT_TOKEN}/sendMessage"
         payload = {
             "chat_id": CHAT_ID,
             "text": message,
