@@ -216,6 +216,27 @@ class TaskViewSet(ModelViewSet):
     def get_queryset(self):
         return Task.objects.filter(is_hold_task=False).prefetch_related('timers')
     
+class TaskBulkCreateView(APIView):
+    permission_classes = [IsAdmin]
+
+    def post(self, request):
+        data = request.data
+        if not isinstance(data, list):
+            return Response({'error': 'Expected a list of tasks'}, status=400)
+
+        existing_keys = set(Task.objects.filter(key__in=[t.get('key') for t in data]).values_list('key', flat=True))
+        to_create = [task for task in data if task.get('key') not in existing_keys]
+
+        serializer = TaskSerializer(data=to_create, many=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+
+        return Response({
+            'created_count': len(to_create),
+            'skipped_existing': list(existing_keys),
+            'created': serializer.data,
+        }, status=201)
+    
 
 class HoldTaskViewSet(ModelViewSet):
     queryset = Task.objects.all()

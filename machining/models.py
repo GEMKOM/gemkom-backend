@@ -17,6 +17,8 @@ class Task(models.Model):
     completion_date = models.BigIntegerField(null=True, blank=True)
     is_hold_task = models.BooleanField(default=False)
     estimated_hours = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    machine_fk = models.ForeignKey(Machine, on_delete=models.SET_NULL, null=True, blank=True, related_name='machine_tasks')
+    finish_time = models.DateField(null=True, blank=True)
 
     def __str__(self):
         return self.name
