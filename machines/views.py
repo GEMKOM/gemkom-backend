@@ -172,13 +172,13 @@ class MachineFaultDetailView(APIView):
 
         resolved_at = timezone.localtime(fault.resolved_at).strftime("%d.%m.%Y %H:%M")
         machine_name = fault.machine.name if fault.machine else "Bilinmiyor"
-        description = fault.description or "Yok"
+        description = fault.resolution_description or "Yok"
         resolved_by = user.get_full_name() or user.username
 
         message = f"""✅ *Bakım Talebi Çözüldü*
-            👤 *Çözen:* {resolved_by}  
-            🖥 *Makine:* {machine_name}  
-            📄 *Açıklama:* {description}  
+            👤 *Çözen:* {resolved_by}
+            🖥 *Makine:* {machine_name}
+            📄 *Açıklama:* {description}
             📅 *Çözüm Tarihi:* {resolved_at}
         """
 
