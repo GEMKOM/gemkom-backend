@@ -45,14 +45,20 @@ class TimerSerializer(serializers.ModelSerializer):
     
 class TaskSerializer(serializers.ModelSerializer):
     completed_by_username = serializers.CharField(source='completed_by.username', read_only=True)
+    total_hours_spent = serializers.SerializerMethodField()
 
     class Meta:
         model = Task
         fields = [
             'key', 'name', 'job_no', 'image_no', 'position_no', 'quantity',
-            'completion_date', 'completed_by', 'completed_by_username'
+            'completion_date', 'completed_by', 'completed_by_username', 'estimated_hours'
         ]
         read_only_fields = ['completed_by', 'completion_date']
+
+    def get_total_hours_spent(self, obj):
+        timers = obj.timers.exclude(finish_time__isnull=True)
+        total_millis = sum((t.finish_time - t.start_time) for t in timers)
+        return round(total_millis / (1000 * 60 * 60), 2)  # Convert ms to hours
 
 
 class HoldTaskSerializer(serializers.ModelSerializer):

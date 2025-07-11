@@ -214,7 +214,7 @@ class TaskViewSet(ModelViewSet):
     ordering = ['-completion_date']  # Default ordering
 
     def get_queryset(self):
-        return Task.objects.filter(is_hold_task=False)
+        return Task.objects.filter(is_hold_task=False).prefetch_related('timers')
     
 
 class HoldTaskViewSet(ModelViewSet):
