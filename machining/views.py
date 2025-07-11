@@ -13,6 +13,7 @@ from rest_framework.viewsets import ModelViewSet
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.permissions import IsAuthenticated
 from config.pagination import CustomPageNumberPagination  # ✅ Use your custom paginator
+from rest_framework.filters import OrderingFilter
 
 class TimerStartView(MachiningProtectedView):
     def post(self, request):
@@ -205,10 +206,12 @@ class TimerReportView(APIView):
 class TaskViewSet(ModelViewSet):
     queryset = Task.objects.all()
     serializer_class = TaskSerializer
-    filter_backends = [DjangoFilterBackend]
+    filter_backends = [DjangoFilterBackend, OrderingFilter]
     permission_classes = [IsMachiningUserOrAdmin]
     filterset_class = TaskFilter
     pagination_class = CustomPageNumberPagination
+    ordering_fields = ['key', 'job_no', 'image_no', 'position_no', 'completion_date', 'created_at']  # Add any fields you want to allow
+    ordering = ['-completion_date']  # Default ordering
 
     def get_queryset(self):
         return Task.objects.filter(is_hold_task=False)
