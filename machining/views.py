@@ -208,6 +208,7 @@ class TaskViewSet(ModelViewSet):
     filter_backends = [DjangoFilterBackend]
     permission_classes = [IsMachiningUserOrAdmin]
     filterset_class = TaskFilter
+    pagination_class = CustomPageNumberPagination()
 
     def get_queryset(self):
         return Task.objects.filter(is_hold_task=False)
