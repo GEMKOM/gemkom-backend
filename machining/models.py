@@ -6,6 +6,14 @@ from django.contrib.auth.models import User
 
 from machines.models import Machine
 
+class TaskKeyCounter(models.Model):
+    prefix = models.CharField(max_length=10, default='TI', unique=True)
+    current = models.IntegerField(default=0)
+
+    def __str__(self):
+        return f"{self.prefix}-{self.current}"
+
+
 class Task(models.Model):
     key = models.CharField(max_length=255, primary_key=True)  # Matches Timer.issue_key
     name = models.CharField(max_length=255)

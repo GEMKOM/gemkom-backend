@@ -4,7 +4,7 @@ from django.db.models import F, Sum, ExpressionWrapper, FloatField
 from machining.filters import TaskFilter
 from machining.permissions import MachiningProtectedView
 from users.permissions import IsAdmin, IsMachiningUserOrAdmin
-from .models import Task, Timer
+from .models import Task, TaskKeyCounter, Timer
 from .serializers import HoldTaskSerializer, TaskSerializer, TimerSerializer
 from django.db.models import Q
 from rest_framework.views import APIView
@@ -14,6 +14,7 @@ from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.permissions import IsAuthenticated
 from config.pagination import CustomPageNumberPagination  # ✅ Use your custom paginator
 from rest_framework.filters import OrderingFilter
+from django.db import transaction
 
 class TimerStartView(MachiningProtectedView):
     def post(self, request):
@@ -220,22 +221,29 @@ class TaskBulkCreateView(APIView):
     permission_classes = [IsAdmin]
 
     def post(self, request):
-        data = request.data
-        if not isinstance(data, list):
+        tasks_data = request.data
+        if not isinstance(tasks_data, list):
             return Response({'error': 'Expected a list of tasks'}, status=400)
 
-        existing_keys = set(Task.objects.filter(key__in=[t.get('key') for t in data]).values_list('key', flat=True))
-        to_create = [task for task in data if task.get('key') not in existing_keys]
+        tasks_to_create = [task for task in tasks_data if not task.get('key')]
 
-        serializer = TaskSerializer(data=to_create, many=True)
+        with transaction.atomic():
+            counter = TaskKeyCounter.objects.select_for_update().get(prefix="TI")
+            start = counter.current + 1
+            counter.current += len(tasks_to_create)
+            counter.save()
+
+            i = 0
+            for task in tasks_data:
+                if not task.get('key'):
+                    task['key'] = f"TI-{start + i:03d}"
+                    i += 1
+
+        serializer = TaskSerializer(data=tasks_data, many=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
 
-        return Response({
-            'created_count': len(to_create),
-            'skipped_existing': list(existing_keys),
-            'created': serializer.data,
-        }, status=201)
+        return Response(serializer.data, status=201)
     
 
 class HoldTaskViewSet(ModelViewSet):
@@ -282,3 +290,14 @@ class UnmarkTaskCompletedView(APIView):
             return Response({'status': 'Task completion removed.'})
         except Task.DoesNotExist:
             return Response({'error': 'Task not found.'}, status=404)
+        
+class InitTaskKeyCounterView(APIView):
+    permission_classes = [IsAdmin]  # 🔒 restrict who can call this
+
+    def post(self, request):
+        counter, created = TaskKeyCounter.objects.get_or_create(prefix="TI", defaults={"current": 0})
+        return Response({
+            "status": "created" if created else "already_exists",
+            "prefix": counter.prefix,
+            "current": counter.current
+        })

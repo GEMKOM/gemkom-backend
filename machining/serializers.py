@@ -1,5 +1,6 @@
 from rest_framework import serializers
-from .models import Task, Timer
+from .models import Task, TaskKeyCounter, Timer
+from django.db import transaction
 
 class TimerSerializer(serializers.ModelSerializer):
     username = serializers.CharField(source='user.username', read_only=True)
@@ -60,6 +61,17 @@ class TaskSerializer(serializers.ModelSerializer):
         timers = obj.timers.exclude(finish_time__isnull=True)
         total_millis = sum((t.finish_time - t.start_time) for t in timers)
         return round(total_millis / (1000 * 60 * 60), 2)  # Convert ms to hours
+    
+    def create(self, validated_data):
+        if 'key' not in validated_data or not validated_data['key']:
+            with transaction.atomic():
+                counter = TaskKeyCounter.objects.select_for_update().get(prefix="TI")
+                next_key_number = counter.current + 1
+                counter.current = next_key_number
+                counter.save()
+                validated_data['key'] = f"TI-{next_key_number:03d}"
+
+        return super().create(validated_data)
 
 
 class HoldTaskSerializer(serializers.ModelSerializer):
