@@ -46,12 +46,13 @@ class TimerSerializer(serializers.ModelSerializer):
 class TaskSerializer(serializers.ModelSerializer):
     completed_by_username = serializers.CharField(source='completed_by.username', read_only=True)
     total_hours_spent = serializers.SerializerMethodField()
+    machine_name = serializers.CharField(source='machine_fk.name', read_only=True)  # ✅ add this line
 
     class Meta:
         model = Task
         fields = [
             'key', 'name', 'job_no', 'image_no', 'position_no', 'quantity',
-            'completion_date', 'completed_by', 'completed_by_username', 'estimated_hours', 'total_hours_spent', 'machine_fk', 'finish_time'
+            'completion_date', 'completed_by', 'completed_by_username', 'estimated_hours', 'total_hours_spent', 'machine_fk', 'finish_time', 'machine_name'
         ]
         read_only_fields = ['completed_by', 'completion_date']
 
