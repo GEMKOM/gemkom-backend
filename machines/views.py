@@ -7,7 +7,7 @@ from django.utils import timezone
 import requests
 
 from machines.models import Machine, MachineFault
-from machines.serializers import MachineFaultSerializer, MachineListSerializer, MachineSerializer
+from machines.serializers import MachineFaultSerializer, MachineGetSerializer, MachineListSerializer, MachineSerializer
 from users.permissions import IsAdmin
 from django.db.models import Q
 
@@ -49,7 +49,7 @@ class MachineDetailView(APIView):
 
     def get(self, request, pk):
         machine = self.get_object(pk)
-        serializer = MachineListSerializer(machine)
+        serializer = MachineGetSerializer(machine)
         return Response(serializer.data)
 
     def put(self, request, pk):
