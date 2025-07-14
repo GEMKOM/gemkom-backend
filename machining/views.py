@@ -89,6 +89,9 @@ class TimerListView(MachiningProtectedView):
         if "issue_key" in request.GET:
             query &= Q(issue_key=request.GET["issue_key"])
 
+        if "machine_fk" in request.GET:
+            query &= Q(machine_fk=request.GET["machine_fk"])
+
         start_after = request.GET.get("start_after")
         start_before = request.GET.get("start_before")
         try:
