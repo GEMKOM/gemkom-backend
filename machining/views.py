@@ -26,6 +26,7 @@ class TimerStartView(MachiningProtectedView):
             return Response({"id": timer.id}, status=200)
         return Response(serializer.errors, status=400)
 
+# API View for maintenance to be able to stop maintenance timers.
 class TimerStopView(APIView):
     def post(self, request):
         timer_id = request.data.get("timer_id")
