@@ -13,6 +13,7 @@ class TimerSerializer(serializers.ModelSerializer):
     position_no = serializers.CharField(source='issue_key.position_no', read_only=True)
     quantity = serializers.IntegerField(source='issue_key.quantity', read_only=True)
     machine_name = serializers.CharField(source='machine_fk.name', read_only=True)  # ✅ add this line
+    duration = serializers.FloatField(read_only=True)
 
     class Meta:
         model = Timer
@@ -37,6 +38,7 @@ class TimerSerializer(serializers.ModelSerializer):
             'stopped_by',
             'stopped_by_first_name',
             'stopped_by_last_name',
+            'duration',
         ]
         read_only_fields = ['id', 'user']
 

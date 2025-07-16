@@ -112,7 +112,12 @@ class TimerListView(MachiningProtectedView):
         if "job_no" in request.GET:
             query &= Q(issue_key__job_no=request.GET["job_no"])
 
-        timers = Timer.objects.filter(query).order_by(ordering)
+        timers = Timer.objects.annotate(
+                    duration=ExpressionWrapper(
+                        (F('finish_time') - F('start_time')) / 3600000.0,
+                        output_field=FloatField()
+                    )
+                ).filter(query).order_by(ordering)
         paginator = CustomPageNumberPagination()  # ✅ use your custom paginator
         page = paginator.paginate_queryset(timers, request)
         serializer = TimerSerializer(page, many=True)
