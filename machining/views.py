@@ -220,7 +220,7 @@ class TaskViewSet(ModelViewSet):
     permission_classes = [IsMachiningUserOrAdmin]
     filterset_class = TaskFilter
     pagination_class = CustomPageNumberPagination
-    ordering_fields = ['key', 'job_no', 'image_no', 'position_no', 'completion_date', 'created_at', 'total_hours_spent', 'estimated_hours']  # Add any fields you want to allow
+    ordering_fields = ['key', 'job_no', 'image_no', 'position_no', 'completion_date', 'created_at', 'total_hours_spent', 'estimated_hours', 'finish_time']  # Add any fields you want to allow
     ordering = ['-completion_date']  # Default ordering
 
     def get_queryset(self):

@@ -11,9 +11,9 @@ class TaskFilter(django_filters.FilterSet):
     completion_date__gte = django_filters.NumberFilter(field_name='completion_date', lookup_expr='gte')
     completion_date__lte = django_filters.NumberFilter(field_name='completion_date', lookup_expr='lte')
 
-    finish_time = django_filters.NumberFilter(field_name='finish_time')  # ✅
-    finish_time__gte = django_filters.NumberFilter(field_name='finish_time', lookup_expr='gte')  # ✅
-    finish_time__lte = django_filters.NumberFilter(field_name='finish_time', lookup_expr='lte')  # ✅
+    finish_time = django_filters.DateFilter(field_name='finish_time')
+    finish_time__gte = django_filters.DateFilter(field_name='finish_time', lookup_expr='gte')
+    finish_time__lte = django_filters.DateFilter(field_name='finish_time', lookup_expr='lte')
 
     class Meta:
         model = Task
