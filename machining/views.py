@@ -157,7 +157,7 @@ class TimerReportView(APIView):
         # Valid group_by fields
         valid_groups = {
             'user': 'user__username',
-            'machine': 'machine',
+            'machine': 'machine_fk',
             'job_no': 'issue_key__job_no',
             'issue_key': 'issue_key',
         }
