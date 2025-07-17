@@ -28,17 +28,14 @@ class UserCreateSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         team = validated_data.pop('team')
-
         user = User.objects.create(username=validated_data['username'])
-        user.set_password("gemkom2025.")
+        user.set_password("gemkom2025.")  # You may want to make this configurable later
         user.save()
 
-        profile, _ = UserProfile.objects.get_or_create(user=user)  # Assumes related_name='profile' on OneToOneField
-        profile.team = team
-        profile.must_reset_password = True
-        profile.save()
-
-        return user
+        UserProfile.objects.update_or_create(user=user, defaults={
+            'team': team,
+            'must_reset_password': True
+        })
 
         return user
     
@@ -58,13 +55,17 @@ class PasswordResetSerializer(serializers.Serializer):
 
 class UserUpdateSerializer(serializers.ModelSerializer):
     jira_api_token = serializers.CharField(source="profile.jira_api_token", allow_blank=True, required=False)
+    team = serializers.CharField(source='profile.team')
+    is_admin = serializers.BooleanField(source='profile.is_admin')
+    must_reset_password = serializers.BooleanField(source='profile.must_reset_password')
 
     class Meta:
         model = User
-        fields = ['first_name', 'last_name', 'email', 'jira_api_token']
+        fields = ['first_name', 'last_name', 'email', 'jira_api_token', 'team', 'is_admin', 'must_reset_password']
 
     def update(self, instance, validated_data):
         profile_data = validated_data.pop('profile', {})
+
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         instance.save()

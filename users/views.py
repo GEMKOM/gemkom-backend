@@ -11,12 +11,26 @@ from users.models import UserProfile
 from users.permissions import IsAdmin
 from .serializers import PasswordResetSerializer, UserCreateSerializer, UserListSerializer, UserUpdateSerializer
 from rest_framework.permissions import IsAuthenticated, IsAdminUser
+from rest_framework.viewsets import ModelViewSet
 
-class UserListView(ListAPIView):
+
+class UserViewSet(ModelViewSet):
     queryset = User.objects.all().select_related('profile').order_by('username')
     serializer_class = UserListSerializer
     filter_backends = [DjangoFilterBackend]
     filterset_class = UserFilter
+
+    def get_permissions(self):
+        if self.action == 'list':
+            return [IsAuthenticated()]
+        return [IsAdminUser()]
+    
+    def get_serializer_class(self):
+        if self.action == 'create':
+            return UserCreateSerializer
+        elif self.action in ['update', 'partial_update']:
+            return UserUpdateSerializer
+        return UserListSerializer
 
 class CurrentUserView(APIView):
     permission_classes = [IsAuthenticated]
@@ -29,18 +43,7 @@ class CurrentUserView(APIView):
         if serializer.is_valid():
             serializer.save()
             return Response({"message": "User updated successfully."})
-        return Response(serializer.errors, status=400)
-    
-class AdminCreateUserView(APIView):
-    permission_classes = [IsAuthenticated, IsAdmin]
-
-    def post(self, request):
-        serializer = UserCreateSerializer(data=request.data)
-        if serializer.is_valid():
-            serializer.save()
-            return Response({"message": "User created successfully"}, status=201)
-        return Response(serializer.errors, status=400)
-    
+        return Response(serializer.errors, status=400)   
 
 class ForcedPasswordResetView(APIView):
     permission_classes = [IsAuthenticated]
