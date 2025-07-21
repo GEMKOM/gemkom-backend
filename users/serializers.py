@@ -4,6 +4,7 @@ from .models import UserProfile
 
 class UserListSerializer(serializers.ModelSerializer):
     team = serializers.CharField(source='profile.team')
+    occupation = serializers.CharField(source='profile.occupation')
     is_admin = serializers.BooleanField(source='profile.is_admin')
     must_reset_password = serializers.BooleanField(source='profile.must_reset_password')
     is_lead = serializers.BooleanField(source='profile.is_lead')
@@ -11,7 +12,7 @@ class UserListSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ['username', 'first_name', 'last_name', 'email', 'is_superuser', 'team', 'team_label', 'is_admin', 'is_lead', 'must_reset_password']
+        fields = ['username', 'first_name', 'last_name', 'email', 'is_superuser', 'team', 'team_label', 'is_admin', 'is_lead', 'must_reset_password', 'occupation']
 
     def get_team_label(self, obj):
         if hasattr(obj, 'profile') and obj.profile.team:
@@ -58,10 +59,11 @@ class UserUpdateSerializer(serializers.ModelSerializer):
     team = serializers.CharField(source='profile.team')
     is_admin = serializers.BooleanField(source='profile.is_admin')
     must_reset_password = serializers.BooleanField(source='profile.must_reset_password')
+    occupation = serializers.CharField(source='profile.occupation')
 
     class Meta:
         model = User
-        fields = ['first_name', 'last_name', 'email', 'jira_api_token', 'team', 'is_admin', 'must_reset_password']
+        fields = ['first_name', 'last_name', 'email', 'jira_api_token', 'team', 'is_admin', 'must_reset_password', 'occupation']
 
     def update(self, instance, validated_data):
         profile_data = validated_data.pop('profile', {})
