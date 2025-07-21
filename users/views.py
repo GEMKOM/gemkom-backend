@@ -66,6 +66,14 @@ class TeamChoicesView(APIView):
             {"value": k, "label": v} for k, v in UserProfile.TEAM_CHOICES
         ])
     
+class OccupationChoicesView(APIView):
+    permission_classes = [IsAuthenticated, IsAdmin]  # Optional
+
+    def get(self, request):
+        return Response([
+            {"value": k, "label": v} for k, v in UserProfile.OCCUPATION_CHOICES
+        ])
+    
 class AdminBulkCreateUsers(APIView):
     permission_classes = [IsAdminUser]  # Only superusers or staff with is_staff=True
 
