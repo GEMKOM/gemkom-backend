@@ -9,6 +9,7 @@ class UserListSerializer(serializers.ModelSerializer):
     must_reset_password = serializers.BooleanField(source='profile.must_reset_password')
     is_lead = serializers.BooleanField(source='profile.is_lead')
     team_label = serializers.SerializerMethodField()
+    occupation_label = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -17,6 +18,11 @@ class UserListSerializer(serializers.ModelSerializer):
     def get_team_label(self, obj):
         if hasattr(obj, 'profile') and obj.profile.team:
             return obj.profile.get_team_display()
+        return None
+    
+    def get_occupation_label(self, obj):
+        if hasattr(obj, 'profile') and obj.profile.occupation:
+            return obj.profile.get_occupation_display()
         return None
 
 
