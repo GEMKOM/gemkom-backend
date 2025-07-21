@@ -23,6 +23,8 @@ class UserProfile(models.Model):
         ('foreman', 'Formen'),
         ('assembler', 'Montajcı'),
         ('helper', 'Yardımcı')
+        ('operator', 'Operatör')
+        ('office', 'Ofis çalışanı')
     ]
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
     team = models.CharField(max_length=50, choices=TEAM_CHOICES, null=True, blank=True)
