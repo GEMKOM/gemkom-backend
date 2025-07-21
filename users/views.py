@@ -22,7 +22,7 @@ class UserViewSet(ModelViewSet):
 
     def get_permissions(self):
         if self.action == 'list':
-            return [IsAuthenticated()]
+            return []
         return [IsAdminUser()]
     
     def get_serializer_class(self):
