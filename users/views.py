@@ -23,7 +23,7 @@ class UserViewSet(ModelViewSet):
     def get_permissions(self):
         if self.action == 'list':
             return []
-        return [IsAdminUser()]
+        return [IsAdmin()]
     
     def get_serializer_class(self):
         if self.action == 'create':
