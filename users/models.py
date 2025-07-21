@@ -13,7 +13,8 @@ class UserProfile(models.Model):
         ('maintenance', "Bakım"),
         ('rollingmill', 'Haddehane'),
         ('qualitycontrol', 'Kalite Kontrol'),
-        ('cutting', 'CNC Kesim')
+        ('cutting', 'CNC Kesim'),
+        ('warehouse', 'Ambar')
         # Add more as needed
     ]
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
