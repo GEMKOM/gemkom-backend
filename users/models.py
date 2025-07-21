@@ -22,8 +22,8 @@ class UserProfile(models.Model):
         ('welder', 'Kaynakçı'),
         ('foreman', 'Formen'),
         ('assembler', 'Montajcı'),
-        ('helper', 'Yardımcı')
-        ('operator', 'Operatör')
+        ('helper', 'Yardımcı'),
+        ('operator', 'Operatör'),
         ('office', 'Ofis çalışanı')
     ]
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
