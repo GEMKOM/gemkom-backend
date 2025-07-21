@@ -1,5 +1,5 @@
 from django.urls import path
-from .views import AdminBulkCreateUsers, CurrentUserView, ForcedPasswordResetView, TeamChoicesView, UserListView, UserViewSet
+from .views import AdminBulkCreateUsers, CurrentUserView, ForcedPasswordResetView, TeamChoicesView, UserViewSet
 from rest_framework.routers import DefaultRouter
 
 router = DefaultRouter()
