@@ -3,9 +3,16 @@ from rest_framework import serializers
 from .models import UserProfile
 
 class PublicUserSerializer(serializers.ModelSerializer):
+    team = serializers.CharField(source='profile.team')
+    team_label = serializers.SerializerMethodField()
     class Meta:
         model = User
         fields = ['username', 'first_name', 'last_name']
+
+    def get_team_label(self, obj):
+        if hasattr(obj, 'profile') and obj.profile.team:
+            return obj.profile.get_team_display()
+        return None
 
 class UserListSerializer(serializers.ModelSerializer):
     team = serializers.CharField(source='profile.team')
