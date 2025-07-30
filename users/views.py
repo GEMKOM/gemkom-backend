@@ -9,16 +9,31 @@ from rest_framework.generics import ListAPIView
 from users.filters import UserFilter
 from users.models import UserProfile
 from users.permissions import IsAdmin
-from .serializers import PasswordResetSerializer, UserCreateSerializer, UserListSerializer, UserUpdateSerializer
+from .serializers import AdminUserUpdateSerializer, CurrentUserUpdateSerializer, PasswordResetSerializer, PublicUserSerializer, UserCreateSerializer, UserListSerializer
 from rest_framework.permissions import IsAuthenticated, IsAdminUser
 from rest_framework.viewsets import ModelViewSet
-
 
 class UserViewSet(ModelViewSet):
     queryset = User.objects.all().select_related('profile').order_by('username')
     serializer_class = UserListSerializer
     filter_backends = [DjangoFilterBackend]
     filterset_class = UserFilter
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = User.objects.select_related('profile').order_by('username')
+
+        if not user.is_authenticated:
+            return qs.filter(profile__collar_type='blue')
+
+        if user.is_superuser or getattr(user.profile, 'is_admin', False):
+            return qs
+
+        if getattr(user.profile, 'collar_type', None) == 'white':
+            return qs
+
+        return qs.filter(profile__collar_type='blue')
+
 
     def get_permissions(self):
         if self.action == 'list':
@@ -29,8 +44,18 @@ class UserViewSet(ModelViewSet):
         if self.action == 'create':
             return UserCreateSerializer
         elif self.action in ['update', 'partial_update']:
-            return UserUpdateSerializer
+            return AdminUserUpdateSerializer
+        elif self.action == 'list':
+            user = self.request.user
+            if not user.is_authenticated:
+                return PublicUserSerializer
+            if user.is_superuser or getattr(user.profile, 'is_admin', False):
+                return UserListSerializer
+            if getattr(user.profile, 'collar_type', None) == 'white':
+                return UserListSerializer
+            return PublicUserSerializer
         return UserListSerializer
+
 
 class CurrentUserView(APIView):
     permission_classes = [IsAuthenticated]
@@ -39,10 +64,20 @@ class CurrentUserView(APIView):
         return Response(serializer.data)
     
     def put(self, request):
-        serializer = UserUpdateSerializer(request.user, data=request.data, partial=True)
+        user = request.user
+        is_admin_user = user.is_superuser or getattr(user.profile, "is_admin", False)
+
+        if is_admin_user:
+            serializer_class = AdminUserUpdateSerializer
+        else:
+            serializer_class = CurrentUserUpdateSerializer
+
+        serializer = serializer_class(user, data=request.data, partial=True, context={'request': request})
+        
         if serializer.is_valid():
             serializer.save()
             return Response({"message": "User updated successfully."})
+        
         return Response(serializer.errors, status=400)   
 
 class ForcedPasswordResetView(APIView):

@@ -33,6 +33,11 @@ class UserProfile(models.Model):
     must_reset_password = models.BooleanField(default=False)
     jira_api_token = models.CharField(max_length=255, blank=True, null=True)
     occupation = models.CharField(max_length=50, choices=OCCUPATION_CHOICES, null=True, blank=True)
+    COLLAR_TYPES = [
+        ('blue', 'Mavi Yaka'),
+        ('white', 'Beyaz Yaka'),
+    ]
+    collar_type = models.CharField(max_length=10, choices=COLLAR_TYPES, default='blue')
 
     def __str__(self):
         return self.user.username

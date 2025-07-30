@@ -2,6 +2,11 @@ from django.contrib.auth.models import User
 from rest_framework import serializers
 from .models import UserProfile
 
+class PublicUserSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ['username', 'first_name', 'last_name']
+
 class UserListSerializer(serializers.ModelSerializer):
     team = serializers.CharField(source='profile.team')
     occupation = serializers.CharField(source='profile.occupation')
@@ -11,9 +16,21 @@ class UserListSerializer(serializers.ModelSerializer):
     team_label = serializers.SerializerMethodField()
     occupation_label = serializers.SerializerMethodField()
 
+    collar_type = serializers.CharField(source='profile.collar_type')
+    collar_type_label = serializers.SerializerMethodField()
+
     class Meta:
         model = User
-        fields = ['id', 'username', 'first_name', 'last_name', 'email', 'is_superuser', 'team', 'team_label', 'is_admin', 'is_lead', 'must_reset_password', 'occupation', 'occupation_label']
+        fields = [
+            'username', 'first_name', 'last_name', 'email', 'is_superuser',
+            'team', 'team_label', 'is_admin', 'is_lead', 'must_reset_password',
+            'occupation', 'occupation_label', 'collar_type', 'collar_type_label'
+        ]
+
+    def get_collar_type_label(self, obj):
+        if hasattr(obj, 'profile') and obj.profile.collar_type:
+            return obj.profile.get_collar_type_display()
+        return None
 
     def get_team_label(self, obj):
         if hasattr(obj, 'profile') and obj.profile.team:
@@ -60,16 +77,39 @@ class PasswordResetSerializer(serializers.Serializer):
         profile.must_reset_password = False
         profile.save()
 
-class UserUpdateSerializer(serializers.ModelSerializer):
+class CurrentUserUpdateSerializer(serializers.ModelSerializer):
+    jira_api_token = serializers.CharField(source="profile.jira_api_token", allow_blank=True, required=False)
+
+    class Meta:
+        model = User
+        fields = ['first_name', 'last_name', 'email', 'jira_api_token']
+
+    def update(self, instance, validated_data):
+        profile_data = validated_data.pop('profile', {})
+
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+
+        profile = instance.profile
+        for attr, value in profile_data.items():
+            setattr(profile, attr, value)
+        profile.save()
+
+        return instance
+    
+
+class AdminUserUpdateSerializer(serializers.ModelSerializer):
     jira_api_token = serializers.CharField(source="profile.jira_api_token", allow_blank=True, required=False)
     team = serializers.CharField(source='profile.team')
     is_admin = serializers.BooleanField(source='profile.is_admin')
     must_reset_password = serializers.BooleanField(source='profile.must_reset_password')
     occupation = serializers.CharField(source='profile.occupation')
+    collar_type = serializers.CharField(source='profile.collar_type')
 
     class Meta:
         model = User
-        fields = ['first_name', 'last_name', 'email', 'jira_api_token', 'team', 'is_admin', 'must_reset_password', 'occupation']
+        fields = ['first_name', 'last_name', 'email', 'jira_api_token', 'team', 'is_admin', 'must_reset_password', 'occupation', 'collar_type']
 
     def update(self, instance, validated_data):
         profile_data = validated_data.pop('profile', {})
