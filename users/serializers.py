@@ -7,7 +7,7 @@ class PublicUserSerializer(serializers.ModelSerializer):
     team_label = serializers.SerializerMethodField()
     class Meta:
         model = User
-        fields = ['username', 'first_name', 'last_name']
+        fields = ['username', 'first_name', 'last_name', 'team', 'team_label']
 
     def get_team_label(self, obj):
         if hasattr(obj, 'profile') and obj.profile.team:
@@ -23,20 +23,20 @@ class UserListSerializer(serializers.ModelSerializer):
     team_label = serializers.SerializerMethodField()
     occupation_label = serializers.SerializerMethodField()
 
-    collar_type = serializers.CharField(source='profile.collar_type')
-    collar_type_label = serializers.SerializerMethodField()
+    work_location = serializers.CharField(source='profile.work_location')
+    work_location_label = serializers.SerializerMethodField()
 
     class Meta:
         model = User
         fields = [
             'username', 'first_name', 'last_name', 'email', 'is_superuser',
             'team', 'team_label', 'is_admin', 'is_lead', 'must_reset_password',
-            'occupation', 'occupation_label', 'collar_type', 'collar_type_label'
+            'occupation', 'occupation_label', 'work_location', 'work_location_label'
         ]
 
-    def get_collar_type_label(self, obj):
-        if hasattr(obj, 'profile') and obj.profile.collar_type:
-            return obj.profile.get_collar_type_display()
+    def get_work_location_label(self, obj):
+        if hasattr(obj, 'profile') and obj.profile.work_location:
+            return obj.profile.get_work_location_display()
         return None
 
     def get_team_label(self, obj):
@@ -112,11 +112,11 @@ class AdminUserUpdateSerializer(serializers.ModelSerializer):
     is_admin = serializers.BooleanField(source='profile.is_admin')
     must_reset_password = serializers.BooleanField(source='profile.must_reset_password')
     occupation = serializers.CharField(source='profile.occupation')
-    collar_type = serializers.CharField(source='profile.collar_type')
+    work_location = serializers.CharField(source='profile.work_location')
 
     class Meta:
         model = User
-        fields = ['first_name', 'last_name', 'email', 'jira_api_token', 'team', 'is_admin', 'must_reset_password', 'occupation', 'collar_type']
+        fields = ['first_name', 'last_name', 'email', 'jira_api_token', 'team', 'is_admin', 'must_reset_password', 'occupation', 'work_location']
 
     def update(self, instance, validated_data):
         profile_data = validated_data.pop('profile', {})
