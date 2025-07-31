@@ -9,8 +9,8 @@ class UserFilter(filters.FilterSet):
     is_admin = filters.BooleanFilter(field_name='profile__is_admin')
     is_lead = filters.BooleanFilter(field_name='profile__is_lead')
     must_reset_password = filters.BooleanFilter(field_name='profile__must_reset_password')
-    collar_type = filters.CharFilter(field_name='profile__collar_type')
+    work_location = filters.CharFilter(field_name='profile__work_location')
 
     class Meta:
         model = User
-        fields = ['team', 'is_admin', 'is_lead', 'must_reset_password', 'collar_type']
+        fields = ['team', 'is_admin', 'is_lead', 'must_reset_password', 'work_location']

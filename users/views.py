@@ -24,15 +24,15 @@ class UserViewSet(ModelViewSet):
         qs = User.objects.select_related('profile').order_by('username')
 
         if not user.is_authenticated:
-            return qs.filter(profile__collar_type='blue')
+            return qs.filter(profile__work_location='workshop')
 
         if user.is_superuser or getattr(user.profile, 'is_admin', False):
             return qs
 
-        if getattr(user.profile, 'collar_type', None) == 'white':
+        if getattr(user.profile, 'work_location', None) == 'office':
             return qs
 
-        return qs.filter(profile__collar_type='blue')
+        return qs.filter(profile__work_location='workshop')
 
 
     def get_permissions(self):
@@ -51,7 +51,7 @@ class UserViewSet(ModelViewSet):
                 return PublicUserSerializer
             if user.is_superuser or getattr(user.profile, 'is_admin', False):
                 return UserListSerializer
-            if getattr(user.profile, 'collar_type', None) == 'white':
+            if getattr(user.profile, 'work_location', None) == 'office':
                 return UserListSerializer
             return PublicUserSerializer
         return UserListSerializer
