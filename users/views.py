@@ -94,8 +94,6 @@ class ForcedPasswordResetView(APIView):
         return Response(serializer.errors, status=400)
     
 class TeamChoicesView(APIView):
-    permission_classes = [IsAuthenticated, IsAdmin]  # Optional
-
     def get(self, request):
         return Response([
             {"value": k, "label": v} for k, v in UserProfile.TEAM_CHOICES
