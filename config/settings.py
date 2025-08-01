@@ -77,9 +77,9 @@ CORS_ALLOWED_ORIGINS = [
     "https://gemkom-dev.github.io",
     "https://gemkom.github.io",
     "https://gemcore.com.tr",
-    "http://gemcore.com.tr",
     "http://127.0.0.1:8080",
     "http://localhost:8080",
+    r"^https:\/\/.*\.gemcore\.com\.tr$",
 ]
 
 CSRF_TRUSTED_ORIGINS = ['https://gemkom-backend-716746493353.europe-west3.run.app']
