@@ -38,7 +38,6 @@ class Timer(models.Model):
     issue_key = models.ForeignKey(Task, on_delete=models.CASCADE, to_field='key', db_column='issue_key', related_name='timers')
     start_time = models.BigIntegerField()
     finish_time = models.BigIntegerField(null=True, blank=True)
-    synced_to_jira = models.BooleanField(default=False)
     manual_entry = models.BooleanField(default=False)
     comment = models.TextField(null=True, blank=True)
     machine = models.CharField(max_length=255, null=True, blank=True)
