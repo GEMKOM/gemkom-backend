@@ -47,9 +47,11 @@ class TimerSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
     
 class TaskSerializer(serializers.ModelSerializer):
+    key = serializers.CharField(required=False)
     completed_by_username = serializers.CharField(source='completed_by.username', read_only=True)
     total_hours_spent = serializers.SerializerMethodField()
     machine_name = serializers.CharField(source='machine_fk.name', read_only=True)  # ✅ add this line
+    
 
     class Meta:
         model = Task
