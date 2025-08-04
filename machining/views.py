@@ -41,7 +41,7 @@ class TimerStopView(APIView):
             finish_time_from_request = request.data.get("finish_time")
 
             # Update allowed fields
-            for field in ['finish_time', 'comment', 'synced_to_jira', 'machine']:
+            for field in ['finish_time', 'comment', 'machine']:
                 if field in request.data:
                     setattr(timer, field, request.data[field])
 
@@ -154,7 +154,6 @@ class TimerReportView(APIView):
     def get(self, request):
         # Optional query params
         group_by = request.query_params.get('group_by', 'user')  # user, machine, job_no
-        synced_only = request.query_params.get('synced_only') == 'true'
         manual_only = request.query_params.get('manual_only') == 'true'
         start_after = request.query_params.get('start_after')
         start_before = request.query_params.get('start_before')
@@ -174,8 +173,6 @@ class TimerReportView(APIView):
         timers = Timer.objects.all()
 
         # Filters
-        if synced_only:
-            timers = timers.filter(synced_to_jira=True)
         if manual_only:
             timers = timers.filter(manual_entry=True)
         if start_after:
