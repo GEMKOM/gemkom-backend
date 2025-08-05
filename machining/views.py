@@ -206,7 +206,7 @@ class TimerReportView(APIView):
                 timer_count=Count('id'),
                 group=F(group_field),
             )
-            .values('group', 'total_hours')
+            .values('group', 'total_hours', 'avg_duration', 'timer_count')
             .order_by('group')
         )
 
