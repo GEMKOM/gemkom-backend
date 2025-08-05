@@ -6,7 +6,7 @@ from machining.permissions import MachiningProtectedView
 from users.permissions import IsAdmin, IsMachiningUserOrAdmin
 from .models import Task, TaskKeyCounter, Timer
 from .serializers import HoldTaskSerializer, TaskSerializer, TimerSerializer
-from django.db.models import Q
+from django.db.models import Q, Count, Avg
 from rest_framework.views import APIView
 from rest_framework.generics import RetrieveUpdateDestroyAPIView
 from rest_framework.viewsets import ModelViewSet
@@ -200,8 +200,12 @@ class TimerReportView(APIView):
         report = (
             timers
             .values(group_field)
-            .annotate(total_hours=Sum(duration_expr))
-            .annotate(group=F(group_field))  # flatten to 'group'
+            .annotate(
+                total_hours=Sum(duration_expr),
+                avg_duration=Avg(duration_expr),
+                timer_count=Count('id'),
+                group=F(group_field),
+            )
             .values('group', 'total_hours')
             .order_by('group')
         )
