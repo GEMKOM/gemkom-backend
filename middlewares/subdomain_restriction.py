@@ -6,6 +6,9 @@ class SubdomainRestrictionMiddleware:
         self.get_response = get_response
 
     def __call__(self, request):
+        if request.method == "OPTIONS":
+            return self.get_response(request)
+
         user = request.user
         host = request.get_host()
 
