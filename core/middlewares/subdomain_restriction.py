@@ -11,7 +11,7 @@ class SubdomainRestrictionMiddleware:
             return self.get_response(request)
 
         # ✅ Normalize host (remove port if any)
-        host = request.get_host().split(":")[0]
+        host = request.headers.get("X-Subdomain", "").split(":")[0]
 
         # ✅ Ensure request.user is safe to access
         user = getattr(request, "user", None)

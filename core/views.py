@@ -41,7 +41,7 @@ class TimerNowView(APIView):
 
 class CustomTokenObtainPairView(TokenObtainPairView):
     def post(self, request, *args, **kwargs):
-        host = request.get_host().split(":")[0]  # strips :443 or :8000
+        host = request.headers.get("X-Subdomain", "").split(":")[0]
 
         # You must extract username manually to get the user object before token creation
         username = request.data.get("username")
