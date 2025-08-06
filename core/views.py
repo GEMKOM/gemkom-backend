@@ -14,6 +14,10 @@ import logging
 
 from core.permissions import IsJiraAutomation
 from machining.models import Task
+from django.contrib.auth.models import User
+
+from rest_framework_simplejwt.views import TokenObtainPairView
+from rest_framework.exceptions import PermissionDenied
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -34,6 +38,25 @@ class TimerNowView(APIView):
     def get(self, request):
         return Response({"now": int(now().timestamp() * 1000)})
 
+
+class CustomTokenObtainPairView(TokenObtainPairView):
+    def post(self, request, *args, **kwargs):
+        host = request.get_host()
+
+        # You must extract username manually to get the user object before token creation
+        username = request.data.get("username")
+        user = User.objects.filter(username=username).first()
+
+        if user and not user.is_superuser and hasattr(user, "profile"):
+            work_location = user.profile.work_location  # adjust if needed
+
+            # Restrict based on domain
+            if host.startswith("ofis.") and work_location != "office":
+                raise PermissionDenied("Workshop employees must use workshop.gemcore.com.tr to log in.")
+            elif host.startswith("saha.") and work_location != "workshop":
+                raise PermissionDenied("Office employees must use office.gemcore.com.tr to log in.")
+
+        return super().post(request, *args, **kwargs)
 
 CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",  # Or use your frontend URL for tighter security
