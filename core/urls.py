@@ -1,6 +1,6 @@
 from django.urls import path
 from .views import CustomTokenObtainPairView, DBTestView, JiraIssueCreatedWebhook, JiraProxyView, TimerNowView
-from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
+from rest_framework_simplejwt.views import TokenRefreshView
 
 urlpatterns = [
     path("db-test/", DBTestView.as_view()),
