@@ -52,19 +52,30 @@ class UserListSerializer(serializers.ModelSerializer):
 
 class UserCreateSerializer(serializers.ModelSerializer):
     team = serializers.CharField(write_only=True)
+    work_location = serializers.CharField(write_only=True, required=False, allow_blank=True)
 
     class Meta:
         model = User
-        fields = ['username', 'team']
+        fields = ['username', 'first_name', 'last_name', 'email', 'team', 'work_location']
 
     def create(self, validated_data):
-        team = validated_data.pop('team')
-        user = User.objects.create(username=validated_data['username'])
-        user.set_password("gemkom2025.")  # You may want to make this configurable later
+        team = validated_data.pop('team', None)
+        work_location = validated_data.pop('work_location', None)
+
+        # Create user with remaining data (first_name, last_name, etc.)
+        user = User.objects.create(
+            username=validated_data.get('username'),
+            first_name=validated_data.get('first_name', ''),
+            last_name=validated_data.get('last_name', ''),
+            email=validated_data.get('email', '')
+        )
+        user.set_password("gemkom2025.")  # You can change this later
         user.save()
 
+        # Create or update profile
         UserProfile.objects.update_or_create(user=user, defaults={
             'team': team,
+            'work_location': work_location,
             'must_reset_password': True
         })
 
