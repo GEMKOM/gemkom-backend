@@ -85,6 +85,11 @@ CORS_ALLOWED_ORIGIN_REGEXES = [
     r"^https:\/\/.*\.gemcore\.com\.tr$",
 ]
 
+from corsheaders.defaults import default_headers
+CORS_ALLOW_HEADERS = list(default_headers) + [
+    "x-subdomain",  # ✅ must be lowercase here
+]
+
 CSRF_TRUSTED_ORIGINS = ['https://gemkom-backend-716746493353.europe-west3.run.app']
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 SESSION_COOKIE_SECURE = True
