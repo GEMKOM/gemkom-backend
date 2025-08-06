@@ -6,19 +6,27 @@ class SubdomainRestrictionMiddleware:
         self.get_response = get_response
 
     def __call__(self, request):
+        # ✅ Allow CORS preflight requests
         if request.method == "OPTIONS":
             return self.get_response(request)
 
-        user = request.user
-        host = request.get_host()
+        # ✅ Normalize host (remove port if any)
+        host = request.get_host().split(":")[0]
 
-        if user.is_authenticated and not user.is_superuser and hasattr(user, "profile"):
-            work_location = user.profile.work_location  # e.g., "office" or "workshop"
+        # ✅ Ensure request.user is safe to access
+        user = getattr(request, "user", None)
 
-            if host.startswith("ofis.") and work_location != "office":
-                return JsonResponse({"error": "Workshop employees are not allowed to access ofis.gemcore.com.tr."}, status=403)
+        if user and user.is_authenticated and not user.is_superuser:
+            profile = getattr(user, "profile", None)
 
-            if host.startswith("saha.") and work_location != "workshop":
-                return JsonResponse({"error": "Office employees are not allowed to access saha.gemcore.com.tr."}, status=403)
+            if profile:
+                work_location = profile.work_location  # "office" or "workshop"
+
+                # 🚫 Enforce domain rules
+                if host.startswith("ofis.") and work_location != "office":
+                    return JsonResponse({"error": "You do not have access to this page."}, status=403)
+
+                if host.startswith("saha.") and work_location != "workshop":
+                    return JsonResponse({"error": "You do not have access to this page."}, status=403)
 
         return self.get_response(request)
