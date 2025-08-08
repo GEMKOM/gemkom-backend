@@ -32,9 +32,24 @@ class TimerStopView(APIView):
         timer_id = request.data.get("timer_id")
         try:
             timer = Timer.objects.get(id=timer_id)
-            is_admin = request.user.is_superuser or getattr(request.user, "is_admin", False)
+            request_user = request.user
+            request_profile = request_user.profile
+            timer_user = timer.user
+            timer_profile = timer_user.profile
+            is_admin = request_user.is_superuser or getattr(request_profile, "is_admin", False)
+            same_team = request_profile.team == timer_profile.team
 
-            if not is_admin and timer.user != request.user:
+            # Default deny
+            allowed = False
+
+            if is_admin or timer_user == request_user:
+                allowed = True
+            elif request_profile.work_location == "office" and (same_team or (timer_profile.team == "machining" and request_profile.team == "manufacturing")):
+                allowed = True
+            elif getattr(request_profile, "is_lead", False) and same_team:
+                allowed = True
+
+            if not allowed:
                 return Response("Permission denied for this timer.", status=403)
 
             was_running = timer.finish_time is None
