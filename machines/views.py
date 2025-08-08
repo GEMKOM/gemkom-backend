@@ -8,6 +8,7 @@ import requests
 
 from machines.models import Machine, MachineFault
 from machines.serializers import MachineFaultSerializer, MachineGetSerializer, MachineListSerializer, MachineSerializer
+from machining.models import Timer
 from users.permissions import IsAdmin
 from django.db.models import Q
 
@@ -150,16 +151,28 @@ class MachineFaultDetailView(APIView):
     def put(self, request, pk):
         fault = self.get_object(pk)
         serializer = MachineFaultSerializer(fault, data=request.data, partial=True)
+
         if serializer.is_valid():
             if not fault.resolved_at:
                 updated_fault = serializer.save(
                     resolved_by=request.user,
                     resolved_at=timezone.now()
                 )
+
+                # ✅ Stop active timers if it's a breaking fault
+                if updated_fault.is_breaking and updated_fault.machine:
+                    active_timers = Timer.objects.filter(machine_fk=updated_fault.machine, finish_time__isnull=True)
+                    for timer in active_timers:
+                        timer.finish_time = int(timezone.now().timestamp() * 1000)
+                        timer.stopped_by = request.user
+                        timer.save()
+
                 self.send_resolution_notification(updated_fault, request.user)
             else:
                 serializer.save()
+
             return Response(serializer.data)
+
         return Response(serializer.errors, status=400)
 
     def delete(self, request, pk):
