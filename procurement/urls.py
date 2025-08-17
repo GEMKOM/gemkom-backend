@@ -1,7 +1,7 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .views import (
-    PaymentTypeViewSet, SupplierViewSet, ItemViewSet,
+    PaymentTypeViewSet, StatusChoicesView, SupplierViewSet, ItemViewSet,
     PurchaseRequestViewSet, PurchaseRequestItemViewSet,
     SupplierOfferViewSet, ItemOfferViewSet
 )
@@ -19,6 +19,7 @@ router.register(r'item-offers', ItemOfferViewSet)
 # URL patterns
 urlpatterns = [
     path('', include(router.urls)),
+    path('status-choices/', StatusChoicesView.as_view(), name="status-list"),
 ]
 
 # The router will automatically create the following URL patterns:

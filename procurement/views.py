@@ -5,6 +5,7 @@ from django.utils import timezone
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import OrderingFilter
 from procurement.filters import PurchaseRequestFilter
+from rest_framework.views import APIView
 from .models import (
     PaymentType, Supplier, Item, PurchaseRequest, 
     PurchaseRequestItem, SupplierOffer, ItemOffer
@@ -194,3 +195,13 @@ class ItemOfferViewSet(viewsets.ModelViewSet):
         item_offer.save()
         
         return Response({'is_recommended': item_offer.is_recommended})
+
+
+class StatusChoicesView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        return Response([
+            {"value": k, "label": v} for k, v in PurchaseRequest.STATUS_CHOICES
+        ])
+    
