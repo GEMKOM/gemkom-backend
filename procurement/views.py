@@ -3,7 +3,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.utils import timezone
 from django_filters.rest_framework import DjangoFilterBackend
-
+from rest_framework.filters import OrderingFilter
 from procurement.filters import PurchaseRequestFilter
 from .models import (
     PaymentType, Supplier, Item, PurchaseRequest, 
@@ -51,7 +51,7 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
     queryset = PurchaseRequest.objects.all()
     serializer_class = PurchaseRequestSerializer
     permission_classes = [permissions.IsAuthenticated]
-    filter_backends = [DjangoFilterBackend]
+    filter_backends = [DjangoFilterBackend, OrderingFilter]
     filterset_class = PurchaseRequestFilter
     ordering_fields = ['id', 'title', 'requestor', 'priority', 'status', 'created_at', 'total_amount_eur']  # Add any fields you want to allow
     ordering = ['-id']  # Default ordering
