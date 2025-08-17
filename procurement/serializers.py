@@ -26,12 +26,11 @@ class ItemSerializer(serializers.ModelSerializer):
 
 class PurchaseRequestItemSerializer(serializers.ModelSerializer):
     item = ItemSerializer(read_only=True)
-    item_id = serializers.IntegerField(write_only=True)
     
     class Meta:
         model = PurchaseRequestItem
         fields = [
-            'id', 'item', 'item_id', 'quantity', 'priority',
+            'id', 'item', 'quantity', 'priority',
             'specifications', 'order'
         ]
 
@@ -59,13 +58,13 @@ class SupplierOfferSerializer(serializers.ModelSerializer):
 class PurchaseRequestSerializer(serializers.ModelSerializer):
     request_items = PurchaseRequestItemSerializer(many=True, read_only=True)
     offers = SupplierOfferSerializer(many=True, read_only=True)
-    requestor = serializers.ReadOnlyField(source='requestor.username')
+    requestor_username = serializers.ReadOnlyField(source='requestor.username')
     
     class Meta:
         model = PurchaseRequest
         fields = [
             'id', 'request_number', 'title', 'description',
-            'requestor', 'priority', 'status',
+            'requestor', 'requestor_username', 'priority', 'status',
             'total_amount_eur', 'currency_rates_snapshot',
             'created_at', 'updated_at', 'submitted_at',
             'request_items', 'offers'

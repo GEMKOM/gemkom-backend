@@ -2,6 +2,9 @@ from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.utils import timezone
+from django_filters.rest_framework import DjangoFilterBackend
+
+from procurement.filters import PurchaseRequestFilter
 from .models import (
     PaymentType, Supplier, Item, PurchaseRequest, 
     PurchaseRequestItem, SupplierOffer, ItemOffer
@@ -48,13 +51,11 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
     queryset = PurchaseRequest.objects.all()
     serializer_class = PurchaseRequestSerializer
     permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [DjangoFilterBackend]
+    filterset_class = PurchaseRequestFilter
     
     def get_queryset(self):
-        user = self.request.user
-        # Users can see their own requests and all requests if they have permission
-        if user.has_perm('app_name.view_all_purchaserequests'):
-            return PurchaseRequest.objects.all()
-        return PurchaseRequest.objects.filter(requestor=user)
+        return PurchaseRequest.objects.all()
     
     def get_serializer_class(self):
         if self.action == 'create':

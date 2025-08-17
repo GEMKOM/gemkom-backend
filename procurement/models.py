@@ -127,10 +127,7 @@ class PurchaseRequestItem(models.Model):
 class SupplierOffer(models.Model):
     purchase_request = models.ForeignKey(PurchaseRequest, on_delete=models.CASCADE, related_name='offers')
     supplier = models.ForeignKey(Supplier, on_delete=models.CASCADE, related_name='offers')
-    
-    # Offer Details
-    unit_price = models.DecimalField(max_digits=15, decimal_places=2)
-    total_price = models.DecimalField(max_digits=15, decimal_places=2)
+    payment_method = models.ForeignKey(PaymentType, on_delete=models.CASCADE, related_name="supplier_offers", null=True, blank=True)
     notes = models.TextField(blank=True)
     
     # Timestamps
