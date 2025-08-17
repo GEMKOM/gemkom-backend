@@ -53,6 +53,8 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend]
     filterset_class = PurchaseRequestFilter
+    ordering_fields = ['id', 'title', 'requestor', 'priority', 'status', 'created_at', 'total_amount_eur']  # Add any fields you want to allow
+    ordering = ['-id']  # Default ordering
     
     def get_queryset(self):
         return PurchaseRequest.objects.all()
