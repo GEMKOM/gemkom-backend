@@ -51,8 +51,7 @@ class SupplierOfferSerializer(serializers.ModelSerializer):
     class Meta:
         model = SupplierOffer
         fields = [
-            'id', 'supplier', 'unit_price', 'total_price',
-            'notes', 'item_offers', 'created_at', 'updated_at'
+            'id', 'supplier', 'notes', 'item_offers', 'created_at', 'updated_at'
         ]
 
 class PurchaseRequestSerializer(serializers.ModelSerializer):
