@@ -62,10 +62,9 @@ class PurchaseRequest(models.Model):
     
     STATUS_CHOICES = [
         ('draft', 'Taslak'),
-        ('submitted', 'Gönderildi'),
+        ('submitted', 'Onay Bekliyor'),
         ('approved', 'Onaylandı'),
-        ('rejected', 'Reddedildi'),
-        ('completed', 'Tamamlandı'),
+        ('rejected', 'Reddedildi')
     ]
     
     # Basic Information

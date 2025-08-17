@@ -110,22 +110,6 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
         
         return Response({'status': 'rejected'})
     
-    @action(detail=True, methods=['post'])
-    def complete(self, request, pk=None):
-        """Mark a purchase request as completed"""
-        purchase_request = self.get_object()
-        
-        if purchase_request.status != 'approved':
-            return Response(
-                {'error': 'Only approved requests can be completed'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        purchase_request.status = 'completed'
-        purchase_request.save()
-        
-        return Response({'status': 'completed'})
-    
     @action(detail=False, methods=['get'])
     def my_requests(self, request):
         """Get current user's purchase requests"""

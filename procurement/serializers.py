@@ -36,14 +36,17 @@ class PurchaseRequestItemSerializer(serializers.ModelSerializer):
         ]
 
 class ItemOfferSerializer(serializers.ModelSerializer):
+    purchase_request_item = serializers.PrimaryKeyRelatedField(read_only=True)
+    
     class Meta:
         model = ItemOffer
         fields = [
             'id', 'unit_price', 'total_price', 'delivery_days',
-            'notes', 'is_recommended'
+            'notes', 'is_recommended', 'purchase_request_item'
         ]
 
 class SupplierOfferSerializer(serializers.ModelSerializer):
+    supplier = SupplierSerializer(read_only=True)
     item_offers = ItemOfferSerializer(many=True, read_only=True)
     
     class Meta:
