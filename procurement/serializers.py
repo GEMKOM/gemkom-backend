@@ -58,12 +58,16 @@ class PurchaseRequestSerializer(serializers.ModelSerializer):
     request_items = PurchaseRequestItemSerializer(many=True, read_only=True)
     offers = SupplierOfferSerializer(many=True, read_only=True)
     requestor_username = serializers.ReadOnlyField(source='requestor.username')
+    status_label = serializers.SerializerMethodField()
+
+    def get_status_label(self, obj):
+        return obj.get_status_display()
     
     class Meta:
         model = PurchaseRequest
         fields = [
             'id', 'request_number', 'title', 'description',
-            'requestor', 'requestor_username', 'priority', 'status',
+            'requestor', 'requestor_username', 'priority', 'status', 'status_label',
             'total_amount_eur', 'currency_rates_snapshot',
             'created_at', 'updated_at', 'submitted_at',
             'request_items', 'offers'
