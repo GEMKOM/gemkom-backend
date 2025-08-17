@@ -79,7 +79,7 @@ class PurchaseRequestCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = PurchaseRequest
         fields = [
-            'title', 'description', 'priority',
+            'id', 'title', 'description', 'priority',
             'items', 'suppliers', 'offers', 'recommendations'
         ]
     
