@@ -28,6 +28,10 @@ JIRA_AUTOMATION_TOKEN = os.getenv('JIRA_AUTOMATION_TOKEN')
 
 TELEGRAM_MAINTENANCE_BOT_TOKEN = os.getenv('TELEGRAM_MAINTENANCE_BOT_TOKEN')
 
+CURRENCY_RATE_API_URL = "https://api.freecurrencyapi.com/v1/latest"
+CURRENCY_FIXED_BASE = "TRY"  # keep it simple
+FREECURRENCYAPI_KEY = os.getenv("FREECURRENCYAPI_KEY")
+
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 

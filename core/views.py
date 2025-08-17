@@ -19,6 +19,13 @@ from django.contrib.auth.models import User
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework.exceptions import PermissionDenied
 
+import os
+import requests
+from django.http import JsonResponse, HttpResponse
+from django.utils import timezone
+from rest_framework.views import APIView
+from .models import CurrencyRateSnapshot
+
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
@@ -175,3 +182,51 @@ class JiraIssueCreatedWebhook(APIView):
         )
 
         return Response({"status": "Task created/updated"}, status=201)
+
+
+class LatestCurrencyRatesView(APIView):
+    authentication_classes = []   # adjust if you need auth
+    permission_classes = []       # adjust if you need auth
+
+    def get(self, request):
+        if not settings.FREECURRENCYAPI_KEY:
+            return HttpResponse("FREECURRENCYAPI_KEY not set", status=500)
+
+        today = timezone.now().date()
+
+        # 1) Read today's snapshot
+        snap = CurrencyRateSnapshot.objects.filter(date=today).first()
+        if snap:
+            return JsonResponse({
+                "provider": snap.provider,
+                "date": str(snap.date),
+                "base": snap.base,
+                "rates": snap.rates,
+            })
+
+        # 2) Not found → fetch, store, return
+        try:
+            res = requests.get(
+                settings.CURRENCY_RATE_API_URL,
+                params={"apikey": settings.FREECURRENCYAPI_KEY, "base_currency": settings.CURRENCY_FIXED_BASE},
+                timeout=20
+            )
+            res.raise_for_status()
+            payload = res.json()
+            rates = payload.get("data") or {}
+            if not rates:
+                return HttpResponse("No data from provider", status=502)
+        except Exception as e:
+            return HttpResponse(f"Fetch failed: {e}", status=502)
+
+        snap = CurrencyRateSnapshot.objects.create(
+            date=today,
+            base=settings.CURRENCY_FIXED_BASE,
+            rates=rates,
+        )
+        return JsonResponse({
+            "provider": snap.provider,
+            "date": str(snap.date),
+            "base": snap.base,
+            "rates": snap.rates,
+        })

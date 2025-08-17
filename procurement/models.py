@@ -7,18 +7,32 @@ class PaymentType(models.Model):
     name = models.CharField()
 
 class Provider(models.Model):
+    CURRENCY_TYPES = [
+        ('USD', '$'),
+        ('EUR', '€'),
+        ('TRY', '₺')
+    ]
     name = models.CharField()
     default_payment_method = models.ForeignKey(PaymentType, on_delete=models.CASCADE, related_name="providers")
+    default_currency = models.CharField(max_length=10, choices=CURRENCY_TYPES)
+
+class Item(models.Model):
+    stock_code = models.CharField(max_length=255)
+    name = models.CharField(max_length=255)
+    unit = models.CharField(max_length=100)
 
 class PurchaseRequest(models.Model):
     request_no = models.CharField(max_length=50, unique=True)
+    job_no = models.CharField(max_length=100)
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    item = models.ForeignKey(Item, on_delete=models.CASCADE, related_name="purchase_requests")
+    quantity = models.DecimalField(max_digits=10, decimal_places=2)
     status = models.CharField(max_length=20, choices=[
-        ('draft', 'Draft'),
-        ('pending', 'Pending Approval'),
-        ('approved', 'Approved'),
-        ('rejected', 'Rejected')
+        ('draft', 'Taslak'),
+        ('pending', 'Onay Bekliyor'),
+        ('approved', 'Onaylandı'),
+        ('rejected', 'Reddedildi')
     ], default='draft')
 
     def save(self, *args, **kwargs):
@@ -29,17 +43,12 @@ class PurchaseRequest(models.Model):
                 self.request_no = f"PR-{next_id:05d}"
         super().save(*args, **kwargs)
 
-class Item(models.Model):
-    request = models.ForeignKey(PurchaseRequest, on_delete=models.CASCADE, related_name="items")
-    name = models.CharField(max_length=255)
-    job_no = models.CharField(max_length=100)
-    quantity = models.DecimalField(max_digits=10, decimal_places=2)
-
 class ProviderOffer(models.Model):
     CURRENCY_TYPES = [
         ('USD', '$'),
         ('EUR', '€'),
-        ('TRY', '₺')
+        ('TRY', '₺'),
+        ('GBP', '£')
     ]
     provider = models.ForeignKey(Provider, on_delete=models.CASCADE, related_name="offers")
     item = models.ForeignKey(Item, on_delete=models.CASCADE, related_name="offers")
