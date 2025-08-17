@@ -18,7 +18,7 @@ router.register(r'item-offers', ItemOfferViewSet)
 
 # URL patterns
 urlpatterns = [
-    path('/', include(router.urls)),
+    path('', include(router.urls)),
 ]
 
 # The router will automatically create the following URL patterns:
