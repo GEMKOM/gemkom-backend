@@ -62,7 +62,7 @@ class PurchaseRequestSerializer(serializers.ModelSerializer):
         model = PurchaseRequest
         fields = [
             'id', 'request_number', 'title', 'description',
-            'requestor', 'department', 'priority', 'status',
+            'requestor', 'priority', 'status',
             'total_amount_eur', 'currency_rates_snapshot',
             'created_at', 'updated_at', 'submitted_at',
             'request_items', 'offers'
@@ -79,7 +79,7 @@ class PurchaseRequestCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = PurchaseRequest
         fields = [
-            'title', 'description', 'department', 'priority',
+            'title', 'description', 'priority',
             'items', 'suppliers', 'offers', 'recommendations'
         ]
     

@@ -75,7 +75,6 @@ class PurchaseRequest(models.Model):
     
     # Request Details
     requestor = models.ForeignKey(User, on_delete=models.CASCADE, related_name='purchase_requests')
-    department = models.CharField(max_length=100)
     priority = models.CharField(max_length=20, choices=PRIORITY_CHOICES, default='normal')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='draft')
     
