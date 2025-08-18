@@ -31,7 +31,7 @@ class PurchaseRequestItemSerializer(serializers.ModelSerializer):
         model = PurchaseRequestItem
         fields = [
             'id', 'item', 'quantity', 'priority',
-            'specifications', 'order'
+            'specifications', 'order', 'job_no'
         ]
 
 class ItemOfferSerializer(serializers.ModelSerializer):
@@ -116,6 +116,7 @@ class PurchaseRequestCreateSerializer(serializers.ModelSerializer):
                 item=item,
                 quantity=item_data['quantity'],
                 priority=item_data.get('priority', 'normal'),
+                job_no=item_data.get('job_no'),
                 specifications=item_data.get('specifications', ''),
                 order=i
             )

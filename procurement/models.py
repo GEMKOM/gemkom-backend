@@ -113,6 +113,7 @@ class PurchaseRequestItem(models.Model):
     item = models.ForeignKey(Item, on_delete=models.CASCADE, related_name='requests')
     quantity = models.DecimalField(max_digits=10, decimal_places=2)  # ADDED: Frontend sends this
     priority = models.CharField(max_length=20, choices=PurchaseRequest.PRIORITY_CHOICES, default='normal')
+    job_no = models.CharField(max_length=20, blank=True, null=True)
     specifications = models.TextField(blank=True)
     
     # Ordering
