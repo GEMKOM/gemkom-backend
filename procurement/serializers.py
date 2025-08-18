@@ -1,5 +1,7 @@
 from rest_framework import serializers
 from django.contrib.auth.models import User
+
+from approvals.serializers import WorkflowSerializer
 from .models import (
     PaymentType, Supplier, Item, PurchaseRequest, 
     PurchaseRequestItem, SupplierOffer, ItemOffer
@@ -59,6 +61,12 @@ class PurchaseRequestSerializer(serializers.ModelSerializer):
     offers = SupplierOfferSerializer(many=True, read_only=True)
     requestor_username = serializers.ReadOnlyField(source='requestor.username')
     status_label = serializers.SerializerMethodField()
+    approval = serializers.SerializerMethodField()
+
+    def get_approval(self, obj):
+        if hasattr(obj, "approval_workflow"):
+            return WorkflowSerializer(obj.approval_workflow).data
+        return None
 
     def get_status_label(self, obj):
         return obj.get_status_display()
@@ -70,7 +78,7 @@ class PurchaseRequestSerializer(serializers.ModelSerializer):
             'requestor', 'requestor_username', 'priority', 'status', 'status_label',
             'total_amount_eur', 'currency_rates_snapshot',
             'created_at', 'updated_at', 'submitted_at',
-            'request_items', 'offers'
+            'request_items', 'offers', 'approval'
         ]
         read_only_fields = ['request_number', 'created_at', 'updated_at', 'submitted_at']
 

@@ -6,6 +6,10 @@ from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import OrderingFilter
 from procurement.filters import PurchaseRequestFilter
 from rest_framework.views import APIView
+from rest_framework.decorators import action
+from rest_framework.response import Response
+from rest_framework import status, permissions
+from approvals.services import submit_purchase_request, decide
 from .models import (
     PaymentType, Supplier, Item, PurchaseRequest, 
     PurchaseRequestItem, SupplierOffer, ItemOffer
@@ -65,54 +69,36 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
             return PurchaseRequestCreateSerializer
         return PurchaseRequestSerializer
     
-    @action(detail=True, methods=['post'])
+    @action(detail=True, methods=["POST"], permission_classes=[permissions.IsAuthenticated])
     def submit(self, request, pk=None):
-        """Submit a purchase request (change status from draft to submitted)"""
-        purchase_request = self.get_object()
-        
-        if purchase_request.status != 'draft':
-            return Response(
-                {'error': 'Only draft requests can be submitted'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        purchase_request.status = 'submitted'
-        purchase_request.submitted_at = timezone.now()
-        purchase_request.save()
-        
-        return Response({'status': 'submitted'})
-    
-    @action(detail=True, methods=['post'])
+        pr = self.get_object()
+        try:
+            submit_purchase_request(pr, request.user)
+        except Exception as e:
+            return Response({"detail": str(e)}, status=400)
+        return Response({"detail": "Submitted."})
+
+    @action(detail=True, methods=["POST"], permission_classes=[permissions.IsAuthenticated])
     def approve(self, request, pk=None):
-        """Approve a purchase request"""
-        purchase_request = self.get_object()
-        
-        if purchase_request.status != 'submitted':
-            return Response(
-                {'error': 'Only submitted requests can be approved'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        purchase_request.status = 'approved'
-        purchase_request.save()
-        
-        return Response({'status': 'approved'})
-    
-    @action(detail=True, methods=['post'])
+        pr = self.get_object()
+        try:
+            decide(pr, request.user, approve=True, comment=request.data.get("comment",""))
+        except PermissionError as e:
+            return Response({"detail": str(e)}, status=403)
+        except Exception as e:
+            return Response({"detail": str(e)}, status=400)
+        return Response({"detail": "Approved."})
+
+    @action(detail=True, methods=["POST"], permission_classes=[permissions.IsAuthenticated])
     def reject(self, request, pk=None):
-        """Reject a purchase request"""
-        purchase_request = self.get_object()
-        
-        if purchase_request.status not in ['submitted', 'approved']:
-            return Response(
-                {'error': 'Only submitted or approved requests can be rejected'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        purchase_request.status = 'rejected'
-        purchase_request.save()
-        
-        return Response({'status': 'rejected'})
+        pr = self.get_object()
+        try:
+            decide(pr, request.user, approve=False, comment=request.data.get("comment",""))
+        except PermissionError as e:
+            return Response({"detail": str(e)}, status=403)
+        except Exception as e:
+            return Response({"detail": str(e)}, status=400)
+        return Response({"detail": "Rejected."})
     
     @action(detail=False, methods=['get'])
     def my_requests(self, request):
