@@ -19,6 +19,12 @@ from .serializers import (
     PurchaseRequestSerializer, PurchaseRequestCreateSerializer,
     PurchaseRequestItemSerializer, SupplierOfferSerializer, ItemOfferSerializer
 )
+from django.db.models import Exists, OuterRef, F, Q
+from rest_framework.decorators import action
+from rest_framework.response import Response
+from rest_framework import status, permissions
+
+from approvals.models import PRApprovalStageInstance, PRApprovalDecision
 
 class PaymentTypeViewSet(viewsets.ModelViewSet):
     queryset = PaymentType.objects.all()
@@ -62,7 +68,16 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
     ordering = ['-id']  # Default ordering
     
     def get_queryset(self):
-        return PurchaseRequest.objects.all()
+        return (
+            PurchaseRequest.objects
+            .select_related('requestor')
+            .prefetch_related(
+                'request_items__item',
+                'offers__supplier',
+                'approval_workflow__stage_instances',
+                'approval_workflow__stage_instances__decisions__approver',
+            )
+        )
     
     def get_serializer_class(self):
         if self.action == 'create':
@@ -108,16 +123,50 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
     
-    @action(detail=False, methods=['get'])
+    @action(detail=False, methods=['get'], permission_classes=[permissions.IsAuthenticated])
     def pending_approval(self, request):
-        """Get purchase requests pending approval (for managers)"""
-        if not request.user.has_perm('app_name.approve_purchaserequests'):
-            return Response(
-                {'error': 'Permission denied'},
-                status=status.HTTP_403_FORBIDDEN
+        """
+        PRs currently awaiting *this user's* approval:
+        - PR is 'submitted'
+        - current stage includes the user in approver_user_ids
+        - user has not already decided on the current stage
+        """
+
+        user = request.user
+
+        # Subquery: is there a current stage on this PR where I'm an approver and it's still open?
+        open_current_stage_qs = PRApprovalStageInstance.objects.filter(
+            workflow=OuterRef('approval_workflow'),
+            order=OuterRef('approval_workflow__current_stage_order'),
+            is_complete=False,
+            is_rejected=False,
+            approver_user_ids__contains=[user.id],
+        )
+
+        # Subquery: have I already decided on that current stage?
+        my_decision_on_current_stage_qs = PRApprovalDecision.objects.filter(
+            stage_instance__workflow=OuterRef('approval_workflow'),
+            stage_instance__order=OuterRef('approval_workflow__current_stage_order'),
+            approver=user,
+        )
+
+        queryset = (
+            self.get_queryset()
+            .filter(status='submitted')                         # only in review
+            .exclude(requestor=user)                           # optional: block self-approval
+            .annotate(
+                is_my_open_stage=Exists(open_current_stage_qs),
+                already_decided=Exists(my_decision_on_current_stage_qs),
             )
-        
-        queryset = PurchaseRequest.objects.filter(status='submitted')
+            .filter(is_my_open_stage=True, already_decided=False)
+            .order_by(*self.ordering)
+        )
+
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
 
