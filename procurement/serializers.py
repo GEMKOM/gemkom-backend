@@ -138,8 +138,6 @@ class PurchaseRequestCreateSerializer(serializers.ModelSerializer):
             supplier_offer = SupplierOffer.objects.create(
                 purchase_request=purchase_request,
                 supplier=supplier,
-                unit_price=0,  # Will be calculated
-                total_price=0,  # Will be calculated
                 notes=''
             )
             
