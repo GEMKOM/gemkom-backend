@@ -7,6 +7,10 @@ from .models import (
     ApprovalPolicy, PRApprovalWorkflow, PRApprovalStageInstance, PRApprovalDecision
 )
 
+
+SYSTEM_USERNAME = "system"  # choose any reserved username
+
+
 def pick_policy_for_request(pr):
     qs = ApprovalPolicy.objects.filter(is_active=True)
     if pr.total_amount_eur is not None:
@@ -33,10 +37,13 @@ def user_can_approve_stage(user, pr, stage: PRApprovalStageInstance):
 def submit_purchase_request(pr, by_user):
     if pr.status != "draft":
         raise ValueError("Only draft requests can be submitted.")
+
     policy = pick_policy_for_request(pr)
     if not policy or not policy.stages.exists():
         raise ValueError("No applicable approval policy/stages configured.")
 
+    # Create workflow shell + snapshot
+    stages_qs = policy.stages.all().order_by("order")
     wf = PRApprovalWorkflow.objects.create(
         purchase_request=pr,
         policy=policy,
@@ -45,21 +52,23 @@ def submit_purchase_request(pr, by_user):
             "policy": {"id": policy.id, "name": policy.name},
             "stages": [
                 {
-                    "order": s.order, "name": s.name,
+                    "order": s.order,
+                    "name": s.name,
                     "required_approvals": s.required_approvals,
                     "users": list(s.approver_users.values_list("id", flat=True)),
                     "groups": list(s.approver_groups.values_list("id", flat=True)),
                 }
-                for s in policy.stages.all().order_by("order")
+                for s in stages_qs
             ],
         },
     )
 
-    for s in policy.stages.all().order_by("order"):
+    # Materialize stage instances
+    for s in stages_qs:
         u_ids = list(s.approver_users.values_list("id", flat=True))
         g_ids = list(s.approver_groups.values_list("id", flat=True))
         u_ids += _resolve_group_user_ids(g_ids)
-        u_ids = sorted(set(u_ids))
+        u_ids = sorted(set(u_ids))  # dedupe + stable order
 
         PRApprovalStageInstance.objects.create(
             workflow=wf,
@@ -70,11 +79,16 @@ def submit_purchase_request(pr, by_user):
             approver_group_ids=g_ids,
         )
 
+    # Mark PR as submitted first; bypass may advance/approve it
     pr.status = "submitted"
     pr.submitted_at = timezone.now()
     pr.save(update_fields=["status", "submitted_at"])
 
-    # TODO: notify stage-1 approvers here
+    # Now run self-approval bypass (handles: sole approver = requestor → auto-complete,
+    # or requestor among many → remove requestor and clamp quorum)
+    _auto_bypass_self_approver(wf, pr.requestor)
+
+    # TODO: notify wf.current_stage_order approvers (after bypass)
     return wf
 
 @transaction.atomic
@@ -127,3 +141,77 @@ def decide(pr, user, approve: bool, comment: str = ""):
             pr.status = "approved"
             pr.save(update_fields=["status"])
             # TODO: trigger post-approval handoff (e.g., enable pro-forma upload)
+
+
+
+def _get_or_create_system_user():
+    user, _ = User.objects.get_or_create(
+        username=SYSTEM_USERNAME,
+        defaults={"first_name": "System", "last_name": "User", "is_active": True},
+    )
+    return user
+
+
+def _auto_bypass_self_approver(workflow: PRApprovalWorkflow, requestor: User) -> None:
+    """
+    - If a stage's approver list is exactly [requestor.id], mark that stage complete
+      and create a synthetic 'approve' decision by SYSTEM user.
+    - If a stage contains requestor among others, remove requestor from approvers and
+      clamp required_approvals to the new approver count.
+    - Repeat while we keep auto-completing stages (in case multiple early stages are self-only).
+    """
+    sys_user = _get_or_create_system_user()
+
+    changed_wf = False
+    # Keep advancing while we auto-complete stages
+    while True:
+        # find current stage
+        stage = workflow.stage_instances.filter(
+            order=workflow.current_stage_order
+        ).first()
+        if not stage or stage.is_complete or stage.is_rejected:
+            break
+
+        approvers = list(stage.approver_user_ids or [])
+        # CASE A: only approver is the requestor -> auto-complete
+        if len(approvers) == 1 and approvers[0] == requestor.id:
+            # mark decision + complete
+            PRApprovalDecision.objects.create(
+                stage_instance=stage,
+                approver=sys_user,
+                decision="approve",   # keep your existing enum; 'approve' is safest
+                comment="Auto-bypass: requestor is the sole approver for this stage.",
+                decided_at=timezone.now(),
+            )
+            stage.approved_count = stage.required_approvals
+            stage.is_complete = True
+            stage.save(update_fields=["approved_count", "is_complete"])
+
+            # advance workflow
+            workflow.current_stage_order += 1
+            changed_wf = True
+            # loop again to check next stage (maybe also self-only)
+            continue
+
+        # CASE B: requestor is in the approver list with others -> remove them
+        if requestor.id in approvers:
+            approvers = [uid for uid in approvers if uid != requestor.id]
+            stage.approver_user_ids = approvers
+            # clamp required approvals to be <= available approvers
+            if stage.required_approvals > len(approvers):
+                stage.required_approvals = max(len(approvers), 0)
+            stage.save(update_fields=["approver_user_ids", "required_approvals"])
+            # do NOT advance; the stage still needs action from remaining approvers
+        break
+
+    # If we advanced past the last stage, finish workflow and PR
+    last_order = workflow.stage_instances.order_by("-order").values_list("order", flat=True).first() or 0
+    if workflow.current_stage_order > last_order:
+        workflow.is_complete = True
+        workflow.save(update_fields=["is_complete", "current_stage_order"])
+        # also flip PR status to approved (mirror your existing finalize logic)
+        pr = workflow.purchase_request
+        pr.status = "approved"
+        pr.save(update_fields=["status"])
+    elif changed_wf:
+        workflow.save(update_fields=["current_stage_order"])
