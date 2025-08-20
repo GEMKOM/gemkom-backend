@@ -3,7 +3,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.utils import timezone
 from django_filters.rest_framework import DjangoFilterBackend
-from rest_framework.filters import OrderingFilter
+from rest_framework.filters import OrderingFilter, SearchFilter
 from procurement.filters import PurchaseRequestFilter
 from rest_framework.views import APIView
 from rest_framework.decorators import action
@@ -11,11 +11,11 @@ from rest_framework.response import Response
 from rest_framework import status, permissions
 from approvals.services import submit_purchase_request, decide
 from .models import (
-    PaymentSchedule, PurchaseOrder, Supplier, Item, PurchaseRequest, 
+    PaymentSchedule, PaymentTerms, PurchaseOrder, Supplier, Item, PurchaseRequest, 
     PurchaseRequestItem, SupplierOffer, ItemOffer
 )
 from .serializers import (
-    SupplierSerializer, ItemSerializer,
+    PaymentTermsSerializer, SupplierSerializer, ItemSerializer,
     PurchaseRequestSerializer, PurchaseRequestCreateSerializer,
     PurchaseRequestItemSerializer, SupplierOfferSerializer, ItemOfferSerializer
 )
@@ -35,11 +35,21 @@ from .serializers import (
     PurchaseOrderDetailSerializer,
 )
 
+class PaymentTermsViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = PaymentTerms.objects.filter(active=True).order_by("name")
+    serializer_class = PaymentTermsSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [SearchFilter, OrderingFilter]
+    search_fields = ["name", "code"]
+    ordering_fields = ["name", "updated_at"]
 
 class SupplierViewSet(viewsets.ModelViewSet):
     queryset = Supplier.objects.filter(is_active=True)
     serializer_class = SupplierSerializer
+    filter_backends = [SearchFilter, OrderingFilter]
     permission_classes = [permissions.IsAuthenticated]
+    search_fields = ["name", "contact_person", "email", "default_payment_terms"]
+    ordering_fields = ["id", "name", "updated_at"]
     
     def get_queryset(self):
         queryset = Supplier.objects.filter(is_active=True)

@@ -1,7 +1,7 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .views import (
-    PurchaseOrderViewSet, StatusChoicesView, SupplierViewSet, ItemViewSet,
+    PaymentTermsViewSet, PurchaseOrderViewSet, StatusChoicesView, SupplierViewSet, ItemViewSet,
     PurchaseRequestViewSet, PurchaseRequestItemViewSet,
     SupplierOfferViewSet, ItemOfferViewSet
 )
@@ -15,6 +15,7 @@ router.register(r'purchase-request-items', PurchaseRequestItemViewSet)
 router.register(r'supplier-offers', SupplierOfferViewSet)
 router.register(r'item-offers', ItemOfferViewSet)
 router.register(r'purchase-orders', PurchaseOrderViewSet)
+router.register(r'payment-terms', PaymentTermsViewSet, basename='payment-terms')
 
 # URL patterns
 urlpatterns = [
