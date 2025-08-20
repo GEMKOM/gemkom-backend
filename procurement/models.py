@@ -170,9 +170,9 @@ class ItemOffer(models.Model):
 
 class PurchaseOrder(models.Model):
     STATUS_CHOICES = [
-        ("awaiting_invoice", "Awaiting Invoice"),  # created after PR approval
-        ("open", "Open"),                          # after invoice arrives / operations start
-        ("closed", "Closed"),
+        ("awaiting_invoice", "Proforma Bekliyor"),  # created after PR approval
+        ("awaiting_payment", "Ödeme Bekliyor"),                          # after invoice arrives / operations start
+        ("paid", "Ödendi"),
         ("cancelled", "Cancelled"),
     ]
 
