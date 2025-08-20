@@ -25,6 +25,8 @@ from rest_framework.response import Response
 from rest_framework import status, permissions
 
 from approvals.models import PRApprovalStageInstance, PRApprovalDecision
+from approvals.services import create_pos_from_recommended
+from .services import cancel_purchase_request
 
 class PaymentTypeViewSet(viewsets.ModelViewSet):
     queryset = PaymentType.objects.all()
@@ -87,6 +89,8 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["POST"], permission_classes=[permissions.IsAuthenticated])
     def submit(self, request, pk=None):
         pr = self.get_object()
+        if pr.status == 'cancelled':
+            return Response({"detail": "Cancelled requests cannot be processed."}, status=400)
         try:
             submit_purchase_request(pr, request.user)
         except Exception as e:
@@ -96,6 +100,8 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["POST"], permission_classes=[permissions.IsAuthenticated])
     def approve(self, request, pk=None):
         pr = self.get_object()
+        if pr.status == 'cancelled':
+            return Response({"detail": "Cancelled requests cannot be processed."}, status=400)
         try:
             decide(pr, request.user, approve=True, comment=request.data.get("comment",""))
         except PermissionError as e:
@@ -107,6 +113,8 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["POST"], permission_classes=[permissions.IsAuthenticated])
     def reject(self, request, pk=None):
         pr = self.get_object()
+        if pr.status == 'cancelled':
+            return Response({"detail": "Cancelled requests cannot be processed."}, status=400)
         try:
             decide(pr, request.user, approve=False, comment=request.data.get("comment",""))
         except PermissionError as e:
@@ -224,6 +232,18 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
             return Response({"detail": "No POs created (already created or no recommended items)."}, status=200)
         data = PurchaseOrderSerializer(pos, many=True).data
         return Response({"detail": f"Created {len(pos)} PO(s).", "purchase_orders": data}, status=201)
+    
+    @action(detail=True, methods=["POST"], permission_classes=[permissions.IsAuthenticated])
+    def cancel(self, request, pk=None):
+        pr = self.get_object()
+        reason = request.data.get("reason", "")
+        try:
+            cancel_purchase_request(pr, request.user, reason=reason)
+        except PermissionError as e:
+            return Response({"detail": str(e)}, status=status.HTTP_403_FORBIDDEN)
+        except Exception as e:
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"detail": "Purchase request cancelled."}, status=status.HTTP_200_OK)
 
 class PurchaseRequestItemViewSet(viewsets.ModelViewSet):
     queryset = PurchaseRequestItem.objects.all()

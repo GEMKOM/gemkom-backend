@@ -78,9 +78,9 @@ class PurchaseRequestSerializer(serializers.ModelSerializer):
             'requestor', 'requestor_username', 'priority', 'status', 'status_label',
             'total_amount_eur', 'currency_rates_snapshot',
             'created_at', 'updated_at', 'submitted_at',
-            'request_items', 'offers', 'approval'
+            'request_items', 'offers', 'approval', 'cancelled_at', 'cancelled_by', 'cancellation_reason'
         ]
-        read_only_fields = ['request_number', 'created_at', 'updated_at', 'submitted_at']
+        read_only_fields = ['request_number', 'created_at', 'updated_at', 'submitted_at', 'cancelled_at', 'cancelled_by']
 
 # Special serializer for creating purchase requests with nested data
 class PurchaseRequestCreateSerializer(serializers.ModelSerializer):

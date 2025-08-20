@@ -65,7 +65,8 @@ class PurchaseRequest(models.Model):
         ('draft', 'Taslak'),
         ('submitted', 'Onay Bekliyor'),
         ('approved', 'Onaylandı'),
-        ('rejected', 'Reddedildi')
+        ('rejected', 'Reddedildi'),
+        ('cancelled', 'İptal Edildi'),
     ]
     
     # Basic Information
@@ -86,6 +87,12 @@ class PurchaseRequest(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     submitted_at = models.DateTimeField(null=True, blank=True)
+
+    cancelled_at = models.DateTimeField(null=True, blank=True)     # NEW
+    cancelled_by = models.ForeignKey(
+        User, null=True, blank=True, on_delete=models.SET_NULL, related_name='+'
+    )
+    cancellation_reason = models.TextField(blank=True)
     
     # Metadata
     is_active = models.BooleanField(default=True)
