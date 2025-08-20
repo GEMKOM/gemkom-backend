@@ -34,14 +34,44 @@ from .serializers import (
     PurchaseOrderListSerializer,
     PurchaseOrderDetailSerializer,
 )
+from rest_framework.exceptions import ValidationError
 
-class PaymentTermsViewSet(viewsets.ReadOnlyModelViewSet):
-    queryset = PaymentTerms.objects.filter(active=True).order_by("name")
+class PaymentTermsViewSet(viewsets.ModelViewSet):
+    """
+    - LIST/RETRIEVE: all active=True terms.
+    - CREATE: allowed only for custom terms (is_custom enforced).
+    - UPDATE: disabled.
+    - DELETE: instead of deleting, set active=False (soft delete).
+    """
     serializer_class = PaymentTermsSerializer
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [SearchFilter, OrderingFilter]
     search_fields = ["name", "code"]
     ordering_fields = ["name", "updated_at"]
+    ordering = ["name"]
+
+    def get_queryset(self):
+        # Only active ones are shown in dropdowns etc.
+        return PaymentTerms.objects.filter(active=True).order_by("name")
+
+    def perform_create(self, serializer):
+        # Force is_custom=True for created terms
+        if not serializer.validated_data.get("is_custom", False):
+            raise ValidationError("Only custom payment terms can be created (is_custom must be true).")
+        serializer.save(is_custom=True, active=True)
+
+    def update(self, request, *args, **kwargs):
+        # Disable updates completely
+        raise ValidationError("Updates to payment terms are not allowed.")
+
+    def partial_update(self, request, *args, **kwargs):
+        # Disable partial updates too
+        raise ValidationError("Updates to payment terms are not allowed.")
+
+    def perform_destroy(self, instance):
+        # Soft delete: mark inactive instead of deleting
+        instance.active = False
+        instance.save()
 
 class SupplierViewSet(viewsets.ModelViewSet):
     queryset = Supplier.objects.filter(is_active=True)
