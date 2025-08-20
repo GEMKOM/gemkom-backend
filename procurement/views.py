@@ -46,7 +46,7 @@ class PaymentTermsViewSet(viewsets.ModelViewSet):
     serializer_class = PaymentTermsSerializer
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [SearchFilter, OrderingFilter]
-    search_fields = ["name", "code"]
+    search_fields = ["name", "code", "active", "is_custom"]
     ordering_fields = ["name", "updated_at"]
     ordering = ["name"]
 
