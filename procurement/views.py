@@ -11,11 +11,11 @@ from rest_framework.response import Response
 from rest_framework import status, permissions
 from approvals.services import submit_purchase_request, decide
 from .models import (
-    PaymentType, Supplier, Item, PurchaseRequest, 
+    PaymentType, PurchaseOrder, Supplier, Item, PurchaseRequest, 
     PurchaseRequestItem, SupplierOffer, ItemOffer
 )
 from .serializers import (
-    PaymentTypeSerializer, SupplierSerializer, ItemSerializer,
+    PaymentTypeSerializer, PurchaseOrderSerializer, SupplierSerializer, ItemSerializer,
     PurchaseRequestSerializer, PurchaseRequestCreateSerializer,
     PurchaseRequestItemSerializer, SupplierOfferSerializer, ItemOfferSerializer
 )
@@ -212,6 +212,19 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
         ser = self.get_serializer(qs, many=True)
         return Response(ser.data)
 
+    @action(detail=True, methods=["POST"], permission_classes=[permissions.IsAuthenticated])
+    def generate_pos(self, request, pk=None):
+        """
+        Manually create POs from recommended offers for this PR.
+        Useful for testing. Safe to call multiple times.
+        """
+        pr = self.get_object()
+        pos = create_pos_from_recommended(pr)
+        if not pos:
+            return Response({"detail": "No POs created (already created or no recommended items)."}, status=200)
+        data = PurchaseOrderSerializer(pos, many=True).data
+        return Response({"detail": f"Created {len(pos)} PO(s).", "purchase_orders": data}, status=201)
+
 class PurchaseRequestItemViewSet(viewsets.ModelViewSet):
     queryset = PurchaseRequestItem.objects.all()
     serializer_class = PurchaseRequestItemSerializer
@@ -281,4 +294,8 @@ class StatusChoicesView(APIView):
         return Response([
             {"value": k, "label": v} for k, v in PurchaseRequest.STATUS_CHOICES
         ])
-    
+
+class PurchaseOrderViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = PurchaseOrder.objects.select_related('supplier','pr','supplier_offer').prefetch_related('lines__purchase_request_item__item')
+    serializer_class = PurchaseOrderSerializer
+    permission_classes = [permissions.IsAuthenticated]

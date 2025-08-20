@@ -3,6 +3,8 @@ from django.db.models import Q
 from django.contrib.auth.models import User
 from django.utils import timezone
 
+from procurement.services import create_pos_from_recommended
+
 from .models import (
     ApprovalPolicy, PRApprovalWorkflow, PRApprovalStageInstance, PRApprovalDecision
 )
@@ -140,6 +142,7 @@ def decide(pr, user, approve: bool, comment: str = ""):
             wf.save(update_fields=["is_complete"])
             pr.status = "approved"
             pr.save(update_fields=["status"])
+            created_pos = create_pos_from_recommended(pr)
             # TODO: trigger post-approval handoff (e.g., enable pro-forma upload)
 
 

@@ -3,7 +3,7 @@ from django.contrib.auth.models import User
 
 from approvals.serializers import WorkflowSerializer
 from .models import (
-    PaymentType, Supplier, Item, PurchaseRequest, 
+    PaymentType, PurchaseOrder, PurchaseOrderLine, Supplier, Item, PurchaseRequest, 
     PurchaseRequestItem, SupplierOffer, ItemOffer
 )
 
@@ -170,3 +170,24 @@ class PurchaseRequestCreateSerializer(serializers.ModelSerializer):
                         )
         
         return purchase_request
+
+
+class PurchaseOrderLineSerializer(serializers.ModelSerializer):
+    item_code = serializers.CharField(source='purchase_request_item.item.code', read_only=True)
+    item_name = serializers.CharField(source='purchase_request_item.item.name', read_only=True)
+
+    class Meta:
+        model = PurchaseOrderLine
+        fields = ['id','item_offer','purchase_request_item','item_code','item_name',
+                  'quantity','unit_price','total_price','delivery_days','notes']
+
+class PurchaseOrderSerializer(serializers.ModelSerializer):
+    supplier_name = serializers.CharField(source='supplier.name', read_only=True)
+    lines = PurchaseOrderLineSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = PurchaseOrder
+        fields = ['id','pr','supplier_offer','supplier','supplier_name',
+                  'currency','total_amount','status','priority','created_at','ordered_at',
+                  'lines']
+        read_only_fields = ['total_amount','status','created_at']

@@ -1,6 +1,7 @@
 from django.db import models
 from django.contrib.auth.models import User
 from django.utils import timezone
+from decimal import Decimal
 
 # Create your models here.
 class PaymentType(models.Model):
@@ -159,3 +160,54 @@ class ItemOffer(models.Model):
     
     def __str__(self):
         return f"{self.purchase_request_item.item.name} - {self.supplier_offer.supplier.name}"
+
+class PurchaseOrder(models.Model):
+    STATUS_CHOICES = [
+        ("awaiting_invoice", "Awaiting Invoice"),  # created after PR approval
+        ("open", "Open"),                          # after invoice arrives / operations start
+        ("closed", "Closed"),
+        ("cancelled", "Cancelled"),
+    ]
+
+    pr = models.ForeignKey('PurchaseRequest', on_delete=models.PROTECT, related_name='purchase_orders')
+    supplier_offer = models.ForeignKey('SupplierOffer', on_delete=models.PROTECT, related_name='purchase_orders')
+    supplier = models.ForeignKey('Supplier', on_delete=models.PROTECT, related_name='purchase_orders')
+
+    currency = models.CharField(max_length=3, default='TRY')  # for now: supplier.default_currency
+    total_amount = models.DecimalField(max_digits=16, decimal_places=2, default=0)
+
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='awaiting_invoice')
+    priority = models.CharField(max_length=20, default='normal')  # mirror PR
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    ordered_at = models.DateTimeField(null=True, blank=True)  # fill later if needed
+
+    class Meta:
+        ordering = ['-id']
+
+    def __str__(self):
+        return f"PO-{self.id} | {self.supplier.name}"
+
+    def recompute_totals(self):
+        total = sum((l.total_price or Decimal('0')) for l in self.lines.all())
+        if total != self.total_amount:
+            self.total_amount = total
+            self.save(update_fields=['total_amount'])
+
+
+class PurchaseOrderLine(models.Model):
+    po = models.ForeignKey(PurchaseOrder, on_delete=models.CASCADE, related_name='lines')
+
+    # Source of truth = the ItemOffer we awarded (recommended)
+    item_offer = models.ForeignKey('ItemOffer', on_delete=models.PROTECT, related_name='po_lines')
+    purchase_request_item = models.ForeignKey('PurchaseRequestItem', on_delete=models.PROTECT, related_name='+')
+
+    # Freeze values at PO creation time
+    quantity = models.DecimalField(max_digits=12, decimal_places=2)
+    unit_price = models.DecimalField(max_digits=15, decimal_places=2)
+    total_price = models.DecimalField(max_digits=16, decimal_places=2)
+    delivery_days = models.PositiveIntegerField(null=True, blank=True)
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ['id']
