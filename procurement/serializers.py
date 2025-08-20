@@ -13,15 +13,17 @@ class PaymentTermsSerializer(serializers.ModelSerializer):
         fields = ["id", "name", "code", "is_custom", "active", "default_lines", "created_at", "updated_at"]
 
 class PaymentScheduleSerializer(serializers.ModelSerializer):
+    payment_terms_name = serializers.ReadOnlyField(source='payment_terms.name')
     class Meta:
         model = PaymentSchedule
         fields = [
-            "id", "purchase_order", "payment_terms", "sequence",
+            "id", "purchase_order", "payment_terms", "payment_terms_name", "sequence",
             "label", "basis", "offset_days",
             "percentage", "amount", "currency",
             "due_date", "is_paid", "paid_at", "paid_by",
         ]
         read_only_fields = ["paid_at", "paid_by", "currency"]
+
 
 class SupplierSerializer(serializers.ModelSerializer):
     class Meta:
