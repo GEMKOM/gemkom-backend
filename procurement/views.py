@@ -323,6 +323,7 @@ class StatusChoicesView(APIView):
         ])
 
 class PurchaseOrderViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = PurchaseOrder.objects.all()
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend, OrderingFilter]
     filterset_fields = ['status', 'supplier', 'pr']
