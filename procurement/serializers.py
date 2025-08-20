@@ -171,18 +171,21 @@ class PurchaseRequestCreateSerializer(serializers.ModelSerializer):
         
         return purchase_request
 
-
 class PurchaseOrderListSerializer(serializers.ModelSerializer):
     supplier_name = serializers.CharField(source='supplier.name', read_only=True)
     line_count = serializers.IntegerField(read_only=True)
+    status_label = serializers.SerializerMethodField()
 
     class Meta:
         model = PurchaseOrder
         fields = [
             'id', 'pr', 'supplier', 'supplier_offer', 'supplier_name',
             'currency', 'total_amount', 'status', 'priority',
-            'created_at', 'ordered_at', 'line_count',
+            'created_at', 'ordered_at', 'line_count', 'status_label'
         ]
+
+    def get_status_label(self, obj):
+        return obj.get_status_display()
 
 class PurchaseOrderLineSerializer(serializers.ModelSerializer):
     item_code = serializers.CharField(source='purchase_request_item.item.code', read_only=True)
