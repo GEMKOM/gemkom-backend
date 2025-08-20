@@ -23,7 +23,6 @@ class Supplier(models.Model):
     contact_person = models.CharField(max_length=100, blank=True)
     phone = models.CharField(max_length=20, blank=True)
     email = models.EmailField(blank=True)
-    currency = models.CharField(max_length=3, choices=CURRENCY_CHOICES, default='TRY')
     default_currency = models.CharField(max_length=3, choices=CURRENCY_CHOICES, default='TRY')  # Fixed max_length
     default_payment_method = models.ForeignKey(PaymentType, on_delete=models.CASCADE, related_name="suppliers", null=True, blank=True)  # Fixed related_name
     
@@ -136,6 +135,7 @@ class PurchaseRequestItem(models.Model):
 class SupplierOffer(models.Model):
     purchase_request = models.ForeignKey(PurchaseRequest, on_delete=models.CASCADE, related_name='offers')
     supplier = models.ForeignKey(Supplier, on_delete=models.CASCADE, related_name='offers')
+    currency = models.CharField(max_length=3, choices=Supplier.CURRENCY_CHOICES, default='TRY')
     payment_method = models.ForeignKey(PaymentType, on_delete=models.CASCADE, related_name="supplier_offers", null=True, blank=True)
     notes = models.TextField(blank=True)
     

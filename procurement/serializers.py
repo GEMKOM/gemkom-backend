@@ -146,6 +146,7 @@ class PurchaseRequestCreateSerializer(serializers.ModelSerializer):
             supplier_offer = SupplierOffer.objects.create(
                 purchase_request=purchase_request,
                 supplier=supplier,
+                currency=supplier_data.get('currency', supplier.default_currency),
                 notes=''
             )
             
