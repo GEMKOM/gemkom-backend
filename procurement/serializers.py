@@ -27,7 +27,7 @@ class SupplierSerializer(serializers.ModelSerializer):
     class Meta:
         model = Supplier
         fields = [
-            'id', 'name', 'contact_person', 'phone', 'email', 'default_currency', 'default_payment_method',
+            'id', 'name', 'contact_person', 'phone', 'email', 'default_currency', 'default_payment_terms',
             'is_active', 'created_at', 'updated_at'
         ]
 
@@ -63,7 +63,7 @@ class SupplierOfferSerializer(serializers.ModelSerializer):
     class Meta:
         model = SupplierOffer
         fields = [
-            'id', 'supplier', 'notes', 'item_offers', 'created_at', 'updated_at', 'currency'
+            'id', 'supplier', 'notes', 'item_offers', 'created_at', 'updated_at', 'currency', 'payment_terms'
         ]
 
 class PurchaseRequestSerializer(serializers.ModelSerializer):
