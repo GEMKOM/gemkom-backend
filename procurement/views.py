@@ -15,7 +15,7 @@ from .models import (
     PurchaseRequestItem, SupplierOffer, ItemOffer
 )
 from .serializers import (
-    PaymentTypeSerializer, PurchaseOrderSerializer, SupplierSerializer, ItemSerializer,
+    PaymentTypeSerializer, SupplierSerializer, ItemSerializer,
     PurchaseRequestSerializer, PurchaseRequestCreateSerializer,
     PurchaseRequestItemSerializer, SupplierOfferSerializer, ItemOfferSerializer
 )
@@ -27,6 +27,13 @@ from rest_framework import status, permissions
 from approvals.models import PRApprovalStageInstance, PRApprovalDecision
 from approvals.services import create_pos_from_recommended
 from .services import cancel_purchase_request
+
+from django.db.models import Count
+from .models import PurchaseOrder
+from .serializers import (
+    PurchaseOrderListSerializer,
+    PurchaseOrderDetailSerializer,
+)
 
 class PaymentTypeViewSet(viewsets.ModelViewSet):
     queryset = PaymentType.objects.all()
@@ -316,6 +323,26 @@ class StatusChoicesView(APIView):
         ])
 
 class PurchaseOrderViewSet(viewsets.ReadOnlyModelViewSet):
-    queryset = PurchaseOrder.objects.select_related('supplier','pr','supplier_offer').prefetch_related('lines__purchase_request_item__item')
-    serializer_class = PurchaseOrderSerializer
     permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, OrderingFilter]
+    filterset_fields = ['status', 'supplier', 'pr']
+    ordering_fields = ['id', 'created_at', 'total_amount']
+    ordering = ['-id']
+
+    def get_queryset(self):
+        qs = (
+            PurchaseOrder.objects
+            .select_related('supplier', 'pr', 'supplier_offer')
+        )
+        if self.action == 'list':
+            # No lines; just annotate a count for UI
+            return qs.annotate(line_count=Count('lines'))
+        # Detail: bring lines + items efficiently
+        return qs.prefetch_related('lines__purchase_request_item__item')
+
+    def get_serializer_class(self):
+        return (
+            PurchaseOrderDetailSerializer
+            if self.action == 'retrieve'
+            else PurchaseOrderListSerializer
+        )
