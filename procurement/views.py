@@ -359,6 +359,15 @@ class StatusChoicesView(APIView):
         return Response([
             {"value": k, "label": v} for k, v in PurchaseRequest.STATUS_CHOICES
         ])
+    
+class BasisChoicesView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        return Response([
+            {"value": k, "label": v} for k, v in PaymentTerms.BASIS_CHOICES
+        ])
+
 
 class PurchaseOrderViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = PurchaseOrder.objects.all()
