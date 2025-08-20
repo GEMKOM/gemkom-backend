@@ -39,7 +39,7 @@ def create_pos_from_recommended(pr):
             pr=pr,
             supplier_offer=so,
             supplier=supplier,
-            currency=(supplier.currency or supplier.default_currency or 'TRY'),
+            currency=(so.currency or supplier.default_currency or 'TRY'),
             priority=pr.priority,
             status='awaiting_invoice',
         )
