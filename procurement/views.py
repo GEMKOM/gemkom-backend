@@ -11,7 +11,7 @@ from rest_framework.response import Response
 from rest_framework import status, permissions
 from approvals.services import submit_purchase_request, decide
 from .models import (
-    PurchaseOrder, Supplier, Item, PurchaseRequest, 
+    PaymentSchedule, PurchaseOrder, Supplier, Item, PurchaseRequest, 
     PurchaseRequestItem, SupplierOffer, ItemOffer
 )
 from .serializers import (
@@ -28,7 +28,7 @@ from approvals.models import PRApprovalStageInstance, PRApprovalDecision
 from approvals.services import create_pos_from_recommended
 from .services import cancel_purchase_request
 
-from django.db.models import Count
+from django.db.models import Count, Prefetch
 from .models import PurchaseOrder
 from .serializers import (
     PurchaseOrderListSerializer,
@@ -329,13 +329,25 @@ class PurchaseOrderViewSet(viewsets.ReadOnlyModelViewSet):
     def get_queryset(self):
         qs = (
             PurchaseOrder.objects
-            .select_related('supplier', 'pr', 'supplier_offer', 'payment_schedules')
+            .select_related('supplier', 'pr', 'supplier_offer')  # forward FKs only
         )
+
+        # If you want the schedules ordered by sequence in both list & detail:
+        schedules_qs = PaymentSchedule.objects.order_by('sequence')
+
         if self.action == 'list':
-            # No lines; just annotate a count for UI
-            return qs.annotate(line_count=Count('lines'))
-        # Detail: bring lines + items efficiently
-        return qs.prefetch_related('lines__purchase_request_item__item')
+            # list: include schedules, NO lines
+            return (
+                qs
+                .annotate(line_count=Count('lines'))
+                .prefetch_related(Prefetch('payment_schedules', queryset=schedules_qs))
+            )
+
+        # detail: include lines & schedules
+        return qs.prefetch_related(
+            'lines__purchase_request_item__item',
+            Prefetch('payment_schedules', queryset=schedules_qs),
+        )
 
     def get_serializer_class(self):
         return (
