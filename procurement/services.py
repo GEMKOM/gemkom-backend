@@ -1,11 +1,11 @@
 # services/po_from_recommended.py
 from collections import defaultdict
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from django.db import transaction
 from django.utils import timezone
 from django.core.exceptions import PermissionDenied, ValidationError
 
-from .models import PurchaseOrder, PurchaseOrderLine, ItemOffer  # adjust import path
+from .models import PurchaseOrder, PurchaseOrderLine, ItemOffer, PaymentTerms, PaymentSchedule
 
 @transaction.atomic
 def create_pos_from_recommended(pr):
@@ -61,6 +61,7 @@ def create_pos_from_recommended(pr):
             )
 
         po.recompute_totals()
+        generate_payment_schedule_for_po(po)
         pos.append(po)
 
     return pos
@@ -125,3 +126,61 @@ def cancel_purchase_request(pr, by_user, reason:str=''):
     pr.save(update_fields=['status','cancelled_at','cancelled_by','cancellation_reason'])
 
     return pr
+
+def _q(x: Decimal) -> Decimal:
+    return x.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+@transaction.atomic
+def generate_payment_schedule_for_po(po, terms: PaymentTerms | None = None):
+    # idempotent
+    if po.payment_schedules.exists():
+        return list(po.payment_schedules.all())
+
+    # pick terms: supplier default → "advance_100" fallback
+    if terms is None:
+        terms = getattr(po.supplier, "default_payment_terms", None)
+    if terms is None:
+        terms = PaymentTerms.objects.filter(code="advance_100").first()
+
+    # last resort: create a temporary 100% peşin
+    if terms is None:
+        terms = PaymentTerms.objects.create(
+            name="100% Peşin (Oto)",
+            code=f"advance_100_auto_{timezone.now().strftime('%Y%m%d%H%M%S')}",
+            default_lines=[{"percentage": 100.00, "label": "Peşin", "basis": "immediate", "offset_days": 0}]
+        )
+
+    lines = terms.default_lines or [{"percentage": 100.00, "label": "Peşin", "basis": "immediate", "offset_days": 0}]
+    pct_sum = sum((l.get("percentage") or 0) for l in lines)
+    if round(pct_sum, 2) != 100.00:
+        raise ValueError(f"PaymentTerms '{terms.name}' toplam %100 olmalı (şu an {pct_sum}).")
+
+    total = po.total_amount
+    created = []
+    running = Decimal("0.00")
+    for idx, line in enumerate(lines, start=1):
+        pct = Decimal(str(line.get("percentage", 0)))
+        amount = _q(total * pct / Decimal("100"))
+        running += amount
+        ps = PaymentSchedule.objects.create(
+            purchase_order=po,
+            payment_terms=terms,
+            sequence=idx,
+            label=line.get("label", ""),
+            basis=line.get("basis", "custom"),
+            offset_days=line.get("offset_days"),
+            percentage=pct,
+            amount=amount,
+            currency=po.currency,
+            due_date=None,  # hesaplanacak (fatura/teslim tarihi girilince)
+        )
+        created.append(ps)
+
+    # rounding drift fix
+    drift = _q(total - running)
+    if drift != Decimal("0.00"):
+        last = created[-1]
+        last.amount = _q(last.amount + drift)
+        last.save(update_fields=["amount"])
+
+    return created

@@ -1,7 +1,7 @@
 from django.db import migrations
 
 def seed_terms(apps, schema_editor):
-    PaymentTerms = apps.get_model('your_app', 'PaymentTerms')
+    PaymentTerms = apps.get_model('procurement', 'PaymentTerms')
     presets = [
         {
             "name": "100% Peşin",
@@ -47,7 +47,7 @@ def seed_terms(apps, schema_editor):
         PaymentTerms.objects.get_or_create(code=p["code"], defaults=p)
 
 def unseed_terms(apps, schema_editor):
-    PaymentTerms = apps.get_model('your_app', 'PaymentTerms')
+    PaymentTerms = apps.get_model('procurement', 'PaymentTerms')
     PaymentTerms.objects.filter(code__in=[
         "advance_100", "split_30_70_delivery", "net_30", "net_60", "custom"
     ]).delete()
@@ -55,7 +55,7 @@ def unseed_terms(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("your_app", "00xx_previous"),
+        ('procurement', '0010_remove_supplieroffer_payment_method_and_more'),
     ]
 
     operations = [

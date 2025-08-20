@@ -3,10 +3,25 @@ from django.contrib.auth.models import User
 
 from approvals.serializers import WorkflowSerializer
 from .models import (
-    PurchaseOrder, PurchaseOrderLine, Supplier, Item, PurchaseRequest, 
+    PaymentSchedule, PaymentTerms, PurchaseOrder, PurchaseOrderLine, Supplier, Item, PurchaseRequest, 
     PurchaseRequestItem, SupplierOffer, ItemOffer
 )
 
+class PaymentTermsSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PaymentTerms
+        fields = ["id", "name", "code", "is_custom", "active", "default_lines", "created_at", "updated_at"]
+
+class PaymentScheduleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PaymentSchedule
+        fields = [
+            "id", "purchase_order", "payment_terms", "sequence",
+            "label", "basis", "offset_days",
+            "percentage", "amount", "currency",
+            "due_date", "is_paid", "paid_at", "paid_by",
+        ]
+        read_only_fields = ["paid_at", "paid_by", "currency"]
 
 class SupplierSerializer(serializers.ModelSerializer):
     class Meta:
@@ -171,13 +186,14 @@ class PurchaseOrderListSerializer(serializers.ModelSerializer):
     supplier_name = serializers.CharField(source='supplier.name', read_only=True)
     line_count = serializers.IntegerField(read_only=True)
     status_label = serializers.SerializerMethodField()
+    payment_schedules = PaymentScheduleSerializer(many=True, read_only=True)
 
     class Meta:
         model = PurchaseOrder
         fields = [
             'id', 'pr', 'supplier', 'supplier_offer', 'supplier_name',
             'currency', 'total_amount', 'status', 'priority',
-            'created_at', 'ordered_at', 'line_count', 'status_label'
+            'created_at', 'ordered_at', 'line_count', 'status_label', 'payment_schedules'
         ]
 
     def get_status_label(self, obj):
@@ -199,5 +215,3 @@ class PurchaseOrderDetailSerializer(PurchaseOrderListSerializer):
 
     class Meta(PurchaseOrderListSerializer.Meta):
         fields = PurchaseOrderListSerializer.Meta.fields + ['lines']
-
-

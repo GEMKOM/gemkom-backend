@@ -329,7 +329,7 @@ class PurchaseOrderViewSet(viewsets.ReadOnlyModelViewSet):
     def get_queryset(self):
         qs = (
             PurchaseOrder.objects
-            .select_related('supplier', 'pr', 'supplier_offer')
+            .select_related('supplier', 'pr', 'supplier_offer', 'payment_schedules')
         )
         if self.action == 'list':
             # No lines; just annotate a count for UI
@@ -343,3 +343,21 @@ class PurchaseOrderViewSet(viewsets.ReadOnlyModelViewSet):
             if self.action == 'retrieve'
             else PurchaseOrderListSerializer
         )
+    
+    @action(detail=True, methods=["POST"])
+    def mark_schedule_paid(self, request, pk=None):
+        po = self.get_object()
+        schedule_id = request.data.get("schedule_id")
+        try:
+            ps = po.payment_schedules.get(id=schedule_id)
+        except PaymentSchedule.DoesNotExist:
+            return Response({"detail": "Schedule not found for this PO."}, status=404)
+
+        if ps.is_paid:
+            return Response({"detail": "Already marked paid."}, status=200)
+
+        ps.is_paid = True
+        ps.paid_at = timezone.now()
+        ps.paid_by = request.user
+        ps.save(update_fields=["is_paid", "paid_at", "paid_by"])
+        return Response({"detail": "Marked paid."}, status=200)
