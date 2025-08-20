@@ -34,7 +34,7 @@ from .serializers import (
     PurchaseOrderListSerializer,
     PurchaseOrderDetailSerializer,
 )
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import ValidationError, PermissionDenied
 
 class PaymentTermsViewSet(viewsets.ModelViewSet):
     """
@@ -69,6 +69,8 @@ class PaymentTermsViewSet(viewsets.ModelViewSet):
         raise ValidationError("Updates to payment terms are not allowed.")
 
     def perform_destroy(self, instance):
+        if not instance.is_custom:
+            raise PermissionDenied("Standard (non-custom) payment terms cannot be deleted.")
         # Soft delete: mark inactive instead of deleting
         instance.active = False
         instance.save()
