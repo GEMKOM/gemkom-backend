@@ -11,11 +11,11 @@ from rest_framework.response import Response
 from rest_framework import status, permissions
 from approvals.services import submit_purchase_request, decide
 from .models import (
-    PaymentType, PurchaseOrder, Supplier, Item, PurchaseRequest, 
+    PurchaseOrder, Supplier, Item, PurchaseRequest, 
     PurchaseRequestItem, SupplierOffer, ItemOffer
 )
 from .serializers import (
-    PaymentTypeSerializer, SupplierSerializer, ItemSerializer,
+    SupplierSerializer, ItemSerializer,
     PurchaseRequestSerializer, PurchaseRequestCreateSerializer,
     PurchaseRequestItemSerializer, SupplierOfferSerializer, ItemOfferSerializer
 )
@@ -35,10 +35,6 @@ from .serializers import (
     PurchaseOrderDetailSerializer,
 )
 
-class PaymentTypeViewSet(viewsets.ModelViewSet):
-    queryset = PaymentType.objects.all()
-    serializer_class = PaymentTypeSerializer
-    permission_classes = [permissions.IsAuthenticated]
 
 class SupplierViewSet(viewsets.ModelViewSet):
     queryset = Supplier.objects.filter(is_active=True)

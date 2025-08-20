@@ -2,13 +2,82 @@ from django.db import models
 from django.contrib.auth.models import User
 from django.utils import timezone
 from decimal import Decimal
+from django.core.validators import MinValueValidator, MaxValueValidator
 
 # Create your models here.
-class PaymentType(models.Model):
-    name = models.CharField(max_length=100)  # Added max_length
-    
+class PaymentTerms(models.Model):
+    """
+    A reusable template. Example default_lines JSON structure:
+    [
+      {"percentage": 100.00, "label": "Advance", "basis": "immediate", "offset_days": 0},
+      {"percentage": 30.00,  "label": "Advance", "basis": "immediate", "offset_days": 0},
+      {"percentage": 70.00,  "label": "On Delivery", "basis": "after_delivery", "offset_days": 0},
+      {"percentage": 100.00, "label": "Net 30", "basis": "after_invoice", "offset_days": 30}
+    ]
+    """
+    BASIS_CHOICES = [
+        ("immediate", "Peşin"),
+        ("on_delivery", "Teslim Edildiğinde"),
+        ("after_invoice", "Fatura Kesildikten Sonra"),
+        ("after_delivery", "Teslimden Sonra"),
+        ("custom", "Diğer"),
+    ]
+
+    name = models.CharField(max_length=100, unique=True)
+    code = models.SlugField(max_length=50, unique=True)  # e.g. "advance_100", "split_30_70", "net_30"
+    is_custom = models.BooleanField(default=False)
+    active = models.BooleanField(default=True)
+
+    # A list of line blueprints (see docstring). Keep it optional for fully‑custom cases.
+    default_lines = models.JSONField(default=list, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name"]
+
     def __str__(self):
         return self.name
+
+    def validate_default_lines_sum(self):
+        total = sum((line.get("percentage") or 0) for line in self.default_lines)
+        return round(total, 2) == 100.00
+    
+class PaymentSchedule(models.Model):
+    BASIS_CHOICES = PaymentTerms.BASIS_CHOICES
+
+    purchase_order = models.ForeignKey(
+        "PurchaseOrder", on_delete=models.CASCADE, related_name="payment_schedules"
+    )
+    payment_terms = models.ForeignKey(  # which template this schedule came from (optional)
+        PaymentTerms, null=True, blank=True, on_delete=models.SET_NULL, related_name="schedules"
+    )
+
+    sequence = models.PositiveIntegerField(default=1)  # order of payment
+    label = models.CharField(max_length=255, blank=True)  # e.g., "Advance", "On Delivery", "Net 30"
+    basis = models.CharField(max_length=20, choices=BASIS_CHOICES, default="custom")
+    offset_days = models.IntegerField(null=True, blank=True)
+
+    percentage = models.DecimalField(
+        max_digits=5, decimal_places=2,
+        validators=[MinValueValidator(0), MaxValueValidator(100)]
+    )
+    amount = models.DecimalField(max_digits=16, decimal_places=2, default=Decimal("0.00"))
+    currency = models.CharField(max_length=3, default="TRY")  # snapshot
+
+    # dates & status
+    due_date = models.DateField(null=True, blank=True)  # optional; fill when basis date is known
+    is_paid = models.BooleanField(default=False)
+    paid_at = models.DateTimeField(null=True, blank=True)
+    paid_by = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, related_name="paid_schedules")
+
+    class Meta:
+        ordering = ["purchase_order", "sequence"]
+        unique_together = [("purchase_order", "sequence")]
+
+    def __str__(self):
+        return f"PO-{self.purchase_order_id} · {self.percentage}% {self.label or ''}".strip()
 
 class Supplier(models.Model):
     CURRENCY_CHOICES = [
@@ -24,7 +93,10 @@ class Supplier(models.Model):
     phone = models.CharField(max_length=20, blank=True)
     email = models.EmailField(blank=True)
     default_currency = models.CharField(max_length=3, choices=CURRENCY_CHOICES, default='TRY')  # Fixed max_length
-    default_payment_method = models.ForeignKey(PaymentType, on_delete=models.CASCADE, related_name="suppliers", null=True, blank=True)  # Fixed related_name
+    default_payment_terms = models.ForeignKey(
+        PaymentTerms, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="suppliers"
+    )
     
     # Metadata
     is_active = models.BooleanField(default=True)
@@ -136,7 +208,7 @@ class SupplierOffer(models.Model):
     purchase_request = models.ForeignKey(PurchaseRequest, on_delete=models.CASCADE, related_name='offers')
     supplier = models.ForeignKey(Supplier, on_delete=models.CASCADE, related_name='offers')
     currency = models.CharField(max_length=3, choices=Supplier.CURRENCY_CHOICES, default='TRY')
-    payment_method = models.ForeignKey(PaymentType, on_delete=models.CASCADE, related_name="supplier_offers", null=True, blank=True)
+    payment_terms = models.ForeignKey(PaymentTerms, on_delete=models.CASCADE, related_name="supplier_offers", null=True, blank=True)
     notes = models.TextField(blank=True)
     
     # Timestamps
@@ -218,3 +290,4 @@ class PurchaseOrderLine(models.Model):
 
     class Meta:
         ordering = ['id']
+

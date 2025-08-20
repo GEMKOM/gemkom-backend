@@ -3,14 +3,10 @@ from django.contrib.auth.models import User
 
 from approvals.serializers import WorkflowSerializer
 from .models import (
-    PaymentType, PurchaseOrder, PurchaseOrderLine, Supplier, Item, PurchaseRequest, 
+    PurchaseOrder, PurchaseOrderLine, Supplier, Item, PurchaseRequest, 
     PurchaseRequestItem, SupplierOffer, ItemOffer
 )
 
-class PaymentTypeSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = PaymentType
-        fields = ['id', 'name']
 
 class SupplierSerializer(serializers.ModelSerializer):
     class Meta:
