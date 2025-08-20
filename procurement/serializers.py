@@ -92,7 +92,7 @@ class PurchaseRequestCreateSerializer(serializers.ModelSerializer):
         model = PurchaseRequest
         fields = [
             'id', 'title', 'description', 'priority',
-            'items', 'suppliers', 'offers', 'recommendations'
+            'items', 'suppliers', 'offers', 'recommendations', 'total_amount_eur'
         ]
     
     def create(self, validated_data):
