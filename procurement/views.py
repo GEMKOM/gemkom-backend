@@ -26,7 +26,7 @@ from rest_framework import status, permissions
 
 from approvals.models import PRApprovalStageInstance, PRApprovalDecision
 from approvals.services import create_pos_from_recommended
-from .services import cancel_purchase_request
+from .services import cancel_purchase_request, recompute_payment_schedule_due_dates
 
 from django.db.models import Count, Prefetch
 from .models import PurchaseOrder
@@ -411,6 +411,9 @@ class PurchaseOrderViewSet(viewsets.ReadOnlyModelViewSet):
     def mark_schedule_paid(self, request, pk=None):
         po = self.get_object()
         schedule_id = request.data.get("schedule_id")
+        if not schedule_id:
+            return Response({"detail": "schedule_id is required."}, status=400)
+
         try:
             ps = po.payment_schedules.get(id=schedule_id)
         except PaymentSchedule.DoesNotExist:
@@ -419,8 +422,24 @@ class PurchaseOrderViewSet(viewsets.ReadOnlyModelViewSet):
         if ps.is_paid:
             return Response({"detail": "Already marked paid."}, status=200)
 
+        # (Optional) enforce sequence: block paying later lines before earlier ones
+        earlier_unpaid = po.payment_schedules.filter(sequence__lt=ps.sequence, is_paid=False).exists()
+        if earlier_unpaid and ps.basis != "immediate":
+            return Response({"detail": "You must pay prior schedules first."}, status=400)
+
         ps.is_paid = True
         ps.paid_at = timezone.now()
         ps.paid_by = request.user
         ps.save(update_fields=["is_paid", "paid_at", "paid_by"])
-        return Response({"detail": "Marked paid."}, status=200)
+
+        # IMPORTANT: recompute due dates for dependent schedules
+        recompute_payment_schedule_due_dates(po, save=True)
+
+        if not po.payment_schedules.filter(is_paid=False).exists():
+            if po.status != "paid":
+                po.status = "paid"
+                po.save(update_fields=["status"])
+
+
+        # (Optional) return updated PO detail or just success
+        return Response({"detail": "Marked paid. Due dates updated."}, status=200)

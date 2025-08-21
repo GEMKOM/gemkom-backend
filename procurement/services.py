@@ -4,6 +4,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from django.db import transaction
 from django.utils import timezone
 from django.core.exceptions import PermissionDenied, ValidationError
+from datetime import timedelta
 
 from .models import PurchaseOrder, PurchaseOrderLine, ItemOffer, PaymentTerms, PaymentSchedule
 
@@ -61,7 +62,8 @@ def create_pos_from_recommended(pr):
             )
 
         po.recompute_totals()
-        generate_payment_schedule_for_po(po)
+        schedules = generate_payment_schedule_for_po(po, terms=so.payment_terms)
+        recompute_payment_schedule_due_dates(po, save=True)
         pos.append(po)
 
     return pos
@@ -140,15 +142,17 @@ def generate_payment_schedule_for_po(po, terms: PaymentTerms | None = None):
     if terms is None:
         terms = getattr(po.supplier, "default_payment_terms", None)
     if terms is None:
-        terms = PaymentTerms.objects.filter(code="advance_100").first()
+        terms = PaymentTerms.objects.filter(code="advance_100", active=True).first()
 
     # last resort: create a temporary 100% peşin
     if terms is None:
         terms = PaymentTerms.objects.create(
             name="100% Peşin (Oto)",
             code=f"advance_100_auto_{timezone.now().strftime('%Y%m%d%H%M%S')}",
-            default_lines=[{"percentage": 100.00, "label": "Peşin", "basis": "immediate", "offset_days": 0}]
-        )
+            default_lines=[{"percentage": 100.00, "label": "Peşin", "basis": "immediate", "offset_days": 0}],
+            is_custom=True,
+            active=True
+        )    
 
     lines = terms.default_lines or [{"percentage": 100.00, "label": "Peşin", "basis": "immediate", "offset_days": 0}]
     pct_sum = sum((l.get("percentage") or 0) for l in lines)
@@ -184,3 +188,107 @@ def generate_payment_schedule_for_po(po, terms: PaymentTerms | None = None):
         last.save(update_fields=["amount"])
 
     return created
+
+def _as_date(value):
+    if value is None:
+        return None
+    return value.date() if hasattr(value, "date") else value
+
+def _plus_days(base_date, days: int):
+    if base_date is None:
+        return None
+    return base_date + timedelta(days=int(days or 0))
+
+def _get_max_delivery_days(po) -> int:
+    """
+    Max snapshot delivery_days among PO lines.
+    """
+    max_days = 0
+    for line in po.lines.all():
+        dd = line.delivery_days
+        if dd is not None and dd > max_days:
+            max_days = dd
+    return max_days
+
+def _get_advance_schedule(po):
+    """
+    First schedule with basis=='immediate' by sequence, or None.
+    """
+    adv = None
+    for s in po.payment_schedules.all():
+        if s.basis == "immediate":
+            if adv is None or s.sequence < adv.sequence:
+                adv = s
+    return adv
+
+def recompute_payment_schedule_due_dates(po, save=True):
+    """
+    Rules:
+      immediate            -> pr.needed_date - max_delivery_days
+      on_delivery          -> (advance.paid_at OR advance.due_date OR po.created_at) + max_delivery_days
+      after_invoice        -> (advance.paid_at OR advance.due_date OR po.created_at) + offset_days
+      after_delivery       -> (advance.paid_at OR advance.due_date OR po.created_at) + max_delivery_days + offset_days
+      custom               -> same as after_invoice (unless you later define otherwise)
+    """
+    po_created   = _as_date(getattr(po, "created_at", None))
+    pr_needed    = _as_date(getattr(getattr(po, "pr", None), "needed_date", None))
+    if pr_needed is None:
+        # With your constraint, this should never happen. Raise to catch data issues early.
+        raise ValueError("PurchaseRequest.needed_date must be set before computing payment schedule due dates.")
+
+    max_dd       = _get_max_delivery_days(po)
+    schedules    = list(po.payment_schedules.all().order_by("sequence"))
+    advance      = _get_advance_schedule(po)
+    changed      = []
+
+    # ---------- PASS 1: compute advance (immediate) ----------
+    adv_due = None
+    adv_base_paid = None
+    if advance:
+        # Always: needed_date - max_delivery_days (no fallback)
+        new_due = _plus_days(pr_needed, -max_dd)
+        if advance.due_date != new_due:
+            advance.due_date = new_due
+            changed.append(advance)
+        adv_due = advance.due_date  # planned (always present)
+        adv_base_paid = _as_date(advance.paid_at) if advance.is_paid else None
+
+    # Helper: base date other schedules use
+    def _dependent_base():
+        if advance:
+            # paid wins; else planned
+            return adv_base_paid or adv_due
+        # no advance → base on PO creation date
+        return po_created
+
+    # ---------- PASS 2: compute others ----------
+    for s in schedules:
+        if s is advance:
+            continue
+
+        basis  = s.basis or "custom"
+        offset = s.offset_days or 0
+        base   = _dependent_base()
+        new_due = None
+
+        if basis == "on_delivery":
+            new_due = _plus_days(base, max_dd) if base is not None else None
+
+        elif basis == "after_invoice":
+            new_due = _plus_days(base, offset) if base is not None else None
+
+        elif basis == "after_delivery":
+            new_due = _plus_days(base, max_dd + offset) if base is not None else None
+
+        else:
+            # 'custom' mirrors after_invoice by default
+            new_due = _plus_days(base, offset) if base is not None else None
+
+        if s.due_date != new_due:
+            s.due_date = new_due
+            changed.append(s)
+
+    if save and changed:
+        for s in changed:
+            s.save(update_fields=["due_date"])
+    return changed

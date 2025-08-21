@@ -144,6 +144,7 @@ class PurchaseRequest(models.Model):
     request_number = models.CharField(max_length=50, unique=True)
     title = models.CharField(max_length=200)
     description = models.TextField(blank=True)
+    needed_date = models.DateField(default=timezone.now)
     
     # Request Details
     requestor = models.ForeignKey(User, on_delete=models.CASCADE, related_name='purchase_requests')
