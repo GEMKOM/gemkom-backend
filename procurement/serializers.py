@@ -51,8 +51,7 @@ class PurchaseRequestItemSerializer(serializers.ModelSerializer):
         model = PurchaseRequestItem
         fields = [
             'id', 'item', 'quantity', 'priority',
-            'specifications', 'order'   # legacy (will be empty for new data)
-            'allocations'
+            'specifications', 'order', 'allocations'
         ]
 
 class PurchaseRequestItemAllocationCreateSerializer(serializers.Serializer):
