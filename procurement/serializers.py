@@ -51,7 +51,7 @@ class PurchaseRequestItemSerializer(serializers.ModelSerializer):
         model = PurchaseRequestItem
         fields = [
             'id', 'item', 'quantity', 'priority',
-            'specifications', 'order', 'job_no',   # legacy (will be empty for new data)
+            'specifications', 'order'   # legacy (will be empty for new data)
             'allocations'
         ]
 
@@ -157,8 +157,6 @@ class PurchaseRequestCreateSerializer(serializers.ModelSerializer):
                 item=item,
                 quantity=item_data['quantity'],
                 priority=item_data.get('priority', 'normal'),
-                # legacy single-job (kept for read-compat; we also mirror to allocations below)
-                job_no=item_data.get('job_no'),
                 specifications=item_data.get('specifications', ''),
                 order=i
             )
