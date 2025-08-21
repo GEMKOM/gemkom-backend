@@ -6,15 +6,12 @@ from django.utils import timezone
 from django.core.exceptions import PermissionDenied, ValidationError
 from datetime import timedelta
 
-from .models import PurchaseOrder, PurchaseOrderLine, ItemOffer, PaymentTerms, PaymentSchedule
+from .models import PurchaseOrder, PurchaseOrderLine, ItemOffer, PaymentTerms, PaymentSchedule, PurchaseOrderLineAllocation
+
+Q2 = lambda x: (Decimal(x)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
 @transaction.atomic
 def create_pos_from_recommended(pr):
-    """
-    Build Purchase Orders from ItemOffer.is_recommended=True for a given PR.
-    Idempotent guard: if PR already has POs, do nothing.
-    Returns list of created POs.
-    """
     if pr.purchase_orders.exists():
         return []
 
@@ -24,6 +21,7 @@ def create_pos_from_recommended(pr):
             'purchase_request_item',
             'supplier_offer', 'supplier_offer__supplier'
         )
+        .prefetch_related('purchase_request_item__allocations')  # <-- important
         .filter(purchase_request_item__purchase_request=pr, is_recommended=True)
     )
     if not rec_offers.exists():
@@ -49,8 +47,9 @@ def create_pos_from_recommended(pr):
             pri = io.purchase_request_item
             qty = pri.quantity
             unit = io.unit_price
-            total = (qty * unit).quantize(Decimal('0.01'))
-            PurchaseOrderLine.objects.create(
+            total = Q2(qty * unit)
+
+            line = PurchaseOrderLine.objects.create(
                 po=po,
                 item_offer=io,
                 purchase_request_item=pri,
@@ -61,8 +60,41 @@ def create_pos_from_recommended(pr):
                 notes=io.notes or '',
             )
 
+            # ---- COPY ALLOCATIONS FROM PR ITEM ----
+            pr_allocs = list(pri.allocations.all())  # if model exists
+            if pr_allocs:
+                # clone each PR allocation, same quantity split; compute amount from unit price
+                to_create = []
+                running = Decimal('0.00')
+                for a in pr_allocs:
+                    a_amount = Q2(a.quantity * unit)
+                    running += a_amount
+                    to_create.append(PurchaseOrderLineAllocation(
+                        po_line=line,
+                        job_no=a.job_no,
+                        quantity=a.quantity,
+                        amount=a_amount,
+                    ))
+                PurchaseOrderLineAllocation.objects.bulk_create(to_create)
+
+                # fix rounding drift against line.total_price
+                drift = Q2(total - running)
+                if drift != Decimal('0.00'):
+                    last = line.allocations.order_by('id').last()
+                    last.amount = Q2(last.amount + drift)
+                    last.save(update_fields=['amount'])
+
+            elif pri.job_no:  # fallback to single job_no on the PR item
+                PurchaseOrderLineAllocation.objects.create(
+                    po_line=line,
+                    job_no=pri.job_no,
+                    quantity=line.quantity,
+                    amount=line.total_price,
+                )
+            # else: leave empty allocations if there’s no job information
+
         po.recompute_totals()
-        schedules = generate_payment_schedule_for_po(po, terms=so.payment_terms)
+        generate_payment_schedule_for_po(po, terms=so.payment_terms)
         recompute_payment_schedule_due_dates(po, save=True)
         pos.append(po)
 

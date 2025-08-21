@@ -193,7 +193,6 @@ class PurchaseRequestItem(models.Model):
     item = models.ForeignKey(Item, on_delete=models.CASCADE, related_name='requests')
     quantity = models.DecimalField(max_digits=10, decimal_places=2)  # ADDED: Frontend sends this
     priority = models.CharField(max_length=20, choices=PurchaseRequest.PRIORITY_CHOICES, default='normal')
-    job_no = models.CharField(max_length=20, blank=True, null=True)
     specifications = models.TextField(blank=True)
     
     # Ordering
@@ -204,6 +203,20 @@ class PurchaseRequestItem(models.Model):
     
     def __str__(self):
         return f"{self.item.code} - {self.item.name}"
+
+class PurchaseRequestItemAllocation(models.Model):
+    purchase_request_item = models.ForeignKey(
+        PurchaseRequestItem, on_delete=models.CASCADE, related_name="allocations"
+    )
+    job_no = models.CharField(max_length=20)  # keep your current length
+    quantity = models.DecimalField(max_digits=10, decimal_places=2)
+
+    class Meta:
+        ordering = ["id"]
+        unique_together = [("purchase_request_item", "job_no")]  # one job row per item
+
+    def __str__(self):
+        return f"{self.job_no} · {self.quantity}"
 
 class SupplierOffer(models.Model):
     purchase_request = models.ForeignKey(PurchaseRequest, on_delete=models.CASCADE, related_name='offers')
@@ -292,3 +305,35 @@ class PurchaseOrderLine(models.Model):
     class Meta:
         ordering = ['id']
 
+    def validate_allocation_totals(self):
+        from django.db.models import Sum
+        sums = self.allocations.aggregate(
+            q=Sum('quantity'),
+            a=Sum('amount')
+        )
+        q_sum = sums['q'] or Decimal('0')
+        a_sum = (sums['a'] or Decimal('0')).quantize(Decimal('0.01'))
+        if q_sum != self.quantity or a_sum != self.total_price.quantize(Decimal('0.01')):
+            raise ValueError("Allocations must sum to line quantity and total price.")
+class PurchaseOrderLineAllocation(models.Model):
+    """
+    Splits a PO line across one or more job numbers.
+    Keep amounts derived from quantity*unit_price for fast reporting.
+    """
+    po_line = models.ForeignKey(
+        'PurchaseOrderLine',
+        on_delete=models.CASCADE,
+        related_name='allocations'
+    )
+    job_no = models.CharField(max_length=50)  # keep same style as PRItem.job_no
+    quantity = models.DecimalField(max_digits=12, decimal_places=2, validators=[MinValueValidator(Decimal('0.00'))])
+    amount = models.DecimalField(max_digits=16, decimal_places=2, validators=[MinValueValidator(Decimal('0.00'))])
+
+    class Meta:
+        ordering = ['id']
+        indexes = [
+            models.Index(fields=['job_no']),
+        ]
+
+    def __str__(self):
+        return f"{self.po_line_id} · {self.job_no} · {self.quantity}"

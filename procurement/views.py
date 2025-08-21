@@ -397,6 +397,7 @@ class PurchaseOrderViewSet(viewsets.ReadOnlyModelViewSet):
         # detail: include lines & schedules
         return qs.prefetch_related(
             'lines__purchase_request_item__item',
+            'lines__allocations',                      # <-- add this
             Prefetch('payment_schedules', queryset=schedules_qs),
         )
 

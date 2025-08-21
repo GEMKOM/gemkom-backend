@@ -44,8 +44,8 @@ def submit_purchase_request(pr, by_user):
     if not policy or not policy.stages.exists():
         raise ValueError("No applicable approval policy/stages configured.")
 
-    # Create workflow shell + snapshot
     stages_qs = policy.stages.all().order_by("order")
+
     wf = PRApprovalWorkflow.objects.create(
         purchase_request=pr,
         policy=policy,
@@ -65,12 +65,12 @@ def submit_purchase_request(pr, by_user):
         },
     )
 
-    # Materialize stage instances
+    # Create stage instances
     for s in stages_qs:
         u_ids = list(s.approver_users.values_list("id", flat=True))
         g_ids = list(s.approver_groups.values_list("id", flat=True))
         u_ids += _resolve_group_user_ids(g_ids)
-        u_ids = sorted(set(u_ids))  # dedupe + stable order
+        u_ids = sorted(set(u_ids))  # dedupe
 
         PRApprovalStageInstance.objects.create(
             workflow=wf,
@@ -81,17 +81,14 @@ def submit_purchase_request(pr, by_user):
             approver_group_ids=g_ids,
         )
 
-    # Mark PR as submitted first; bypass may advance/approve it
     pr.status = "submitted"
     pr.submitted_at = timezone.now()
     pr.save(update_fields=["status", "submitted_at"])
 
-    # Now run self-approval bypass (handles: sole approver = requestor → auto-complete,
-    # or requestor among many → remove requestor and clamp quorum)
-    _auto_bypass_self_approver(wf, pr.requestor)
+    _auto_bypass_self_approver(wf, pr.requestor)  # same as before
 
-    # TODO: notify wf.current_stage_order approvers (after bypass)
     return wf
+
 
 @transaction.atomic
 def decide(pr, user, approve: bool, comment: str = ""):
