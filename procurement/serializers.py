@@ -1,3 +1,4 @@
+from procurement.services import compute_vat_carry_map
 from rest_framework import serializers
 from django.contrib.auth.models import User
 
@@ -6,6 +7,7 @@ from .models import (
     PaymentSchedule, PaymentTerms, PurchaseOrder, PurchaseOrderLine, PurchaseOrderLineAllocation, PurchaseRequestItemAllocation, Supplier, Item, PurchaseRequest, 
     PurchaseRequestItem, SupplierOffer, ItemOffer
 )
+from decimal import Decimal
 
 class PaymentTermsSerializer(serializers.ModelSerializer):
     class Meta:
@@ -13,16 +15,30 @@ class PaymentTermsSerializer(serializers.ModelSerializer):
         fields = ["id", "name", "code", "is_custom", "active", "default_lines", "created_at", "updated_at"]
 
 class PaymentScheduleSerializer(serializers.ModelSerializer):
-    payment_terms_name = serializers.ReadOnlyField(source='payment_terms.name')
+    # Derived fields (server-side)
+    base_tax = serializers.SerializerMethodField()
+    effective_tax_due = serializers.SerializerMethodField()
+
     class Meta:
         model = PaymentSchedule
         fields = [
-            "id", "purchase_order", "payment_terms", "payment_terms_name", "sequence",
-            "label", "basis", "offset_days",
+            "id", "purchase_order", "sequence", "label", "basis", "offset_days",
             "percentage", "amount", "currency",
-            "due_date", "is_paid", "paid_at", "paid_by",
+            "due_date", "is_paid", "paid_at", "paid_by", "paid_with_tax",
+            # derived:
+            "base_tax", "effective_tax_due",
         ]
         read_only_fields = ["paid_at", "paid_by", "currency"]
+
+    def get_base_tax(self, obj):
+        vm = self.context.get('vat_map', {})
+        item = vm.get('by_id', {}).get(obj.id)
+        return item['base_tax'] if item else Decimal('0.00')
+
+    def get_effective_tax_due(self, obj):
+        vm = self.context.get('vat_map', {})
+        item = vm.get('by_id', {}).get(obj.id)
+        return item['effective_tax_due'] if item else Decimal('0.00')
 
 
 class SupplierSerializer(serializers.ModelSerializer):
@@ -242,18 +258,40 @@ class PurchaseOrderListSerializer(serializers.ModelSerializer):
     supplier_name = serializers.CharField(source='supplier.name', read_only=True)
     line_count = serializers.IntegerField(read_only=True)
     status_label = serializers.SerializerMethodField()
-    payment_schedules = PaymentScheduleSerializer(many=True, read_only=True)
+
+    # nested schedules (read-only) with VAT map
+    payment_schedules = serializers.SerializerMethodField()
+
+    # optional PO-level derived
+    tax_outstanding = serializers.SerializerMethodField()
 
     class Meta:
         model = PurchaseOrder
         fields = [
             'id', 'pr', 'supplier', 'supplier_offer', 'supplier_name',
-            'currency', 'total_amount', 'status', 'priority',
-            'created_at', 'ordered_at', 'line_count', 'status_label', 'payment_schedules'
+            'currency',
+            'total_amount', 'tax_rate', 'total_tax_amount',  # <— persisted fields
+            'status', 'priority', 'created_at', 'ordered_at',
+            'line_count', 'status_label',
+            'payment_schedules',  # nested with derived fields
+            'tax_outstanding',    # derived (sum of unpaid effective taxes)
         ]
 
     def get_status_label(self, obj):
         return obj.get_status_display()
+
+    def get_payment_schedules(self, obj):
+        vat_map = compute_vat_carry_map(obj)
+        ser = PaymentScheduleSerializer(
+            obj.payment_schedules.all().order_by('sequence'),
+            many=True,
+            context={**self.context, 'vat_map': vat_map}
+        )
+        return ser.data
+
+    def get_tax_outstanding(self, obj):
+        return compute_vat_carry_map(obj)['tax_outstanding']
+
     
 class PurchaseOrderLineAllocationSerializer(serializers.ModelSerializer):
     class Meta:
@@ -278,6 +316,3 @@ class PurchaseOrderDetailSerializer(PurchaseOrderListSerializer):
 
     class Meta(PurchaseOrderListSerializer.Meta):
         fields = PurchaseOrderListSerializer.Meta.fields + ['lines']
-
-
-

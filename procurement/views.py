@@ -35,6 +35,7 @@ from .serializers import (
     PurchaseOrderDetailSerializer,
 )
 from rest_framework.exceptions import ValidationError, PermissionDenied
+from django.db import transaction
 
 class PaymentTermsViewSet(viewsets.ModelViewSet):
     """
@@ -409,11 +410,17 @@ class PurchaseOrderViewSet(viewsets.ReadOnlyModelViewSet):
         )
     
     @action(detail=True, methods=["POST"])
+    @transaction.atomic
     def mark_schedule_paid(self, request, pk=None):
         po = self.get_object()
         schedule_id = request.data.get("schedule_id")
         if not schedule_id:
             return Response({"detail": "schedule_id is required."}, status=400)
+
+        paid_with_tax = request.data.get("paid_with_tax", None)
+        if paid_with_tax is None:
+            return Response({"detail": "paid_with_tax is required (true/false)."}, status=400)
+        paid_with_tax = bool(paid_with_tax)
 
         try:
             ps = po.payment_schedules.get(id=schedule_id)
@@ -423,24 +430,32 @@ class PurchaseOrderViewSet(viewsets.ReadOnlyModelViewSet):
         if ps.is_paid:
             return Response({"detail": "Already marked paid."}, status=200)
 
-        # (Optional) enforce sequence: block paying later lines before earlier ones
+        # (Optional) enforce paying in order for non-immediate bases
         earlier_unpaid = po.payment_schedules.filter(sequence__lt=ps.sequence, is_paid=False).exists()
         if earlier_unpaid and ps.basis != "immediate":
             return Response({"detail": "You must pay prior schedules first."}, status=400)
 
+        # Guard: if this is the last unpaid schedule, net-only is not allowed
+        more_unpaid_exists = po.payment_schedules.filter(is_paid=False).exclude(id=ps.id).exists()
+        if not more_unpaid_exists and not paid_with_tax:
+            return Response({"detail": "Last installment cannot be paid without tax."}, status=400)
+
         ps.is_paid = True
+        ps.paid_with_tax = paid_with_tax
         ps.paid_at = timezone.now()
         ps.paid_by = request.user
-        ps.save(update_fields=["is_paid", "paid_at", "paid_by"])
+        ps.save(update_fields=["is_paid", "paid_with_tax", "paid_at", "paid_by"])
 
-        # IMPORTANT: recompute due dates for dependent schedules
+        # Recompute dependent due dates
         recompute_payment_schedule_due_dates(po, save=True)
 
-        if not po.payment_schedules.filter(is_paid=False).exists():
-            if po.status != "paid":
-                po.status = "paid"
-                po.save(update_fields=["status"])
+        # Strict policy: PO is 'paid' only if all schedules are paid with tax
+        all_paid_with_tax = not po.payment_schedules.filter(is_paid=False).exists() \
+                            and not po.payment_schedules.filter(is_paid=True, paid_with_tax=False).exists()
+        if all_paid_with_tax and po.status != "paid":
+            po.status = "paid"
+            po.save(update_fields=["status"])
 
-
-        # (Optional) return updated PO detail or just success
-        return Response({"detail": "Marked paid. Due dates updated."}, status=200)
+        # Return updated PO snapshot (with derived VAT fields)
+        serializer = PurchaseOrderDetailSerializer(po, context=self.get_serializer_context())
+        return Response(serializer.data, status=200)

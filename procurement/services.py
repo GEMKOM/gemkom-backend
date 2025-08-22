@@ -10,6 +10,7 @@ from .models import PurchaseOrder, PurchaseOrderLine, ItemOffer, PaymentTerms, P
 
 Q2 = lambda x: (Decimal(x)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
+
 @transaction.atomic
 def create_pos_from_recommended(pr):
     if pr.purchase_orders.exists():
@@ -17,11 +18,8 @@ def create_pos_from_recommended(pr):
 
     rec_offers = (
         ItemOffer.objects
-        .select_related(
-            'purchase_request_item',
-            'supplier_offer', 'supplier_offer__supplier'
-        )
-        .prefetch_related('purchase_request_item__allocations')  # <-- important
+        .select_related('purchase_request_item', 'supplier_offer', 'supplier_offer__supplier')
+        .prefetch_related('purchase_request_item__allocations')
         .filter(purchase_request_item__purchase_request=pr, is_recommended=True)
     )
     if not rec_offers.exists():
@@ -41,6 +39,7 @@ def create_pos_from_recommended(pr):
             currency=(so.currency or supplier.default_currency or 'TRY'),
             priority=pr.priority,
             status='awaiting_invoice',
+            tax_rate=(so.tax_rate or getattr(supplier, 'default_tax_rate', Decimal('0.00')) or Decimal('0.00')),
         )
 
         for io in item_offers:
@@ -61,9 +60,8 @@ def create_pos_from_recommended(pr):
             )
 
             # ---- COPY ALLOCATIONS FROM PR ITEM ----
-            pr_allocs = list(pri.allocations.all())  # if model exists
+            pr_allocs = list(pri.allocations.all())
             if pr_allocs:
-                # clone each PR allocation, same quantity split; compute amount from unit price
                 to_create = []
                 running = Decimal('0.00')
                 for a in pr_allocs:
@@ -76,25 +74,26 @@ def create_pos_from_recommended(pr):
                         amount=a_amount,
                     ))
                 PurchaseOrderLineAllocation.objects.bulk_create(to_create)
-
-                # fix rounding drift against line.total_price
                 drift = Q2(total - running)
                 if drift != Decimal('0.00'):
                     last = line.allocations.order_by('id').last()
                     last.amount = Q2(last.amount + drift)
                     last.save(update_fields=['amount'])
-
-            elif pri.job_no:  # fallback to single job_no on the PR item
+            elif pri.job_no:
                 PurchaseOrderLineAllocation.objects.create(
                     po_line=line,
                     job_no=pri.job_no,
                     quantity=line.quantity,
                     amount=line.total_price,
                 )
-            # else: leave empty allocations if there’s no job information
 
+        # Now recompute NET + TAX; TAX from immutable po.tax_rate
         po.recompute_totals()
+
+        # Create schedules (no tax fields) and compute due dates
         generate_payment_schedule_for_po(po, terms=so.payment_terms)
+        # Optional: lock tax_rate now (policy)
+        # po.lock_tax_rate()  # if you add such a method/flag
         recompute_payment_schedule_due_dates(po, save=True)
         pos.append(po)
 
@@ -324,3 +323,46 @@ def recompute_payment_schedule_due_dates(po, save=True):
         for s in changed:
             s.save(update_fields=["due_date"])
     return changed
+
+def compute_vat_carry_map(po):
+    """
+    Returns:
+      {
+        'by_id': { schedule_id: {'base_tax': Decimal, 'effective_tax_due': Decimal} },
+        'tax_outstanding': Decimal,  # sum of effective tax for UNPAID schedules
+      }
+    Enforces the algorithm:
+      - base_tax = amount * po.tax_rate
+      - carry propagates through paid-without-tax schedules
+      - VAT parks on first UNPAID schedule
+    This function assumes endpoint prevented “last unpaid, net-only” state.
+    """
+    rate = (po.tax_rate or Decimal('0')) / Decimal('100')
+    schedules = list(po.payment_schedules.all().order_by('sequence'))
+
+    by_id = {}
+    carry = Decimal('0.00')
+    tax_outstanding = Decimal('0.00')
+
+    for s in schedules:
+        base_tax = Q2(Decimal(s.amount) * rate)
+        effective_before = Q2(base_tax + carry)
+
+        if s.is_paid:
+            if s.paid_with_tax:
+                eff_due = Decimal('0.00')
+                carry = Decimal('0.00')
+            else:
+                # net-only → push VAT to next
+                eff_due = Decimal('0.00')
+                carry = effective_before
+        else:
+            # unpaid → VAT parks here; reset carry
+            eff_due = effective_before
+            carry = Decimal('0.00')
+            tax_outstanding += eff_due
+
+        by_id[s.id] = {'base_tax': base_tax, 'effective_tax_due': eff_due}
+
+    # Safety note: if carry > 0 here, endpoint invariants were violated (last unpaid paid net-only).
+    return {'by_id': by_id, 'tax_outstanding': Q2(tax_outstanding)}

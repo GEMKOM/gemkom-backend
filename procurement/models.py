@@ -71,6 +71,7 @@ class PaymentSchedule(models.Model):
     is_paid = models.BooleanField(default=False)
     paid_at = models.DateTimeField(null=True, blank=True)
     paid_by = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, related_name="paid_schedules")
+    paid_with_tax = models.BooleanField(default=False)
 
     class Meta:
         ordering = ["purchase_order", "sequence"]
@@ -96,6 +97,11 @@ class Supplier(models.Model):
     default_payment_terms = models.ForeignKey(
         PaymentTerms, null=True, blank=True,
         on_delete=models.SET_NULL, related_name="suppliers"
+    )
+    default_tax_rate = models.DecimalField(
+        max_digits=5, decimal_places=2,
+        validators=[MinValueValidator(Decimal('0')), MaxValueValidator(Decimal('100'))],
+        default=Decimal('20.00')
     )
     
     # Metadata
@@ -223,6 +229,11 @@ class SupplierOffer(models.Model):
     supplier = models.ForeignKey(Supplier, on_delete=models.CASCADE, related_name='offers')
     currency = models.CharField(max_length=3, choices=Supplier.CURRENCY_CHOICES, default='TRY')
     payment_terms = models.ForeignKey(PaymentTerms, on_delete=models.CASCADE, related_name="supplier_offers", null=True, blank=True)
+    tax_rate = models.DecimalField(
+        max_digits=5, decimal_places=2,
+        validators=[MinValueValidator(Decimal('0')), MaxValueValidator(Decimal('100'))],
+        default=Decimal('20.00')
+    )
     notes = models.TextField(blank=True)
     
     # Timestamps
@@ -268,6 +279,13 @@ class PurchaseOrder(models.Model):
 
     currency = models.CharField(max_length=3, default='TRY')  # for now: supplier.default_currency
     total_amount = models.DecimalField(max_digits=16, decimal_places=2, default=0)
+    tax_rate = models.DecimalField(
+        max_digits=5, decimal_places=2,
+        validators=[MinValueValidator(Decimal('0')), MaxValueValidator(Decimal('100'))],
+        default=Decimal('20.00')
+    )
+    # Persisted tax total for audit/reporting. (Gross = computed on frontend.)
+    total_tax_amount = models.DecimalField(max_digits=16, decimal_places=2, default=Decimal('0.00'))
 
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='awaiting_invoice')
     priority = models.CharField(max_length=20, default='normal')  # mirror PR
@@ -282,10 +300,28 @@ class PurchaseOrder(models.Model):
         return f"PO-{self.id} | {self.supplier.name}"
 
     def recompute_totals(self):
-        total = sum((l.total_price or Decimal('0')) for l in self.lines.all())
-        if total != self.total_amount:
-            self.total_amount = total
-            self.save(update_fields=['total_amount'])
+        """
+        Recompute net total from lines, then recompute tax from immutable po.tax_rate.
+        """
+        from decimal import Decimal, ROUND_HALF_UP
+
+        def Q2(x: Decimal) -> Decimal:
+            return Decimal(x).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+        net = sum((l.total_price or Decimal('0')) for l in self.lines.all())
+        rate = (self.tax_rate or Decimal('0')) / Decimal('100')
+        tax = Q2(Decimal(net) * rate)
+
+        updates = {}
+        if net != self.total_amount:
+            updates['total_amount'] = net
+        if tax != self.total_tax_amount:
+            updates['total_tax_amount'] = tax
+
+        if updates:
+            for k, v in updates.items():
+                setattr(self, k, v)
+            self.save(update_fields=list(updates.keys()))
 
 
 class PurchaseOrderLine(models.Model):
@@ -315,6 +351,7 @@ class PurchaseOrderLine(models.Model):
         a_sum = (sums['a'] or Decimal('0')).quantize(Decimal('0.01'))
         if q_sum != self.quantity or a_sum != self.total_price.quantize(Decimal('0.01')):
             raise ValueError("Allocations must sum to line quantity and total price.")
+        
 class PurchaseOrderLineAllocation(models.Model):
     """
     Splits a PO line across one or more job numbers.
