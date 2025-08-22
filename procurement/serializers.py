@@ -213,6 +213,7 @@ class PurchaseRequestCreateSerializer(serializers.ModelSerializer):
                     'phone': supplier_data.get('phone', ''),
                     'email': supplier_data.get('email', ''),
                     'currency': supplier_data.get('currency', 'TRY'),
+                    'default_tax_rate': supplier_data.get('tax_rate', 20)
                 }
             )
 
@@ -231,7 +232,8 @@ class PurchaseRequestCreateSerializer(serializers.ModelSerializer):
                 supplier=supplier,
                 currency=supplier_data.get('currency', getattr(supplier, 'default_currency', 'TRY')),
                 payment_terms=pt,     # <- capture terms if provided; can be null
-                notes=supplier_data.get('notes', '')
+                notes=supplier_data.get('notes', ''),
+                tax_rate=supplier_data.get('tax_rate', getattr(supplier, 'default_tax_rate', 20))
             )
 
             # Create item-level offers for this supplier
