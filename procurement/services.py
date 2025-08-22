@@ -38,7 +38,7 @@ def create_pos_from_recommended(pr):
             supplier=supplier,
             currency=(so.currency or supplier.default_currency or 'TRY'),
             priority=pr.priority,
-            status='awaiting_invoice',
+            status='awaiting_payment',
             tax_rate=(so.tax_rate or getattr(supplier, 'default_tax_rate', Decimal('0.00')) or Decimal('0.00')),
         )
 

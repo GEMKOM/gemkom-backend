@@ -267,7 +267,6 @@ class ItemOffer(models.Model):
 
 class PurchaseOrder(models.Model):
     STATUS_CHOICES = [
-        ("awaiting_invoice", "Proforma Bekliyor"),  # created after PR approval
         ("awaiting_payment", "Ödeme Bekliyor"),                          # after invoice arrives / operations start
         ("paid", "Ödendi"),
         ("cancelled", "Cancelled"),
@@ -287,7 +286,7 @@ class PurchaseOrder(models.Model):
     # Persisted tax total for audit/reporting. (Gross = computed on frontend.)
     total_tax_amount = models.DecimalField(max_digits=16, decimal_places=2, default=Decimal('0.00'))
 
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='awaiting_invoice')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='awaiting_payment')
     priority = models.CharField(max_length=20, default='normal')  # mirror PR
 
     created_at = models.DateTimeField(auto_now_add=True)

@@ -26,7 +26,7 @@ from rest_framework import status, permissions
 
 from approvals.models import PRApprovalStageInstance, PRApprovalDecision
 from approvals.services import create_pos_from_recommended
-from .services import cancel_purchase_request, recompute_payment_schedule_due_dates
+from .services import cancel_purchase_request, compute_vat_carry_map, recompute_payment_schedule_due_dates
 
 from django.db.models import Count, Prefetch
 from .models import PurchaseOrder
@@ -36,6 +36,7 @@ from .serializers import (
 )
 from rest_framework.exceptions import ValidationError, PermissionDenied
 from django.db import transaction
+from decimal import Decimal
 
 class PaymentTermsViewSet(viewsets.ModelViewSet):
     """
@@ -449,10 +450,10 @@ class PurchaseOrderViewSet(viewsets.ReadOnlyModelViewSet):
         # Recompute dependent due dates
         recompute_payment_schedule_due_dates(po, save=True)
 
-        # Strict policy: PO is 'paid' only if all schedules are paid with tax
-        all_paid_with_tax = not po.payment_schedules.filter(is_paid=False).exists() \
-                            and not po.payment_schedules.filter(is_paid=True, paid_with_tax=False).exists()
-        if all_paid_with_tax and po.status != "paid":
+        all_net_paid = not po.payment_schedules.filter(is_paid=False).exists()
+        tax_outstanding = compute_vat_carry_map(po)['tax_outstanding']
+
+        if all_net_paid and tax_outstanding == Decimal('0.00') and po.status != "paid":
             po.status = "paid"
             po.save(update_fields=["status"])
 
