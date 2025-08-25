@@ -14,7 +14,8 @@ class UserProfile(models.Model):
         ('rollingmill', 'Haddehane'),
         ('qualitycontrol', 'Kalite Kontrol'),
         ('cutting', 'CNC Kesim'),
-        ('warehouse', 'Ambar')
+        ('warehouse', 'Ambar'),
+        ('finance', 'Finans')
         # Add more as needed
     ]
     OCCUPATION_CHOICES = [

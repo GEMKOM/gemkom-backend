@@ -140,6 +140,7 @@ def decide(pr, user, approve: bool, comment: str = ""):
             pr.save(update_fields=["status"])
             created_pos = create_pos_from_recommended(pr)
             _email_requestor_on_final(pr, status_str="Onaylandı", comment="")
+            _email_finance_pos_created(pr, created_pos)
             # TODO: trigger post-approval handoff (e.g., enable pro-forma upload)
 
 
@@ -235,6 +236,10 @@ def _pr_frontend_url(pr):
     # change to your real frontend route
     return f"https://ofis.gemcore.com.tr/procurement/purchase-requests/pending/?talep={pr.request_number}"
 
+def _po_frontend_url(po):
+    # change to your real frontend route
+    return f"https://ofis.gemcore.com.tr/finance/purchase-orders/?order={po.id}"
+
 def _email_approvers_for_current_stage(workflow: PRApprovalWorkflow, reason: str = "pending"):
     """
     Sends an email to all approvers of the CURRENT stage of this workflow.
@@ -276,5 +281,51 @@ def _email_requestor_on_final(pr, status_str: str, comment: str = ""):
         f"Satınalma talebiniz (#{pr.id} – {_pr_title(pr)}) {status_str.lower()}.\n"
         f"{('Not: ' + comment) if comment else ''}\n\n"
         f"Detay: {_pr_frontend_url(pr)}"
+    )
+    send_plain_email(subject, body, to)
+
+def _finance_emails():
+    # All active users whose profile.team == 'finance' and who have an email
+    return list(
+        User.objects.filter(
+            is_active=True,
+            profile__team='finance',
+        )
+        .exclude(email__isnull=True)
+        .exclude(email='')
+        .values_list('email', flat=True)
+    )
+
+def _email_finance_pos_created(pr, pos_list):
+    """
+    Send ONE summary email to finance when one or more POs are created for a PR.
+    """
+    if not pos_list:
+        return
+    to = _finance_emails()
+    if not to:
+        return
+
+    pr_title = getattr(pr, 'title', f'PR-{pr.id}')
+
+    lines = []
+    for po in pos_list:
+        supplier_name = getattr(getattr(po, 'supplier', None), 'name', '—')
+        currency = getattr(po, 'currency', '')
+        total = getattr(po, 'total_amount', '')
+        status = getattr(po, 'status', '')
+        po_url = _po_frontend_url(po)
+        try:
+            # nice to have, if you have choices:
+            status = po.get_status_display()
+        except Exception:
+            pass
+        lines.append(f"- PO #{po.id} | Tedarikçi: {supplier_name} | Tutar: {currency} {total} | Durum: {status} | URL: {po_url}")
+
+    subject = f"[PO Oluşturuldu] PR #{pr.id} – {pr_title}"
+    body = (
+        f"Merhaba Finans,\n\n"
+        f"Satınalma talebi (PR #{pr.id} – {pr_title}) onaylandı ve aşağıdaki satınalma siparişleri oluşturuldu:\n\n"
+        + "\n".join(lines)
     )
     send_plain_email(subject, body, to)
