@@ -139,7 +139,6 @@ class PurchaseRequest(models.Model):
     ]
     
     STATUS_CHOICES = [
-        ('draft', 'Taslak'),
         ('submitted', 'Onay Bekliyor'),
         ('approved', 'Onaylandı'),
         ('rejected', 'Reddedildi'),
@@ -155,7 +154,7 @@ class PurchaseRequest(models.Model):
     # Request Details
     requestor = models.ForeignKey(User, on_delete=models.CASCADE, related_name='purchase_requests')
     priority = models.CharField(max_length=20, choices=PRIORITY_CHOICES, default='normal')
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='draft')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='submitted')
     
     # Financial Information
     total_amount_eur = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
@@ -191,6 +190,29 @@ class PurchaseRequest(models.Model):
             else:
                 self.request_number = f"PR-{timezone.now().year}-0001"
         super().save(*args, **kwargs)
+
+class PurchaseRequestDraft(models.Model):
+    title = models.CharField(max_length=200)
+    description = models.TextField(blank=True)
+    needed_date = models.DateField(default=timezone.now)  # or keep timezone.now if you prefer
+    requestor = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='draft_purchase_requests',
+        db_index=True,
+    )
+    priority = models.CharField(
+        max_length=20,
+        choices=PurchaseRequest.PRIORITY_CHOICES,
+        default='normal'
+    )
+    data = models.JSONField(default=dict)  # default=dict avoids mutable default pitfall
+
+    class Meta:
+        ordering = ['-id']  # default order if you like
+        indexes = [
+            models.Index(fields=['requestor']),
+        ]
 
 class PurchaseRequestItem(models.Model):
     purchase_request = models.ForeignKey(PurchaseRequest, on_delete=models.CASCADE, related_name='request_items')

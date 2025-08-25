@@ -11,11 +11,11 @@ from rest_framework.response import Response
 from rest_framework import status, permissions
 from approvals.services import submit_purchase_request, decide
 from .models import (
-    PaymentSchedule, PaymentTerms, PurchaseOrder, Supplier, Item, PurchaseRequest, 
+    PaymentSchedule, PaymentTerms, PurchaseOrder, PurchaseRequestDraft, Supplier, Item, PurchaseRequest, 
     PurchaseRequestItem, SupplierOffer, ItemOffer
 )
 from .serializers import (
-    PaymentTermsSerializer, SupplierSerializer, ItemSerializer,
+    PaymentTermsSerializer, PurchaseRequestDraftDetailSerializer, PurchaseRequestDraftListSerializer, SupplierSerializer, ItemSerializer,
     PurchaseRequestSerializer, PurchaseRequestCreateSerializer,
     PurchaseRequestItemSerializer, SupplierOfferSerializer, ItemOfferSerializer
 )
@@ -277,7 +277,7 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
         pos = create_pos_from_recommended(pr)
         if not pos:
             return Response({"detail": "No POs created (already created or no recommended items)."}, status=200)
-        data = PurchaseOrderSerializer(pos, many=True).data
+        data = PurchaseOrderListSerializer(pos, many=True).data
         return Response({"detail": f"Created {len(pos)} PO(s).", "purchase_orders": data}, status=201)
     
     @action(detail=True, methods=["POST"], permission_classes=[permissions.IsAuthenticated])
@@ -291,6 +291,42 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
         except Exception as e:
             return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
         return Response({"detail": "Purchase request cancelled."}, status=status.HTTP_200_OK)
+    
+class PurchaseRequestDraftViewSet(viewsets.ModelViewSet):
+    queryset = PurchaseRequestDraft.objects.all()
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, OrderingFilter]
+    filterset_fields = ['id', 'requestor', 'title']
+    ordering_fields = ['id', 'requestor', 'title', 'needed_date', 'priority']
+    ordering = ['-id']
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        user = self.request.user
+        return qs if user.is_superuser else qs.filter(requestor=user)
+
+    def get_serializer_class(self):
+        # list -> brief (no `data`), everything else -> detail (with `data`)
+        if self.action == 'list':
+            return PurchaseRequestDraftListSerializer
+        return PurchaseRequestDraftDetailSerializer
+
+    def perform_create(self, serializer):
+        serializer.save(requestor=self.request.user)
+
+    def perform_update(self, serializer):
+        # prevent changing ownership on update
+        serializer.save(requestor=self.request.user)
+
+    # If you keep manual query param filters, fix the field name:
+    def list(self, request, *args, **kwargs):
+        # optional: keep DjangoFilterBackend only and delete this override
+        title = request.query_params.get('title')
+        self.queryset = self.get_queryset()
+        if title:
+            self.queryset = self.queryset.filter(title__icontains=title)  # <- fixed from name__icontains
+        return super().list(request, *args, **kwargs)
+
 
 class PurchaseRequestItemViewSet(viewsets.ModelViewSet):
     queryset = PurchaseRequestItem.objects.all()

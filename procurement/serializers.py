@@ -1,10 +1,10 @@
 from procurement.services import compute_vat_carry_map
 from rest_framework import serializers
-from django.contrib.auth.models import User
+from django.utils import timezone
 
 from approvals.serializers import WorkflowSerializer
 from .models import (
-    PaymentSchedule, PaymentTerms, PurchaseOrder, PurchaseOrderLine, PurchaseOrderLineAllocation, PurchaseRequestItemAllocation, Supplier, Item, PurchaseRequest, 
+    PaymentSchedule, PaymentTerms, PurchaseOrder, PurchaseOrderLine, PurchaseOrderLineAllocation, PurchaseRequestDraft, PurchaseRequestItemAllocation, Supplier, Item, PurchaseRequest, 
     PurchaseRequestItem, SupplierOffer, ItemOffer
 )
 from decimal import Decimal
@@ -150,11 +150,15 @@ class PurchaseRequestCreateSerializer(serializers.ModelSerializer):
         suppliers_data = validated_data.pop('suppliers')
         offers_data = validated_data.pop('offers')
         recommendations_data = validated_data.pop('recommendations')
+        validated_data.pop('status')
+        validated_data.pop('submitted_at')
 
         # Create PR (needed_date should have a model default to "today")
         pr = PurchaseRequest.objects.create(
             **validated_data,
-            requestor=self.context['request'].user
+            requestor=self.context['request'].user,
+            status = "submitted",
+            submitted_at = timezone.now()
         )
 
         # Build items
@@ -255,6 +259,18 @@ class PurchaseRequestCreateSerializer(serializers.ModelSerializer):
                         )
 
         return pr
+    
+class PurchaseRequestDraftListSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PurchaseRequestDraft
+        fields = ['id', 'title', 'description', 'priority', 'needed_date', 'requestor']
+        read_only_fields = ['requestor']
+
+class PurchaseRequestDraftDetailSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PurchaseRequestDraft
+        fields = ['id', 'title', 'description', 'priority', 'needed_date', 'requestor', 'data']
+        read_only_fields = ['requestor']
 
 class PurchaseOrderListSerializer(serializers.ModelSerializer):
     supplier_name = serializers.CharField(source='supplier.name', read_only=True)

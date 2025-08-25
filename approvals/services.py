@@ -37,9 +37,6 @@ def user_can_approve_stage(user, pr, stage: PRApprovalStageInstance):
 
 @transaction.atomic
 def submit_purchase_request(pr, by_user):
-    if pr.status != "draft":
-        raise ValueError("Only draft requests can be submitted.")
-
     policy = pick_policy_for_request(pr)
     if not policy or not policy.stages.exists():
         raise ValueError("No applicable approval policy/stages configured.")
@@ -80,10 +77,6 @@ def submit_purchase_request(pr, by_user):
             approver_user_ids=u_ids,
             approver_group_ids=g_ids,
         )
-
-    pr.status = "submitted"
-    pr.submitted_at = timezone.now()
-    pr.save(update_fields=["status", "submitted_at"])
 
     _auto_bypass_self_approver(wf, pr.requestor)  # same as before
 

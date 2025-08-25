@@ -121,7 +121,7 @@ def cancel_purchase_request(pr, by_user, reason:str=''):
     is_admin = getattr(by_user, 'is_staff', False) or by_user.is_superuser
     is_owner = (pr.requestor_id == by_user.id)
 
-    if pr.status in ('draft', 'submitted'):
+    if pr.status in ('submitted'):
         if not (is_owner or is_admin):
             raise PermissionDenied("You can’t cancel this request.")
     elif pr.status == 'approved':
