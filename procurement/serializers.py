@@ -150,8 +150,6 @@ class PurchaseRequestCreateSerializer(serializers.ModelSerializer):
         suppliers_data = validated_data.pop('suppliers')
         offers_data = validated_data.pop('offers')
         recommendations_data = validated_data.pop('recommendations')
-        validated_data.pop('status')
-        validated_data.pop('submitted_at')
 
         # Create PR (needed_date should have a model default to "today")
         pr = PurchaseRequest.objects.create(
