@@ -41,6 +41,7 @@ class PRApprovalWorkflow(models.Model):
     current_stage_order = models.PositiveIntegerField(default=1)
     is_complete = models.BooleanField(default=False)
     is_rejected = models.BooleanField(default=False)
+    is_cancelled = models.BooleanField(default=False)
     snapshot = models.JSONField(default=dict, blank=True)  # stages snapshot for audit
 
     def __str__(self): return f"WF for {self.purchase_request_id} ({self.policy.name})"
@@ -56,7 +57,6 @@ class PRApprovalStageInstance(models.Model):
     approved_count = models.PositiveIntegerField(default=0)
     is_complete = models.BooleanField(default=False)
     is_rejected = models.BooleanField(default=False)
-
     class Meta:
         unique_together = [("workflow", "order")]
         ordering = ["order"]

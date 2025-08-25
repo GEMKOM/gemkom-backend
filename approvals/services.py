@@ -9,6 +9,10 @@ from .models import (
     ApprovalPolicy, PRApprovalWorkflow, PRApprovalStageInstance, PRApprovalDecision
 )
 
+from django.conf import settings
+from django.urls import reverse  # if you ever serve a backend link
+from core.emails import send_plain_email
+
 
 SYSTEM_USERNAME = "system"  # choose any reserved username
 
@@ -79,6 +83,7 @@ def submit_purchase_request(pr, by_user):
         )
 
     _auto_bypass_self_approver(wf, pr.requestor)  # same as before
+    _email_approvers_for_current_stage(wf, reason="Talep gönderildi")
 
     return wf
 
@@ -126,6 +131,7 @@ def decide(pr, user, approve: bool, comment: str = ""):
         if next_stage:
             wf.current_stage_order = next_stage.order
             wf.save(update_fields=["current_stage_order"])
+            _email_approvers_for_current_stage(wf, reason=f"Önceki aşama onaylandı (#{stage.order})")
             # TODO: notify next_stage approvers
         else:
             wf.is_complete = True
@@ -133,6 +139,7 @@ def decide(pr, user, approve: bool, comment: str = ""):
             pr.status = "approved"
             pr.save(update_fields=["status"])
             created_pos = create_pos_from_recommended(pr)
+            _email_requestor_on_final(pr, status_str="Onaylandı", comment="")
             # TODO: trigger post-approval handoff (e.g., enable pro-forma upload)
 
 
@@ -206,5 +213,68 @@ def _auto_bypass_self_approver(workflow: PRApprovalWorkflow, requestor: User) ->
         pr = workflow.purchase_request
         pr.status = "approved"
         pr.save(update_fields=["status"])
+        _email_requestor_on_final(pr, status_str="Onaylandı", comment="(Otomatik geçiş)")
     elif changed_wf:
         workflow.save(update_fields=["current_stage_order"])
+
+
+def _users_from_ids(user_ids):
+    if not user_ids:
+        return User.objects.none()
+    return User.objects.filter(id__in=user_ids, is_active=True)
+
+def _approver_emails_for_stage(stage: PRApprovalStageInstance):
+    qs = _users_from_ids(stage.approver_user_ids or [])
+    return list(qs.exclude(email__isnull=True).exclude(email="").values_list("email", flat=True))
+
+def _pr_title(pr):
+    # adjust if you have a title field; fall back gracefully
+    return getattr(pr, "title", f"PR-{pr.id}")
+
+def _pr_frontend_url(pr):
+    # change to your real frontend route
+    return f"https://ofis.gemcore.com.tr/procurement/purchase-requests/pending/?talep={pr.request_number}"
+
+def _email_approvers_for_current_stage(workflow: PRApprovalWorkflow, reason: str = "pending"):
+    """
+    Sends an email to all approvers of the CURRENT stage of this workflow.
+    No-op if workflow finished/rejected or stage has no approvers.
+    """
+    if workflow.is_complete or workflow.is_rejected:
+        return
+
+    stage = workflow.stage_instances.filter(order=workflow.current_stage_order).first()
+    if not stage or stage.is_complete or stage.is_rejected:
+        return
+
+    pr = workflow.purchase_request
+    to_list = _approver_emails_for_stage(stage)
+    if not to_list:
+        return
+
+    subject = f"[Onay Gerekli] Satınalma Talebi #{pr.id} – {_pr_title(pr)}"
+    body = (
+        f"Merhaba,\n\n"
+        f"Satınalma talebi (#{pr.id} – {_pr_title(pr)}) için onayınız bekleniyor.\n"
+        f"Aşama: {stage.name} (Gerekli onay sayısı: {stage.required_approvals})\n"
+        f"Öncelik: {getattr(pr, 'priority', '—')}\n"
+        f"Talep Eden: {getattr(pr.requestor, 'get_full_name', lambda: pr.requestor.username)() if getattr(pr, 'requestor', None) else '—'}\n\n"
+        f"İncelemek için: {_pr_frontend_url(pr)}\n\n"
+        f"Not: Bu bildirim nedeni: {reason}."
+    )
+    send_plain_email(subject, body, to_list)
+
+def _email_requestor_on_final(pr, status_str: str, comment: str = ""):
+    if not getattr(pr, "requestor", None):
+        return
+    to = [pr.requestor.email] if getattr(pr.requestor, "email", "") else []
+    if not to:
+        return
+    subject = f"[Satınalma Talebi {status_str}] PR #{pr.id} – {_pr_title(pr)}"
+    body = (
+        f"Merhaba,\n\n"
+        f"Satınalma talebiniz (#{pr.id} – {_pr_title(pr)}) {status_str.lower()}.\n"
+        f"{('Not: ' + comment) if comment else ''}\n\n"
+        f"Detay: {_pr_frontend_url(pr)}"
+    )
+    send_plain_email(subject, body, to)

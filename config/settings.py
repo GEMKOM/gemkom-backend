@@ -32,6 +32,18 @@ CURRENCY_RATE_API_URL = "https://api.freecurrencyapi.com/v1/latest"
 CURRENCY_FIXED_BASE = "TRY"  # keep it simple
 FREECURRENCYAPI_KEY = os.getenv("FREECURRENCYAPI_KEY")
 
+DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", "noreply@yourcompany.com")
+SERVER_EMAIL = DEFAULT_FROM_EMAIL  # for error mails
+
+EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
+EMAIL_HOST = os.environ.get("EMAIL_HOST", "smtp.office365.com")
+EMAIL_PORT = int(os.environ.get("EMAIL_PORT", "587"))
+EMAIL_USE_TLS = os.environ.get("EMAIL_USE_TLS", "true").lower() == "true"
+
+# Authenticate with YOUR licensed user (who has "Gönder Olarak / Send As" on noreply@...)
+EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER")        # e.g. onat@yourcompany.com
+EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD")  # that user's password (or app password)
+
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
