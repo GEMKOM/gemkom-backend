@@ -18,7 +18,10 @@ SYSTEM_USERNAME = "system"  # choose any reserved username
 
 
 def pick_policy_for_request(pr):
-    qs = ApprovalPolicy.objects.filter(is_active=True)
+    qs = ApprovalPolicy.objects.filter(
+        is_active=True,
+        is_rolling_mill=pr.is_rolling_mill
+    )
     if pr.total_amount_eur is not None:
         qs = qs.filter(
             Q(min_amount_eur__isnull=True) | Q(min_amount_eur__lte=pr.total_amount_eur),
@@ -26,6 +29,7 @@ def pick_policy_for_request(pr):
         )
     if pr.priority:
         qs = qs.filter(Q(priority_in=[]) | Q(priority_in__contains=[pr.priority]))
+
     return qs.order_by("selection_priority").first()
 
 def _resolve_group_user_ids(group_ids):

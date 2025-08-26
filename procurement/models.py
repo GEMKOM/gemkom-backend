@@ -173,6 +173,7 @@ class PurchaseRequest(models.Model):
     
     # Metadata
     is_active = models.BooleanField(default=True)
+    is_rolling_mill = models.BooleanField(default=False)
     
     class Meta:
         ordering = ['-created_at']

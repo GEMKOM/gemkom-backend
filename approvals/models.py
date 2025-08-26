@@ -12,6 +12,7 @@ class ApprovalPolicy(models.Model):
     # optional matching rules (extend later if needed)
     min_amount_eur = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
     max_amount_eur = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
+    is_rolling_mill = models.BooleanField(default=False)
     priority_in = models.JSONField(default=list, blank=True)  # e.g. ["normal","urgent"]
 
     selection_priority = models.PositiveIntegerField(default=100)  # lower wins

@@ -8,7 +8,7 @@ class ApprovalStageInline(admin.TabularInline):
 
 @admin.register(ApprovalPolicy)
 class ApprovalPolicyAdmin(admin.ModelAdmin):
-    list_display = ["name", "is_active", "min_amount_eur", "max_amount_eur", "selection_priority"]
+    list_display = ["name", "is_active", "min_amount_eur", "max_amount_eur", "selection_priority", "is_rolling_mill"]
     list_filter = ["is_active"]
     inlines = [ApprovalStageInline]
 
