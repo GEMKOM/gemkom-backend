@@ -126,7 +126,7 @@ class PurchaseRequestSerializer(serializers.ModelSerializer):
             'requestor', 'requestor_username', 'priority', 'status', 'status_label',
             'total_amount_eur', 'currency_rates_snapshot',
             'created_at', 'updated_at', 'submitted_at',
-            'request_items', 'offers', 'approval', 'cancelled_at', 'cancelled_by', 'cancellation_reason'
+            'request_items', 'offers', 'approval', 'cancelled_at', 'cancelled_by', 'cancellation_reason', 'needed_date'
         ]
         read_only_fields = ['request_number', 'created_at', 'updated_at', 'submitted_at', 'cancelled_at', 'cancelled_by']
 
@@ -141,7 +141,7 @@ class PurchaseRequestCreateSerializer(serializers.ModelSerializer):
         model = PurchaseRequest
         fields = [
             'id', 'title', 'description', 'priority',
-            'items', 'suppliers', 'offers', 'recommendations', 'total_amount_eur'
+            'items', 'suppliers', 'offers', 'recommendations', 'total_amount_eur', 'needed_date'
         ]
 
     def create(self, validated_data):
