@@ -32,6 +32,10 @@ def create_pos_from_recommended(pr):
     pos = []
     for so, item_offers in grouped.items():
         supplier = so.supplier
+        # ✅ Skip DBS suppliers entirely (no PO, no schedules, nothing)
+        if getattr(supplier, 'has_dbs', False):
+            continue
+
         po = PurchaseOrder.objects.create(
             pr=pr,
             supplier_offer=so,

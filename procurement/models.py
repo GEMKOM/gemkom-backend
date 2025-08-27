@@ -93,6 +93,8 @@ class Supplier(models.Model):
     contact_person = models.CharField(max_length=100, blank=True)
     phone = models.CharField(max_length=20, blank=True)
     email = models.EmailField(blank=True)
+    address = models.TextField(blank=True)
+    bank_info = models.TextField(blank=True)
     default_currency = models.CharField(max_length=3, choices=CURRENCY_CHOICES, default='TRY')  # Fixed max_length
     default_payment_terms = models.ForeignKey(
         PaymentTerms, null=True, blank=True,
@@ -103,6 +105,20 @@ class Supplier(models.Model):
         validators=[MinValueValidator(Decimal('0')), MaxValueValidator(Decimal('100'))],
         default=Decimal('20.00')
     )
+    
+    # --- DBS Section ---
+    has_dbs = models.BooleanField(default=False)
+    dbs_bank = models.CharField(max_length=100, blank=True)          # Örn: İşbank, Garanti, Yapı Kredi...
+    dbs_limit = models.DecimalField(
+        max_digits=16, decimal_places=2, null=True, blank=True,
+        validators=[MinValueValidator(0)]
+    )
+    dbs_currency = models.CharField(
+        max_length=3, choices=CURRENCY_CHOICES, default='TRY'
+    )
+    dbs_agreement_no = models.CharField(max_length=100, blank=True)  # (opsiyonel) sözleşme no
+    dbs_expiry_date = models.DateField(null=True, blank=True)        # (opsiyonel) limit bitiş tarihi
+    dbs_details = models.TextField(blank=True)
     
     # Metadata
     is_active = models.BooleanField(default=True)
