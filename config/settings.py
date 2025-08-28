@@ -32,7 +32,7 @@ CURRENCY_RATE_API_URL = "https://api.freecurrencyapi.com/v1/latest"
 CURRENCY_FIXED_BASE = "TRY"  # keep it simple
 FREECURRENCYAPI_KEY = os.getenv("FREECURRENCYAPI_KEY")
 
-DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", "noreply@yourcompany.com")
+DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", "gemcore@gemkom.com.tr")
 SERVER_EMAIL = DEFAULT_FROM_EMAIL  # for error mails
 
 EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"

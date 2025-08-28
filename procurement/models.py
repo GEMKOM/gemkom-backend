@@ -89,6 +89,7 @@ class Supplier(models.Model):
     ]
     
     # Basic Information
+    code = models.CharField(max_length=255, blank=True)
     name = models.CharField(max_length=200)
     contact_person = models.CharField(max_length=100, blank=True)
     phone = models.CharField(max_length=20, blank=True)
