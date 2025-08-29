@@ -16,12 +16,21 @@ from rest_framework.viewsets import ModelViewSet
 from django.db.models import Count
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from rest_framework.filters import OrderingFilter
 
 class UserViewSet(ModelViewSet):
     queryset = User.objects.all().select_related('profile').order_by('username')
     serializer_class = UserListSerializer
-    filter_backends = [DjangoFilterBackend]
+    filter_backends = [DjangoFilterBackend, OrderingFilter]
     filterset_class = UserFilter
+
+    ordering_fields = [
+        'username', 'first_name', 'last_name', 'email',
+        'profile__team', 'profile__work_location', 'profile__occupation',
+        'profile__is_admin', 'profile__is_lead', 'profile__must_reset_password',
+    ]
+    # default ordering if ?ordering=… is not provided
+    ordering = ['username']
 
     def get_queryset(self):
         user = self.request.user
