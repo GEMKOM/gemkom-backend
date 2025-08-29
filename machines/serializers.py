@@ -16,7 +16,7 @@ class MachineGetSerializer(serializers.ModelSerializer):
     class Meta:
         model = Machine
         fields = [
-            'id', 'name', 'machine_type', 'used_in', 'machine_type_label',
+            'id', 'name', 'machine_type', 'used_in', 'used_in_label', 'machine_type_label',
             'is_active', 'has_active_timer', 'active_timer_ids',
             'is_under_maintenance', 'jira_id', 'properties'
         ]
@@ -50,7 +50,7 @@ class MachineListSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Machine
-        fields = ['id', 'name', 'machine_type', 'used_in', 'machine_type_label', 'is_active', 'has_active_timer', 'is_under_maintenance', 'jira_id', 'properties']
+        fields = ['id', 'name', 'machine_type', 'used_in', 'used_in_label', 'machine_type_label', 'is_active', 'has_active_timer', 'is_under_maintenance', 'jira_id', 'properties']
 
     def get_machine_type_label(self, obj):
         return obj.get_machine_type_display()
