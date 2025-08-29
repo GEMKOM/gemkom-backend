@@ -13,6 +13,10 @@ from .serializers import AdminUserUpdateSerializer, CurrentUserUpdateSerializer,
 from rest_framework.permissions import IsAuthenticated, IsAdminUser
 from rest_framework.viewsets import ModelViewSet
 
+from django.db.models import Count
+from rest_framework.decorators import action
+from rest_framework.response import Response
+
 class UserViewSet(ModelViewSet):
     queryset = User.objects.all().select_related('profile').order_by('username')
     serializer_class = UserListSerializer
@@ -55,6 +59,25 @@ class UserViewSet(ModelViewSet):
                 return UserListSerializer
             return PublicUserSerializer
         return UserListSerializer
+    
+    @action(detail=False, methods=['get'], url_path='summary')
+    def summary(self, request):
+        qs = (UserProfile.objects
+              .values('work_location')
+              .annotate(count=Count('id'))
+              .order_by('work_location'))
+
+        # map code -> label
+        loc_field = UserProfile._meta.get_field('work_location')
+        loc_map = dict(loc_field.choices)
+
+        data = [
+            {'work_location': row['work_location'],
+             'work_location_label': loc_map.get(row['work_location']),
+             'count': row['count']}
+            for row in qs
+        ]
+        return Response(data)
 
 
 class CurrentUserView(APIView):
