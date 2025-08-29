@@ -8,6 +8,7 @@ class MachineSerializer(serializers.ModelSerializer):
 
 class MachineGetSerializer(serializers.ModelSerializer):
     machine_type_label = serializers.SerializerMethodField()
+    used_in_label = serializers.SerializerMethodField()
     is_under_maintenance = serializers.SerializerMethodField()
     has_active_timer = serializers.SerializerMethodField()
     active_timer_ids = serializers.SerializerMethodField()
@@ -22,6 +23,9 @@ class MachineGetSerializer(serializers.ModelSerializer):
 
     def get_machine_type_label(self, obj):
         return obj.get_machine_type_display()
+    
+    def get_used_in_label(self, obj):
+        return obj.get_used_in_display()
     
     def get_is_under_maintenance(self, obj):
         return MachineFault.objects.filter(
@@ -40,6 +44,7 @@ class MachineGetSerializer(serializers.ModelSerializer):
 
 class MachineListSerializer(serializers.ModelSerializer):
     machine_type_label = serializers.SerializerMethodField()
+    used_in_label = serializers.SerializerMethodField()
     is_under_maintenance = serializers.SerializerMethodField()
     has_active_timer = serializers.SerializerMethodField()
 
@@ -49,6 +54,9 @@ class MachineListSerializer(serializers.ModelSerializer):
 
     def get_machine_type_label(self, obj):
         return obj.get_machine_type_display()
+    
+    def get_used_in_label(self, obj):
+        return obj.get_used_in_display()
     
     def get_is_under_maintenance(self, obj):
         return MachineFault.objects.filter(

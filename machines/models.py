@@ -15,10 +15,26 @@ class Machine(models.Model):
         ('ACT', 'AJAN Sac Kesim Tezgahı'),
         ('ECT', 'ESAB Sac Kesim Tezgahı'),
     ]
+    USED_IN_CHOICES = [
+        ('machining', 'Talaşlı İmalat'),
+        ('design', 'Dizayn'),
+        ('logistics', 'Lojistik'),
+        ('procurement', 'Satın Alma'),
+        ('welding', 'Kaynaklı İmalat'),
+        ('planning', 'Planlama'),
+        ('manufacturing', 'İmalat'),
+        ('maintenance', "Bakım"),
+        ('rollingmill', 'Haddehane'),
+        ('qualitycontrol', 'Kalite Kontrol'),
+        ('cutting', 'CNC Kesim'),
+        ('warehouse', 'Ambar'),
+        ('finance', 'Finans')
+        # Add more as needed
+    ]
 
     name = models.CharField(max_length=255)
     machine_type = models.CharField(max_length=10, choices=MACHINE_TYPES)
-    used_in = models.CharField(max_length=50)
+    used_in = models.CharField(max_length=50, choices=USED_IN_CHOICES)
     jira_id = models.IntegerField(null=True, blank=True)
     is_active = models.BooleanField(null=True, blank=True, default=True)
     properties = models.JSONField(default=dict)  # Store dynamic properties here
