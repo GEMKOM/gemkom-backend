@@ -20,12 +20,13 @@ from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter, OrderingFilter
 
 class MachineListCreateView(generics.ListCreateAPIView):
-    queryset = Machine.objects.all().order_by("-machine_type")
+    queryset = Machine.objects.all().order_by('id')
     serializer_class = MachineListSerializer
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     filterset_class = MachineFilter
     search_fields = ["name"]   # substring search on name
-    ordering_fields = ["name", "machine_type"]  # allow ordering by these
+    ordering_fields = ["id", "name", "machine_type"]  # allow ordering by these
+    ordering = ['id']
 
     def get_permissions(self):
         if self.request.method == 'POST':
