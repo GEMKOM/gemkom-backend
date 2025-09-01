@@ -14,6 +14,9 @@ class Machine(models.Model):
         ('BT', 'Köprü Tipi İşleme Merkezi'),
         ('ACT', 'AJAN Sac Kesim Tezgahı'),
         ('ECT', 'ESAB Sac Kesim Tezgahı'),
+        ('CTEDO', 'Dolap Tipi Elektrot Kurutma Fırını'),
+        ('OC', 'Tavan Vinci'),
+        ('WD', 'Kaynak Makinesi')
     ]
     USED_IN_CHOICES = [
         ('machining', 'Talaşlı İmalat'),
