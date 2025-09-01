@@ -75,6 +75,14 @@ class MachineTypeChoicesView(APIView):
             {"value": k, "label": v} for k, v in Machine.MACHINE_TYPES
         ])
     
+class UsedInChoicesView(APIView):
+    permission_classes = [IsAuthenticated, IsAdmin]  # Optional
+
+    def get(self, request):
+        return Response([
+            {"value": k, "label": v} for k, v in Machine.USED_IN_CHOICES
+        ])
+    
 class MachineFaultListCreateView(APIView):
     permission_classes = [IsAuthenticated]
 

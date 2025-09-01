@@ -1,13 +1,14 @@
     
 from django.urls import path
 
-from machines.views import MachineDetailView, MachineFaultDetailView, MachineFaultListCreateView, MachineListCreateView, MachineTypeChoicesView
+from machines.views import MachineDetailView, MachineFaultDetailView, MachineFaultListCreateView, MachineListCreateView, MachineTypeChoicesView, UsedInChoicesView
 
 
 urlpatterns = [
     path("", MachineListCreateView.as_view(), name="machine-list"),
     path('<int:pk>/', MachineDetailView.as_view(), name='machine-detail'),
     path('types/', MachineTypeChoicesView.as_view(), name='machine-types'),
+    path('used_in/', UsedInChoicesView.as_view(), name='used-in-choices'),
     path('faults/', MachineFaultListCreateView.as_view(), name='machinefault-list-create'),
     path('faults/<int:pk>/', MachineFaultDetailView.as_view(), name='machinefault-detail'),
 ]
