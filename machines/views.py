@@ -1,4 +1,5 @@
 from config.settings import TELEGRAM_MAINTENANCE_BOT_TOKEN
+from machines.filters import MachineFilter
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
@@ -14,30 +15,22 @@ from django.db.models import Q
 
 # Create your views here.
 
-class MachineListCreateView(APIView):
+from rest_framework import generics, permissions
+from django_filters.rest_framework import DjangoFilterBackend
+from rest_framework.filters import SearchFilter, OrderingFilter
+
+class MachineListCreateView(generics.ListCreateAPIView):
+    queryset = Machine.objects.all().order_by("-machine_type")
+    serializer_class = MachineListSerializer
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    filterset_class = MachineFilter
+    search_fields = ["name"]   # substring search on name
+    ordering_fields = ["name", "machine_type"]  # allow ordering by these
+
     def get_permissions(self):
         if self.request.method == 'POST':
-            return [IsAuthenticated(), IsAdmin()]
-        return [IsAuthenticated()]
-
-    def get(self, request):
-        query = Q()
-        used_in = request.GET.get("used_in")
-        is_active = request.GET.get("is_active")
-        if used_in:
-            query &= Q(used_in=used_in)
-        if is_active:
-            query &= Q(is_active=is_active)
-        machines = Machine.objects.filter(query).order_by("-machine_type")
-        serializer = MachineListSerializer(machines, many=True)
-        return Response(serializer.data)
-
-    def post(self, request):
-        serializer = MachineSerializer(data=request.data)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data, status=200)
-        return Response(serializer.errors, status=400)
+            return [permissions.IsAuthenticated(), IsAdmin()]
+        return [permissions.IsAuthenticated()]
     
 class MachineDetailView(APIView):
     def get_permissions(self):
