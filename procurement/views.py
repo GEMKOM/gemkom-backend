@@ -251,50 +251,50 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
         return Response(serializer.data)
 
         
-        @action(detail=False, methods=['get'], permission_classes=[permissions.IsAuthenticated])
-        def approved_by_me(self, request):
-            """
-            Purchase requests where I have approved (optionally filter by date range).
-            Query params:
-            - since: ISO datetime (include decisions made at/after this)
-            - until: ISO datetime (include decisions made before this)
-            - decision: 'approve' or 'reject' (default: approve)
-            """
-            user = request.user
-            decision_type = request.query_params.get("decision", "approve")
-            since = request.query_params.get("since")
-            until = request.query_params.get("until")
+    @action(detail=False, methods=['get'], permission_classes=[permissions.IsAuthenticated])
+    def approved_by_me(self, request):
+        """
+        Purchase requests where I have approved (optionally filter by date range).
+        Query params:
+        - since: ISO datetime (include decisions made at/after this)
+        - until: ISO datetime (include decisions made before this)
+        - decision: 'approve' or 'reject' (default: approve)
+        """
+        user = request.user
+        decision_type = request.query_params.get("decision", "approve")
+        since = request.query_params.get("since")
+        until = request.query_params.get("until")
 
-            ct_pr = ContentType.objects.get_for_model(self.get_queryset().model)
+        ct_pr = ContentType.objects.get_for_model(self.get_queryset().model)
 
-            # Base subquery: my decisions on any stage in this PR's workflow
-            my_decisions = ApprovalDecision.objects.filter(
-                stage_instance__workflow__content_type=ct_pr,
-                stage_instance__workflow__object_id=OuterRef('pk'),
-                approver=user,
-            )
-            if decision_type in ("approve", "reject"):
-                my_decisions = my_decisions.filter(decision=decision_type)
-            if since:
-                my_decisions = my_decisions.filter(decided_at__gte=since)
-            if until:
-                my_decisions = my_decisions.filter(decided_at__lt=until)
+        # Base subquery: my decisions on any stage in this PR's workflow
+        my_decisions = ApprovalDecision.objects.filter(
+            stage_instance__workflow__content_type=ct_pr,
+            stage_instance__workflow__object_id=OuterRef('pk'),
+            approver=user,
+        )
+        if decision_type in ("approve", "reject"):
+            my_decisions = my_decisions.filter(decision=decision_type)
+        if since:
+            my_decisions = my_decisions.filter(decided_at__gte=since)
+        if until:
+            my_decisions = my_decisions.filter(decided_at__lt=until)
 
-            qs = (
-                self.get_queryset()
-                .annotate(i_decided=Exists(my_decisions))
-                .filter(i_decided=True)
-                .order_by(*self.ordering)
-                .distinct()
-            )
+        qs = (
+            self.get_queryset()
+            .annotate(i_decided=Exists(my_decisions))
+            .filter(i_decided=True)
+            .order_by(*self.ordering)
+            .distinct()
+        )
 
-            page = self.paginate_queryset(qs)
-            if page is not None:
-                ser = self.get_serializer(page, many=True)
-                return self.get_paginated_response(ser.data)
+        page = self.paginate_queryset(qs)
+        if page is not None:
+            ser = self.get_serializer(page, many=True)
+            return self.get_paginated_response(ser.data)
 
-            ser = self.get_serializer(qs, many=True)
-            return Response(ser.data)
+        ser = self.get_serializer(qs, many=True)
+        return Response(ser.data)
 
 
     @action(detail=True, methods=["POST"], permission_classes=[permissions.IsAuthenticated])
