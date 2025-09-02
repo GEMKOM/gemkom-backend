@@ -290,7 +290,7 @@ class PurchaseOrderListSerializer(serializers.ModelSerializer):
             'id', 'pr', 'purchase_request_number', 'supplier', 'supplier_offer', 'supplier_name',
             'currency',
             'total_amount', 'tax_rate', 'total_tax_amount',  # <— persisted fields
-            'status', 'priority', 'created_at', 'ordered_at',
+            'status', 'priority', 'created_at',
             'line_count', 'status_label',
             'payment_schedules',  # nested with derived fields
             'tax_outstanding', 'next_unpaid_due',    # derived (sum of unpaid effective taxes)
