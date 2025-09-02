@@ -275,6 +275,8 @@ class PurchaseOrderListSerializer(serializers.ModelSerializer):
     supplier_name = serializers.CharField(source='supplier.name', read_only=True)
     line_count = serializers.IntegerField(read_only=True)
     status_label = serializers.SerializerMethodField()
+    purchase_request_number = serializers.CharField(source='pr.request_number', read_only=True)
+    next_unpaid_due = serializers.DateField(read_only=True)
 
     # nested schedules (read-only) with VAT map
     payment_schedules = serializers.SerializerMethodField()
@@ -285,13 +287,13 @@ class PurchaseOrderListSerializer(serializers.ModelSerializer):
     class Meta:
         model = PurchaseOrder
         fields = [
-            'id', 'pr', 'supplier', 'supplier_offer', 'supplier_name',
+            'id', 'pr', 'purchase_request_number', 'supplier', 'supplier_offer', 'supplier_name',
             'currency',
             'total_amount', 'tax_rate', 'total_tax_amount',  # <— persisted fields
             'status', 'priority', 'created_at', 'ordered_at',
             'line_count', 'status_label',
             'payment_schedules',  # nested with derived fields
-            'tax_outstanding',    # derived (sum of unpaid effective taxes)
+            'tax_outstanding', 'next_unpaid_due',    # derived (sum of unpaid effective taxes)
         ]
 
     def get_status_label(self, obj):

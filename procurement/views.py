@@ -38,6 +38,11 @@ from rest_framework.exceptions import ValidationError, PermissionDenied
 from django.db import transaction
 from decimal import Decimal
 
+from django.db.models import Q, OuterRef, Exists, Value, IntegerField
+from django.db.models import Min, F, Case, When
+from django.db.models.functions import Coalesce, TruncDate
+from django.db.models import Prefetch
+
 class PaymentTermsViewSet(viewsets.ModelViewSet):
     """
     - LIST/RETRIEVE: all active=True terms.
@@ -412,32 +417,57 @@ class PurchaseOrderViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend, OrderingFilter]
     filterset_fields = ['status', 'supplier', 'pr']
-    ordering_fields = ['id', 'created_at', 'total_amount']
-    ordering = ['-id']
+    # allow API consumer to override, but we’ll default to next_unpaid_due
+    ordering_fields = ['id', 'created_at', 'total_amount', 'next_unpaid_due']
+    ordering = ['next_unpaid_due', 'id']  # default: earliest first, ties by id
+
+    def _with_payment_annos(self, qs):
+        unpaid_exists = PaymentSchedule.objects.filter(
+            purchase_order=OuterRef('pk'),
+            is_paid=False
+        )
+        # next unpaid due date; fallback to ordered_at/created_at (as DATE)
+        next_unpaid_due = Coalesce(
+            Min('payment_schedules__due_date', filter=Q(payment_schedules__is_paid=False)),
+            TruncDate('ordered_at'),
+            TruncDate('created_at'),
+        )
+        return qs.annotate(
+            has_unpaid=Exists(unpaid_exists),
+            next_unpaid_due=next_unpaid_due,
+        )
 
     def get_queryset(self):
         qs = (
             PurchaseOrder.objects
-            .select_related('supplier', 'pr', 'supplier_offer')  # forward FKs only
+            .select_related('supplier', 'pr', 'supplier_offer')
         )
 
-        # If you want the schedules ordered by sequence in both list & detail:
         schedules_qs = PaymentSchedule.objects.order_by('sequence')
 
         if self.action == 'list':
-            # list: include schedules, NO lines
-            return (
+            qs = (
                 qs
                 .annotate(line_count=Count('lines'))
                 .prefetch_related(Prefetch('payment_schedules', queryset=schedules_qs))
             )
+        else:
+            qs = qs.prefetch_related(
+                'lines__purchase_request_item__item',
+                'lines__allocations',
+                Prefetch('payment_schedules', queryset=schedules_qs),
+            )
 
-        # detail: include lines & schedules
-        return qs.prefetch_related(
-            'lines__purchase_request_item__item',
-            'lines__allocations',                      # <-- add this
-            Prefetch('payment_schedules', queryset=schedules_qs),
+        qs = self._with_payment_annos(qs)
+
+        # Push fully-paid POs to the bottom while preserving ordering.
+        # has_unpaid=True -> 0 ; False -> 1 ; ascending puts unpaid first.
+        unpaid_rank = Case(
+            When(has_unpaid=False, then=Value(1)),
+            default=Value(0),
+            output_field=IntegerField(),
         )
+        return qs.order_by(unpaid_rank, *self.ordering)
 
     def get_serializer_class(self):
         return (
