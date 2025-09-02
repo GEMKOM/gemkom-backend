@@ -97,11 +97,12 @@ class ItemOfferSerializer(serializers.ModelSerializer):
 class SupplierOfferSerializer(serializers.ModelSerializer):
     supplier = SupplierSerializer(read_only=True)
     item_offers = ItemOfferSerializer(many=True, read_only=True)
+    payment_terms_name = serializers.ReadOnlyField(source="payment_terms.name")
     
     class Meta:
         model = SupplierOffer
         fields = [
-            'id', 'supplier', 'notes', 'item_offers', 'created_at', 'updated_at', 'currency', 'payment_terms', 'tax_rate'
+            'id', 'supplier', 'notes', 'item_offers', 'created_at', 'updated_at', 'currency', 'payment_terms', 'payment_terms_name', 'tax_rate'
         ]
 
 class PurchaseRequestSerializer(serializers.ModelSerializer):
