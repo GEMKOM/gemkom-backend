@@ -9,7 +9,6 @@ from rest_framework.views import APIView
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework import status, permissions
-from approvals.services import submit_purchase_request, decide
 from .models import (
     PaymentSchedule, PaymentTerms, PurchaseOrder, PurchaseRequestDraft, Supplier, Item, PurchaseRequest, 
     PurchaseRequestItem, SupplierOffer, ItemOffer
@@ -24,8 +23,11 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework import status, permissions
 
-from approvals.models import PRApprovalStageInstance, PRApprovalDecision
-from approvals.services import create_pos_from_recommended
+from django.contrib.contenttypes.models import ContentType
+from django.db.models import OuterRef, Subquery, Exists
+from approvals.models import ApprovalWorkflow, ApprovalStageInstance, ApprovalDecision
+
+from procurement.approval_service import create_pos_from_recommended, submit_purchase_request, decide
 from .services import cancel_purchase_request, compute_vat_carry_map, recompute_payment_schedule_due_dates
 
 from django.db.models import Count, Prefetch
@@ -122,14 +124,22 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
     ordering = ['-id']  # Default ordering
     
     def get_queryset(self):
+        wf_qs = (
+            ApprovalWorkflow.objects
+            .select_related("policy")
+            .prefetch_related(
+                "stage_instances",
+                "stage_instances__decisions__approver",
+            )
+            .order_by("-created_at")
+        )
         return (
             PurchaseRequest.objects
-            .select_related('requestor')
+            .select_related("requestor")
             .prefetch_related(
-                'request_items__item',
-                'offers__supplier',
-                'approval_workflow__stage_instances',
-                'approval_workflow__stage_instances__decisions__approver',
+                "request_items__item",
+                "offers__supplier",
+                Prefetch("approvals", queryset=wf_qs),  # ← use the generic relation
             )
         )
     
@@ -191,22 +201,32 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
         - current stage includes the user in approver_user_ids
         - user has not already decided on the current stage
         """
-
         user = request.user
+        ct_pr = ContentType.objects.get_for_model(self.get_queryset().model)
+
+        # Subquery: current stage order for the PR's workflow
+        current_stage_order_sq = Subquery(
+            ApprovalWorkflow.objects.filter(
+                content_type=ct_pr,
+                object_id=OuterRef('pk'),
+            ).values('current_stage_order')[:1]
+        )
 
         # Subquery: is there a current stage on this PR where I'm an approver and it's still open?
-        open_current_stage_qs = PRApprovalStageInstance.objects.filter(
-            workflow=OuterRef('approval_workflow'),
-            order=OuterRef('approval_workflow__current_stage_order'),
+        open_current_stage_qs = ApprovalStageInstance.objects.filter(
+            workflow__content_type=ct_pr,
+            workflow__object_id=OuterRef('pk'),
+            order=current_stage_order_sq,
             is_complete=False,
             is_rejected=False,
             approver_user_ids__contains=[user.id],
         )
 
         # Subquery: have I already decided on that current stage?
-        my_decision_on_current_stage_qs = PRApprovalDecision.objects.filter(
-            stage_instance__workflow=OuterRef('approval_workflow'),
-            stage_instance__order=OuterRef('approval_workflow__current_stage_order'),
+        my_decision_on_current_stage_qs = ApprovalDecision.objects.filter(
+            stage_instance__workflow__content_type=ct_pr,
+            stage_instance__workflow__object_id=OuterRef('pk'),
+            stage_instance__order=current_stage_order_sq,
             approver=user,
         )
 
@@ -229,48 +249,53 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
 
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
-    
-    @action(detail=False, methods=['get'], permission_classes=[permissions.IsAuthenticated])
-    def approved_by_me(self, request):
-        """
-        Purchase requests where I have approved (optionally filter by date range).
-        Query params:
-          - since: ISO datetime (include decisions made at/after this)
-          - until: ISO datetime (include decisions made before this)
-          - decision: 'approve' or 'reject' (default: approve)
-        """
-        user = request.user
-        decision_type = request.query_params.get("decision", "approve")
-        since = request.query_params.get("since")
-        until = request.query_params.get("until")
 
-        # Base subquery: my decisions on any stage in this PR's workflow
-        my_decisions = PRApprovalDecision.objects.filter(
-            stage_instance__workflow_id=OuterRef('approval_workflow__id'),
-            approver=user,
-        )
-        if decision_type in ("approve", "reject"):
-            my_decisions = my_decisions.filter(decision=decision_type)
+        
+        @action(detail=False, methods=['get'], permission_classes=[permissions.IsAuthenticated])
+        def approved_by_me(self, request):
+            """
+            Purchase requests where I have approved (optionally filter by date range).
+            Query params:
+            - since: ISO datetime (include decisions made at/after this)
+            - until: ISO datetime (include decisions made before this)
+            - decision: 'approve' or 'reject' (default: approve)
+            """
+            user = request.user
+            decision_type = request.query_params.get("decision", "approve")
+            since = request.query_params.get("since")
+            until = request.query_params.get("until")
 
-        if since:
-            my_decisions = my_decisions.filter(decided_at__gte=since)
-        if until:
-            my_decisions = my_decisions.filter(decided_at__lt=until)
+            ct_pr = ContentType.objects.get_for_model(self.get_queryset().model)
 
-        qs = (
-            self.get_queryset()
-            .annotate(i_decided=Exists(my_decisions))
-            .filter(i_decided=True)
-            .order_by(*self.ordering)
-            .distinct()
-        )
+            # Base subquery: my decisions on any stage in this PR's workflow
+            my_decisions = ApprovalDecision.objects.filter(
+                stage_instance__workflow__content_type=ct_pr,
+                stage_instance__workflow__object_id=OuterRef('pk'),
+                approver=user,
+            )
+            if decision_type in ("approve", "reject"):
+                my_decisions = my_decisions.filter(decision=decision_type)
+            if since:
+                my_decisions = my_decisions.filter(decided_at__gte=since)
+            if until:
+                my_decisions = my_decisions.filter(decided_at__lt=until)
 
-        page = self.paginate_queryset(qs)
-        if page is not None:
-            ser = self.get_serializer(page, many=True)
-            return self.get_paginated_response(ser.data)
-        ser = self.get_serializer(qs, many=True)
-        return Response(ser.data)
+            qs = (
+                self.get_queryset()
+                .annotate(i_decided=Exists(my_decisions))
+                .filter(i_decided=True)
+                .order_by(*self.ordering)
+                .distinct()
+            )
+
+            page = self.paginate_queryset(qs)
+            if page is not None:
+                ser = self.get_serializer(page, many=True)
+                return self.get_paginated_response(ser.data)
+
+            ser = self.get_serializer(qs, many=True)
+            return Response(ser.data)
+
 
     @action(detail=True, methods=["POST"], permission_classes=[permissions.IsAuthenticated])
     def generate_pos(self, request, pk=None):

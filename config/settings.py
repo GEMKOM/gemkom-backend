@@ -12,8 +12,10 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 
 from pathlib import Path
 import os
-# Build paths inside the project like this: BASE_DIR / 'subdir'.
+from dotenv import load_dotenv, find_dotenv
 BASE_DIR = Path(__file__).resolve().parent.parent
+# Load the nearest .env (explicit path avoids CWD issues on Windows)
+load_dotenv(find_dotenv(str(BASE_DIR / ".env")), override=False)
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
@@ -44,11 +46,9 @@ EMAIL_USE_TLS = os.environ.get("EMAIL_USE_TLS", "true").lower() == "true"
 EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER")        # e.g. onat@yourcompany.com
 EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD")  # that user's password (or app password)
 
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
 
 ALLOWED_HOSTS = ['gemkom-backend-716746493353.europe-west3.run.app',
-                 '127.0.0.1']  # for now
+                 '127.0.0.1', 'localhost']  # for now
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
@@ -139,13 +139,17 @@ WSGI_APPLICATION = 'config.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': os.getenv('DB_NAME'),
-        'USER': os.getenv('DB_USER'),
-        'PASSWORD': os.getenv('DB_PASSWORD'),
-        'HOST': os.getenv('DB_HOST'),
-        'PORT': os.getenv('DB_PORT', '5432'),
+        'NAME'    : os.getenv('DB_NAME', 'postgres'),
+        'USER'    : os.getenv('DB_USER', 'postgres'),
+        'PASSWORD': os.getenv('DB_PASSWORD', ''),
+        'HOST'    : os.getenv('DB_HOST', ''),
+        'PORT'    : os.getenv('DB_PORT', '5432'),
+        'OPTIONS' : {
+            'sslmode': os.getenv('DB_SSLMODE', 'require'),
+        },
     }
 }
+
 
 LOGGING = {
     'version': 1,

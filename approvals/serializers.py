@@ -1,6 +1,12 @@
+# approvals/serializers.py
 from rest_framework import serializers
-from .models import PRApprovalWorkflow, PRApprovalStageInstance, PRApprovalDecision
 from django.contrib.auth.models import User
+
+from .models import (
+    ApprovalWorkflow,
+    ApprovalStageInstance,
+    ApprovalDecision,
+)
 
 
 class MiniUserSerializer(serializers.ModelSerializer):
@@ -15,12 +21,20 @@ class MiniUserSerializer(serializers.ModelSerializer):
         model = User
         fields = ["id", "username", "first_name", "last_name", "full_name"]
 
+
 class DecisionSerializer(serializers.ModelSerializer):
     approver_detail = MiniUserSerializer(source="approver", read_only=True)
 
     class Meta:
-        model = PRApprovalDecision
-        fields = ["id", "approver", "approver_detail", "decision", "comment", "decided_at"]
+        model = ApprovalDecision
+        fields = [
+            "id",
+            "approver",
+            "approver_detail",
+            "decision",
+            "comment",
+            "decided_at",
+        ]
 
 
 class StageInstanceSerializer(serializers.ModelSerializer):
@@ -28,13 +42,16 @@ class StageInstanceSerializer(serializers.ModelSerializer):
     approvers = serializers.SerializerMethodField()
 
     class Meta:
-        model = PRApprovalStageInstance
+        model = ApprovalStageInstance
         fields = [
-            "order", "name",
-            "required_approvals", "approved_count",
-            "is_complete", "is_rejected",
+            "order",
+            "name",
+            "required_approvals",
+            "approved_count",
+            "is_complete",
+            "is_rejected",
             "approver_user_ids",   # keep for backward compatibility
-            "approvers",           # NEW: rich user objects
+            "approvers",           # rich user objects
             "decisions",
         ]
 
@@ -51,7 +68,9 @@ class StageInstanceSerializer(serializers.ModelSerializer):
             else:
                 missing.append(uid)
         if missing:
-            qs = User.objects.filter(id__in=missing).only("id","username","first_name","last_name")
+            qs = User.objects.filter(id__in=missing).only(
+                "id", "username", "first_name", "last_name"
+            )
             # update cache so siblings reuse it
             for u in qs:
                 ser = MiniUserSerializer(u).data
@@ -68,8 +87,14 @@ class WorkflowSerializer(serializers.ModelSerializer):
     stage_instances = serializers.SerializerMethodField()
 
     class Meta:
-        model = PRApprovalWorkflow
-        fields = ["policy", "current_stage_order", "is_complete", "is_rejected", "stage_instances"]
+        model = ApprovalWorkflow
+        fields = [
+            "policy",
+            "current_stage_order",
+            "is_complete",
+            "is_rejected",
+            "stage_instances",
+        ]
 
     def get_stage_instances(self, obj):
         stages = list(obj.stage_instances.all().order_by("order"))
@@ -83,7 +108,9 @@ class WorkflowSerializer(serializers.ModelSerializer):
         # prefetch users into cache
         user_cache = {}
         if ids:
-            qs = User.objects.filter(id__in=list(ids)).only("id","username","first_name","last_name")
+            qs = User.objects.filter(id__in=list(ids)).only(
+                "id", "username", "first_name", "last_name"
+            )
             for u in qs:
                 user_cache[u.id] = MiniUserSerializer(u).data
 
@@ -91,9 +118,3 @@ class WorkflowSerializer(serializers.ModelSerializer):
         ctx["user_cache"] = user_cache
 
         return StageInstanceSerializer(stages, many=True, context=ctx).data
-
-
-
-
-
-

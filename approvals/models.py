@@ -4,7 +4,59 @@ from django.db import models
 from django.db import models
 from django.contrib.auth.models import User, Group
 from django.utils import timezone
+from django.db import models
+from django.contrib.auth.models import User
+from django.contrib.contenttypes.models import ContentType
+from django.contrib.contenttypes.fields import GenericForeignKey
 
+
+#NEW
+class ApprovalWorkflow(models.Model):
+    content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE)
+    object_id = models.PositiveIntegerField()
+    subject = GenericForeignKey("content_type", "object_id")
+
+    # Reuse your existing ApprovalPolicy records
+    policy = models.ForeignKey("approvals.ApprovalPolicy", on_delete=models.PROTECT)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    current_stage_order = models.PositiveIntegerField(default=1)
+    is_complete = models.BooleanField(default=False)
+    is_rejected = models.BooleanField(default=False)
+    is_cancelled = models.BooleanField(default=False)
+    snapshot = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["content_type", "object_id"])]
+
+class ApprovalStageInstance(models.Model):
+    workflow = models.ForeignKey(ApprovalWorkflow, on_delete=models.CASCADE, related_name="stage_instances")
+    order = models.PositiveIntegerField()
+    name = models.CharField(max_length=200)
+    required_approvals = models.PositiveIntegerField(default=1)
+    approver_user_ids = models.JSONField(default=list, blank=True)
+    approver_group_ids = models.JSONField(default=list, blank=True)
+    approved_count = models.PositiveIntegerField(default=0)
+    is_complete = models.BooleanField(default=False)
+    is_rejected = models.BooleanField(default=False)
+
+    class Meta:
+        unique_together = [("workflow", "order")]
+        ordering = ["order"]
+
+class ApprovalDecision(models.Model):
+    stage_instance = models.ForeignKey(ApprovalStageInstance, on_delete=models.CASCADE, related_name="decisions")
+    approver = models.ForeignKey(User, on_delete=models.PROTECT)
+    decision = models.CharField(max_length=10, choices=[("approve","Approve"),("reject","Reject")])
+    comment = models.TextField(blank=True)
+    decided_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = [("stage_instance", "approver")]
+        ordering = ["decided_at"]
+
+
+#OLD
 class ApprovalPolicy(models.Model):
     name = models.CharField(max_length=200, unique=True)
     is_active = models.BooleanField(default=True)

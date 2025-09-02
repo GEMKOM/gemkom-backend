@@ -3,6 +3,8 @@ from django.contrib.auth.models import User
 from django.utils import timezone
 from decimal import Decimal
 from django.core.validators import MinValueValidator, MaxValueValidator
+from django.contrib.contenttypes.fields import GenericRelation
+from approvals.models import ApprovalWorkflow
 
 # Create your models here.
 class PaymentTerms(models.Model):
@@ -191,6 +193,11 @@ class PurchaseRequest(models.Model):
     # Metadata
     is_active = models.BooleanField(default=True)
     is_rolling_mill = models.BooleanField(default=False)
+
+    approvals = GenericRelation(
+        ApprovalWorkflow,
+        related_query_name="purchase_request",  # lets you filter from workflow side if needed
+    )
     
     class Meta:
         ordering = ['-created_at']

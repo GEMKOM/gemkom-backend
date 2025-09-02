@@ -9,6 +9,10 @@ from .models import (
 )
 from decimal import Decimal
 
+from django.contrib.contenttypes.models import ContentType
+
+from approvals.models import ApprovalWorkflow
+
 class PaymentTermsSerializer(serializers.ModelSerializer):
     class Meta:
         model = PaymentTerms
@@ -113,9 +117,19 @@ class PurchaseRequestSerializer(serializers.ModelSerializer):
     approval = serializers.SerializerMethodField()
 
     def get_approval(self, obj):
-        if hasattr(obj, "approval_workflow"):
-            return WorkflowSerializer(obj.approval_workflow).data
-        return None
+        # if prefetch exists, use it; else fall back to query
+        wfs = getattr(obj, "approvals", None)
+        wf = None
+        if wfs is not None:
+            # approvals is a RelatedManager; convert to list or just take first by created_at desc
+            wf = next(iter(sorted(wfs.all(), key=lambda w: w.created_at, reverse=True)), None)
+        else:
+            ct = ContentType.objects.get_for_model(PurchaseRequest)
+            wf = ApprovalWorkflow.objects.filter(content_type=ct, object_id=obj.id).order_by("-created_at").first()
+
+        if not wf:
+            return None
+        return WorkflowSerializer(wf, context=self.context).data
 
     def get_status_label(self, obj):
         return obj.get_status_display()

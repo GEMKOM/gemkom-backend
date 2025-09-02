@@ -1,114 +1,109 @@
-from django.db import transaction
-from django.db.models import Q
-from django.contrib.auth.models import User
-from django.utils import timezone
+# approvals/services_core.py
+from __future__ import annotations
+from typing import Callable, Optional, Tuple
 
-from procurement.services import create_pos_from_recommended
+from django.db import transaction
+from django.contrib.auth.models import User
+from django.contrib.contenttypes.models import ContentType
 
 from .models import (
-    ApprovalPolicy, PRApprovalWorkflow, PRApprovalStageInstance, PRApprovalDecision
+    ApprovalWorkflow,
+    ApprovalStageInstance,
+    ApprovalDecision,
 )
 
-from django.conf import settings
-from django.urls import reverse  # if you ever serve a backend link
-from core.emails import send_plain_email
 
-
-SYSTEM_USERNAME = "system"  # choose any reserved username
-
-
-def pick_policy_for_request(pr):
-    qs = ApprovalPolicy.objects.filter(
-        is_active=True,
-        is_rolling_mill=pr.is_rolling_mill
-    )
-    if pr.total_amount_eur is not None:
-        qs = qs.filter(
-            Q(min_amount_eur__isnull=True) | Q(min_amount_eur__lte=pr.total_amount_eur),
-            Q(max_amount_eur__isnull=True) | Q(max_amount_eur__gte=pr.total_amount_eur),
-        )
-    if pr.priority:
-        qs = qs.filter(Q(priority_in=[]) | Q(priority_in__contains=[pr.priority]))
-
-    return qs.order_by("selection_priority").first()
-
-def _resolve_group_user_ids(group_ids):
+# --------- Small generic utilities ---------
+def resolve_group_user_ids(group_ids) -> list[int]:
+    """Expand Django Group ids to active user ids (deduped)."""
+    if not group_ids:
+        return []
     return list(
         User.objects.filter(groups__id__in=group_ids, is_active=True)
-        .values_list("id", flat=True).distinct()
+        .values_list("id", flat=True)
+        .distinct()
     )
 
-def user_can_approve_stage(user, pr, stage: PRApprovalStageInstance):
-    if pr.requestor_id == user.id:
-        return False
-    return (user.id in stage.approver_user_ids) and (not stage.is_complete) and (not stage.is_rejected)
 
-@transaction.atomic
-def submit_purchase_request(pr, by_user):
-    policy = pick_policy_for_request(pr)
-    if not policy or not policy.stages.exists():
-        raise ValueError("No applicable approval policy/stages configured.")
+def get_workflow(subject) -> ApprovalWorkflow:
+    """Fetch the workflow for any subject object (by content type + id)."""
+    ct = ContentType.objects.get_for_model(type(subject))
+    return ApprovalWorkflow.objects.get(content_type=ct, object_id=subject.id)
 
-    stages_qs = policy.stages.all().order_by("order")
 
-    wf = PRApprovalWorkflow.objects.create(
-        purchase_request=pr,
+# --------- Creation ---------
+def create_workflow(
+    subject,
+    policy,
+    snapshot: Optional[dict] = None,
+    *,
+    approver_user_ids_builder: Optional[
+        Callable[[object, object], tuple[list[int], list[int]]]
+    ] = None,
+) -> ApprovalWorkflow:
+    """
+    Create a workflow for any subject using the given policy.
+
+    - approver_user_ids_builder(stage, subject) -> (user_ids, group_ids)
+      If not provided, uses the users/groups directly from the policy stage
+      and DOES NOT expand groups (domain may expand later if desired).
+    """
+    ct = ContentType.objects.get_for_model(type(subject))
+    wf = ApprovalWorkflow.objects.create(
+        content_type=ct,
+        object_id=subject.id,
         policy=policy,
         current_stage_order=1,
-        snapshot={
-            "policy": {"id": policy.id, "name": policy.name},
-            "stages": [
-                {
-                    "order": s.order,
-                    "name": s.name,
-                    "required_approvals": s.required_approvals,
-                    "users": list(s.approver_users.values_list("id", flat=True)),
-                    "groups": list(s.approver_groups.values_list("id", flat=True)),
-                }
-                for s in stages_qs
-            ],
-        },
+        snapshot=snapshot or {},
     )
 
-    # Create stage instances
-    for s in stages_qs:
-        u_ids = list(s.approver_users.values_list("id", flat=True))
-        g_ids = list(s.approver_groups.values_list("id", flat=True))
-        u_ids += _resolve_group_user_ids(g_ids)
-        u_ids = sorted(set(u_ids))  # dedupe
+    for s in policy.stages.all().order_by("order"):
+        if approver_user_ids_builder:
+            u_ids, g_ids = approver_user_ids_builder(s, subject)
+        else:
+            u_ids = list(s.approver_users.values_list("id", flat=True))
+            g_ids = list(s.approver_groups.values_list("id", flat=True))
 
-        PRApprovalStageInstance.objects.create(
+        ApprovalStageInstance.objects.create(
             workflow=wf,
             order=s.order,
             name=s.name,
             required_approvals=s.required_approvals,
-            approver_user_ids=u_ids,
+            approver_user_ids=list(dict.fromkeys(u_ids)),  # dedupe, keep order
             approver_group_ids=g_ids,
         )
-
-    _auto_bypass_self_approver(wf, pr.requestor)  # same as before
-    _email_approvers_for_current_stage(wf, reason="Talep gönderildi")
-
     return wf
 
 
+# --------- Decision & progression ---------
 @transaction.atomic
-def decide(pr, user, approve: bool, comment: str = ""):
-    wf = PRApprovalWorkflow.objects.select_for_update().get(purchase_request=pr)
+def record_decision(subject, user, approve: bool, comment: str = "") -> tuple[ApprovalWorkflow, ApprovalStageInstance, str]:
+    """
+    Approve/Reject on the subject's CURRENT stage.
+    Returns: (workflow, current_or_next_stage, outcome)
+      outcome ∈ {"rejected", "moved", "completed", "pending"}
+    """
+    wf = get_workflow(subject)
     if wf.is_complete or wf.is_rejected:
         raise ValueError("Workflow already finished.")
 
-    stage = PRApprovalStageInstance.objects.select_for_update().get(
+    stage = ApprovalStageInstance.objects.select_for_update().get(
         workflow=wf, order=wf.current_stage_order
     )
-    if not user_can_approve_stage(user, pr, stage):
-        raise PermissionError("You are not an approver for the current stage.")
+    if stage.is_complete or stage.is_rejected:
+        # defensive; normally shouldn't happen
+        next_stage = wf.stage_instances.filter(order__gt=stage.order).order_by("order").first()
+        if next_stage:
+            return wf, next_stage, "moved"
+        return wf, stage, "completed" if wf.is_complete else "pending"
 
-    if PRApprovalDecision.objects.filter(stage_instance=stage, approver=user).exists():
+    # idempotency
+    if ApprovalDecision.objects.filter(stage_instance=stage, approver=user).exists():
         raise ValueError("You already decided on this stage.")
 
-    PRApprovalDecision.objects.create(
-        stage_instance=stage, approver=user,
+    ApprovalDecision.objects.create(
+        stage_instance=stage,
+        approver=user,
         decision="approve" if approve else "reject",
         comment=comment,
     )
@@ -118,9 +113,7 @@ def decide(pr, user, approve: bool, comment: str = ""):
         stage.save(update_fields=["is_rejected"])
         wf.is_rejected = True
         wf.save(update_fields=["is_rejected"])
-        pr.status = "rejected"
-        pr.save(update_fields=["status"])
-        return
+        return wf, stage, "rejected"
 
     # approval path
     stage.approved_count += 1
@@ -129,207 +122,67 @@ def decide(pr, user, approve: bool, comment: str = ""):
     stage.save(update_fields=["approved_count", "is_complete"])
 
     if stage.is_complete:
-        next_stage = PRApprovalStageInstance.objects.filter(
-            workflow=wf, order__gt=stage.order
-        ).order_by("order").first()
+        next_stage = wf.stage_instances.filter(order__gt=stage.order).order_by("order").first()
         if next_stage:
             wf.current_stage_order = next_stage.order
             wf.save(update_fields=["current_stage_order"])
-            _email_approvers_for_current_stage(wf, reason=f"Önceki aşama onaylandı (#{stage.order})")
-            # TODO: notify next_stage approvers
+            return wf, next_stage, "moved"
         else:
             wf.is_complete = True
             wf.save(update_fields=["is_complete"])
-            pr.status = "approved"
-            pr.save(update_fields=["status"])
-            created_pos = create_pos_from_recommended(pr)
-            _email_requestor_on_final(pr, status_str="Onaylandı", comment="")
-            _email_finance_pos_created(pr, created_pos)
-            # TODO: trigger post-approval handoff (e.g., enable pro-forma upload)
+            return wf, stage, "completed"
+
+    return wf, stage, "pending"
 
 
-
-def _get_or_create_system_user():
-    user, _ = User.objects.get_or_create(
-        username=SYSTEM_USERNAME,
-        defaults={"first_name": "System", "last_name": "User", "is_active": True},
-    )
-    return user
-
-
-def _auto_bypass_self_approver(workflow: PRApprovalWorkflow, requestor: User) -> None:
+# --------- Self-approver auto-bypass (generic) ---------
+def auto_bypass_self_approver(wf: ApprovalWorkflow, requestor_user_id: int) -> tuple[bool, bool]:
     """
-    - If a stage's approver list is exactly [requestor.id], mark that stage complete
-      and create a synthetic 'approve' decision by SYSTEM user.
-    - If a stage contains requestor among others, remove requestor from approvers and
-      clamp required_approvals to the new approver count.
-    - Repeat while we keep auto-completing stages (in case multiple early stages are self-only).
+    If the current stage's only approver is the requestor, auto-approve and advance.
+    If the requestor is among multiple approvers, remove them and clamp quorum.
+    Returns: (changed_workflow, finished)
     """
-    sys_user = _get_or_create_system_user()
-
     changed_wf = False
-    # Keep advancing while we auto-complete stages
     while True:
-        # find current stage
-        stage = workflow.stage_instances.filter(
-            order=workflow.current_stage_order
-        ).first()
+        stage = wf.stage_instances.filter(order=wf.current_stage_order).first()
         if not stage or stage.is_complete or stage.is_rejected:
             break
 
         approvers = list(stage.approver_user_ids or [])
-        # CASE A: only approver is the requestor -> auto-complete
-        if len(approvers) == 1 and approvers[0] == requestor.id:
-            # mark decision + complete
-            PRApprovalDecision.objects.create(
+
+        # A) only approver is the requestor -> auto-complete
+        if len(approvers) == 1 and approvers[0] == requestor_user_id:
+            # create a synthetic decision by a system user? keep engine neutral:
+            ApprovalDecision.objects.create(
                 stage_instance=stage,
-                approver=sys_user,
-                decision="approve",   # keep your existing enum; 'approve' is safest
+                approver=User.objects.get_or_create(
+                    username="system",
+                    defaults={"first_name": "System", "last_name": "User", "is_active": True},
+                )[0],
+                decision="approve",
                 comment="Auto-bypass: requestor is the sole approver for this stage.",
-                decided_at=timezone.now(),
             )
             stage.approved_count = stage.required_approvals
             stage.is_complete = True
             stage.save(update_fields=["approved_count", "is_complete"])
-
-            # advance workflow
-            workflow.current_stage_order += 1
+            wf.current_stage_order += 1
             changed_wf = True
-            # loop again to check next stage (maybe also self-only)
             continue
 
-        # CASE B: requestor is in the approver list with others -> remove them
-        if requestor.id in approvers:
-            approvers = [uid for uid in approvers if uid != requestor.id]
+        # B) requestor among others -> remove them and clamp quorum
+        if requestor_user_id in approvers:
+            approvers = [uid for uid in approvers if uid != requestor_user_id]
             stage.approver_user_ids = approvers
-            # clamp required approvals to be <= available approvers
             if stage.required_approvals > len(approvers):
                 stage.required_approvals = max(len(approvers), 0)
             stage.save(update_fields=["approver_user_ids", "required_approvals"])
-            # do NOT advance; the stage still needs action from remaining approvers
         break
 
-    # If we advanced past the last stage, finish workflow and PR
-    last_order = workflow.stage_instances.order_by("-order").values_list("order", flat=True).first() or 0
-    if workflow.current_stage_order > last_order:
-        workflow.is_complete = True
-        workflow.save(update_fields=["is_complete", "current_stage_order"])
-        # also flip PR status to approved (mirror your existing finalize logic)
-        pr = workflow.purchase_request
-        pr.status = "approved"
-        pr.save(update_fields=["status"])
-        _email_requestor_on_final(pr, status_str="Onaylandı", comment="(Otomatik geçiş)")
+    last_order = wf.stage_instances.order_by("-order").values_list("order", flat=True).first() or 0
+    finished = wf.current_stage_order > last_order
+    if finished:
+        wf.is_complete = True
+        wf.save(update_fields=["is_complete", "current_stage_order"])
     elif changed_wf:
-        workflow.save(update_fields=["current_stage_order"])
-
-
-def _users_from_ids(user_ids):
-    if not user_ids:
-        return User.objects.none()
-    return User.objects.filter(id__in=user_ids, is_active=True)
-
-def _approver_emails_for_stage(stage: PRApprovalStageInstance):
-    qs = _users_from_ids(stage.approver_user_ids or [])
-    return list(qs.exclude(email__isnull=True).exclude(email="").values_list("email", flat=True))
-
-def _pr_title(pr):
-    # adjust if you have a title field; fall back gracefully
-    return getattr(pr, "title", f"PR-{pr.id}")
-
-def _pr_frontend_url(pr):
-    # change to your real frontend route
-    return f"https://ofis.gemcore.com.tr/procurement/purchase-requests/pending/?talep={pr.request_number}"
-
-def _po_frontend_url(po):
-    # change to your real frontend route
-    return f"https://ofis.gemcore.com.tr/finance/purchase-orders/?order={po.id}"
-
-def _email_approvers_for_current_stage(workflow: PRApprovalWorkflow, reason: str = "pending"):
-    """
-    Sends an email to all approvers of the CURRENT stage of this workflow.
-    No-op if workflow finished/rejected or stage has no approvers.
-    """
-    if workflow.is_complete or workflow.is_rejected:
-        return
-
-    stage = workflow.stage_instances.filter(order=workflow.current_stage_order).first()
-    if not stage or stage.is_complete or stage.is_rejected:
-        return
-
-    pr = workflow.purchase_request
-    to_list = _approver_emails_for_stage(stage)
-    if not to_list:
-        return
-
-    subject = f"[Onay Gerekli] Satınalma Talebi #{pr.id} – {_pr_title(pr)}"
-    body = (
-        f"Merhaba,\n\n"
-        f"Satınalma talebi (#{pr.id} – {_pr_title(pr)}) için onayınız bekleniyor.\n"
-        f"Aşama: {stage.name} (Gerekli onay sayısı: {stage.required_approvals})\n"
-        f"Öncelik: {getattr(pr, 'priority', '—')}\n"
-        f"Talep Eden: {getattr(pr.requestor, 'get_full_name', lambda: pr.requestor.username)() if getattr(pr, 'requestor', None) else '—'}\n\n"
-        f"İncelemek için: {_pr_frontend_url(pr)}\n\n"
-        f"Not: Bu bildirim nedeni: {reason}."
-    )
-    send_plain_email(subject, body, to_list)
-
-def _email_requestor_on_final(pr, status_str: str, comment: str = ""):
-    if not getattr(pr, "requestor", None):
-        return
-    to = [pr.requestor.email] if getattr(pr.requestor, "email", "") else []
-    if not to:
-        return
-    subject = f"[Satınalma Talebi {status_str}] PR #{pr.id} – {_pr_title(pr)}"
-    body = (
-        f"Merhaba,\n\n"
-        f"Satınalma talebiniz (#{pr.id} – {_pr_title(pr)}) {status_str.lower()}.\n"
-        f"{('Not: ' + comment) if comment else ''}\n\n"
-        f"Detay: {_pr_frontend_url(pr)}"
-    )
-    send_plain_email(subject, body, to)
-
-def _finance_emails():
-    # All active users whose profile.team == 'finance' and who have an email
-    return list(
-        User.objects.filter(
-            is_active=True,
-            profile__team='finance',
-        )
-        .exclude(email__isnull=True)
-        .exclude(email='')
-        .values_list('email', flat=True)
-    )
-
-def _email_finance_pos_created(pr, pos_list):
-    """
-    Send ONE summary email to finance when one or more POs are created for a PR.
-    """
-    if not pos_list:
-        return
-    to = _finance_emails()
-    if not to:
-        return
-
-    pr_title = getattr(pr, 'title', f'PR-{pr.id}')
-
-    lines = []
-    for po in pos_list:
-        supplier_name = getattr(getattr(po, 'supplier', None), 'name', '—')
-        currency = getattr(po, 'currency', '')
-        total = getattr(po, 'total_amount', '')
-        status = getattr(po, 'status', '')
-        po_url = _po_frontend_url(po)
-        try:
-            # nice to have, if you have choices:
-            status = po.get_status_display()
-        except Exception:
-            pass
-        lines.append(f"- PO #{po.id} | Tedarikçi: {supplier_name} | Tutar: {currency} {total} | Durum: {status} | URL: {po_url}")
-
-    subject = f"[PO Oluşturuldu] PR #{pr.id} – {pr_title}"
-    body = (
-        f"Merhaba Finans,\n\n"
-        f"Satınalma talebi (PR #{pr.id} – {pr_title}) onaylandı ve aşağıdaki satınalma siparişleri oluşturuldu:\n\n"
-        + "\n".join(lines)
-    )
-    send_plain_email(subject, body, to)
+        wf.save(update_fields=["current_stage_order"])
+    return changed_wf, finished
