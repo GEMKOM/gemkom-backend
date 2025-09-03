@@ -13,6 +13,13 @@ from .models import (
 )
 
 
+def _notify_subject(wf: ApprovalWorkflow, event: str, payload: Optional[dict] = None):
+    """Call subject.handle_approval_event(...) if it exists."""
+    subject = wf.subject
+    handler = getattr(subject, "handle_approval_event", None)
+    if callable(handler):
+        handler(workflow=wf, event=event, payload=payload or {})
+
 # --------- Small generic utilities ---------
 def resolve_group_user_ids(group_ids) -> list[int]:
     """Expand Django Group ids to active user ids (deduped)."""
@@ -113,6 +120,7 @@ def record_decision(subject, user, approve: bool, comment: str = "") -> tuple[Ap
         stage.save(update_fields=["is_rejected"])
         wf.is_rejected = True
         wf.save(update_fields=["is_rejected"])
+        _notify_subject(wf, "rejected", {"stage_order": stage.order, "comment": comment})
         return wf, stage, "rejected"
 
     # approval path
@@ -126,10 +134,12 @@ def record_decision(subject, user, approve: bool, comment: str = "") -> tuple[Ap
         if next_stage:
             wf.current_stage_order = next_stage.order
             wf.save(update_fields=["current_stage_order"])
+            _notify_subject(wf, "stage_advanced", {"from_stage_order": stage.order, "to_stage_order": next_stage.order})
             return wf, next_stage, "moved"
         else:
             wf.is_complete = True
             wf.save(update_fields=["is_complete"])
+            _notify_subject(wf, "approved", {"last_stage_order": stage.order})
             return wf, stage, "completed"
 
     return wf, stage, "pending"
@@ -183,6 +193,8 @@ def auto_bypass_self_approver(wf: ApprovalWorkflow, requestor_user_id: int) -> t
     if finished:
         wf.is_complete = True
         wf.save(update_fields=["is_complete", "current_stage_order"])
+        _notify_subject(wf, "approved", {"auto_bypass": True, "reason": "requestor sole approver"})
     elif changed_wf:
         wf.save(update_fields=["current_stage_order"])
+        _notify_subject(wf, "stage_advanced", {"auto_bypass": True, "to_stage_order": wf.current_stage_order})
     return changed_wf, finished

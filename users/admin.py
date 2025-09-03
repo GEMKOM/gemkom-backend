@@ -17,13 +17,13 @@ class UserAdmin(BaseUserAdmin):
         return instance.profile.team if hasattr(instance, 'profile') else '-'
     
     def is_admin(self, instance):
-        return instance.profile.is_admin if hasattr(instance, 'profile') else False
+        return instance.profile.location_type == "office" if hasattr(instance, 'profile') else False
     is_admin.boolean = True  # show as checkmark in admin
     is_admin.short_description = 'Admin?'
 
     list_display = BaseUserAdmin.list_display + ('team', 'is_admin',)
     search_fields = BaseUserAdmin.search_fields + ('profile__team',)
-    list_filter = BaseUserAdmin.list_filter + ('profile__team', 'profile__is_admin',)
+    list_filter = BaseUserAdmin.list_filter + ('profile__team',)
 
 # Unregister and re-register with custom admin
 admin.site.unregister(User)

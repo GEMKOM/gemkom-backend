@@ -1,0 +1,146 @@
+# overtime/serializers.py
+from django.utils import timezone
+from django.db.models import Q
+from rest_framework import serializers
+from django.contrib.auth import get_user_model
+
+from users.models import UserProfile
+
+from .models import OvertimeRequest, OvertimeEntry
+
+User = get_user_model()
+TEAM_LABELS = dict(UserProfile._meta.get_field("team").choices)
+
+class OvertimeEntryReadSerializer(serializers.ModelSerializer):
+    user_id = serializers.IntegerField(source="user.id", read_only=True)
+    user_username = serializers.CharField(source="user.username", read_only=True)
+    user_full_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = OvertimeEntry
+        fields = ["id", "user_id", "user_username", "user_full_name", "job_no", "description", "approved_hours", "created_at"]
+
+    def get_user_full_name(self, obj):
+        return getattr(obj.user, "get_full_name", lambda: "")() or obj.user.username
+
+
+class OvertimeEntryWriteSerializer(serializers.ModelSerializer):
+    user = serializers.PrimaryKeyRelatedField(queryset=User.objects.all())
+
+    class Meta:
+        model = OvertimeEntry
+        fields = ["user", "job_no", "description"]
+
+
+class OvertimeRequestListSerializer(serializers.ModelSerializer):
+    requester_username = serializers.CharField(source="requester.username", read_only=True)
+    total_users = serializers.IntegerField(source="entries.count", read_only=True)
+    status_label = serializers.SerializerMethodField()
+    team_label = serializers.SerializerMethodField()
+
+    def get_status_label(self, obj):
+        return obj.get_status_display()
+    
+    def get_team_label(self, obj):
+        return TEAM_LABELS.get(obj.team, obj.team or "")
+
+    class Meta:
+        model = OvertimeRequest
+        fields = [
+            "id", "status", "status_label", "start_at", "end_at", "duration_hours",
+            "requester", "requester_username", "team", "total_users", "created_at",
+        ]
+
+
+class OvertimeRequestDetailSerializer(serializers.ModelSerializer):
+    requester_username = serializers.CharField(source="requester.username", read_only=True)
+    entries = OvertimeEntryReadSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = OvertimeRequest
+        fields = [
+            "id", "status", "start_at", "end_at", "duration_hours",
+            "requester", "requester_username", "team", "reason",
+            "entries", "created_at", "updated_at",
+        ]
+
+
+class OvertimeRequestCreateSerializer(serializers.ModelSerializer):
+    """
+    Create payload includes:
+    - start_at, end_at
+    - reason (optional)
+    - entries: [{user: <id>, job_no: "...", description: "..."}, ...]
+    """
+    entries = OvertimeEntryWriteSerializer(many=True)
+
+    class Meta:
+        model = OvertimeRequest
+        fields = ["start_at", "end_at", "reason", "entries"]
+
+    def validate(self, data):
+        start_at = data["start_at"]
+        end_at = data["end_at"]
+        if end_at <= start_at:
+            raise serializers.ValidationError("end_at must be after start_at.")
+        return data
+
+    def _validate_overlaps(self, *, requester, start_at, end_at, entries_users, instance=None):
+        """
+        Disallow overlapping open/approved requests for the same user & time range.
+        """
+        qs = OvertimeRequest.objects.filter(
+            status__in=["submitted", "approved"],
+            entries__user__in=entries_users,
+        ).distinct()
+
+        if instance:
+            qs = qs.exclude(pk=instance.pk)
+
+        # overlap condition: existing.start < new.end AND existing.end > new.start
+        qs = qs.filter(Q(start_at__lt=end_at) & Q(end_at__gt=start_at))
+        if qs.exists():
+            raise serializers.ValidationError("One or more selected users already have an overlapping overtime request in this time range.")
+
+    def create(self, validated_data):
+        request = self.context["request"]
+        requester = request.user
+
+        entries_data = validated_data.pop("entries")
+        start_at = validated_data["start_at"]
+        end_at = validated_data["end_at"]
+
+        # Snapshot team from profile if available
+        team = getattr(getattr(requester, "profile", None), "team", "") or ""
+
+        # Validate overlaps before creating
+        users = [row["user"] for row in entries_data]
+        self._validate_overlaps(requester=requester, start_at=start_at, end_at=end_at, entries_users=users)
+
+        ot = OvertimeRequest.objects.create(requester=requester, team=team, **validated_data)
+        OvertimeEntry.objects.bulk_create([
+            OvertimeEntry(request=ot, user=row["user"], job_no=row["job_no"], description=row.get("description", ""))
+            for row in entries_data
+        ])
+
+        # Fire approval hook (no-op for now)
+        ot.send_for_approval()
+
+        return ot
+
+
+class OvertimeRequestUpdateSerializer(serializers.ModelSerializer):
+    """
+    Allow requester to update reason while 'submitted'.
+    (Editing time range or entries is typically disallowed after submission;
+     if you want edits, you can expand here with extra checks.)
+    """
+    class Meta:
+        model = OvertimeRequest
+        fields = ["reason"]
+
+    def validate(self, attrs):
+        obj: OvertimeRequest = self.instance
+        if obj.status != "submitted":
+            raise serializers.ValidationError("Only 'submitted' requests can be edited.")
+        return attrs

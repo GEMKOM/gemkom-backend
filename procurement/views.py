@@ -195,60 +195,40 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
     
     @action(detail=False, methods=['get'], permission_classes=[permissions.IsAuthenticated])
     def pending_approval(self, request):
-        """
-        PRs currently awaiting *this user's* approval:
-        - PR is 'submitted'
-        - current stage includes the user in approver_user_ids
-        - user has not already decided on the current stage
-        """
         user = request.user
-        ct_pr = ContentType.objects.get_for_model(self.get_queryset().model)
+        ct_pr = ContentType.objects.get_for_model(PurchaseRequest)
 
-        # Subquery: current stage order for the PR's workflow
-        current_stage_order_sq = Subquery(
-            ApprovalWorkflow.objects.filter(
-                content_type=ct_pr,
-                object_id=OuterRef('pk'),
-            ).values('current_stage_order')[:1]
-        )
+        # 1) Get open CURRENT stages where I am an approver and haven’t decided
+        my_decision_qs = ApprovalDecision.objects.filter(stage_instance=OuterRef('pk'), approver=user)
 
-        # Subquery: is there a current stage on this PR where I'm an approver and it's still open?
-        open_current_stage_qs = ApprovalStageInstance.objects.filter(
-            workflow__content_type=ct_pr,
-            workflow__object_id=OuterRef('pk'),
-            order=current_stage_order_sq,
-            is_complete=False,
-            is_rejected=False,
-            approver_user_ids__contains=[user.id],
-        )
-
-        # Subquery: have I already decided on that current stage?
-        my_decision_on_current_stage_qs = ApprovalDecision.objects.filter(
-            stage_instance__workflow__content_type=ct_pr,
-            stage_instance__workflow__object_id=OuterRef('pk'),
-            stage_instance__order=current_stage_order_sq,
-            approver=user,
-        )
-
-        queryset = (
-            self.get_queryset()
-            .filter(status='submitted')                         # only in review
-            .exclude(requestor=user)                           # optional: block self-approval
-            .annotate(
-                is_my_open_stage=Exists(open_current_stage_qs),
-                already_decided=Exists(my_decision_on_current_stage_qs),
+        stages_qs = (
+            ApprovalStageInstance.objects
+            .filter(
+                workflow__content_type=ct_pr,
+                order=F('workflow__current_stage_order'),  # ← no nested Subquery, use F() directly
+                is_complete=False,
+                is_rejected=False,
+                approver_user_ids__contains=[user.id],     # JSONB contains int
             )
-            .filter(is_my_open_stage=True, already_decided=False)
-            .order_by(*self.ordering)
+            .annotate(already_decided=Exists(my_decision_qs))
+            .filter(already_decided=False)
+            .values_list('workflow__object_id', flat=True)
+        )
+
+        # 2) PRs linked to those stages and still "submitted"
+        queryset = (
+            PurchaseRequest.objects
+            .filter(id__in=Subquery(stages_qs), status='submitted')
+            .exclude(requestor=user)          # keep if you want to block self-approval
+            .order_by('-created_at')
         )
 
         page = self.paginate_queryset(queryset)
         if page is not None:
-            serializer = self.get_serializer(page, many=True)
-            return self.get_paginated_response(serializer.data)
-
-        serializer = self.get_serializer(queryset, many=True)
-        return Response(serializer.data)
+            ser = PurchaseRequestSerializer(page, many=True)
+            return self.get_paginated_response(ser.data)
+        ser = PurchaseRequestSerializer(queryset, many=True)
+        return Response(ser.data)
 
         
     @action(detail=False, methods=['get'], permission_classes=[permissions.IsAuthenticated])

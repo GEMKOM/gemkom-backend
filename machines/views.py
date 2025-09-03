@@ -93,7 +93,7 @@ class MachineFaultListCreateView(APIView):
         profile = getattr(user, 'profile', None)
 
         # Restrict non-admin, non-maintenance users to their own faults
-        if not user.is_superuser and not getattr(profile, 'is_admin', False) and getattr(profile, 'team', '') != 'maintenance':
+        if not user.is_admin and getattr(profile, 'team', '') != 'maintenance':
             query &= Q(reported_by=user)
 
         machine_id = request.GET.get("machine_id")

@@ -17,9 +17,7 @@ class PublicUserSerializer(serializers.ModelSerializer):
 class UserListSerializer(serializers.ModelSerializer):
     team = serializers.CharField(source='profile.team')
     occupation = serializers.CharField(source='profile.occupation')
-    is_admin = serializers.BooleanField(source='profile.is_admin')
     must_reset_password = serializers.BooleanField(source='profile.must_reset_password')
-    is_lead = serializers.BooleanField(source='profile.is_lead')
     team_label = serializers.SerializerMethodField()
     occupation_label = serializers.SerializerMethodField()
 
@@ -30,7 +28,7 @@ class UserListSerializer(serializers.ModelSerializer):
         model = User
         fields = [
             'id', 'username', 'first_name', 'last_name', 'email', 'is_superuser',
-            'team', 'team_label', 'is_admin', 'is_lead', 'must_reset_password',
+            'team', 'team_label', 'must_reset_password',
             'occupation', 'occupation_label', 'work_location', 'work_location_label'
         ]
 
@@ -120,14 +118,13 @@ class CurrentUserUpdateSerializer(serializers.ModelSerializer):
 class AdminUserUpdateSerializer(serializers.ModelSerializer):
     jira_api_token = serializers.CharField(source="profile.jira_api_token", allow_blank=True, required=False)
     team = serializers.CharField(source='profile.team')
-    is_admin = serializers.BooleanField(source='profile.is_admin')
     must_reset_password = serializers.BooleanField(source='profile.must_reset_password')
     occupation = serializers.CharField(source='profile.occupation')
     work_location = serializers.CharField(source='profile.work_location')
 
     class Meta:
         model = User
-        fields = ['first_name', 'last_name', 'email', 'jira_api_token', 'team', 'is_admin', 'must_reset_password', 'occupation', 'work_location']
+        fields = ['first_name', 'last_name', 'email', 'jira_api_token', 'team', 'must_reset_password', 'occupation', 'work_location']
 
     def update(self, instance, validated_data):
         profile_data = validated_data.pop('profile', {})

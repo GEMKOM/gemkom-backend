@@ -36,13 +36,12 @@ class TimerStopView(APIView):
             request_profile = request_user.profile
             timer_user = timer.user
             timer_profile = timer_user.profile
-            is_admin = request_user.is_superuser or getattr(request_profile, "is_admin", False)
             same_team = request_profile.team == timer_profile.team
 
             # Default deny
             allowed = False
 
-            if is_admin or timer_user == request_user:
+            if request_user.is_admin or timer_user == request_user:
                 allowed = True
             elif request_profile.work_location == "office" and (same_team or (timer_profile.team == "machining" and request_profile.team == "manufacturing")):
                 allowed = True
@@ -92,11 +91,9 @@ class TimerListView(MachiningProtectedView):
         elif request.GET.get("is_active") == "false":
             query &= Q(finish_time__isnull=False)
 
-        profile = getattr(request.user, 'profile', None)
-        is_admin = request.user.is_superuser or getattr(profile, "is_admin", False)
         user_param = request.GET.get("user")
 
-        if is_admin:
+        if request.user and request.user.is_admin:
             if user_param:
                 query &= Q(user__username=user_param)
         else:
@@ -146,7 +143,7 @@ class TimerDetailView(RetrieveUpdateDestroyAPIView):
 
     def get_queryset(self):
         user = self.request.user
-        if user.is_superuser or (hasattr(user, 'profile') and user.profile.is_admin):
+        if user.is_admin:
             return Timer.objects.all()
         return Timer.objects.filter(user=user)
 
@@ -155,9 +152,8 @@ class TimerDetailView(RetrieveUpdateDestroyAPIView):
 
     def destroy(self, request, *args, **kwargs):
         user = request.user
-        is_admin = user.is_superuser or (hasattr(user, 'profile') and user.profile.is_admin)
 
-        if not is_admin:
+        if not user.is_admin:
             return Response({"error": "You are not allowed to delete this timer."}, status=403)
 
         return super().destroy(request, *args, **kwargs)

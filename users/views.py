@@ -26,8 +26,7 @@ class UserViewSet(ModelViewSet):
 
     ordering_fields = [
         'username', 'first_name', 'last_name', 'email',
-        'profile__team', 'profile__work_location', 'profile__occupation',
-        'profile__is_admin', 'profile__is_lead', 'profile__must_reset_password',
+        'profile__team', 'profile__work_location', 'profile__occupation', 'profile__must_reset_password',
     ]
     # default ordering if ?ordering=… is not provided
     ordering = ['username']
@@ -39,7 +38,7 @@ class UserViewSet(ModelViewSet):
         if not user.is_authenticated:
             return qs.filter(profile__work_location='workshop')
 
-        if user.is_superuser or getattr(user.profile, 'is_admin', False):
+        if user.is_admin:
             return qs
 
         if getattr(user.profile, 'work_location', None) == 'office':
@@ -62,7 +61,7 @@ class UserViewSet(ModelViewSet):
             user = self.request.user
             if not user.is_authenticated:
                 return PublicUserSerializer
-            if user.is_superuser or getattr(user.profile, 'is_admin', False):
+            if user.is_admin:
                 return UserListSerializer
             if getattr(user.profile, 'work_location', None) == 'office':
                 return UserListSerializer
@@ -97,9 +96,8 @@ class CurrentUserView(APIView):
     
     def put(self, request):
         user = request.user
-        is_admin_user = user.is_superuser or getattr(user.profile, "is_admin", False)
 
-        if is_admin_user:
+        if user.is_admin:
             serializer_class = AdminUserUpdateSerializer
         else:
             serializer_class = CurrentUserUpdateSerializer

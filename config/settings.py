@@ -75,7 +75,8 @@ INSTALLED_APPS = [
     'machining',
     'machines',
     'procurement',
-    "approvals"
+    "approvals",
+    'overtime',
 ]
 
 MIDDLEWARE = [

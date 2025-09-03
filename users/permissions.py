@@ -10,7 +10,7 @@ class IsMachiningUserOrAdmin(BasePermission):
             and user.is_authenticated
             and (
                 user.is_superuser
-                or getattr(profile, "is_admin", False)
+                or user.is_admin
                 or getattr(profile, "team", "").lower() == "machining"
             )
         )
@@ -23,6 +23,6 @@ class IsAdmin(BasePermission):
             and user.is_authenticated
             and (
                 user.is_superuser
-                or (hasattr(user, 'profile') and getattr(user.profile, 'is_admin', False))
+                or user.is_admin
             )
         )
