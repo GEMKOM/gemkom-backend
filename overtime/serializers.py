@@ -48,7 +48,7 @@ class OvertimeRequestListSerializer(serializers.ModelSerializer):
         model = OvertimeRequest
         fields = [
             "id", "status", "status_label", "start_at", "end_at", "duration_hours",
-            "requester", "requester_username", "team", "total_users", "created_at",
+            "requester", "requester_username", "team", "team_label", "total_users", "created_at",
         ]
 
 
