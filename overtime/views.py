@@ -28,7 +28,7 @@ from rest_framework.filters import OrderingFilter, SearchFilter
 from django_filters.rest_framework import DjangoFilterBackend
 from django.contrib.contenttypes.models import ContentType
 
-from approvals.models import ApprovalWorkflow, ApprovalStageInstance
+from approvals.models import ApprovalDecision, ApprovalWorkflow, ApprovalStageInstance
 from .models import OvertimeRequest, OvertimeEntry
 from .serializers import (
     OvertimeRequestListSerializer,
@@ -39,6 +39,10 @@ from .serializers import (
 from .filters import OvertimeRequestFilter
 from .permissions import IsRequesterOrAdmin
 from .approval_service import decide as ot_decide  # approve/reject helper
+
+from django.db.models import Exists, OuterRef, Subquery
+from django.contrib.contenttypes.models import ContentType
+from rest_framework import permissions
 
 
 
@@ -158,8 +162,8 @@ class OvertimeRequestViewSet(viewsets.ModelViewSet):
         return Response({"detail": "Rejected.", "status": ot.status})
 
     # ---------- Inbox: pending approvals for the current user ----------
-    @action(detail=False, methods=["get"], url_path="pending-approvals")
-    def pending_approvals(self, request):
+    @action(detail=False, methods=["get"], url_path="pending_approval")
+    def pending_approval(self, request):
         """
         Returns OvertimeRequests where the caller is in the CURRENT stage approvers.
         """
@@ -205,3 +209,51 @@ class OvertimeRequestViewSet(viewsets.ModelViewSet):
                 "url": f"/overtime/requests/{ot.id}/",  # frontend can link to detail
             })
         return Response(data, status=200)
+    
+    @action(detail=False, methods=["get"], permission_classes=[permissions.IsAuthenticated], url_path="approved_by_me")
+    def approved_by_me(self, request):
+        """
+        Overtime requests where *I* have decided (approved/rejected), optionally filtered by date and decision type.
+
+        Query params:
+        - decision: 'approve' | 'reject' (default: 'approve')
+        - since: ISO datetime (include decisions made at/after this)
+        - until: ISO datetime (include decisions made before this)
+        """
+        user = request.user
+        decision_type = request.query_params.get("decision", "approve")
+        since = request.query_params.get("since")
+        until = request.query_params.get("until")
+
+        from overtime.models import OvertimeRequest  # local import to avoid circulars
+        ct_ot = ContentType.objects.get_for_model(OvertimeRequest)
+
+        # Subquery: my decisions on any stage in this OT's workflow
+        my_decisions = ApprovalDecision.objects.filter(
+            stage_instance__workflow__content_type=ct_ot,
+            stage_instance__workflow__object_id=OuterRef("pk"),
+            approver=user,
+        )
+        if decision_type in ("approve", "reject"):
+            my_decisions = my_decisions.filter(decision=decision_type)
+        if since:
+            my_decisions = my_decisions.filter(decided_at__gte=since)
+        if until:
+            my_decisions = my_decisions.filter(decided_at__lt=until)
+
+        # IMPORTANT: start from all OTs so you see approvals even if you aren't requester/entry user
+        base_qs = OvertimeRequest.objects.all()
+
+        qs = (
+            base_qs
+            .annotate(i_decided=Exists(my_decisions))
+            .filter(i_decided=True)
+            .order_by(*self.ordering)  # uses your viewset's ordering (["-created_at"])
+            .distinct()
+        )
+
+        page = self.paginate_queryset(qs)
+        ser_cls = self.get_serializer_class()  # ensure this returns your list serializer for this action
+        if page is not None:
+            return self.get_paginated_response(ser_cls(page, many=True).data)
+        return Response(ser_cls(qs, many=True).data)

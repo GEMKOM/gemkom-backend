@@ -17,7 +17,7 @@ class UserAdmin(BaseUserAdmin):
         return instance.profile.team if hasattr(instance, 'profile') else '-'
     
     def is_admin(self, instance):
-        return instance.profile.location_type == "office" if hasattr(instance, 'profile') else False
+        return instance.profile.work_location == "office" if hasattr(instance, 'profile') else False
     is_admin.boolean = True  # show as checkmark in admin
     is_admin.short_description = 'Admin?'
 

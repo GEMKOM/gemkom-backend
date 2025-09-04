@@ -5,7 +5,7 @@ class IsRequesterOrAdmin(BasePermission):
     """
     - Requester can read & update their own.
     - Users included as entry line can read.
-    - Admins (superuser or user.profile.location_type == "office") can do anything.
+    - Admins (superuser or user.profile.work_location == "office") can do anything.
     """
 
     def has_object_permission(self, request, view, obj):

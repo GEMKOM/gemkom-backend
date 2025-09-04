@@ -46,7 +46,7 @@ class UserProfile(models.Model):
     
     @property
     def is_admin(self) -> bool:
-        return bool(getattr(self.user, "is_superuser", False) or self.location_type == "office")
+        return bool(getattr(self.user, "is_superuser", False) or self.work_location == "office")
 
 def _user_is_admin(self) -> bool:
     # guards AnonymousUser and missing profile
@@ -55,7 +55,7 @@ def _user_is_admin(self) -> bool:
     if getattr(self, "is_superuser", False):
         return True
     prof = getattr(self, "profile", None)
-    return bool(prof and getattr(prof, "location_type", None) == "office")
+    return bool(prof and getattr(prof, "work_location", None) == "office")
 
 # attach as a property
 User.add_to_class("is_admin", property(_user_is_admin))
