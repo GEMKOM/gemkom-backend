@@ -170,7 +170,7 @@ def auto_bypass_self_approver(wf: ApprovalWorkflow, requestor_user_id: int) -> t
                     defaults={"first_name": "System", "last_name": "User", "is_active": True},
                 )[0],
                 decision="approve",
-                comment="Auto-bypass: requestor is the sole approver for this stage.",
+                comment="Oto-geçiş: Talep eden kişi onaylama yetkisine sahip.",
             )
             stage.approved_count = stage.required_approvals
             stage.is_complete = True

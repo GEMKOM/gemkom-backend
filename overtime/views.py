@@ -91,7 +91,7 @@ class OvertimeRequestViewSet(viewsets.ModelViewSet):
             return OvertimeRequestCreateSerializer
         elif self.action in ["update", "partial_update"]:
             return OvertimeRequestUpdateSerializer
-        elif self.action == "list":
+        elif self.action in ["list", "pending_approval", "approved_by_me"]:
             return OvertimeRequestListSerializer
         return OvertimeRequestDetailSerializer
 
@@ -175,73 +175,49 @@ class OvertimeRequestViewSet(viewsets.ModelViewSet):
         return Response({"detail": "Rejected.", "status": ot.status})
 
     # ---------- Inbox: pending approvals for the current user ----------
-    @action(detail=False, methods=["get"], url_path="pending_approval")
+    @action(detail=False, methods=["get"], permission_classes=[permissions.IsAuthenticated], url_path="pending_approval")
     def pending_approval(self, request):
-        """
-        Returns OvertimeRequests where the caller is in the CURRENT stage approvers.
-        """
         user = request.user
         ct = ContentType.objects.get_for_model(OvertimeRequest)
-        stages = (ApprovalStageInstance.objects
-                  .filter(
-                      workflow__content_type=ct,
-                      workflow__is_complete=False,
-                      workflow__is_rejected=False,
-                      workflow__current_stage_order=F("order"),
-                      is_complete=False,
-                      is_rejected=False,
-                      approver_user_ids__contains=[user.id],   # Postgres JSONB containment
-                  )
-                  .select_related("workflow")
-                  .order_by("-id"))
 
-        ot_ids = [s.workflow.object_id for s in stages]
-        # keep list ordering by stages (optional)
-        qs = (OvertimeRequest.objects
-              .filter(id__in=ot_ids)
-              .select_related("requester")
-              .prefetch_related("entries"))
+        # open CURRENT stages where I’m an approver
+        stages_qs = (
+            ApprovalStageInstance.objects
+            .filter(
+                workflow__content_type=ct,
+                workflow__is_complete=False,
+                workflow__is_rejected=False,
+                workflow__is_cancelled=False,          # avoid cancelled workflows
+                order=F("workflow__current_stage_order"),
+                is_complete=False,
+                is_rejected=False,
+                approver_user_ids__contains=[user.id], # Postgres JSONB
+            )
+            .values_list("workflow__object_id", flat=True)
+        )
 
-        # Map stage meta (name/order) onto each OT in the response
-        stage_map = {s.workflow.object_id: {"order": s.order, "name": s.name} for s in stages}
+        queryset = (
+            OvertimeRequest.objects
+            .filter(id__in=Subquery(stages_qs), status="submitted")  # only submitted OTs
+            .select_related("requester")
+            .prefetch_related(Prefetch("entries", queryset=OvertimeEntry.objects.select_related("user")))
+            .order_by(*self.ordering)
+            .distinct()
+        )
 
-        data = []
-        for ot in qs:
-            st = stage_map.get(ot.id, {"order": None, "name": None})
-            data.append({
-                "id": ot.id,
-                "status": ot.status,
-                "start_at": ot.start_at,
-                "end_at": ot.end_at,
-                "duration_hours": ot.duration_hours,
-                "team": ot.team,
-                "reason": ot.reason,
-                "requester": getattr(ot.requester, "username", None),
-                "current_stage_order": st["order"],
-                "current_stage_name": st["name"],
-                "url": f"/overtime/requests/{ot.id}/",  # frontend can link to detail
-            })
-        return Response(data, status=200)
+        page = self.paginate_queryset(queryset)
+        ser = self.get_serializer(page if page is not None else queryset, many=True, context=self.get_serializer_context())
+        return self.get_paginated_response(ser.data) if page is not None else Response(ser.data)
     
-    @action(detail=False, methods=["get"], permission_classes=[permissions.IsAuthenticated], url_path="approved_by_me")
-    def approved_by_me(self, request):
-        """
-        Overtime requests where *I* have decided (approved/rejected), optionally filtered by date and decision type.
-
-        Query params:
-        - decision: 'approve' | 'reject' (default: 'approve')
-        - since: ISO datetime (include decisions made at/after this)
-        - until: ISO datetime (include decisions made before this)
-        """
+    @action(detail=False, methods=["get"], permission_classes=[permissions.IsAuthenticated], url_path="decision_by_me")
+    def decision_by_me(self, request):
         user = request.user
-        decision_type = request.query_params.get("decision", "approve")
+        decision_type = request.query_params.get("decision", "")
         since = request.query_params.get("since")
         until = request.query_params.get("until")
 
-        from overtime.models import OvertimeRequest  # local import to avoid circulars
         ct_ot = ContentType.objects.get_for_model(OvertimeRequest)
 
-        # Subquery: my decisions on any stage in this OT's workflow
         my_decisions = ApprovalDecision.objects.filter(
             stage_instance__workflow__content_type=ct_ot,
             stage_instance__workflow__object_id=OuterRef("pk"),
@@ -254,19 +230,17 @@ class OvertimeRequestViewSet(viewsets.ModelViewSet):
         if until:
             my_decisions = my_decisions.filter(decided_at__lt=until)
 
-        # IMPORTANT: start from all OTs so you see approvals even if you aren't requester/entry user
-        base_qs = OvertimeRequest.objects.all()
-
-        qs = (
-            base_qs
+        queryset = (
+            OvertimeRequest.objects
             .annotate(i_decided=Exists(my_decisions))
             .filter(i_decided=True)
-            .order_by(*self.ordering)  # uses your viewset's ordering (["-created_at"])
+            .select_related("requester")
+            .prefetch_related(Prefetch("entries", queryset=OvertimeEntry.objects.select_related("user")))
+            .order_by(*self.ordering)
             .distinct()
         )
 
-        page = self.paginate_queryset(qs)
-        ser_cls = self.get_serializer_class()  # ensure this returns your list serializer for this action
-        if page is not None:
-            return self.get_paginated_response(ser_cls(page, many=True).data)
-        return Response(ser_cls(qs, many=True).data)
+        page = self.paginate_queryset(queryset)
+        ser = self.get_serializer(page if page is not None else queryset, many=True, context=self.get_serializer_context())
+        return self.get_paginated_response(ser.data) if page is not None else Response(ser.data)
+

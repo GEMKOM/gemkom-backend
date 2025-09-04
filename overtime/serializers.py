@@ -1,6 +1,8 @@
 # overtime/serializers.py
-from django.utils import timezone
+from django.contrib.contenttypes.models import ContentType
 from django.db.models import Q
+from approvals.models import ApprovalWorkflow
+from approvals.serializers import WorkflowSerializer
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 
@@ -37,18 +39,37 @@ class OvertimeRequestListSerializer(serializers.ModelSerializer):
     total_users = serializers.IntegerField(source="entries.count", read_only=True)
     status_label = serializers.SerializerMethodField()
     team_label = serializers.SerializerMethodField()
+    approval = serializers.SerializerMethodField()
 
     def get_status_label(self, obj):
         return obj.get_status_display()
     
     def get_team_label(self, obj):
         return TEAM_LABELS.get(obj.team, obj.team or "")
+    
+    def get_approval(self, obj):
+        """
+        Return the latest workflow for this overtime request (if any).
+        Uses prefetched GenericRelation if present; otherwise falls back to a direct query.
+        """
+        wfs = getattr(obj, "approvals", None)  # GenericRelation (see step 2)
+        if wfs is not None:
+            wf = wfs.order_by("-created_at").first()
+        else:
+            ct = ContentType.objects.get_for_model(OvertimeRequest)
+            wf = (ApprovalWorkflow.objects
+                  .filter(content_type=ct, object_id=obj.id)
+                  .order_by("-created_at")
+                  .first())
+        if not wf:
+            return None
+        return WorkflowSerializer(wf, context=self.context).data
 
     class Meta:
         model = OvertimeRequest
         fields = [
             "id", "status", "status_label", "start_at", "end_at", "duration_hours",
-            "requester", "requester_username", "team", "team_label", "total_users", "created_at",
+            "requester", "requester_username", "team", "team_label", "total_users", "created_at","approval"
         ]
 
 
@@ -57,19 +78,38 @@ class OvertimeRequestDetailSerializer(serializers.ModelSerializer):
     entries = OvertimeEntryReadSerializer(many=True, read_only=True)
     status_label = serializers.SerializerMethodField()
     team_label = serializers.SerializerMethodField()
+    approval = serializers.SerializerMethodField()
 
     def get_status_label(self, obj):
         return obj.get_status_display()
     
     def get_team_label(self, obj):
         return TEAM_LABELS.get(obj.team, obj.team or "")
+    
+    def get_approval(self, obj):
+        """
+        Return the latest workflow for this overtime request (if any).
+        Uses prefetched GenericRelation if present; otherwise falls back to a direct query.
+        """
+        wfs = getattr(obj, "approvals", None)  # GenericRelation (see step 2)
+        if wfs is not None:
+            wf = wfs.order_by("-created_at").first()
+        else:
+            ct = ContentType.objects.get_for_model(OvertimeRequest)
+            wf = (ApprovalWorkflow.objects
+                  .filter(content_type=ct, object_id=obj.id)
+                  .order_by("-created_at")
+                  .first())
+        if not wf:
+            return None
+        return WorkflowSerializer(wf, context=self.context).data
 
     class Meta:
         model = OvertimeRequest
         fields = [
             "id", "status", "start_at", "end_at", "duration_hours",
             "requester", "requester_username", "team", "reason",
-            "entries", "created_at", "updated_at", "team_label", "status_label"
+            "entries", "created_at", "updated_at", "team_label", "status_label", "approval"
         ]
 
 
