@@ -64,7 +64,7 @@ def _ot_title(ot: OvertimeRequest):
     return f"{s} → {e} / {ot.duration_hours} saat"
 
 def _ot_frontend_url(ot: OvertimeRequest):
-    return f"https://ofis.gemcore.com.tr/hr/overtime/?ot={ot.id}"
+    return f"https://ofis.gemcore.com.tr/general/overtime/pending/?request={ot.id}"
 
 def _email_approvers_for_current_stage(wf: ApprovalWorkflow, reason: str = "pending"):
     if wf.is_complete or wf.is_rejected:

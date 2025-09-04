@@ -39,6 +39,7 @@ from .serializers import (
 from .filters import OvertimeRequestFilter
 from .permissions import IsRequesterOrAdmin
 from .approval_service import decide as ot_decide  # approve/reject helper
+from approvals.services import get_workflow
 
 from django.db.models import Exists, OuterRef, Subquery
 from django.contrib.contenttypes.models import ContentType
@@ -103,8 +104,20 @@ class OvertimeRequestViewSet(viewsets.ModelViewSet):
         obj: OvertimeRequest = self.get_object()
         if obj.status != "submitted":
             return Response({"detail": "Only 'submitted' requests can be cancelled."}, status=400)
+
+        # set request status
         obj.status = "cancelled"
         obj.save(update_fields=["status", "updated_at"])
+
+        # ALSO mark the approval workflow as cancelled
+        try:
+            wf = get_workflow(obj)  # generic ctype lookup
+        except ApprovalWorkflow.DoesNotExist:
+            wf = None
+        if wf and not (wf.is_complete or wf.is_rejected or wf.is_cancelled):
+            wf.is_cancelled = True
+            wf.save(update_fields=["is_cancelled"])
+
         return Response({"detail": "Request cancelled."}, status=200)
 
     # ---------- Approvals: Approve / Reject (detail actions) ----------

@@ -55,13 +55,21 @@ class OvertimeRequestListSerializer(serializers.ModelSerializer):
 class OvertimeRequestDetailSerializer(serializers.ModelSerializer):
     requester_username = serializers.CharField(source="requester.username", read_only=True)
     entries = OvertimeEntryReadSerializer(many=True, read_only=True)
+    status_label = serializers.SerializerMethodField()
+    team_label = serializers.SerializerMethodField()
+
+    def get_status_label(self, obj):
+        return obj.get_status_display()
+    
+    def get_team_label(self, obj):
+        return TEAM_LABELS.get(obj.team, obj.team or "")
 
     class Meta:
         model = OvertimeRequest
         fields = [
             "id", "status", "start_at", "end_at", "duration_hours",
             "requester", "requester_username", "team", "reason",
-            "entries", "created_at", "updated_at",
+            "entries", "created_at", "updated_at", "team_label", "status_label"
         ]
 
 
@@ -100,7 +108,7 @@ class OvertimeRequestCreateSerializer(serializers.ModelSerializer):
         # overlap condition: existing.start < new.end AND existing.end > new.start
         qs = qs.filter(Q(start_at__lt=end_at) & Q(end_at__gt=start_at))
         if qs.exists():
-            raise serializers.ValidationError("One or more selected users already have an overlapping overtime request in this time range.")
+            raise serializers.ValidationError("Bir veya daha fazla kullanıcı bu tarihler arasında mesaiye kalmaktadır.")
 
     def create(self, validated_data):
         request = self.context["request"]
