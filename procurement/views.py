@@ -10,7 +10,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework import status, permissions
 from .models import (
-    PaymentSchedule, PaymentTerms, PurchaseOrder, PurchaseRequestDraft, Supplier, Item, PurchaseRequest, 
+    PaymentSchedule, PaymentTerms, PurchaseOrder, PurchaseOrderLine, PurchaseRequestDraft, Supplier, Item, PurchaseRequest, 
     PurchaseRequestItem, SupplierOffer, ItemOffer
 )
 from .serializers import (
@@ -44,6 +44,12 @@ from django.db.models import Q, OuterRef, Exists, Value, IntegerField
 from django.db.models import Min, F, Case, When
 from django.db.models.functions import Coalesce, TruncDate
 from django.db.models import Prefetch
+
+from django.db.models import Count, Sum, Min, OuterRef, Subquery, Value, DecimalField, DateTimeField
+from django.db.models.functions import Coalesce
+from django.contrib.postgres.aggregates import ArrayAgg
+from decimal import Decimal, ROUND_HALF_UP
+from core.models import CurrencyRateSnapshot
 
 class PaymentTermsViewSet(viewsets.ModelViewSet):
     """
@@ -98,11 +104,30 @@ class SupplierViewSet(viewsets.ModelViewSet):
         if name:
             queryset = queryset.filter(name__icontains=name)
         return queryset
+    
+    @action(detail=False, methods=["get"], url_path="report", permission_classes=[permissions.IsAuthenticated])
+    def report(self, request):
+        from .reports.suppliers import build_suppliers_report
+        base_qs = self.get_queryset()  # your SupplierViewSet already filters is_active + search/order
+        rows = build_suppliers_report(base_qs, request)
+
+        page = self.paginate_queryset(rows)
+        if page is not None:
+            return self.get_paginated_response(page)
+        return Response(rows)
 
 class ItemViewSet(viewsets.ModelViewSet):
     queryset = Item.objects.all()
     serializer_class = ItemSerializer
     permission_classes = [permissions.IsAuthenticated]
+
+    filter_backends = [DjangoFilterBackend, OrderingFilter, SearchFilter]
+    filterset_fields = {
+        "code": ["exact", "icontains"],
+        "name": ["icontains"],
+    }
+    ordering_fields = ["code", "name"]  # (plus any report fields you expose via ?ordering=…)
+    search_fields = ["code", "name"]
     
     def get_queryset(self):
         queryset = Item.objects.all()
@@ -113,6 +138,17 @@ class ItemViewSet(viewsets.ModelViewSet):
         if name:
             queryset = queryset.filter(name__icontains=name)
         return queryset
+    
+    @action(detail=False, methods=["get"], permission_classes=[permissions.IsAuthenticated])
+    def report(self, request):
+        from .reports.items import build_items_report
+        base_qs = self.filter_queryset(self.get_queryset())  # reuses code/name/search filters
+        rows = build_items_report(base_qs, request)
+
+        page = self.paginate_queryset(rows)
+        if page is not None:
+            return self.get_paginated_response(page)
+        return Response(rows)
 
 class PurchaseRequestViewSet(viewsets.ModelViewSet):
     queryset = PurchaseRequest.objects.all()
