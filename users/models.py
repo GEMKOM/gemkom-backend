@@ -18,7 +18,8 @@ class UserProfile(models.Model):
         ('cutting', 'CNC Kesim'),
         ('warehouse', 'Ambar'),
         ('finance', 'Finans'),
-        ('management', 'Yönetim')
+        ('management', 'Yönetim'),
+        ('external_workshops', 'Dış Atölyeler')
         # Add more as needed
     ]
     OCCUPATION_CHOICES = [

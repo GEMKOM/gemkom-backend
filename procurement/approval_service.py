@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from django.db import transaction
-from django.db.models import Q
 from django.contrib.auth.models import User
 
 from approvals.services import (
@@ -18,6 +17,7 @@ from approvals.models import ApprovalStageInstance, ApprovalWorkflow, ApprovalDe
 from .models import PurchaseRequest
 from procurement.services import create_pos_from_recommended
 from core.emails import send_plain_email
+from django.db.models import Max, Q
 
 
 SYSTEM_USERNAME = "system"
@@ -171,6 +171,25 @@ def submit_purchase_request(pr: PurchaseRequest, by_user):
 
     wf = create_workflow(pr, policy, snapshot=snapshot, approver_user_ids_builder=_builder)
 
+    # -------- NEW: auto-skip first stage for external_workshops --------
+    requester_team = getattr(getattr(pr, "requestor", None), "profile", None)
+    requester_team = getattr(requester_team, "team", None)
+
+    if requester_team == "external_workshops":
+        # Only if we are at stage 1, skip it
+        if getattr(wf, "current_stage_order", 0) == 1:
+            skipped, finished = _skip_current_stage(wf, reason="Auto-skip for external_workshops")
+            if finished:
+                pr.status = "approved"
+                pr.save(update_fields=["status"])
+                created_pos = create_pos_from_recommended(pr)
+                _email_requestor_on_final(pr, status_str="Onaylandı", comment="(Dış atölye: 1. aşama atlandı)")
+                _email_finance_pos_created(pr, created_pos)
+                return wf
+            # If not finished, we’ll notify the next stage’s approvers below as usual
+            # (and we should NOT notify stage-1 approvers)
+    # -------------------------------------------------------------------
+
     # Auto-bypass if the requester is the sole approver for current stage(s)
     changed, finished = auto_bypass_self_approver(wf, pr.requestor_id)
     if finished:
@@ -209,3 +228,58 @@ def decide(pr: PurchaseRequest, user, approve: bool, comment: str = ""):
 
     # "pending" → quorum not yet reached; no side effect
     return wf
+
+
+def _skip_current_stage(wf, reason: str = "Auto-skip"):
+    """
+    Advances the workflow by skipping the *current* stage.
+    Works with common patterns:
+      - wf.current_stage_order (int)
+      - wf.stages (related manager) with per-instance records having `order` and `status`
+    Returns (changed: bool, finished: bool)
+    """
+    # Try to fetch the current stage instance
+    current_order = getattr(wf, "current_stage_order", None)
+    if current_order is None:
+        return False, False
+
+    # Many setups expose something like wf.stage_instances / wf.stages / wf.workflowstages
+    stages_rel = getattr(wf, "stages", None) or getattr(wf, "stage_instances", None)
+    if stages_rel is None:
+        return False, False
+
+    cur = stages_rel.filter(order=current_order).first()
+    if not cur:
+        return False, False
+
+    # If your stage instance has a status field, mark it skipped (or approved)
+    if hasattr(cur, "status"):
+        if cur.status in ("approved", "skipped"):
+            # Already not actionable; attempt to advance pointer if engine allows
+            pass
+        else:
+            cur.status = "skipped"
+            # Optional: if you store audit trails/comments
+            if hasattr(cur, "system_comment"):
+                cur.system_comment = (cur.system_comment or "") + f"\n[{reason}]"
+            cur.save(update_fields=[f for f in ("status", "system_comment") if hasattr(cur, f)])
+
+    # Advance the workflow pointer to the next stage
+    # If your engine has a dedicated method (e.g. wf.advance_to_next_stage()),
+    # prefer calling that instead.
+    max_order = stages_rel.aggregate(Max("order"))["order__max"] or 0
+    if current_order >= max_order:
+        # we just completed the last stage → workflow finished
+        if hasattr(wf, "is_completed"):
+            setattr(wf, "is_completed", True)
+            wf.save(update_fields=["is_completed"])
+        else:
+            # Some engines mark completion with a sentinel order like None/0 or keep last
+            setattr(wf, "current_stage_order", current_order + 1)
+            wf.save(update_fields=["current_stage_order"])
+        return True, True
+
+    # Move to the next stage
+    setattr(wf, "current_stage_order", current_order + 1)
+    wf.save(update_fields=["current_stage_order"])
+    return True, False
