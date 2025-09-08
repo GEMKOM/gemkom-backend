@@ -651,3 +651,45 @@ class ProcurementReportViewSet(viewsets.GenericViewSet):
         if page is not None:
             return self.get_paginated_response(page)
         return Response(rows)
+    
+    @action(detail=False, methods=["get"], url_path="executive")
+    def executive(self, request):
+        from .reports.finance import build_executive_overview
+        payload = build_executive_overview(request) or {}
+        return Response(payload)
+
+    @action(detail=False, methods=["get"], url_path="concentration")
+    def concentration(self, request):
+        from .reports.finance import build_concentration_report
+        payload = build_concentration_report(request) or {}
+        return Response(payload)
+
+    @action(detail=False, methods=["get"], url_path="cash-forecast")
+    def cash_forecast(self, request):
+        from .reports.finance import build_cash_forecast
+        payload = build_cash_forecast(request) or {}
+        return Response(payload)
+
+    @action(detail=False, methods=["get"], url_path="cycle-time")
+    def cycle_time(self, request):
+        from .reports.finance import build_cycle_time_report
+        payload = build_cycle_time_report(request) or {}
+        return Response(payload)
+
+    @action(detail=False, methods=["get"], url_path="price-variance")
+    def price_variance(self, request):
+        from .reports.finance import build_price_variance_report
+        rows = build_price_variance_report(request) or []
+        page = self.paginate_queryset(rows)
+        if page is not None:
+            return self.get_paginated_response(page)
+        return Response(rows)
+
+    @action(detail=False, methods=["get"], url_path="projects")
+    def projects(self, request):
+        from .reports.finance import build_projects_report
+        rows = build_projects_report(request) or []
+        page = self.paginate_queryset(rows)
+        if page is not None:
+            return self.get_paginated_response(page)
+        return Response(rows)
