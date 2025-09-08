@@ -45,11 +45,11 @@ from django.db.models import Min, F, Case, When
 from django.db.models.functions import Coalesce, TruncDate
 from django.db.models import Prefetch
 
-from django.db.models import Count, Sum, Min, OuterRef, Subquery, Value, DecimalField, DateTimeField
+from django.db.models import Count, Min, OuterRef, Subquery, Value
 from django.db.models.functions import Coalesce
-from django.contrib.postgres.aggregates import ArrayAgg
-from decimal import Decimal, ROUND_HALF_UP
-from core.models import CurrencyRateSnapshot
+from decimal import Decimal
+from django.contrib.auth import get_user_model
+from .reports.common import bool_param
 
 class PaymentTermsViewSet(viewsets.ModelViewSet):
     """
@@ -104,17 +104,6 @@ class SupplierViewSet(viewsets.ModelViewSet):
         if name:
             queryset = queryset.filter(name__icontains=name)
         return queryset
-    
-    @action(detail=False, methods=["get"], url_path="report", permission_classes=[permissions.IsAuthenticated])
-    def report(self, request):
-        from .reports.suppliers import build_suppliers_report
-        base_qs = self.get_queryset()  # your SupplierViewSet already filters is_active + search/order
-        rows = build_suppliers_report(base_qs, request)
-
-        page = self.paginate_queryset(rows)
-        if page is not None:
-            return self.get_paginated_response(page)
-        return Response(rows)
 
 class ItemViewSet(viewsets.ModelViewSet):
     queryset = Item.objects.all()
@@ -138,17 +127,6 @@ class ItemViewSet(viewsets.ModelViewSet):
         if name:
             queryset = queryset.filter(name__icontains=name)
         return queryset
-    
-    @action(detail=False, methods=["get"], permission_classes=[permissions.IsAuthenticated])
-    def report(self, request):
-        from .reports.items import build_items_report
-        base_qs = self.filter_queryset(self.get_queryset())  # reuses code/name/search filters
-        rows = build_items_report(base_qs, request)
-
-        page = self.paginate_queryset(rows)
-        if page is not None:
-            return self.get_paginated_response(page)
-        return Response(rows)
 
 class PurchaseRequestViewSet(viewsets.ModelViewSet):
     queryset = PurchaseRequest.objects.all()
@@ -567,3 +545,109 @@ class PurchaseOrderViewSet(viewsets.ReadOnlyModelViewSet):
         # Return updated PO snapshot (with derived VAT fields)
         serializer = PurchaseOrderDetailSerializer(po, context=self.get_serializer_context())
         return Response(serializer.data, status=200)
+
+class ProcurementReportViewSet(viewsets.GenericViewSet):
+    """
+    All procurement reports under /procurement/reports/<report-name>/.
+    Uses DRF pagination (paginate_queryset / get_paginated_response).
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    @action(detail=False, methods=["get"], url_path="items")
+    def items(self, request):
+        """
+        Items report (EUR-normalized): supports ?code=, ?name=, ?ordering=..., pagination.
+        Hides items with no convertible data (same behavior as before).
+        """
+        from .reports.items import build_items_report
+
+        # optional filters for items
+        base_qs = Item.objects.all()
+        code_q = request.query_params.get("code")
+        name_q = request.query_params.get("name")
+        if code_q:
+            base_qs = base_qs.filter(code__icontains=code_q)
+        if name_q:
+            base_qs = base_qs.filter(name__icontains=name_q)
+
+        rows = build_items_report(base_qs, request) or []
+
+        page = self.paginate_queryset(rows)
+        if page is not None:
+            return self.get_paginated_response(page)
+        return Response(rows)
+    
+
+    @action(detail=False, methods=["get"], url_path="suppliers")
+    def suppliers(self, request):
+        """
+        Suppliers report (EUR-normalized).
+        Filters supported in builder: ?name=, ?code=, ?has_dbs=, ?created_gte=, ?created_lte=, ?status=, ?min_total_spent_eur=
+        Ordering: ?ordering=... (default -total_spent_eur). Pagination as usual.
+        Hides 'empty' suppliers (no active POs, no spend, no items).
+        """
+        from .reports.suppliers import build_suppliers_report
+
+        base_qs = Supplier.objects.filter(is_active=True)
+        rows = build_suppliers_report(base_qs, request) or []
+
+        page = self.paginate_queryset(rows)
+        if page is not None:
+            return self.get_paginated_response(page)
+        return Response(rows)
+
+    @action(detail=False, methods=["get"], url_path="staff")
+    def staff(self, request):
+        """
+        Procurement staff report:
+        Accepts user filters and includes both procurement & external_workshops by default.
+        Filters:
+          - teams: comma-separated team codes (default: procurement,external_workshops)
+          - username: icontains filter on username
+          - name: icontains filter on first_name OR last_name
+          - email: icontains filter on email
+          - is_active: true/false (1/0/yes/no/true/false)
+        Plus the existing date filters used inside the builder:
+          - created_gte, created_lte
+        Ordering: ?ordering=... (default -total_spent_eur). Pagination applied.
+        """
+        from .reports.employees import build_procurement_staff_report
+
+        User = get_user_model()
+        base_qs = User.objects.all()
+
+        # Teams: default to both procurement & external_workshops
+        teams_param = request.query_params.get("teams") or request.query_params.get("team")
+        if teams_param:
+            teams = [t.strip() for t in teams_param.split(",") if t.strip()]
+        else:
+            teams = ["procurement", "external_workshops"]
+        base_qs = base_qs.filter(profile__team__in=teams)
+
+        # User filters
+        username_q = request.query_params.get("username")
+        name_q     = request.query_params.get("name")
+        email_q    = request.query_params.get("email")
+        is_active_q = request.query_params.get("is_active")
+
+        if username_q:
+            base_qs = base_qs.filter(username__icontains=username_q)
+
+        if name_q:
+            base_qs = base_qs.filter(
+                Q(first_name__icontains=name_q) | Q(last_name__icontains=name_q)
+            )
+
+        if email_q:
+            base_qs = base_qs.filter(email__icontains=email_q)
+
+        active_bool = bool_param(is_active_q)
+        if active_bool is not None:
+            base_qs = base_qs.filter(is_active=active_bool)
+
+        rows = build_procurement_staff_report(base_qs, request) or []
+
+        page = self.paginate_queryset(rows)
+        if page is not None:
+            return self.get_paginated_response(page)
+        return Response(rows)
