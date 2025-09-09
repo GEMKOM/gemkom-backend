@@ -30,6 +30,7 @@ class Task(models.Model):
     finish_time = models.DateField(null=True, blank=True)
 
     # Planning (set by frontend save)
+    in_plan = models.BooleanField(default=False, db_index=True)
     planned_start_ms = models.BigIntegerField(null=True, blank=True)
     planned_end_ms = models.BigIntegerField(null=True, blank=True)
     plan_order = models.IntegerField(null=True, blank=True)
@@ -40,13 +41,15 @@ class Task(models.Model):
     
     class Meta:
         constraints = [
+            # Only enforce unique order for items that are actually in the plan
             models.UniqueConstraint(
                 fields=['machine_fk', 'plan_order'],
-                name='uniq_machine_plan_order',
-                condition=models.Q(plan_order__isnull=False),
+                name='uniq_machine_plan_order_active',
+                condition=models.Q(plan_order__isnull=False, in_plan=True),
             ),
         ]
         indexes = [
+            models.Index(fields=['machine_fk', 'in_plan']),
             models.Index(fields=['machine_fk', 'plan_order']),
             models.Index(fields=['machine_fk', 'planned_start_ms']),
         ]

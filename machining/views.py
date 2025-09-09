@@ -5,7 +5,7 @@ from machining.filters import TaskFilter
 from machining.permissions import MachiningProtectedView
 from users.permissions import IsAdmin, IsMachiningUserOrAdmin
 from .models import Task, TaskKeyCounter, Timer
-from .serializers import HoldTaskSerializer, PlanningCandidateSerializer, TaskPlanBulkWrapperSerializer, TaskSerializer, TimerSerializer
+from .serializers import HoldTaskSerializer, PlanningListItemSerializer, TaskPlanBulkWrapperSerializer, TaskSerializer, TimerSerializer
 from django.db.models import Q, Count, Avg
 from rest_framework.views import APIView
 from rest_framework.generics import RetrieveUpdateDestroyAPIView
@@ -15,13 +15,10 @@ from rest_framework.permissions import IsAuthenticated
 from config.pagination import CustomPageNumberPagination  # ✅ Use your custom paginator
 from rest_framework.filters import OrderingFilter
 from django.db import transaction
-from django.utils.dateparse import parse_datetime
 from rest_framework import permissions, status, views
 from .serializers import MachineTimelineSegmentSerializer
-from .services.timeline import build_machine_timeline, _parse_ms  # _parse_ms is small; OK to re-use
+from .services.timeline import build_machine_timeline  # _parse_ms is small; OK to re-use
 from rest_framework import status
-from .serializers import MachinePlanSegmentSerializer
-from .services.plan import build_machine_plan, _parse_ms
 
 class TimerStartView(MachiningProtectedView):
     def post(self, request):
@@ -330,7 +327,18 @@ class InitTaskKeyCounterView(APIView):
             "current": counter.current
         })
 
-class MachinePlanView(APIView):
+def _parse_ms(val):
+    if val is None: return None
+    ts = int(val)
+    return ts * 1000 if ts < 1_000_000_000_000 else ts
+
+class PlanningListView(APIView):
+    """
+    GET /machining/planning/list/?machine_fk=5&only_in_plan=false&start_after=<ms|sec>&start_before=<ms|sec>
+    - Excludes hold tasks
+    - Returns BOTH in-plan and backlog (unless only_in_plan=true)
+    - Includes estimated_hours, total_hours_spent, remaining_hours
+    """
     permission_classes = [IsMachiningUserOrAdmin]
 
     def get(self, request):
@@ -338,20 +346,47 @@ class MachinePlanView(APIView):
         if not machine_id:
             return Response({"error": "machine_fk is required"}, status=400)
 
-        start_after = _parse_ms(request.query_params.get('start_after'))
-        start_before = _parse_ms(request.query_params.get('start_before'))
+        only_in_plan = str(request.query_params.get('only_in_plan', 'false')).lower() == 'true'
+        t0 = _parse_ms(request.query_params.get('start_after'))
+        t1 = _parse_ms(request.query_params.get('start_before'))
 
-        # Build payload
-        result = build_machine_plan(int(machine_id), start_after, start_before)
+        qs = Task.objects.select_related('machine_fk').filter(
+            machine_fk_id=machine_id,
+            is_hold_task=False,     # exclude holds from planning
+        )
 
-        # Serialize rows for a stable, documented shape
-        return Response({
-            "planned": MachinePlanSegmentSerializer(result["planned"], many=True).data,
-            "overlaps": result["overlaps"],  # optional; UI can warn
-        }, status=status.HTTP_200_OK)
+        if only_in_plan:
+            qs = qs.filter(in_plan=True)
+            if t0 is not None and t1 is not None:
+                qs = qs.filter(planned_start_ms__lte=t1, planned_end_ms__gte=t0)
+        else:
+            q_in_plan = Q(in_plan=True)
+            if t0 is not None and t1 is not None:
+                q_in_plan &= Q(planned_start_ms__lte=t1, planned_end_ms__gte=t0)
+            qs = qs.filter(q_in_plan | Q(in_plan=False))
+
+        qs = qs.order_by(
+            F('in_plan').desc(),                        # in-plan first
+            F('plan_order').asc(nulls_last=True),
+            F('planned_start_ms').asc(nulls_last=True),
+            F('finish_time').asc(nulls_last=True),      # backlog seed
+            'key'
+        )
+
+        data = PlanningListItemSerializer(qs, many=True).data
+        return Response(data, status=200)
 
 
 class PlanningBulkSaveView(APIView):
+    """
+    POST /machining/planning/bulk-save/
+    {
+      "items": [
+        {"key":"TI-001","machine_fk":5,"planned_start_ms":..., "planned_end_ms":..., "plan_order":1, "plan_locked":true, "in_plan": true},
+        {"key":"TI-002","plan_order":2, "in_plan": false}
+      ]
+    }
+    """
     permission_classes = [IsMachiningUserOrAdmin]
 
     @transaction.atomic
@@ -359,11 +394,19 @@ class PlanningBulkSaveView(APIView):
         ser = TaskPlanBulkWrapperSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         updated = ser.validated_data['items'].update(instances=None, validated_data=ser.validated_data['items'])
-        # return the updated tasks with your TaskSerializer (includes machine_name etc.)
-        return Response({'updated': TaskSerializer(updated, many=True).data}, status=status.HTTP_200_OK)
+        return Response({'updated': PlanningListItemSerializer(updated, many=True).data}, status=status.HTTP_200_OK)
     
 class MachineTimelineView(APIView):
-    permission_classes = [IsAuthenticated]
+    """
+    GET /machining/analytics/machine-timeline/?machine_fk=<id>&start_after=<ms|sec>&start_before=<ms|sec>
+    Returns:
+      {
+        "actual":  [ {start_ms,end_ms,task_key,task_name,is_hold,category:"work|hold"} ],
+        "idle":    [ {start_ms,end_ms,...,category:"idle"} ],
+        "totals":  { productive_seconds, hold_seconds, idle_seconds }
+      }
+    """
+    permission_classes = [IsMachiningUserOrAdmin]
 
     def get(self, request):
         machine_id = request.query_params.get('machine_fk')
@@ -374,44 +417,8 @@ class MachineTimelineView(APIView):
         start_before = _parse_ms(request.query_params.get('start_before'))
 
         payload = build_machine_timeline(int(machine_id), start_after, start_before)
-
-        # Validate/serialize rows for consistency
         return Response({
             "actual":  MachineTimelineSegmentSerializer(payload["actual"], many=True).data,
             "idle":    MachineTimelineSegmentSerializer(payload["idle"], many=True).data,
-            "planned": MachineTimelineSegmentSerializer(payload["planned"], many=True).data,
             "totals":  payload["totals"],
         }, status=status.HTTP_200_OK)
-    
-
-class PlanningCandidatesView(APIView):
-    """
-    GET /machining/planning/candidates?machine_fk=5&include_holds=false&order=finish_time&limit=100
-    Returns tasks with no plan (planned_*_ms is null) and not completed.
-    """
-    permission_classes = [IsMachiningUserOrAdmin]
-
-    def get(self, request):
-        machine_id = request.query_params.get('machine_fk')
-        include_holds = (request.query_params.get('include_holds') == 'true')
-        order = request.query_params.get('order', 'finish_time')  # or '-finish_time', 'estimated_hours', etc.
-        limit = int(request.query_params.get('limit', 100))
-
-        qs = Task.objects.select_related('machine_fk').filter(
-            Q(planned_start_ms__isnull=True) | Q(planned_end_ms__isnull=True),
-            completion_date__isnull=True,
-        )
-
-        if machine_id:
-            qs = qs.filter(machine_fk_id=machine_id)
-        if not include_holds:
-            qs = qs.filter(is_hold_task=False)
-
-        # allow a small safe set of order fields
-        allowed = {'finish_time', '-finish_time', 'estimated_hours', '-estimated_hours', 'key', '-key'}
-        if order not in allowed:
-            order = 'finish_time'
-        qs = qs.order_by(order, 'key')[:limit]
-
-        data = PlanningCandidateSerializer(qs, many=True).data
-        return Response(data, status=status.HTTP_200_OK)

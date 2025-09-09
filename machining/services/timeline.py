@@ -1,16 +1,7 @@
-# machining/services/timeline.py
 import time
-from typing import List, Dict, Any, Optional
+from typing import Dict, Any, List, Optional
 from django.db.models import Q
-from machining.models import Timer, Task  # adjust import path if your app label differs
-
-def _parse_ms(val: Optional[str]) -> Optional[int]:
-    if val is None:
-        return None
-    ts = int(val)
-    if ts < 1_000_000_000_000:  # seconds -> ms
-        ts *= 1000
-    return ts
+from ..models import Timer, Task
 
 def _clamp_ms(s: int, e: int, t0: int, t1: int):
     s = max(s, t0) if t0 is not None else s
@@ -24,11 +15,7 @@ def _merge_segments_ms(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     out = [rows[0]]
     for seg in rows[1:]:
         last = out[-1]
-        same = (
-            last['task_key'] == seg['task_key'] and
-            last['is_hold'] == seg['is_hold'] and
-            last['category'] == seg['category']
-        )
+        same = (last['task_key'] == seg['task_key'] and last['is_hold'] == seg['is_hold'] and last['category'] == seg['category'])
         touching_or_overlap = seg['start_ms'] <= last['end_ms']
         if same and touching_or_overlap:
             if seg['end_ms'] > last['end_ms']:
@@ -38,7 +25,7 @@ def _merge_segments_ms(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 def build_machine_timeline(machine_id: int, start_after_ms: Optional[int], start_before_ms: Optional[int]) -> Dict[str, Any]:
-    # Default to "today" in server TZ if not provided
+    # default to "today" if not provided
     if start_after_ms is None or start_before_ms is None:
         from django.utils import timezone
         from datetime import timedelta
@@ -50,7 +37,7 @@ def build_machine_timeline(machine_id: int, start_after_ms: Optional[int], start
 
     now_ms = lambda: int(time.time() * 1000)
 
-    # --- Actual from timers (Timer.issue_key -> Task with machine_fk) ---
+    # actual segments from timers (Timer → issue_key(Task) → machine_fk)
     timers = (
         Timer.objects
         .select_related('issue_key', 'machine_fk')
@@ -60,14 +47,14 @@ def build_machine_timeline(machine_id: int, start_after_ms: Optional[int], start
         .order_by('start_time')
     )
 
-    actual = []
+    actual: List[Dict[str, Any]] = []
     for t in timers:
         s = t.start_time
         e = t.finish_time or now_ms()
         s, e = _clamp_ms(s, e, start_after_ms, start_before_ms)
         if not s:
             continue
-        is_hold = bool(getattr(t.issue_key, 'is_hold_task', False))  # from Task.is_hold_task 
+        is_hold = bool(getattr(t.issue_key, 'is_hold_task', False))
         actual.append({
             "start_ms": s,
             "end_ms": e,
@@ -78,8 +65,8 @@ def build_machine_timeline(machine_id: int, start_after_ms: Optional[int], start
         })
     actual = _merge_segments_ms(actual)
 
-    # --- Idle gaps
-    idle = []
+    # idle gaps
+    idle: List[Dict[str, Any]] = []
     cursor = start_after_ms
     for seg in actual:
         if seg['start_ms'] > cursor:
@@ -96,26 +83,6 @@ def build_machine_timeline(machine_id: int, start_after_ms: Optional[int], start
             "is_hold": False, "category": "idle",
         })
 
-    # --- Planned from Task (if you added planned_*_ms)
-    planned = []
-    if hasattr(Task, 'planned_start_ms') and hasattr(Task, 'planned_end_ms'):
-        planned_qs = (
-            Task.objects.select_related('machine_fk')
-            .filter(machine_fk_id=machine_id)
-            .filter(planned_start_ms__lte=start_before_ms, planned_end_ms__gte=start_after_ms)
-            .order_by('planned_start_ms', 'plan_order', 'key')
-        )
-        for tk in planned_qs:
-            s, e = _clamp_ms(tk.planned_start_ms, tk.planned_end_ms, start_after_ms, start_before_ms)
-            if not s:
-                continue
-            planned.append({
-                "start_ms": s, "end_ms": e,
-                "task_key": tk.key, "task_name": tk.name,
-                "is_hold": bool(tk.is_hold_task),
-                "category": "planned",
-            })
-
     def sum_secs_ms(rows, cat=None):
         tot = 0
         for r in rows:
@@ -127,7 +94,6 @@ def build_machine_timeline(machine_id: int, start_after_ms: Optional[int], start
     return {
         "actual": actual,
         "idle": idle,
-        "planned": planned,
         "totals": {
             "productive_seconds": sum_secs_ms(actual, "work"),
             "hold_seconds": sum_secs_ms(actual, "hold"),

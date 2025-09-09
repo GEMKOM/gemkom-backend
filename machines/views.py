@@ -11,7 +11,7 @@ from machines.models import Machine, MachineFault
 from machines.serializers import MachineFaultSerializer, MachineGetSerializer, MachineListSerializer, MachineSerializer
 from machining.models import Timer
 from users.permissions import IsAdmin
-from django.db.models import Q
+from django.db.models import Q, Count
 
 # Create your views here.
 
@@ -32,6 +32,24 @@ class MachineListCreateView(generics.ListCreateAPIView):
         if self.request.method == 'POST':
             return [permissions.IsAuthenticated(), IsAdmin()]
         return [permissions.IsAuthenticated()]
+    
+    def get(self, request):
+        query = Q()
+        used_in = request.GET.get("used_in")
+        is_active = request.GET.get("is_active")
+        if used_in:
+            query &= Q(used_in=used_in)
+        if is_active:
+            query &= Q(is_active=is_active)
+
+        machines = (
+            Machine.objects
+            .filter(query)
+            .annotate(tasks_count=Count('machine_tasks'))  # <-- NEW
+            .order_by('-machine_type')
+        )
+        serializer = MachineListSerializer(machines, many=True)
+        return Response(serializer.data)
     
 class MachineDetailView(APIView):
     def get_permissions(self):

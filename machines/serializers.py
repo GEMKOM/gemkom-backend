@@ -47,10 +47,15 @@ class MachineListSerializer(serializers.ModelSerializer):
     used_in_label = serializers.SerializerMethodField()
     is_under_maintenance = serializers.SerializerMethodField()
     has_active_timer = serializers.SerializerMethodField()
+    tasks_count = serializers.IntegerField(read_only=True)  # <-- NEW
 
     class Meta:
         model = Machine
-        fields = ['id', 'name', 'machine_type', 'used_in', 'used_in_label', 'machine_type_label', 'is_active', 'has_active_timer', 'is_under_maintenance', 'jira_id', 'properties']
+        fields = [
+            'id', 'name', 'machine_type', 'used_in', 'used_in_label', 'machine_type_label',
+            'is_active', 'has_active_timer', 'is_under_maintenance', 'jira_id', 'properties',
+            'tasks_count',  # <-- NEW
+        ]
 
     def get_machine_type_label(self, obj):
         return obj.get_machine_type_display()
@@ -66,7 +71,7 @@ class MachineListSerializer(serializers.ModelSerializer):
         ).exists()
 
     def get_has_active_timer(self, obj):
-        from machining.models import Timer  # again, for safety
+        from machining.models import Timer
         return Timer.objects.filter(machine_fk=obj, finish_time__isnull=True).exists()
 
     

@@ -90,50 +90,98 @@ class HoldTaskSerializer(serializers.ModelSerializer):
         read_only_fields = ['key', 'name', 'job_no']
 
 
-class MachinePlanSegmentSerializer(serializers.Serializer):
-    start_ms   = serializers.IntegerField()
-    end_ms     = serializers.IntegerField()
-    task_key   = serializers.CharField()
-    task_name  = serializers.CharField(allow_null=True)
-    is_hold    = serializers.BooleanField()
-    category   = serializers.CharField()            # always "planned" here
-    plan_order = serializers.IntegerField(allow_null=True)
-    plan_locked = serializers.BooleanField()
-    machine_id  = serializers.IntegerField()
+class PlanningListItemSerializer(serializers.ModelSerializer):
+    machine_name = serializers.CharField(source='machine_fk.name', read_only=True)
+    total_hours_spent = serializers.SerializerMethodField()
+    remaining_hours = serializers.SerializerMethodField()
 
+    class Meta:
+        model = Task
+        fields = [
+            # identity
+            'key', 'name', 'job_no', 'image_no', 'position_no', 'quantity',
+            # machine
+            'machine_fk', 'machine_name',
+            # plan state
+            'in_plan', 'planned_start_ms', 'planned_end_ms', 'plan_order', 'plan_locked',
+            # hours
+            'estimated_hours', 'total_hours_spent', 'remaining_hours',
+            # useful for initial auto-sort
+            'finish_time',
+        ]
+
+    # Sum finished timers (epoch-ms → hours)
+    def _sum_timer_hours(self, obj: Task) -> float:
+        qs = Timer.objects.filter(issue_key=obj).exclude(finish_time__isnull=True).only('start_time', 'finish_time')
+        total_ms = 0
+        for t in qs:
+            if t.start_time is None:
+                continue
+            end = t.finish_time
+            if end is None or end <= t.start_time:
+                continue
+            total_ms += (end - t.start_time)
+        return round(total_ms / 3_600_000.0, 2)
+
+    def get_total_hours_spent(self, obj):
+        return self._sum_timer_hours(obj)
+
+    def get_remaining_hours(self, obj):
+        est = float(obj.estimated_hours or 0)
+        spent = self._sum_timer_hours(obj)
+        return round(max(0.0, est - spent), 2)
+
+
+# ----------------------------
+# Planning: bulk save payload
+# ----------------------------
 class TaskPlanUpdateItemSerializer(serializers.ModelSerializer):
+    # Your Task PK is "key" (string)
     key = serializers.CharField()
 
     class Meta:
         model = Task
-        fields = ['key', 'machine_fk', 'planned_start_ms', 'planned_end_ms', 'plan_order', 'plan_locked']
+        fields = [
+            'key', 'machine_fk',
+            'planned_start_ms', 'planned_end_ms',
+            'plan_order', 'plan_locked',
+            'in_plan',
+        ]
         extra_kwargs = {
             'machine_fk': {'required': False, 'allow_null': True},
             'planned_start_ms': {'required': False, 'allow_null': True},
             'planned_end_ms': {'required': False, 'allow_null': True},
             'plan_order': {'required': False, 'allow_null': True},
             'plan_locked': {'required': False},
+            'in_plan': {'required': False},
         }
 
 class TaskPlanBulkListSerializer(serializers.ListSerializer):
     child = TaskPlanUpdateItemSerializer()
 
     def validate(self, data):
-        # Ensure (machine_fk, plan_order) uniqueness inside this payload
+        """
+        Enforce (machine_fk, plan_order) uniqueness *only* among items where in_plan is True.
+        """
         seen = set()
         for item in data:
-            plan_order = item.get('plan_order')
-            # fallback to current machine if not provided
+            # treat unspecified in_plan as "unchanged" (we can't know here); safe to check only if True
+            in_plan = item.get('in_plan', True)
+            if not in_plan:
+                continue
+            order = item.get('plan_order', None)
+            if order is None:
+                continue
+            # figure target machine
             if 'machine_fk' in item and item['machine_fk'] is not None:
                 machine_id = item['machine_fk'].id if hasattr(item['machine_fk'], 'id') else item['machine_fk']
             else:
                 cur = Task.objects.only('machine_fk_id').get(pk=item['key'])
                 machine_id = cur.machine_fk_id
-            if plan_order is not None and machine_id:
-                key = (machine_id, plan_order)
-                if key in seen:
-                    raise serializers.ValidationError(f'duplicate plan_order {plan_order} for machine {machine_id}')
-                seen.add(key)
+            key = (machine_id, order)
+            if key in seen:
+                raise serializers.ValidationError(f'duplicate plan_order {order} for machine {machine_id} among in-plan items')
+            seen.add(key)
         return data
 
     def update(self, instances, validated_data):
@@ -142,10 +190,10 @@ class TaskPlanBulkListSerializer(serializers.ListSerializer):
         updated = []
         for obj in qs:
             payload = by_key[obj.key]
-            for f in ['machine_fk', 'planned_start_ms', 'planned_end_ms', 'plan_order', 'plan_locked']:
+            for f in ['machine_fk','planned_start_ms','planned_end_ms','plan_order','plan_locked','in_plan']:
                 if f in payload:
                     setattr(obj, f, payload[f])
-            obj.save(update_fields=[f for f in ['machine_fk','planned_start_ms','planned_end_ms','plan_order','plan_locked'] if f in payload])
+            obj.save(update_fields=[f for f in ['machine_fk','planned_start_ms','planned_end_ms','plan_order','plan_locked','in_plan'] if f in payload])
             updated.append(obj)
         return updated
 
@@ -153,34 +201,13 @@ class TaskPlanBulkWrapperSerializer(serializers.Serializer):
     items = TaskPlanBulkListSerializer()
 
 
+# ----------------------------
+# Analytics: machine timeline segments (actuals & idle)
+# ----------------------------
 class MachineTimelineSegmentSerializer(serializers.Serializer):
-    start_ms   = serializers.IntegerField()
-    end_ms     = serializers.IntegerField()
-    task_key   = serializers.CharField(allow_null=True)
-    task_name  = serializers.CharField(allow_null=True)
-    is_hold    = serializers.BooleanField()
-    category   = serializers.CharField()
-
-
-class PlanningCandidateSerializer(serializers.ModelSerializer):
-    machine_name = serializers.CharField(source='machine_fk.name', read_only=True)
-    total_hours_spent = serializers.SerializerMethodField()
-    remaining_hours = serializers.SerializerMethodField()
-
-    class Meta:
-        model = Task
-        fields = [
-            'key', 'name', 'job_no', 'image_no', 'position_no', 'quantity',
-            'estimated_hours', 'total_hours_spent', 'remaining_hours',
-            'machine_fk', 'machine_name', 'finish_time', 'is_hold_task',
-        ]
-
-    def get_total_hours_spent(self, obj):
-        # same logic you already use in TaskSerializer
-        timers = obj.timers.exclude(finish_time__isnull=True)
-        total_millis = sum((t.finish_time - t.start_time) for t in timers)
-        return round(total_millis / (1000 * 60 * 60), 2)
-
-    def get_remaining_hours(self, obj):
-        est = float(obj.estimated_hours or 0)
-        return max(0.0, round(est - self.get_total_hours_spent(obj), 2))
+    start_ms  = serializers.IntegerField()
+    end_ms    = serializers.IntegerField()
+    task_key  = serializers.CharField(allow_null=True)
+    task_name = serializers.CharField(allow_null=True)
+    is_hold   = serializers.BooleanField()
+    category  = serializers.CharField()  # "work" | "hold" | "idle"
