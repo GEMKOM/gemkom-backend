@@ -5,6 +5,7 @@ from django.db import models
 from django.contrib.auth.models import User
 
 from machines.models import Machine
+from django.db.models import Q
 
 class TaskKeyCounter(models.Model):
     prefix = models.CharField(max_length=10, default='TI', unique=True)
@@ -28,8 +29,27 @@ class Task(models.Model):
     machine_fk = models.ForeignKey(Machine, on_delete=models.SET_NULL, null=True, blank=True, related_name='machine_tasks')
     finish_time = models.DateField(null=True, blank=True)
 
+    # Planning (set by frontend save)
+    planned_start_ms = models.BigIntegerField(null=True, blank=True)
+    planned_end_ms = models.BigIntegerField(null=True, blank=True)
+    plan_order = models.IntegerField(null=True, blank=True)
+    plan_locked = models.BooleanField(default=False)
+
     def __str__(self):
         return self.name
+    
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['machine_fk', 'plan_order'],
+                name='uniq_machine_plan_order',
+                condition=models.Q(plan_order__isnull=False),
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['machine_fk', 'plan_order']),
+            models.Index(fields=['machine_fk', 'planned_start_ms']),
+        ]
     
 
 class Timer(models.Model):
