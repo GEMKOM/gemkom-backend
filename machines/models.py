@@ -66,3 +66,16 @@ class MachineFault(models.Model):
     def __str__(self):
         return f"{self.machine.name} - {'Resolved' if self.resolved_at else 'Unresolved'}"
     
+class MachineCalendar(models.Model):
+    machine_fk = models.OneToOneField('Machine', on_delete=models.CASCADE, related_name='calendar')
+    timezone = models.CharField(max_length=64, default='Europe/Istanbul')
+
+    # Week template: keys "0".."6" (Mon..Sun), each a list of shift dicts:
+    # {"start":"07:30","end":"12:30"}, {"start":"13:00","end":"17:00"}
+    # Overnight shift example: {"start":"22:00","end":"02:00","end_next_day": true}
+    week_template = models.JSONField(default=dict, blank=True)
+
+    # (Optional) blackout/exception days can be added later with another model.
+
+    def __str__(self):
+        return f'Calendar for {self.machine_fk} ({self.timezone})'

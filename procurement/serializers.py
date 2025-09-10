@@ -156,8 +156,11 @@ class PurchaseRequestCreateSerializer(serializers.ModelSerializer):
         model = PurchaseRequest
         fields = [
             'id', 'title', 'description', 'priority',
-            'items', 'suppliers', 'offers', 'recommendations', 'total_amount_eur', 'needed_date'
+            'items', 'suppliers', 'offers', 'recommendations', 'total_amount_eur', 'needed_date', 'is_rolling_mill'
         ]
+        extra_kwargs = {
+            'is_rolling_mill': {'required': False}  # optional, if caller may omit it
+        }
 
     def create(self, validated_data):
         from decimal import Decimal

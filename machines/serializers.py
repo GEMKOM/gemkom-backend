@@ -1,5 +1,6 @@
 from machines.models import Machine, MachineFault
 from rest_framework import serializers
+from .models import MachineCalendar
 
 class MachineSerializer(serializers.ModelSerializer):
     class Meta:
@@ -85,3 +86,15 @@ class MachineFaultSerializer(serializers.ModelSerializer):
         fields = ['id', 'machine', 'machine_name', 'description', 'reported_by', 'reported_by_username',
                   'reported_at', 'resolved_at', 'is_breaking', 'is_maintenance', 'resolution_description', 'resolved_by', 'resolved_by_username']
         read_only_fields = ['id', 'reported_by', 'reported_at']
+
+# machining/serializers_calendar.py
+
+
+class MachineCalendarSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = MachineCalendar
+        fields = ['machine_fk', 'timezone', 'week_template']
+        extra_kwargs = {
+            'machine_fk': {'required': True},
+            'timezone': {'required': True},
+        }

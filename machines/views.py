@@ -10,7 +10,7 @@ import requests
 from machines.models import Machine, MachineFault
 from machines.serializers import MachineFaultSerializer, MachineGetSerializer, MachineListSerializer, MachineSerializer
 from machining.models import Timer
-from users.permissions import IsAdmin
+from users.permissions import IsAdmin, IsMachiningUserOrAdmin
 from django.db.models import Q, Count
 
 # Create your views here.
@@ -226,3 +226,17 @@ class MachineFaultDetailView(APIView):
             requests.post(url, data=payload, timeout=5)
         except requests.RequestException as e:
             print("Telegram çözüm bildirimi hatası:", e)
+
+
+class MachineCalendarView(APIView):
+    """
+    GET  /machining/planning/calendar?machine_fk=5
+    PATCH/POST /machining/planning/calendar (body with machine_fk, timezone, week_template)
+    """
+    permission_classes = [IsMachiningUserOrAdmin]
+
+    def get(self, request):
+        machine_id = request.query_params.get('machine_fk')
+        if not machine_id:
+            return Response({"error": "machine_fk is required"}, status=400)
+        cal, _ = Machine
