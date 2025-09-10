@@ -5,7 +5,7 @@ from machining.filters import TaskFilter
 from machining.permissions import MachiningProtectedView
 from users.permissions import IsAdmin, IsMachiningUserOrAdmin
 from .models import Task, TaskKeyCounter, Timer
-from .serializers import HoldTaskSerializer, PlanningListItemSerializer, TaskPlanBulkWrapperSerializer, TaskSerializer, TimerSerializer
+from .serializers import HoldTaskSerializer, PlanningListItemSerializer, TaskPlanUpdateItemSerializer, TaskSerializer, TimerSerializer
 from django.db.models import Q, Count, Avg
 from rest_framework.views import APIView
 from rest_framework.generics import RetrieveUpdateDestroyAPIView
@@ -391,10 +391,26 @@ class PlanningBulkSaveView(APIView):
 
     @transaction.atomic
     def post(self, request):
-        ser = TaskPlanBulkWrapperSerializer(data=request.data)
+        items = request.data.get('items', [])
+        if not isinstance(items, list) or not items:
+            return Response({"error": "Body must include non-empty 'items' array"}, status=400)
+
+        # Validate payload
+        ser = TaskPlanUpdateItemSerializer(data=items, many=True)
         ser.is_valid(raise_exception=True)
-        updated = ser.validated_data['items'].update(instances=None, validated_data=ser.validated_data['items'])
-        return Response({'updated': PlanningListItemSerializer(updated, many=True).data}, status=status.HTTP_200_OK)
+
+        # Build instance list in the SAME ORDER as validated_data
+        keys = [row['key'] for row in ser.validated_data]
+        inst_map = {t.key: t for t in Task.objects.select_for_update().filter(key__in=keys)}
+        missing = [k for k in keys if k not in inst_map]
+        if missing:
+            return Response({"error": "Some tasks not found", "keys": missing}, status=400)
+        instances = [inst_map[k] for k in keys]
+
+        # Bulk update via the ListSerializer.update we defined
+        updated = ser.update(instances, ser.validated_data)
+
+        return Response({"updated": PlanningListItemSerializer(updated, many=True).data}, status=200)
     
 class MachineTimelineView(APIView):
     """

@@ -90,11 +90,22 @@ class MachineFaultSerializer(serializers.ModelSerializer):
 # machining/serializers_calendar.py
 
 
+class MachineCalendarWindowSerializer(serializers.Serializer):
+    start = serializers.RegexField(r"^\d{2}:\d{2}$")
+    end   = serializers.RegexField(r"^\d{2}:\d{2}$")
+    end_next_day = serializers.BooleanField(required=False)
+
 class MachineCalendarSerializer(serializers.ModelSerializer):
+    # week_template keyed "0".."6" -> list[window]
+    week_template = serializers.DictField(
+        child=MachineCalendarWindowSerializer(many=True),
+        required=False
+    )
+    # exceptions: [{date:'YYYY-MM-DD', windows:[...], note?}]
+    work_exceptions = serializers.ListField(
+        child=serializers.DictField(), required=False
+    )
+
     class Meta:
         model = MachineCalendar
-        fields = ['machine_fk', 'timezone', 'week_template']
-        extra_kwargs = {
-            'machine_fk': {'required': True},
-            'timezone': {'required': True},
-        }
+        fields = ['timezone', 'week_template', 'work_exceptions']

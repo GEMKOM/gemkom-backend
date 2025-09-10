@@ -11,5 +11,5 @@ urlpatterns = [
     path('used_in/', UsedInChoicesView.as_view(), name='used-in-choices'),
     path('faults/', MachineFaultListCreateView.as_view(), name='machinefault-list-create'),
     path('faults/<int:pk>/', MachineFaultDetailView.as_view(), name='machinefault-detail'),
-    path('calendar/', MachineCalendarView.as_view(), name='machine-calendar'),
+    path('calendar/', MachineCalendarView.as_view(), name='planning-calendar'),
 ]

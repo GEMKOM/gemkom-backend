@@ -192,7 +192,11 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+USE_TZ = True
+TIME_ZONE = 'UTC'  # keep UTC in DB and as global default
+
+# add an app-level default planning tz (custom setting)
+APP_DEFAULT_TZ = 'Europe/Istanbul'
 
 USE_I18N = True
 

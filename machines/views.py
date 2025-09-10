@@ -1,4 +1,6 @@
+from django.conf import settings
 from config.settings import TELEGRAM_MAINTENANCE_BOT_TOKEN
+from machines.calendar import DEFAULT_WEEK_TEMPLATE
 from machines.filters import MachineFilter
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -7,8 +9,8 @@ from django.shortcuts import get_object_or_404
 from django.utils import timezone
 import requests
 
-from machines.models import Machine, MachineFault
-from machines.serializers import MachineFaultSerializer, MachineGetSerializer, MachineListSerializer, MachineSerializer
+from machines.models import Machine, MachineCalendar, MachineFault
+from machines.serializers import MachineCalendarSerializer, MachineFaultSerializer, MachineGetSerializer, MachineListSerializer, MachineSerializer
 from machining.models import Timer
 from users.permissions import IsAdmin, IsMachiningUserOrAdmin
 from django.db.models import Q, Count
@@ -230,13 +232,64 @@ class MachineFaultDetailView(APIView):
 
 class MachineCalendarView(APIView):
     """
-    GET  /machining/planning/calendar?machine_fk=5
-    PATCH/POST /machining/planning/calendar (body with machine_fk, timezone, week_template)
+    GET /machining/planning/calendar?machine_fk=5
+    PUT /machining/planning/calendar?machine_fk=5
+      body: {
+        "timezone": "Europe/Istanbul",   // optional
+        "week_template": { "0":[...], ..., "6":[...] },
+        "work_exceptions": [ {"date":"YYYY-MM-DD","windows":[...], "note":"..."} ]
+      }
     """
     permission_classes = [IsMachiningUserOrAdmin]
 
     def get(self, request):
-        machine_id = request.query_params.get('machine_fk')
+        machine_id = request.query_params.get("machine_fk")
         if not machine_id:
             return Response({"error": "machine_fk is required"}, status=400)
-        cal, _ = Machine
+        try:
+            m = Machine.objects.get(pk=machine_id)
+        except Machine.DoesNotExist:
+            return Response({"error": "machine not found"}, status=404)
+
+        cal = getattr(m, "calendar", None)
+        if cal is None:
+            # serve defaults when no calendar exists yet
+            return Response({
+                "machine_id": m.id,
+                "timezone": getattr(settings, "APP_DEFAULT_TZ", "Europe/Istanbul"),
+                "week_template": DEFAULT_WEEK_TEMPLATE,
+                "work_exceptions": [],
+                "is_default": True
+            }, status=200)
+
+        data = {
+            "machine_id": m.id,
+            "timezone": cal.timezone or getattr(settings, "APP_DEFAULT_TZ", "Europe/Istanbul"),
+            "week_template": cal.week_template or DEFAULT_WEEK_TEMPLATE,
+            "work_exceptions": cal.work_exceptions or [],
+            "is_default": False
+        }
+        return Response(data, status=200)
+
+    def put(self, request):
+        machine_id = request.query_params.get("machine_fk")
+        if not machine_id:
+            return Response({"error": "machine_fk is required"}, status=400)
+        try:
+            m = Machine.objects.get(pk=machine_id)
+        except Machine.DoesNotExist:
+            return Response({"error": "machine not found"}, status=404)
+
+        cal, _ = MachineCalendar.objects.get_or_create(machine_fk=m)
+        ser = MachineCalendarSerializer(instance=cal, data=request.data, partial=True)
+        ser.is_valid(raise_exception=True)
+        ser.save()
+
+        out = {
+            "machine_id": m.id,
+            "timezone": cal.timezone,
+            "week_template": cal.week_template or DEFAULT_WEEK_TEMPLATE,
+            "work_exceptions": cal.work_exceptions or [],
+            "is_default": False
+        }
+        return Response(out, status=200)

@@ -74,6 +74,7 @@ class MachineCalendar(models.Model):
     # {"start":"07:30","end":"12:30"}, {"start":"13:00","end":"17:00"}
     # Overnight shift example: {"start":"22:00","end":"02:00","end_next_day": true}
     week_template = models.JSONField(default=dict, blank=True)
+    work_exceptions = models.JSONField(default=list, blank=True)
 
     # (Optional) blackout/exception days can be added later with another model.
 
