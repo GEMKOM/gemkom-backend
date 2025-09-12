@@ -6,6 +6,10 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.filters import OrderingFilter, SearchFilter
 from django_filters.rest_framework import DjangoFilterBackend
+from django.contrib.auth.models import User
+from rest_framework.views import APIView
+from datetime import date, datetime, time
+from django.utils import timezone
 
 from .models import OvertimeRequest, OvertimeEntry
 from .serializers import (
@@ -13,6 +17,7 @@ from .serializers import (
     OvertimeRequestDetailSerializer,
     OvertimeRequestCreateSerializer,
     OvertimeRequestUpdateSerializer,
+    UserOvertimeListSerializer,
 )
 from .filters import OvertimeRequestFilter
 from .permissions import IsRequesterOrAdmin
@@ -244,3 +249,55 @@ class OvertimeRequestViewSet(viewsets.ModelViewSet):
         ser = self.get_serializer(page if page is not None else queryset, many=True, context=self.get_serializer_context())
         return self.get_paginated_response(ser.data) if page is not None else Response(ser.data)
 
+
+class OvertimeUsersForDateView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    @staticmethod
+    def _from_iso_or_dot(s: str) -> date | None:
+        s = (s or "").strip()
+        for fmt in ("%Y-%m-%d", "%d.%m.%Y"):
+            try:
+                return datetime.strptime(s, fmt).date()
+            except ValueError:
+                continue
+        return None
+
+    def get(self, request, date_str=None, yyyy=None, mm=None, dd=None):
+        # Accept either /.../<YYYY-MM-DD>/  OR  /.../<YYYY>/<MM>/<DD>/
+        if yyyy and mm and dd:
+            try:
+                day = date(int(yyyy), int(mm), int(dd))
+            except ValueError:
+                day = None
+        else:
+            day = self._from_iso_or_dot(date_str)
+
+        if not day:
+            return Response(
+                {"detail": "Invalid date. Use /.../YYYY-MM-DD/ or /.../YYYY/MM/DD/ (e.g., 2025-09-12)."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        tz = timezone.get_current_timezone()
+        start_of_day = tz.localize(datetime.combine(day, time.min))
+        end_of_day   = tz.localize(datetime.combine(day, time.max))
+
+        approved_ots = OvertimeRequest.objects.filter(
+            status="approved",
+            start_at__lte=end_of_day,
+            end_at__gte=start_of_day,
+        ).only("id")
+
+        user_ids = (OvertimeEntry.objects
+                    .filter(overtime_request__in=approved_ots)
+                    .values_list("user_id", flat=True)
+                    .distinct())
+
+        users = (User.objects
+                 .filter(id__in=user_ids, is_active=True)
+                 .select_related("profile")
+                 .order_by("first_name", "last_name", "username"))
+
+        data = UserOvertimeListSerializer(users, many=True).data
+        return Response(data, status=status.HTTP_200_OK)

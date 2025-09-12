@@ -192,3 +192,15 @@ class OvertimeRequestUpdateSerializer(serializers.ModelSerializer):
         if obj.status != "submitted":
             raise serializers.ValidationError("Only 'submitted' requests can be edited.")
         return attrs
+
+
+class UserOvertimeListSerializer(serializers.ModelSerializer):
+    full_name = serializers.SerializerMethodField()
+    team = serializers.CharField(source="profile.team", read_only=True)
+
+    def get_full_name(self, obj):
+        return obj.get_full_name() or obj.username
+
+    class Meta:
+        model = User
+        fields = ["id", "username", "full_name", "team"]

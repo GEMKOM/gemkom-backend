@@ -18,6 +18,7 @@ from .models import OvertimeRequest
 TEAM_MANAGER_OCCUPATION = "manager"             # your UserProfile.occupation value for managers
 OVERTIME_POLICY_NAME    = "Overtime – Default"  # pick policy explicitly by name
 TEAM_MANAGER_STAGE_ORDER = 1                    # Stage #1 = Team Manager; Stage #2+ = policy-configured approvers
+TEAM_HR_CODE = "human_resources" 
 
 
 # ------- Helpers -------
@@ -54,6 +55,16 @@ def _users_from_ids(user_ids):
     if not user_ids:
         return User.objects.none()
     return User.objects.filter(id__in=user_ids, is_active=True)
+
+def _emails_from_queryset(qs):
+    return list(qs.exclude(email__isnull=True).exclude(email="").values_list("email", flat=True))
+
+def _hr_recipient_emails():
+    """
+    All active users in the Human Resources team.
+    """
+    qs = User.objects.filter(is_active=True, profile__team=TEAM_HR_CODE)
+    return _emails_from_queryset(qs)
 
 def _approver_emails_for_stage(stage: ApprovalStageInstance):
     qs = _users_from_ids(stage.approver_user_ids or [])
@@ -105,6 +116,33 @@ def _email_requester(ot: OvertimeRequest, status_str: str, comment: str = ""):
     )
     send_plain_email(subject, body, to)
 
+def _email_hr_on_approved(ot: OvertimeRequest):
+    """
+    Notify HR when an overtime request is fully approved.
+    """
+    to_list = _hr_recipient_emails()
+    if not to_list:
+        return
+    subject = f"[Bilgi] Onaylanan Mesai Talebi #{ot.id} – {_ot_title(ot)}"
+    lines = [
+        f"Talep No: #{ot.id}",
+        f"Talep Eden: {getattr(ot.requester, 'get_full_name', lambda: ot.requester.username)()}",
+        f"Takım: {ot.team or '—'}",
+        f"Neden: {ot.reason or '—'}",
+        f"Başlangıç: {ot.start_at.strftime('%Y-%m-%d %H:%M')}",
+        f"Bitiş: {ot.end_at.strftime('%Y-%m-%d %H:%M')}",
+        f"Süre: {ot.duration_hours} saat",
+        "",
+        "Kişi/Dönem Kalemleri:",
+    ]
+    for e in ot.entries.all():
+        # You can enrich this if you have names via select_related('user') on entries
+        uname = getattr(e.user, "get_full_name", lambda: getattr(e.user, "username", str(e.user_id)))()
+        lines.append(f" - {uname} | İş No: {e.job_no or '—'} | Açıklama: {e.description or '—'}")
+
+    lines += ["", f"Detay: {_ot_frontend_url(ot)}"]
+    body = " \n".join(lines)
+    send_plain_email(subject, body, to_list)
 
 # --------- Skip stages that have no approvers ---------
 def _skip_empty_stages(wf: ApprovalWorkflow) -> bool:
