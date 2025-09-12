@@ -175,10 +175,14 @@ def submit_purchase_request(pr: PurchaseRequest, by_user):
     requester_team = getattr(getattr(pr, "requestor", None), "profile", None)
     requester_team = getattr(requester_team, "team", None)
 
+    moved = False     # track if current stage changed at any point
+    finished = False  # track if workflow ended
+
     if requester_team == "external_workshops":
-        # Only if we are at stage 1, skip it
-        if getattr(wf, "current_stage_order", 0) == 1:
-            skipped, finished = _skip_current_stage(wf, reason="Auto-skip for external_workshops")
+        if (getattr(wf, "current_stage_order", 0) or 0) == 1:
+            skipped, done = _skip_current_stage(wf, reason="Auto-skip for external_workshops")
+            moved |= bool(skipped)
+            finished |= bool(done)
             if finished:
                 pr.status = "approved"
                 pr.save(update_fields=["status"])
@@ -186,19 +190,21 @@ def submit_purchase_request(pr: PurchaseRequest, by_user):
                 _email_requestor_on_final(pr, status_str="Onaylandı", comment="(Dış atölye: 1. aşama atlandı)")
                 _email_finance_pos_created(pr, created_pos)
                 return wf
-            # If not finished, we’ll notify the next stage’s approvers below as usual
-            # (and we should NOT notify stage-1 approvers)
-    # -------------------------------------------------------------------
 
     # Auto-bypass if the requester is the sole approver for current stage(s)
-    changed, finished = auto_bypass_self_approver(wf, pr.requestor_id)
+    while True:
+        changed, done = auto_bypass_self_approver(wf, pr.requestor_id)
+        moved |= bool(changed)
+        finished |= bool(done)
+        if done or not changed:
+            break
     if finished:
         pr.status = "approved"
         pr.save(update_fields=["status"])
         _email_requestor_on_final(pr, status_str="Onaylandı", comment="(Otomatik geçiş)")
         return wf
 
-    if changed or wf.current_stage_order == 1:
+    if moved:
         _email_approvers_for_current_stage(wf, reason="Talep gönderildi")
 
     return wf
@@ -283,3 +289,70 @@ def _skip_current_stage(wf, reason: str = "Auto-skip"):
     setattr(wf, "current_stage_order", current_order + 1)
     wf.save(update_fields=["current_stage_order"])
     return True, False
+
+
+from django.db import transaction
+from django.db.models import F
+from django.contrib.contenttypes.models import ContentType
+
+# adjust model paths to your app names
+from procurement.models import PurchaseRequest
+from approvals.models import ApprovalWorkflow, ApprovalStageInstance, ApprovalDecision
+
+def _advance_to_next_incomplete_stage(wf):
+    """Move current_stage_order forward over already-complete stages."""
+    orders = list(
+        ApprovalStageInstance.objects
+        .filter(workflow=wf)
+        .order_by("order")
+        .values_list("order", flat=True)
+    )
+    if not orders:
+        return False  # nothing to do
+
+    # find next incomplete at or after current
+    for o in orders:
+        si = ApprovalStageInstance.objects.get(workflow=wf, order=o)
+        if not si.is_complete and not si.is_rejected:
+            wf.current_stage_order = o
+            wf.save(update_fields=["current_stage_order"])
+            return True
+
+    # all stages complete -> finalize workflow
+    wf.is_complete = True
+    wf.is_rejected = False
+    wf.save(update_fields=["is_complete", "is_rejected"])
+    return False
+
+from django.db import transaction
+from django.db.models import F
+from django.contrib.contenttypes.models import ContentType
+
+# adjust model paths to your app names
+from procurement.models import PurchaseRequest
+from approvals.models import ApprovalWorkflow, ApprovalStageInstance, ApprovalDecision
+
+def _advance_to_next_incomplete_stage(wf):
+    """Move current_stage_order forward over already-complete stages."""
+    orders = list(
+        ApprovalStageInstance.objects
+        .filter(workflow=wf)
+        .order_by("order")
+        .values_list("order", flat=True)
+    )
+    if not orders:
+        return False  # nothing to do
+
+    # find next incomplete at or after current
+    for o in orders:
+        si = ApprovalStageInstance.objects.get(workflow=wf, order=o)
+        if not si.is_complete and not si.is_rejected:
+            wf.current_stage_order = o
+            wf.save(update_fields=["current_stage_order"])
+            return True
+
+    # all stages complete -> finalize workflow
+    wf.is_complete = True
+    wf.is_rejected = False
+    wf.save(update_fields=["is_complete", "is_rejected"])
+    return False

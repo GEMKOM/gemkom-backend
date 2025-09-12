@@ -19,7 +19,8 @@ class UserProfile(models.Model):
         ('warehouse', 'Ambar'),
         ('finance', 'Finans'),
         ('management', 'Yönetim'),
-        ('external_workshops', 'Dış Atölyeler')
+        ('external_workshops', 'Dış Atölyeler'),
+        ('human_resouces', 'İnsan Kaynakları')
         # Add more as needed
     ]
     OCCUPATION_CHOICES = [
