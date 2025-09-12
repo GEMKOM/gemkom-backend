@@ -201,6 +201,7 @@ def submit_purchase_request(pr: PurchaseRequest, by_user):
     if finished:
         pr.status = "approved"
         pr.save(update_fields=["status"])
+        created_pos = create_pos_from_recommended(pr)
         _email_requestor_on_final(pr, status_str="Onaylandı", comment="(Otomatik geçiş)")
         return wf
 

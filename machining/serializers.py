@@ -187,9 +187,6 @@ class TaskPlanBulkListSerializer(serializers.ListSerializer):
                     machine = item['machine_fk'] if hasattr(item['machine_fk'], 'id') else Machine.objects.get(pk=item['machine_fk'])
                 else:
                     machine = Task.objects.select_related('machine_fk').get(pk=item['key']).machine_fk
-                msg = validate_plan_interval(machine, item['planned_start_ms'], item['planned_end_ms'])
-                if msg:
-                    errors.append({"key": item['key'], "error": msg})
 
         if errors:
             raise serializers.ValidationError({"calendar": errors})
