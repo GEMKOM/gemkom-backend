@@ -1,11 +1,12 @@
 import time
 from rest_framework.response import Response
 from django.db.models import F, Sum, ExpressionWrapper, FloatField
+from machines.models import Machine
 from machining.filters import TaskFilter
 from machining.permissions import MachiningProtectedView
 from users.permissions import IsAdmin, IsMachiningUserOrAdmin
 from .models import Task, TaskKeyCounter, Timer
-from .serializers import HoldTaskSerializer, PlanningListItemSerializer, TaskPlanUpdateItemSerializer, TaskSerializer, TimerSerializer
+from .serializers import HoldTaskSerializer, PlanningListItemSerializer, TaskPlanBulkListSerializer, TaskPlanUpdateItemSerializer, TaskSerializer, TimerSerializer
 from django.db.models import Q, Count, Avg
 from rest_framework.views import APIView
 from rest_framework.generics import RetrieveUpdateDestroyAPIView
@@ -17,7 +18,7 @@ from rest_framework.filters import OrderingFilter
 from django.db import transaction
 from rest_framework import permissions, status, views
 from .serializers import MachineTimelineSegmentSerializer
-from .services.timeline import build_machine_timeline  # _parse_ms is small; OK to re-use
+from .services.timeline import _build_bulk_machine_timelines, _ensure_valid_range  # _parse_ms is small; OK to re-use
 from rest_framework import status
 
 class TimerStartView(MachiningProtectedView):
@@ -352,7 +353,7 @@ class PlanningListView(APIView):
 
         qs = Task.objects.select_related('machine_fk').filter(
             machine_fk_id=machine_id,
-            is_hold_task=False,     # exclude holds from planning
+            is_hold_task=False,
         )
 
         if only_in_plan:
@@ -366,10 +367,10 @@ class PlanningListView(APIView):
             qs = qs.filter(q_in_plan | Q(in_plan=False))
 
         qs = qs.order_by(
-            F('in_plan').desc(),                        # in-plan first
+            F('in_plan').desc(),
             F('plan_order').asc(nulls_last=True),
             F('planned_start_ms').asc(nulls_last=True),
-            F('finish_time').asc(nulls_last=True),      # backlog seed
+            F('finish_time').asc(nulls_last=True),
             'key'
         )
 
@@ -382,10 +383,15 @@ class PlanningBulkSaveView(APIView):
     POST /machining/planning/bulk-save/
     {
       "items": [
-        {"key":"TI-001","machine_fk":5,"planned_start_ms":..., "planned_end_ms":..., "plan_order":1, "plan_locked":true, "in_plan": true},
-        {"key":"TI-002","plan_order":2, "in_plan": false}
+        {"key":"TI-001","in_plan": true,  "machine_fk":5,"planned_start_ms":..., "planned_end_ms":..., "plan_order":1, "plan_locked":true},
+        {"key":"TI-002","in_plan": false}
       ]
     }
+
+    Behavior (existing tasks only):
+      - in_plan:false -> remove from plan (clear planning fields)
+      - in_plan:true  -> add to plan or update plan fields (partial)
+      - Missing keys  -> 400 with list of missing
     """
     permission_classes = [IsMachiningUserOrAdmin]
 
@@ -395,46 +401,135 @@ class PlanningBulkSaveView(APIView):
         if not isinstance(items, list) or not items:
             return Response({"error": "Body must include non-empty 'items' array"}, status=400)
 
-        # Validate payload
-        ser = TaskPlanUpdateItemSerializer(data=items, many=True)
-        ser.is_valid(raise_exception=True)
+        # 1) ITEM-LEVEL VALIDATION (once, on raw payload)
+        item_ser = TaskPlanUpdateItemSerializer(data=items, many=True)
+        item_ser.is_valid(raise_exception=True)
+        rows = item_ser.validated_data  # machine_fk may now be a Machine instance
 
-        # Build instance list in the SAME ORDER as validated_data
-        keys = [row['key'] for row in ser.validated_data]
-        inst_map = {t.key: t for t in Task.objects.select_for_update().filter(key__in=keys)}
+        # 2) FETCH EXISTING (lock) & fail if any key is missing
+        keys = [row['key'] for row in rows]
+        existing_qs = Task.objects.select_for_update().filter(key__in=keys)
+        inst_map = {t.key: t for t in existing_qs}
         missing = [k for k in keys if k not in inst_map]
         if missing:
             return Response({"error": "Some tasks not found", "keys": missing}, status=400)
-        instances = [inst_map[k] for k in keys]
 
-        # Bulk update via the ListSerializer.update we defined
-        updated = ser.update(instances, ser.validated_data)
+        existing_machine_map = {t.key: t.machine_fk for t in existing_qs}
 
-        return Response({"updated": PlanningListItemSerializer(updated, many=True).data}, status=200)
+        # 3) LIST-LEVEL PAYLOAD UNIQUENESS (run on raw subset to avoid instance coercion)
+        raw_by_key = {d['key']: d for d in items if isinstance(d, dict) and 'key' in d}
+        raw_rows_in_order = [raw_by_key[k] for k in keys]
+        bulk_validate = TaskPlanBulkListSerializer(
+            child=TaskPlanUpdateItemSerializer(),
+            data=raw_rows_in_order,
+            context={"existing_machine_map": existing_machine_map},
+        )
+        bulk_validate.is_valid(raise_exception=True)  # only triggers list-level validate()
+
+        # 3b) Optional: DB preflight for intended (machine_fk, plan_order) conflicts (friendlier 400)
+        intended = []
+        for r in rows:
+            if r.get("in_plan", True):
+                key = r["key"]
+                mid = getattr(r.get("machine_fk"), "id", None)
+                if mid is None:
+                    mid = inst_map[key].machine_fk
+                order = r.get("plan_order", inst_map[key].plan_order)
+                if mid is not None and order is not None:
+                    intended.append((key, mid, order))
+
+        conflicts = []
+        for key, mid, order in intended:
+            if Task.objects.filter(machine_fk_id=mid, plan_order=order, in_plan=True).exclude(key=key).exists():
+                conflicts.append({"key": key, "machine_fk": mid, "plan_order": order})
+        if conflicts:
+            return Response({"error": "plan_order conflicts with existing tasks", "conflicts": conflicts}, status=400)
+
+        # 4) APPLY UPDATES/REMOVES using the validated rows (no re-validation)
+        instances_in_order = [inst_map[k] for k in keys]
+        bulk_updater = TaskPlanBulkListSerializer(child=TaskPlanUpdateItemSerializer())
+        updated_objs = bulk_updater.update(instances_in_order, rows)
+
+        return Response({"updated": PlanningListItemSerializer(updated_objs, many=True).data}, status=200)
     
 class MachineTimelineView(APIView):
     """
-    GET /machining/analytics/machine-timeline/?machine_fk=<id>&start_after=<ms|sec>&start_before=<ms|sec>
-    Returns:
-      {
-        "actual":  [ {start_ms,end_ms,task_key,task_name,is_hold,category:"work|hold"} ],
-        "idle":    [ {start_ms,end_ms,...,category:"idle"} ],
-        "totals":  { productive_seconds, hold_seconds, idle_seconds }
-      }
+    GET /machining/analytics/machine-timeline/
+        ?machine_fk=<id|all>   (omit or 'all' => all machines)
+        &start_after=<ms|sec>
+        &start_before=<ms|sec>
+
+    Enforces a maximum window of 7 full days.
     """
     permission_classes = [IsMachiningUserOrAdmin]
 
     def get(self, request):
-        machine_id = request.query_params.get('machine_fk')
-        if not machine_id:
-            return Response({"error": "machine_fk is required"}, status=400)
+        machine_param = request.query_params.get('machine_fk')
+        start_after = request.query_params.get('start_after')
+        start_before = request.query_params.get('start_before')
 
-        start_after = _parse_ms(request.query_params.get('start_after'))
-        start_before = _parse_ms(request.query_params.get('start_before'))
+        # Parse numbers safely
+        def _parse_ms(x):
+            if x is None or x == "":
+                return None
+            try:
+                v = int(x)
+                return v  # normalization to ms happens later
+            except ValueError:
+                return None
 
-        payload = build_machine_timeline(int(machine_id), start_after, start_before)
+        start_after_ms = _parse_ms(start_after)
+        start_before_ms = _parse_ms(start_before)
+
+        # Validate/enforce 7-day window
+        try:
+            start_after_ms, start_before_ms = _ensure_valid_range(start_after_ms, start_before_ms)
+        except ValueError as ve:
+            return Response({"error": str(ve)}, status=status.HTTP_400_BAD_REQUEST)
+        except OverflowError as oe:
+            return Response({"error": str(oe)}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Machine selection
+        if machine_param and machine_param.lower() != "all":
+            try:
+                machine_ids = [int(machine_param)]
+            except (TypeError, ValueError):
+                return Response({"error": "machine_fk must be an integer id or 'all'."}, status=400)
+            machines = Machine.objects.filter(id__in=machine_ids)
+        else:
+            machines = Machine.objects.filter(used_in="machining").only("id", "name")
+            machine_ids = list(machines.values_list("id", flat=True))
+
+        # Build timelines in bulk
+        timelines = _build_bulk_machine_timelines(machine_ids, start_after_ms, start_before_ms)
+
+        # Stitch response
+        machines_by_id = {m.id: m for m in machines}
+        items = []
+        overall = {"productive_seconds": 0, "hold_seconds": 0, "idle_seconds": 0}
+
+        for mid in machine_ids:
+            m = machines_by_id.get(mid)
+            name = getattr(m, "name", None)
+            data = timelines.get(mid, {"segments": [], "totals": {"productive_seconds": 0, "hold_seconds": 0, "idle_seconds": 0}})
+            # (Optional) serialize segments
+            # segments = MachineTimelineSegmentSerializer(data["segments"], many=True).data
+            segments = data["segments"]
+            totals = data["totals"]
+
+            overall["productive_seconds"] += totals["productive_seconds"]
+            overall["hold_seconds"] += totals["hold_seconds"]
+            overall["idle_seconds"] += totals["idle_seconds"]
+
+            items.append({
+                "machine_id": mid,
+                "machine_name": name,
+                "segments": segments,
+                "totals": totals,
+            })
+
         return Response({
-            "actual":  MachineTimelineSegmentSerializer(payload["actual"], many=True).data,
-            "idle":    MachineTimelineSegmentSerializer(payload["idle"], many=True).data,
-            "totals":  payload["totals"],
+            "range": {"start_after_ms": start_after_ms, "start_before_ms": start_before_ms},
+            "machines": items,
+            "overall_totals": overall,
         }, status=status.HTTP_200_OK)

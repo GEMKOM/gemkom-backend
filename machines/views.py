@@ -47,7 +47,12 @@ class MachineListCreateView(generics.ListCreateAPIView):
         machines = (
             Machine.objects
             .filter(query)
-            .annotate(tasks_count=Count('machine_tasks'))  # <-- NEW
+            .annotate(
+                tasks_count=Count(
+                    'machine_tasks',
+                    filter=Q(machine_tasks__completion_date__isnull=True)  # only NOT completed
+                )
+            )
             .order_by('-machine_type')
         )
         serializer = MachineListSerializer(machines, many=True)

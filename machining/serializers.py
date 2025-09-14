@@ -135,93 +135,135 @@ class PlanningListItemSerializer(serializers.ModelSerializer):
         return round(max(0.0, est - spent), 2)
 
 
-# ----------------------------
-# Planning: bulk save payload
-# ----------------------------
-class TaskPlanUpdateItemSerializer(serializers.ModelSerializer):
-    # Your Task PK is "key" (string)
-    key = serializers.CharField()
-
-    class Meta:
-        model = Task
-        fields = [
-            'key', 'machine_fk',
-            'planned_start_ms', 'planned_end_ms',
-            'plan_order', 'plan_locked',
-            'in_plan',
-        ]
-        extra_kwargs = {
-            'machine_fk': {'required': False, 'allow_null': True},
-            'planned_start_ms': {'required': False, 'allow_null': True},
-            'planned_end_ms': {'required': False, 'allow_null': True},
-            'plan_order': {'required': False, 'allow_null': True},
-            'plan_locked': {'required': False},
-            'in_plan': {'required': False},
-        }
-
 class TaskPlanBulkListSerializer(serializers.ListSerializer):
-    child = TaskPlanUpdateItemSerializer()
+    """
+    Bulk updates for existing tasks only (no creates).
+    - Enforces (machine_fk, plan_order) uniqueness among in-payload rows.
+    - Optional calendar hook left in place.
+    - If in_plan is False -> clear planning fields.
+    - Efficient bulk_update.
+    """
 
     def validate(self, data):
         errors = []
-        seen = set()
+        seen_pairs = set()
+        seen_keys = set()
+        existing_machine_map = (self.context or {}).get("existing_machine_map", {})
 
         for item in data:
-            in_plan = item.get('in_plan', True)
+            key = item["key"]
+            if key in seen_keys:
+                errors.append({"key": key, "error": "duplicate key in payload"})
+            seen_keys.add(key)
 
-            # uniqueness among in-plan items (existing code of yours)
+            in_plan = item.get('in_plan', True)
             order = item.get('plan_order')
+
+            # Uniqueness within the payload for (machine, plan_order)
             if in_plan and order is not None:
                 if 'machine_fk' in item and item['machine_fk'] is not None:
                     machine_id = item['machine_fk'].id if hasattr(item['machine_fk'], 'id') else item['machine_fk']
                 else:
-                    machine_id = Task.objects.only('machine_fk_id').get(pk=item['key']).machine_fk_id
-                k = (machine_id, order)
-                if k in seen:
-                    raise serializers.ValidationError(f'duplicate plan_order {order} for machine {machine_id} among in-plan items')
-                seen.add(k)
+                    machine_id = existing_machine_map.get(key)  # fallback to existing machine
 
-            # calendar validation only if both times supplied and in_plan
-            if in_plan and item.get('planned_start_ms') is not None and item.get('planned_end_ms') is not None:
-                if 'machine_fk' in item and item['machine_fk'] is not None:
-                    machine = item['machine_fk'] if hasattr(item['machine_fk'], 'id') else Machine.objects.get(pk=item['machine_fk'])
-                else:
-                    machine = Task.objects.select_related('machine_fk').get(pk=item['key']).machine_fk
+                if machine_id is not None:
+                    pair = (machine_id, order)
+                    if pair in seen_pairs:
+                        errors.append({"key": key, "error": f"duplicate plan_order {order} for machine {machine_id} in payload"})
+                    else:
+                        seen_pairs.add(pair)
+
+            # calendar overlap hook (optional)
+            # if in_plan and item.get('planned_start_ms') is not None and item.get('planned_end_ms') is not None:
+            #     ...
 
         if errors:
-            raise serializers.ValidationError({"calendar": errors})
+            raise serializers.ValidationError({"errors": errors})
         return data
 
+    @transaction.atomic
     def update(self, instances, validated_data):
-        # instances is a list matching validated_data order
-        # Map existing instances by key for safety
-        by_key = {obj.key: obj for obj in instances}
-        updated = []
+        inst_by_key = {obj.key: obj for obj in instances}
+
+        to_update = []
+        changed_fields = set()
+
+        def set_if_changed(obj, field, value):
+            # Normalize FK input (instance or pk or None)
+            if field == "machine_fk":
+                new_id = getattr(value, "id", value)
+                if obj.machine_fk_id != new_id:
+                    obj.machine_fk_id = new_id
+                    changed_fields.add("machine_fk")
+                return
+            if getattr(obj, field) != value:
+                setattr(obj, field, value)
+                changed_fields.add(field)
+
         for row in validated_data:
-            obj = by_key[row['key']]
-            for f in ['machine_fk','planned_start_ms','planned_end_ms','plan_order','plan_locked','in_plan']:
+            obj = inst_by_key[row['key']]
+
+            # REMOVE from plan
+            if row.get('in_plan') is False:
+                set_if_changed(obj, 'in_plan', False)
+                set_if_changed(obj, 'machine_fk', None)
+                set_if_changed(obj, 'planned_start_ms', None)
+                set_if_changed(obj, 'planned_end_ms', None)
+                set_if_changed(obj, 'plan_order', None)
+                set_if_changed(obj, 'plan_locked', False)
+                to_update.append(obj)
+                continue
+
+            # ADD/UPDATE in plan (partial)
+            for f in ['machine_fk','planned_start_ms','planned_end_ms','plan_order','plan_locked','in_plan','name']:
                 if f in row:
-                    setattr(obj, f, row[f])
-            obj.save(update_fields=[f for f in ['machine_fk','planned_start_ms','planned_end_ms','plan_order','plan_locked','in_plan'] if f in row])
-            updated.append(obj)
-        return updated
+                    set_if_changed(obj, f, row[f])
+
+            to_update.append(obj)
+
+        if to_update and changed_fields:
+            Task.objects.bulk_update(to_update, list(changed_fields))
+
+        return to_update
+
 
 class TaskPlanUpdateItemSerializer(serializers.ModelSerializer):
     key = serializers.CharField()
+    name = serializers.CharField(required=False, allow_blank=True)
 
     class Meta:
         model = Task
-        fields = ['key','machine_fk','planned_start_ms','planned_end_ms','plan_order','plan_locked','in_plan']
-        extra_kwargs = {
-            'machine_fk': {'required': False, 'allow_null': True},
-            'planned_start_ms': {'required': False, 'allow_null': True},
-            'planned_end_ms': {'required': False, 'allow_null': True},
-            'plan_order': {'required': False, 'allow_null': True},
-            'plan_locked': {'required': False},
-            'in_plan': {'required': False},
-        }
-        # 👇 THIS is the key line
+        fields = ["key","name","machine_fk","planned_start_ms","planned_end_ms","plan_order","plan_locked","in_plan"]
         list_serializer_class = TaskPlanBulkListSerializer
+        extra_kwargs = {
+            "machine_fk": {"required": False, "allow_null": True},
+            "planned_start_ms": {"required": False, "allow_null": True},
+            "planned_end_ms": {"required": False, "allow_null": True},
+            "plan_order": {"required": False, "allow_null": True},
+            "plan_locked": {"required": False},
+            "in_plan": {"required": False},
+        }
+        # Disable per-item UniqueTogetherValidator; we enforce uniqueness at list-level + DB constraint.
+        validators = []
+
+    def validate(self, attrs):
+        # Pair-wise start/end logic (what you already had)
+        start_provided = 'planned_start_ms' in attrs
+        end_provided   = 'planned_end_ms' in attrs
+
+        start_val = attrs.get('planned_start_ms', getattr(self.instance, 'planned_start_ms', None))
+        end_val   = attrs.get('planned_end_ms',   getattr(self.instance, 'planned_end_ms',   None))
+
+        if start_provided ^ end_provided:
+            raise serializers.ValidationError("planned_start_ms and planned_end_ms must be provided together (or both omitted).")
+
+        if start_provided and end_provided and start_val is not None and end_val is not None:
+            if not isinstance(start_val, int) or not isinstance(end_val, int):
+                raise serializers.ValidationError("planned_start_ms and planned_end_ms must be integers (epoch ms).")
+            if start_val > end_val:
+                raise serializers.ValidationError("planned_start_ms cannot be after planned_end_ms.")
+
+        return attrs
 
 
 # ----------------------------
