@@ -1,10 +1,10 @@
-import time
 from typing import Dict, Any, List, Optional
 from django.db.models import Q
 
+from machines.calendar import DEFAULT_WEEK_TEMPLATE, _get_calendar
 from machines.models import Machine
 from ..models import Timer, Task
-from datetime import timedelta
+from datetime import datetime, timedelta, time as dtime
 from django.utils import timezone
 
 MAX_DAYS = 7
@@ -67,35 +67,48 @@ def _parse_hhmm(hhmm: str):
     h, m = map(int, hhmm.split(":"))
     return dtime(hour=h, minute=m)
 
-def _iter_calendar_windows(cal, start_after_ms: int, start_before_ms: int):
+from datetime import datetime, timedelta, time as dtime
+from zoneinfo import ZoneInfo
+from django.utils import timezone
+from django.db.models import Q
+from machines.models import Machine  # has OneToOne 'calendar'
+
+
+def _parse_hhmm(hhmm: str) -> dtime:
+    h, m = map(int, hhmm.split(":"))
+    return dtime(hour=h, minute=m)
+
+
+def _iter_calendar_windows_from(tzname: str,
+                                week_template: Dict[str, List[Dict[str, Any]]],
+                                work_exceptions: List[Dict[str, Any]],
+                                start_after_ms: int,
+                                start_before_ms: int,
+                                now_cutoff_ms: int):
     """
-    Yield working windows [ws, we] (ms) within the requested range based on the machine's calendar.
-    Supports overnight shifts when {'end_next_day': True}.
-    If no calendar or empty template, yield the entire range once.
+    Yield working windows [ws,we] in ms based on the provided tz/template/exceptions.
+    - Windows are clipped to [start_after_ms, min(start_before_ms, now_cutoff_ms)]
+    - Supports overnight shifts with {"end_next_day": true}
+    - Exceptions: [{"date":"YYYY-MM-DD","closed":true}|{"date":"YYYY-MM-DD","shifts":[...]}]
     """
-    if not cal or not cal.week_template:
-        yield (start_after_ms, start_before_ms)
+    effective_end_ms = min(start_before_ms, now_cutoff_ms)
+    if start_after_ms >= effective_end_ms:
         return
+        yield  # keep generator semantics
 
-    tzname = cal.timezone or "Europe/Istanbul"
-    tz = timezone.pytz.timezone(tzname) if hasattr(timezone, "pytz") else timezone.get_current_timezone()
-
+    tz = ZoneInfo(tzname or "Europe/Istanbul")
     start_dt = datetime.fromtimestamp(start_after_ms / 1000, tz)
-    end_dt   = datetime.fromtimestamp(start_before_ms / 1000, tz)
+    end_dt   = datetime.fromtimestamp(effective_end_ms / 1000, tz)
 
-    # (Optional) quick map of exceptions: {"YYYY-MM-DD": {"shifts":[...]} or {"closed":True}}
-    exc_map = {}
-    for exc in (cal.work_exceptions or []):
-        day = exc.get("date")
-        if day:
-            exc_map[day] = exc
+    exc_map = {exc.get("date"): exc for exc in (work_exceptions or []) if exc.get("date")}
 
     day = start_dt.date()
-    while day <= (end_dt - timedelta(milliseconds=1)).date():
-        key = str(day.weekday())  # 0..6 (Mon..Sun)
-        shifts = list(cal.week_template.get(key, []))
+    last_date = (end_dt - timedelta(milliseconds=1)).date()
+    while day <= last_date:
+        key = str(day.weekday())  # "0".."6"
+        shifts = list((week_template or {}).get(key, []))
 
-        # Apply exception override if any
+        # apply day-level exception
         exc = exc_map.get(day.isoformat())
         if exc:
             if exc.get("closed"):
@@ -105,35 +118,33 @@ def _iter_calendar_windows(cal, start_after_ms: int, start_before_ms: int):
 
         for sh in shifts:
             try:
-                s_local = tz.localize(datetime.combine(day, _parse_hhmm(sh["start"])))
+                s_local = datetime.combine(day, _parse_hhmm(sh["start"])).replace(tzinfo=tz)
                 end_day = day + timedelta(days=1) if sh.get("end_next_day") else day
-                e_local = tz.localize(datetime.combine(end_day, _parse_hhmm(sh["end"])))
+                e_local = datetime.combine(end_day, _parse_hhmm(sh["end"])).replace(tzinfo=tz)
             except Exception:
-                continue  # skip malformed shift
+                continue
 
-            # clip to requested range
             ws = max(int(s_local.timestamp() * 1000), start_after_ms)
-            we = min(int(e_local.timestamp() * 1000), start_before_ms)
+            we = min(int(e_local.timestamp() * 1000), effective_end_ms)
             if we > ws:
                 yield (ws, we)
-
         day += timedelta(days=1)
+
 
 def _subtract_actual_gaps_within_window(actual_sorted, ws, we):
     """
-    Given merged & time-ordered actual segments, return idle gaps within [ws,we].
-    actual_sorted: list of dicts with start_ms, end_ms (work or hold).
+    Return idle gaps within [ws,we], subtracting merged actual segments that intersect this window.
+    Idle is strictly clipped to the window, so it never leaks past shift end or bridges nights.
     """
     idle = []
     cursor = ws
-    # advance to first segment that might intersect window
     for seg in actual_sorted:
         if seg["end_ms"] <= ws:
             continue
         if seg["start_ms"] >= we:
             break
-        a = max(seg["start_ms"], ws)
-        b = min(seg["end_ms"], we)
+        a = max(seg["start_ms"], ws)  # clip to window start
+        b = min(seg["end_ms"], we)    # clip to window end
         if a > cursor:
             idle.append({
                 "start_ms": cursor, "end_ms": a,
@@ -149,22 +160,32 @@ def _subtract_actual_gaps_within_window(actual_sorted, ws, we):
         })
     return idle
 
+
 def _build_bulk_machine_timelines(machine_ids, start_after_ms, start_before_ms):
     """
-    One-pass fetch for all relevant timers, grouped per machine, then build
-    calendar-aware idle (idle only inside MachineCalendar windows).
+    - Active timers (finish_time is null) are shown up to 'now'.
+    - Idle exists only inside working windows (calendar or default template) and never in the future.
+    - Idle never crosses shift boundaries (e.g., 16:30→17:00 only; no overnight bridging).
     """
-    now_ms = lambda: int(timezone.now().timestamp() * 1000)
+    now_ms = int(timezone.now().timestamp() * 1000)
 
-    # fetch calendars up-front
+    # preload machines (and calendar via OneToOne)
     machines = (
         Machine.objects
         .filter(id__in=machine_ids)
         .select_related("calendar")
-        .only("id", "calendar__timezone", "calendar__week_template", "calendar__work_exceptions")
+        .only("id", "name", "calendar__timezone", "calendar__week_template", "calendar__work_exceptions")
     )
-    cal_by_id = {m.id: getattr(m, "calendar", None) for m in machines}
 
+    # Prepare tz/template/exceptions per machine using your _get_calendar
+    cal_info = {}
+    for m in machines:
+        tzname, week, exceptions = _get_calendar(m)  # <- you provided this
+        # normalize keys to strings "0".."6" just in case
+        week = {str(k): v for k, v in week.items()}
+        cal_info[m.id] = (tzname, week, exceptions)
+
+    # Pull timers intersecting requested range
     timers = (
         Timer.objects
         .select_related('issue_key', 'machine_fk')
@@ -174,16 +195,15 @@ def _build_bulk_machine_timelines(machine_ids, start_after_ms, start_before_ms):
         .order_by('start_time')
     )
 
-    # Group actual timers by machine
+    # Group/prepare actual segments (active timers → end at now, and nothing goes into the future)
     grouped = {mid: [] for mid in machine_ids}
     for t in timers:
         mid = t.machine_fk_id
         if mid is None:
             continue
-        s = t.start_time
-        e = t.finish_time or now_ms()
-        s, e = _clamp_ms(s, e, start_after_ms, start_before_ms)
-        if not s:
+        s = max(t.start_time, start_after_ms)
+        e = min((t.finish_time or now_ms), start_before_ms, now_ms)
+        if e <= s:
             continue
         is_hold = bool(getattr(t.issue_key, 'is_hold_task', False))
         grouped[mid].append({
@@ -193,15 +213,17 @@ def _build_bulk_machine_timelines(machine_ids, start_after_ms, start_before_ms):
             "task_name": getattr(t.issue_key, 'name', None),
             "is_hold": is_hold,
             "category": "hold" if is_hold else "work",
+            "timer_id": t.id,
         })
 
     results = {}
     for mid in machine_ids:
-        actual = _merge_segments_ms(grouped.get(mid, []))  # merged work/hold
-        # Build idle only inside calendar windows:
+        actual = _merge_segments_ms(grouped.get(mid, []))  # you already have this helper
+
+        # Build idle strictly per working window and never past 'now'
         idle = []
-        cal = cal_by_id.get(mid)
-        for ws, we in _iter_calendar_windows(cal, start_after_ms, start_before_ms):
+        tzname, week, exceptions = cal_info.get(mid, ("Europe/Istanbul", DEFAULT_WEEK_TEMPLATE, []))
+        for ws, we in _iter_calendar_windows_from(tzname, week, exceptions, start_after_ms, start_before_ms, now_ms):
             idle.extend(_subtract_actual_gaps_within_window(actual, ws, we))
 
         segments = sorted(actual + idle, key=lambda r: r["start_ms"])
@@ -211,4 +233,5 @@ def _build_bulk_machine_timelines(machine_ids, start_after_ms, start_before_ms):
             "idle_seconds": _sum_secs(segments, "idle"),
         }
         results[mid] = {"segments": segments, "totals": totals}
+
     return results
