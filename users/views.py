@@ -33,7 +33,7 @@ class UserViewSet(ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        qs = User.objects.select_related('profile').order_by('username')
+        qs = User.objects.filter(is_active=True).select_related('profile').order_by('username')
 
         if not user.is_authenticated:
             return qs.filter(profile__work_location='workshop')
