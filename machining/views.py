@@ -354,6 +354,8 @@ class PlanningListView(APIView):
         qs = Task.objects.select_related('machine_fk').filter(
             machine_fk_id=machine_id,
             is_hold_task=False,
+            completion_date__isnull=True,
+            completed_by__isnull=True,
         )
 
         if only_in_plan:

@@ -9,10 +9,8 @@ router.register(r"requests", OvertimeRequestViewSet, basename="overtime-request"
 urlpatterns = [
     path('', include(router.urls)),
     path(
-        "overtime/users-for-date/<str:date_str>/",
+        "users-for-date/<str:date_str>/",
         OvertimeUsersForDateView.as_view(),
         name="overtime-users-for-date"
     ),
 ]
-
-urlpatterns = router.urls

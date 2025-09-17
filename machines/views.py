@@ -13,7 +13,8 @@ from machines.models import Machine, MachineCalendar, MachineFault
 from machines.serializers import MachineCalendarSerializer, MachineFaultSerializer, MachineGetSerializer, MachineListSerializer, MachineSerializer
 from machining.models import Timer
 from users.permissions import IsAdmin, IsMachiningUserOrAdmin
-from django.db.models import Q, Count
+from django.db.models import Q, Count, Sum, DecimalField, Value
+from django.db.models.functions import Coalesce
 
 # Create your views here.
 
@@ -44,14 +45,23 @@ class MachineListCreateView(generics.ListCreateAPIView):
         if is_active:
             query &= Q(is_active=is_active)
 
+
+        not_completed = Q(machine_tasks__completion_date__isnull=True)
+        dec_field = DecimalField(max_digits=12, decimal_places=2) 
         machines = (
             Machine.objects
             .filter(query)
             .annotate(
                 tasks_count=Count(
                     'machine_tasks',
-                    filter=Q(machine_tasks__completion_date__isnull=True)  # only NOT completed
-                )
+                    filter=not_completed  # only NOT completed
+                ),
+                total_estimated_hours=Sum(
+                    Coalesce('machine_tasks__estimated_hours',
+                            Value(0, output_field=dec_field)),
+                    filter=not_completed,
+                    output_field=dec_field,
+)
             )
             .order_by('-machine_type')
         )

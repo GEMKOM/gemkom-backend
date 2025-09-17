@@ -49,13 +49,15 @@ class MachineListSerializer(serializers.ModelSerializer):
     is_under_maintenance = serializers.SerializerMethodField()
     has_active_timer = serializers.SerializerMethodField()
     tasks_count = serializers.IntegerField(read_only=True)  # <-- NEW
+    total_estimated_hours = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)  # <-- NEW
+
 
     class Meta:
         model = Machine
         fields = [
             'id', 'name', 'machine_type', 'used_in', 'used_in_label', 'machine_type_label',
             'is_active', 'has_active_timer', 'is_under_maintenance', 'jira_id', 'properties',
-            'tasks_count',  # <-- NEW
+            'tasks_count', 'total_estimated_hours'  # <-- NEW
         ]
 
     def get_machine_type_label(self, obj):

@@ -194,13 +194,41 @@ class OvertimeRequestUpdateSerializer(serializers.ModelSerializer):
         return attrs
 
 
+class OvertimeEntryShortSerializer(serializers.ModelSerializer):
+    request_start_at = serializers.DateTimeField(source="request.start_at", read_only=True)
+    request_end_at   = serializers.DateTimeField(source="request.end_at",   read_only=True)
+    class Meta:
+        model = OvertimeEntry
+        fields = ["id", "job_no", "description", "approved_hours", "request_start_at", "request_end_at"]
+
 class UserOvertimeListSerializer(serializers.ModelSerializer):
     full_name = serializers.SerializerMethodField()
     team = serializers.CharField(source="profile.team", read_only=True)
+    team_label = serializers.SerializerMethodField()
+    entries = serializers.SerializerMethodField()
 
     def get_full_name(self, obj):
         return obj.get_full_name() or obj.username
+    
+    def get_team_label(self, obj):
+        return TEAM_LABELS.get(obj.profile.team, obj.profile.team or "")
+    
+    def get_entries(self, obj):
+        # We’ll prefetch filtered entries into obj.entries_for_day
+        entries = getattr(obj, "entries_for_day", None)
+        if entries is None:
+            # Fallback (shouldn’t happen if view uses Prefetch)
+            from overtime.models import OvertimeEntry
+            start_of_day = self.context["start_of_day"]
+            end_exclusive = self.context["end_exclusive"]
+            entries = OvertimeEntry.objects.filter(
+                user=obj,
+                request__status="approved",
+                request__start_at__lt=end_exclusive,
+                request__end_at__gte=start_of_day,
+            )
+        return OvertimeEntryShortSerializer(entries, many=True).data
 
     class Meta:
         model = User
-        fields = ["id", "username", "full_name", "team"]
+        fields = ["id", "username", "full_name", "team", "team_label", "entries"]

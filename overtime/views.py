@@ -8,7 +8,7 @@ from rest_framework.filters import OrderingFilter, SearchFilter
 from django_filters.rest_framework import DjangoFilterBackend
 from django.contrib.auth.models import User
 from rest_framework.views import APIView
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from django.utils import timezone
 
 from .models import OvertimeRequest, OvertimeEntry
@@ -280,24 +280,39 @@ class OvertimeUsersForDateView(APIView):
             )
 
         tz = timezone.get_current_timezone()
-        start_of_day = tz.localize(datetime.combine(day, time.min))
-        end_of_day   = tz.localize(datetime.combine(day, time.max))
+        start_of_day = timezone.make_aware(datetime.combine(day, time.min), tz)
+        end_of_day = timezone.make_aware(datetime.combine(day + timedelta(days=1), time.min), tz)
 
-        approved_ots = OvertimeRequest.objects.filter(
-            status="approved",
-            start_at__lte=end_of_day,
-            end_at__gte=start_of_day,
-        ).only("id")
+        user_ids = (
+            OvertimeEntry.objects
+            .filter(
+                request__status="approved",
+                request__start_at__lte=end_of_day,
+                request__end_at__gte=start_of_day,
+            )
+            .values_list("user_id", flat=True)
+            .distinct()
+        )
 
-        user_ids = (OvertimeEntry.objects
-                    .filter(overtime_request__in=approved_ots)
-                    .values_list("user_id", flat=True)
-                    .distinct())
+        day_entries_qs = (
+            OvertimeEntry.objects
+            .filter(
+                request__status="approved",
+                request__start_at__lt=end_of_day,
+                request__end_at__gte=start_of_day,
+            )
+            .only("id", "job_no", "description", "approved_hours", "user_id", "request_id", "request__start_at","request__end_at")
+            .select_related(None)  # ensure we don't drag extra relations
+        )
 
         users = (User.objects
                  .filter(id__in=user_ids, is_active=True)
                  .select_related("profile")
                  .order_by("first_name", "last_name", "username"))
 
-        data = UserOvertimeListSerializer(users, many=True).data
+        serializer = UserOvertimeListSerializer(
+            users, many=True,
+            context={"start_of_day": start_of_day, "end_exclusive": end_of_day}
+        )
+        data = serializer.data
         return Response(data, status=status.HTTP_200_OK)
