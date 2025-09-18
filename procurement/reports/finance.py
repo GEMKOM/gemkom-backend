@@ -60,7 +60,13 @@ def build_executive_overview(request):
     created_gte = request.query_params.get("created_gte")
     created_lte = request.query_params.get("created_lte")
 
-    qs = PurchaseOrder.objects.exclude(status="cancelled").select_related("pr", "supplier")
+    # Base PO set (still allow filtering by created/ordered if you want to scope which POs contribute)
+    qs = (
+        PurchaseOrder.objects
+        .exclude(status="cancelled")
+        .select_related("pr", "supplier")
+        .prefetch_related("payment_schedules")
+    )
     if created_gte:
         qs = qs.filter(Q(created_at__gte=created_gte) | Q(ordered_at__gte=created_gte))
     if created_lte:
@@ -68,56 +74,83 @@ def build_executive_overview(request):
 
     fb = get_fallback_rates()
 
-    # Series by month
+    # We aggregate by PaymentSchedule.due_date month (all amounts NET in EUR)
     by_month = defaultdict(lambda: {
-        "total_spent_eur": Decimal("0.00"),
-        "total_tax_eur": Decimal("0.00"),
-        "po_count": 0,
-        "active_suppliers": set(),
+        "total_spent_eur": Decimal("0.00"),  # here: total scheduled NET due in that month
+        "paid_eur": Decimal("0.00"),
+        "awaiting_eur": Decimal("0.00"),
+        "po_ids": set(),            # to count distinct POs for the month
+        "active_suppliers": set(),  # distinct suppliers with dues that month
     })
 
-    total_spent = Decimal("0.00")
-    total_tax   = Decimal("0.00")
     suppliers_all = set()
 
+    # Walk through POs and their schedules; attribute values to schedule.due_date month
     for po in qs:
-        ts = po.ordered_at or po.created_at
-        mk = _month_key(ts)
-        pr_rates = extract_rates(po.pr.currency_rates_snapshot or {})
-        net = to_eur(po.total_amount, po.currency or "TRY", pr_rates, fb) or Decimal("0.00")
-        tax = to_eur(po.total_tax_amount, po.currency or "TRY", pr_rates, fb) or Decimal("0.00")
+        pr_rates = extract_rates(getattr(po.pr, "currency_rates_snapshot", {}) or {})
+        rate = (po.tax_rate or Decimal("0")) / Decimal("100")
 
-        by_month[mk]["total_spent_eur"] += net
-        by_month[mk]["total_tax_eur"] += tax
-        by_month[mk]["po_count"] += 1
-        if po.supplier_id:
-            by_month[mk]["active_suppliers"].add(po.supplier_id)
-            suppliers_all.add(po.supplier_id)
+        for sch in po.payment_schedules.all():
+            # Skip schedules without a due date (optional: bucket them separately if you prefer)
+            if not sch.due_date:
+                continue
 
-        total_spent += net
-        total_tax += tax
+            mk = f"{sch.due_date.year:04d}-{sch.due_date.month:02d}"
 
-    # build series + compute MoM/YoY based on latest month we have
+            # Convert schedule amount to EUR
+            sch_ccy = sch.currency or (po.currency or "TRY")
+            amt_eur = to_eur(sch.amount or Decimal("0.00"), sch_ccy, pr_rates, fb) or Decimal("0.00")
+
+            # Normalize to NET for comparability with PO net figures.
+            # If this specific installment/payment is marked "paid_with_tax", strip tax.
+            # (If your schedules represent GROSS by definition, set paid_with_tax=True on creation.)
+            net_component = (amt_eur / (Decimal("1.00") + rate)) if sch.paid_with_tax else amt_eur
+
+            # Aggregate to the schedule's due month
+            by_month[mk]["total_spent_eur"] += net_component
+            if sch.is_paid:
+                by_month[mk]["paid_eur"] += net_component
+
+            by_month[mk]["po_ids"].add(po.id)
+            if po.supplier_id:
+                by_month[mk]["active_suppliers"].add(po.supplier_id)
+                suppliers_all.add(po.supplier_id)
+
+    # Finalize awaiting and build series
     months = sorted(by_month.keys())
     series = []
+    total_spent_all = Decimal("0.00")
+    total_paid_all = Decimal("0.00")
+    total_awaiting_all = Decimal("0.00")
+
     for m in months:
         row = by_month[m]
+        awaiting = row["total_spent_eur"] - row["paid_eur"]
+        if awaiting < 0:
+            awaiting = Decimal("0.00")  # guard against rounding/over-payment
+        row["awaiting_eur"] = awaiting
+
+        total_spent_all += row["total_spent_eur"]
+        total_paid_all += row["paid_eur"]
+        total_awaiting_all += awaiting
+
         series.append({
             "month": m,
+            # kept key name for compatibility; semantically: total scheduled (NET) due in month
             "total_spent_eur": str(q2(row["total_spent_eur"])),
-            "total_gross_eur": str(q2(row["total_spent_eur"] + row["total_tax_eur"])),
-            "po_count": row["po_count"],
+            "po_count": len(row["po_ids"]),
             "active_suppliers": len(row["active_suppliers"]),
+            "paid_eur": str(q2(row["paid_eur"])),
+            "awaiting_eur": str(q2(row["awaiting_eur"])),
         })
 
-    # KPI cards
+    # MoM / YoY based on scheduled dues (total_spent_eur) of the latest month
     latest = months[-1] if months else None
     mom = yoy = None
     if latest:
-        # previous month key
         yyyy, mm = map(int, latest.split("-"))
-        prev_m = f"{(yyyy if mm>1 else yyyy-1):04d}-{(mm-1 if mm>1 else 12):02d}"
-        last_year = f"{yyyy-1:04d}-{mm:02d}"
+        prev_m = f"{(yyyy if mm > 1 else yyyy - 1):04d}-{(mm - 1 if mm > 1 else 12):02d}"
+        last_year = f"{yyyy - 1:04d}-{mm:02d}"
         cur_val = by_month[latest]["total_spent_eur"]
         if prev_m in by_month and by_month[prev_m]["total_spent_eur"] > 0:
             base = by_month[prev_m]["total_spent_eur"]
@@ -127,13 +160,18 @@ def build_executive_overview(request):
             yoy = float((cur_val - base) / base) * 100.0
 
     kpis = {
-        "total_spent_eur": str(q2(total_spent)),
-        "total_gross_eur": str(q2(total_spent + total_tax)),
-        "po_count": sum(r["po_count"] for r in by_month.values()),
+        # Totals across all due months in range (NET, EUR)
+        "total_spent_eur": str(q2(total_spent_all)),
+        "total_paid_eur": str(q2(total_paid_all)),
+        "total_awaiting_eur": str(q2(total_awaiting_all)),
+        # Distinct counts across all months
+        "po_count": sum(len(v["po_ids"]) for v in by_month.values()),
         "active_suppliers": len(suppliers_all),
+        # Trend on due-based totals
         "mom_percent": (round(mom, 2) if mom is not None else None),
         "yoy_percent": (round(yoy, 2) if yoy is not None else None),
     }
+
     return {"kpis": kpis, "series": series}
 
 

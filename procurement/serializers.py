@@ -49,8 +49,8 @@ class SupplierSerializer(serializers.ModelSerializer):
     class Meta:
         model = Supplier
         fields = [
-            'id', 'name', 'contact_person', 'phone', 'email', 'default_currency', 'default_payment_terms',
-            'is_active', 'created_at', 'updated_at', 'default_tax_rate', 'has_dbs', 'dbs_limit'
+            'id', 'name', 'contact_person', 'phone', 'address', 'email', 'default_currency', 'default_payment_terms',
+            'is_active', 'created_at', 'updated_at', 'default_tax_rate', 'has_dbs', 'dbs_limit', 'dbs_used', 'dbs_currency'
         ]
 
 class ItemSerializer(serializers.ModelSerializer):

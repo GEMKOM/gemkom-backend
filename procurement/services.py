@@ -6,7 +6,9 @@ from django.utils import timezone
 from django.core.exceptions import PermissionDenied, ValidationError
 from datetime import timedelta
 
-from .models import PurchaseOrder, PurchaseOrderLine, ItemOffer, PaymentTerms, PaymentSchedule, PurchaseOrderLineAllocation
+from procurement.reports.common import extract_rates, get_fallback_rates, to_eur
+
+from .models import PurchaseOrder, PurchaseOrderLine, ItemOffer, PaymentTerms, PaymentSchedule, PurchaseOrderLineAllocation, Supplier
 
 Q2 = lambda x: (Decimal(x)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
@@ -32,8 +34,33 @@ def create_pos_from_recommended(pr):
     pos = []
     for so, item_offers in grouped.items():
         supplier = so.supplier
-        # ✅ Skip DBS suppliers entirely (no PO, no schedules, nothing)
+        # ✅ If supplier is DBS, don't create a PO — just increment DBS usage.
         if getattr(supplier, 'has_dbs', False):
+            # ---- NET total (no tax). If you want GROSS, see note below. ----
+            total_net = sum(
+                Q2(io.purchase_request_item.quantity * io.unit_price)
+                for io in item_offers
+            )
+
+            # Optional: normalize to a single currency for DBS tracking
+            # Assuming supplier keeps DBS in its default currency or so.currency
+            dbs_ccy = getattr(supplier, "dbs_currency", None) or (so.currency or getattr(supplier, "default_currency", "TRY"))
+
+            # Use PR snapshot rates for consistency (same as your PO logic)
+            pr_rates = extract_rates(getattr(pr, "currency_rates_snapshot", {}) or {})
+            # Convert the batch total to the DBS currency (here I show TRY/EUR example using your to_eur;
+            # if you have a to_currency() helper, swap it in)
+            if dbs_ccy == "EUR":
+                total_for_dbs = to_eur(total_net, (so.currency or "TRY"), pr_rates, get_fallback_rates()) or Decimal("0.00")
+            else:
+                # If you store DBS in TRY (common), you might want a to_try(...) helper.
+                # As a simple fallback, if currencies match, no conversion:
+                total_for_dbs = total_net if (so.currency or "TRY") == dbs_ccy else total_net  # TODO: convert if needed
+
+            # Atomic increment to avoid race conditions
+            Supplier.objects.filter(pk=supplier.pk).update(dbs_used=F('dbs_used') + total_for_dbs)
+
+            # Skip the rest for DBS suppliers
             continue
 
         po = PurchaseOrder.objects.create(

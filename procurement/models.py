@@ -116,6 +116,10 @@ class Supplier(models.Model):
         max_digits=16, decimal_places=2, null=True, blank=True,
         validators=[MinValueValidator(0)]
     )
+    dbs_used = models.DecimalField(
+        max_digits=16, decimal_places=2, null=True, blank=True,
+        validators=[MinValueValidator(0)]
+    )
     dbs_currency = models.CharField(
         max_length=3, choices=CURRENCY_CHOICES, default='TRY'
     )
