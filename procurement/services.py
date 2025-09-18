@@ -5,6 +5,8 @@ from django.db import transaction
 from django.utils import timezone
 from django.core.exceptions import PermissionDenied, ValidationError
 from datetime import timedelta
+from django.db.models import F
+
 
 from procurement.reports.common import extract_rates, get_fallback_rates, to_eur
 
@@ -41,6 +43,8 @@ def create_pos_from_recommended(pr):
                 Q2(io.purchase_request_item.quantity * io.unit_price)
                 for io in item_offers
             )
+            rate = (so.tax_rate or getattr(supplier, 'default_tax_rate', Decimal('0'))) / Decimal('100')
+            total_gross = Q2(total_net * (Decimal('1') + rate))
 
             # Optional: normalize to a single currency for DBS tracking
             # Assuming supplier keeps DBS in its default currency or so.currency
@@ -51,11 +55,11 @@ def create_pos_from_recommended(pr):
             # Convert the batch total to the DBS currency (here I show TRY/EUR example using your to_eur;
             # if you have a to_currency() helper, swap it in)
             if dbs_ccy == "EUR":
-                total_for_dbs = to_eur(total_net, (so.currency or "TRY"), pr_rates, get_fallback_rates()) or Decimal("0.00")
+                total_for_dbs = to_eur(total_gross, (so.currency or "TRY"), pr_rates, get_fallback_rates()) or Decimal("0.00")
             else:
                 # If you store DBS in TRY (common), you might want a to_try(...) helper.
                 # As a simple fallback, if currencies match, no conversion:
-                total_for_dbs = total_net if (so.currency or "TRY") == dbs_ccy else total_net  # TODO: convert if needed
+                total_for_dbs = total_gross if (so.currency or "TRY") == dbs_ccy else total_gross  # TODO: convert if needed
 
             # Atomic increment to avoid race conditions
             Supplier.objects.filter(pk=supplier.pk).update(dbs_used=F('dbs_used') + total_for_dbs)
