@@ -16,7 +16,8 @@ class Machine(models.Model):
         ('ECT', 'ESAB Sac Kesim Tezgahı'),
         ('CTEDO', 'Dolap Tipi Elektrot Kurutma Fırını'),
         ('OC', 'Tavan Vinci'),
-        ('WD', 'Kaynak Makinesi')
+        ('WD', 'Kaynak Makinesi'),
+        ('LAPTOP', 'Dizüstü Bilgisayar')
     ]
     USED_IN_CHOICES = [
         ('machining', 'Talaşlı İmalat'),
@@ -31,11 +32,13 @@ class Machine(models.Model):
         ('qualitycontrol', 'Kalite Kontrol'),
         ('cutting', 'CNC Kesim'),
         ('warehouse', 'Ambar'),
-        ('finance', 'Finans')
+        ('finance', 'Finans'),
+        ('it', 'Bilgi İşlem')
         # Add more as needed
     ]
 
     name = models.CharField(max_length=255)
+    code = models.CharField(max_length=255, default=None, null=True, blank=True)
     machine_type = models.CharField(max_length=10, choices=MACHINE_TYPES)
     used_in = models.CharField(max_length=50, choices=USED_IN_CHOICES)
     jira_id = models.IntegerField(null=True, blank=True)
