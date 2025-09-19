@@ -27,8 +27,9 @@ class MachineListCreateView(generics.ListCreateAPIView):
     serializer_class = MachineListSerializer
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     filterset_class = MachineFilter
-    search_fields = ["name"]   # substring search on name
-    ordering_fields = ["id", "name", "machine_type"]  # allow ordering by these
+    filterset_fields = ["used_in", "is_active", "machine_type", "assigned_users"]  # <- filter by user id
+    search_fields = ["name", "code"]  # <- search by code too
+    ordering_fields = ["id", "name", "machine_type", "code"]
     ordering = ['id']
 
     def get_permissions(self):

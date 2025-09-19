@@ -1,6 +1,12 @@
 from machines.models import Machine, MachineFault
 from rest_framework import serializers
 from .models import MachineCalendar
+from django.contrib.auth.models import User
+
+class SimpleUserSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ["id", "username", "first_name", "last_name"]
 
 class MachineSerializer(serializers.ModelSerializer):
     class Meta:
@@ -8,6 +14,10 @@ class MachineSerializer(serializers.ModelSerializer):
         fields = '__all__'  # Includes all fields, including JSON and label
 
 class MachineGetSerializer(serializers.ModelSerializer):
+    assigned_users = SimpleUserSerializer(many=True, read_only=True)
+    assigned_user_ids = serializers.PrimaryKeyRelatedField(
+        many=True, write_only=True, required=False, queryset=User.objects.all(), source="assigned_users"
+    )
     machine_type_label = serializers.SerializerMethodField()
     used_in_label = serializers.SerializerMethodField()
     is_under_maintenance = serializers.SerializerMethodField()
@@ -17,9 +27,9 @@ class MachineGetSerializer(serializers.ModelSerializer):
     class Meta:
         model = Machine
         fields = [
-            'id', 'name', 'machine_type', 'used_in', 'used_in_label', 'machine_type_label',
+            'id', 'name', 'code', 'machine_type', 'used_in', 'used_in_label', 'machine_type_label',
             'is_active', 'has_active_timer', 'active_timer_ids',
-            'is_under_maintenance', 'jira_id', 'properties'
+            'is_under_maintenance', 'jira_id', 'properties', "assigned_users", "assigned_user_ids"
         ]
 
     def get_machine_type_label(self, obj):
@@ -44,6 +54,10 @@ class MachineGetSerializer(serializers.ModelSerializer):
         return list(Timer.objects.filter(machine_fk=obj, finish_time__isnull=True).values_list('id', flat=True))
 
 class MachineListSerializer(serializers.ModelSerializer):
+    assigned_users = SimpleUserSerializer(many=True, read_only=True)
+    assigned_user_ids = serializers.PrimaryKeyRelatedField(
+        many=True, write_only=True, required=False, queryset=User.objects.all(), source="assigned_users"
+    )
     machine_type_label = serializers.SerializerMethodField()
     used_in_label = serializers.SerializerMethodField()
     is_under_maintenance = serializers.SerializerMethodField()
@@ -55,9 +69,9 @@ class MachineListSerializer(serializers.ModelSerializer):
     class Meta:
         model = Machine
         fields = [
-            'id', 'name', 'machine_type', 'used_in', 'used_in_label', 'machine_type_label',
+            'id', 'name', 'code', 'machine_type', 'used_in', 'used_in_label', 'machine_type_label',
             'is_active', 'has_active_timer', 'is_under_maintenance', 'jira_id', 'properties',
-            'tasks_count', 'total_estimated_hours'  # <-- NEW
+            'tasks_count', 'total_estimated_hours', "assigned_users", "assigned_user_ids"  # <-- NEW
         ]
 
     def get_machine_type_label(self, obj):

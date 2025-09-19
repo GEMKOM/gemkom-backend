@@ -17,7 +17,7 @@ class Machine(models.Model):
         ('CTEDO', 'Dolap Tipi Elektrot Kurutma Fırını'),
         ('OC', 'Tavan Vinci'),
         ('WD', 'Kaynak Makinesi'),
-        ('LAPTOP', 'Dizüstü Bilgisayar')
+        ('LAPTOP', 'Dizüstü Bilgisayar'),
     ]
     USED_IN_CHOICES = [
         ('machining', 'Talaşlı İmalat'),
@@ -33,23 +33,27 @@ class Machine(models.Model):
         ('cutting', 'CNC Kesim'),
         ('warehouse', 'Ambar'),
         ('finance', 'Finans'),
-        ('it', 'Bilgi İşlem')
-        # Add more as needed
+        ('it', 'Bilgi İşlem'),
     ]
 
     name = models.CharField(max_length=255)
-    code = models.CharField(max_length=255, default=None, null=True, blank=True)
+    # Optional, searchable asset code; unique when present, multiple NULLs allowed (PostgreSQL)
+    code = models.CharField(max_length=255, null=True, blank=True, db_index=True, unique=True)
+    # Multi-assign: who is responsible / primary users
+    assigned_users = models.ManyToManyField(User, blank=True, related_name="assigned_machines")
+
     machine_type = models.CharField(max_length=10, choices=MACHINE_TYPES)
     used_in = models.CharField(max_length=50, choices=USED_IN_CHOICES)
     jira_id = models.IntegerField(null=True, blank=True)
-    is_active = models.BooleanField(null=True, blank=True, default=True)
-    properties = models.JSONField(default=dict)  # Store dynamic properties here
+    is_active = models.BooleanField(default=True)
+    properties = models.JSONField(default=dict)
 
     def __str__(self):
         return self.name
-    
+
     @property
     def is_available(self):
+        # Keep your existing relation name if different
         return not self.faults.filter(is_resolved=False).exists()
     
 class MachineFault(models.Model):
