@@ -237,7 +237,7 @@ def decide(pr: PurchaseRequest, user, approve: bool, comment: str = ""):
     return wf
 
 
-def skip_current_stage(wf, reason: str = "Auto-skip", system_user=None):
+def _skip_current_stage(wf, reason: str = "Auto-skip", system_user=None):
     """
     Skips the *current* stage in a way that keeps your approval model consistent.
     Returns (changed: bool, finished: bool).
