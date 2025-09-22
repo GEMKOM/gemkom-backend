@@ -237,123 +237,64 @@ def decide(pr: PurchaseRequest, user, approve: bool, comment: str = ""):
     return wf
 
 
-def _skip_current_stage(wf, reason: str = "Auto-skip"):
+def skip_current_stage(wf, reason: str = "Auto-skip", system_user=None):
     """
-    Advances the workflow by skipping the *current* stage.
-    Works with common patterns:
-      - wf.current_stage_order (int)
-      - wf.stages (related manager) with per-instance records having `order` and `status`
-    Returns (changed: bool, finished: bool)
+    Skips the *current* stage in a way that keeps your approval model consistent.
+    Returns (changed: bool, finished: bool).
     """
-    # Try to fetch the current stage instance
-    current_order = getattr(wf, "current_stage_order", None)
-    if current_order is None:
-        return False, False
+    from approvals.models import ApprovalWorkflow, ApprovalDecision  # adjust import path if different
 
-    # Many setups expose something like wf.stage_instances / wf.stages / wf.workflowstages
-    stages_rel = getattr(wf, "stages", None) or getattr(wf, "stage_instances", None)
-    if stages_rel is None:
-        return False, False
+    with transaction.atomic():
+        # Re-load & lock to avoid concurrent pointer moves
+        wf = ApprovalWorkflow.objects.select_for_update().get(pk=wf.pk)
 
-    cur = stages_rel.filter(order=current_order).first()
-    if not cur:
-        return False, False
+        # Already terminal?
+        if wf.is_complete or wf.is_rejected or wf.is_cancelled:
+            return False, wf.is_complete
 
-    # If your stage instance has a status field, mark it skipped (or approved)
-    if hasattr(cur, "status"):
-        if cur.status in ("approved", "skipped"):
-            # Already not actionable; attempt to advance pointer if engine allows
-            pass
-        else:
-            cur.status = "skipped"
-            # Optional: if you store audit trails/comments
-            if hasattr(cur, "system_comment"):
-                cur.system_comment = (cur.system_comment or "") + f"\n[{reason}]"
-            cur.save(update_fields=[f for f in ("status", "system_comment") if hasattr(cur, f)])
+        current_order = wf.current_stage_order
+        if not current_order:
+            return False, False
 
-    # Advance the workflow pointer to the next stage
-    # If your engine has a dedicated method (e.g. wf.advance_to_next_stage()),
-    # prefer calling that instead.
-    max_order = stages_rel.aggregate(Max("order"))["order__max"] or 0
-    if current_order >= max_order:
-        # we just completed the last stage → workflow finished
-        if hasattr(wf, "is_completed"):
-            setattr(wf, "is_completed", True)
-            wf.save(update_fields=["is_completed"])
-        else:
-            # Some engines mark completion with a sentinel order like None/0 or keep last
-            setattr(wf, "current_stage_order", current_order + 1)
+        # Your related_name is "stage_instances"
+        qs = wf.stage_instances
+        cur = qs.select_for_update().filter(order=current_order).first()
+        if not cur:
+            return False, False
+
+        changed = False
+
+        # If stage is still actionable, mark it as completed (skipped == approved quorum reached)
+        if not cur.is_complete and not cur.is_rejected:
+            cur.is_complete = True
+            # Treat skip as meeting quorum
+            cur.approved_count = cur.required_approvals or 1
+            cur.save(update_fields=["is_complete", "approved_count"])
+            changed = True
+
+            # Optional audit trail: record a single system "approve" decision
+            if system_user is not None:
+                # Unique per (stage_instance, approver); safe to get_or_create
+                ApprovalDecision.objects.get_or_create(
+                    stage_instance=cur,
+                    approver=system_user,
+                    defaults={"decision": "approve", "comment": f"[{reason}]"}
+                )
+
+        # Find the next incomplete & not rejected stage
+        next_stage = (
+            qs.filter(order__gt=current_order, is_complete=False, is_rejected=False)
+              .order_by("order")
+              .first()
+        )
+        if next_stage:
+            wf.current_stage_order = next_stage.order
             wf.save(update_fields=["current_stage_order"])
+            return changed, False
+
+        # No actionable stages remain → finish the workflow
+        max_order = qs.aggregate(m=Max("order"))["m"] or current_order
+        wf.is_complete = True
+        wf.current_stage_order = max_order + 1  # sentinel beyond last to avoid re-processing
+        wf.save(update_fields=["is_complete", "current_stage_order"])
         return True, True
-
-    # Move to the next stage
-    setattr(wf, "current_stage_order", current_order + 1)
-    wf.save(update_fields=["current_stage_order"])
-    return True, False
-
-
-from django.db import transaction
-from django.db.models import F
-from django.contrib.contenttypes.models import ContentType
-
-# adjust model paths to your app names
-from procurement.models import PurchaseRequest
-from approvals.models import ApprovalWorkflow, ApprovalStageInstance, ApprovalDecision
-
-def _advance_to_next_incomplete_stage(wf):
-    """Move current_stage_order forward over already-complete stages."""
-    orders = list(
-        ApprovalStageInstance.objects
-        .filter(workflow=wf)
-        .order_by("order")
-        .values_list("order", flat=True)
-    )
-    if not orders:
-        return False  # nothing to do
-
-    # find next incomplete at or after current
-    for o in orders:
-        si = ApprovalStageInstance.objects.get(workflow=wf, order=o)
-        if not si.is_complete and not si.is_rejected:
-            wf.current_stage_order = o
-            wf.save(update_fields=["current_stage_order"])
-            return True
-
-    # all stages complete -> finalize workflow
-    wf.is_complete = True
-    wf.is_rejected = False
-    wf.save(update_fields=["is_complete", "is_rejected"])
-    return False
-
-from django.db import transaction
-from django.db.models import F
-from django.contrib.contenttypes.models import ContentType
-
-# adjust model paths to your app names
-from procurement.models import PurchaseRequest
-from approvals.models import ApprovalWorkflow, ApprovalStageInstance, ApprovalDecision
-
-def _advance_to_next_incomplete_stage(wf):
-    """Move current_stage_order forward over already-complete stages."""
-    orders = list(
-        ApprovalStageInstance.objects
-        .filter(workflow=wf)
-        .order_by("order")
-        .values_list("order", flat=True)
-    )
-    if not orders:
-        return False  # nothing to do
-
-    # find next incomplete at or after current
-    for o in orders:
-        si = ApprovalStageInstance.objects.get(workflow=wf, order=o)
-        if not si.is_complete and not si.is_rejected:
-            wf.current_stage_order = o
-            wf.save(update_fields=["current_stage_order"])
-            return True
-
-    # all stages complete -> finalize workflow
-    wf.is_complete = True
-    wf.is_rejected = False
-    wf.save(update_fields=["is_complete", "is_rejected"])
-    return False

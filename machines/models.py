@@ -34,6 +34,8 @@ class Machine(models.Model):
         ('warehouse', 'Ambar'),
         ('finance', 'Finans'),
         ('it', 'Bilgi İşlem'),
+        ('sales', 'Proje Taahhüt'),
+        ('accounting', 'Muhasebe'),
     ]
 
     name = models.CharField(max_length=255)

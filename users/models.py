@@ -20,7 +20,9 @@ class UserProfile(models.Model):
         ('finance', 'Finans'),
         ('management', 'Yönetim'),
         ('external_workshops', 'Dış Atölyeler'),
-        ('human_resouces', 'İnsan Kaynakları')
+        ('human_resouces', 'İnsan Kaynakları'),
+        ('sales', 'Proje Taahhüt'),
+        ('accounting', 'Muhasebe'),
         # Add more as needed
     ]
     OCCUPATION_CHOICES = [
