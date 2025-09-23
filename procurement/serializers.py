@@ -115,6 +115,7 @@ class PurchaseRequestSerializer(serializers.ModelSerializer):
     requestor_username = serializers.ReadOnlyField(source='requestor.username')
     status_label = serializers.SerializerMethodField()
     approval = serializers.SerializerMethodField()
+    purchase_orders = serializers.PrimaryKeyRelatedField(many=True, read_only=True)
 
     def get_approval(self, obj):
         # if prefetch exists, use it; else fall back to query
@@ -141,7 +142,7 @@ class PurchaseRequestSerializer(serializers.ModelSerializer):
             'requestor', 'requestor_username', 'priority', 'status', 'status_label',
             'total_amount_eur', 'currency_rates_snapshot',
             'created_at', 'updated_at', 'submitted_at',
-            'request_items', 'offers', 'approval', 'cancelled_at', 'cancelled_by', 'cancellation_reason', 'needed_date'
+            'request_items', 'offers', 'approval', 'cancelled_at', 'cancelled_by', 'cancellation_reason', 'needed_date', 'purchase_orders'
         ]
         read_only_fields = ['request_number', 'created_at', 'updated_at', 'submitted_at', 'cancelled_at', 'cancelled_by']
 

@@ -153,6 +153,7 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
             .prefetch_related(
                 "request_items__item",
                 "offers__supplier",
+                "purchase_orders",
                 Prefetch("approvals", queryset=wf_qs),  # ← use the generic relation
             )
         )
