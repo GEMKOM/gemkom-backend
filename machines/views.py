@@ -37,37 +37,32 @@ class MachineListCreateView(generics.ListCreateAPIView):
             return [permissions.IsAuthenticated(), IsAdmin()]
         return [permissions.IsAuthenticated()]
     
-    def get(self, request):
-        query = Q()
-        used_in = request.GET.get("used_in")
-        is_active = request.GET.get("is_active")
-        if used_in:
-            query &= Q(used_in=used_in)
-        if is_active:
-            query &= Q(is_active=is_active)
-
-
+    def get_queryset(self):
+        dec_field = DecimalField(max_digits=12, decimal_places=2)
         not_completed = Q(machine_tasks__completion_date__isnull=True)
-        dec_field = DecimalField(max_digits=12, decimal_places=2) 
-        machines = (
-            Machine.objects
-            .filter(query)
-            .annotate(
-                tasks_count=Count(
-                    'machine_tasks',
-                    filter=not_completed  # only NOT completed
-                ),
+
+        qs = Machine.objects.all()
+
+        # (If you still want manual query params in addition to the filterset)
+        used_in = self.request.query_params.get("used_in")
+        is_active = self.request.query_params.get("is_active")
+        if used_in:
+            qs = qs.filter(used_in=used_in)
+        if is_active is not None:
+            # parse to bool if needed; the filterset can also handle this
+            qs = qs.filter(is_active=is_active in ("1", "true", "True"))
+
+        return (
+            qs.annotate(
+                tasks_count=Count('machine_tasks', filter=not_completed),
                 total_estimated_hours=Sum(
-                    Coalesce('machine_tasks__estimated_hours',
-                            Value(0, output_field=dec_field)),
+                    Coalesce('machine_tasks__estimated_hours', Value(0, output_field=dec_field)),
                     filter=not_completed,
                     output_field=dec_field,
-)
+                ),
             )
             .order_by('-machine_type')
         )
-        serializer = MachineListSerializer(machines, many=True)
-        return Response(serializer.data)
     
 class MachineDetailView(APIView):
     def get_permissions(self):
