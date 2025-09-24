@@ -14,6 +14,18 @@ class PublicUserSerializer(serializers.ModelSerializer):
             return obj.profile.get_team_display()
         return None
 
+class UserPasswordResetSerializer(serializers.ModelSerializer):
+    reset_password_request = serializers.BooleanField(source='profile.reset_password_request')
+    must_reset_password = serializers.BooleanField(source='profile.must_reset_password')
+    team = serializers.CharField(source='profile.team')
+
+    class Meta:
+        model = User
+        fields = [
+            'id', 'username', 'first_name', 'last_name', 'email', 'is_superuser',
+            'team', 'reset_password_request', 'must_reset_password'
+        ]
+    
 class UserListSerializer(serializers.ModelSerializer):
     team = serializers.CharField(source='profile.team')
     occupation = serializers.CharField(source='profile.occupation')
@@ -28,8 +40,7 @@ class UserListSerializer(serializers.ModelSerializer):
         model = User
         fields = [
             'id', 'username', 'first_name', 'last_name', 'email', 'is_superuser',
-            'team', 'team_label', 'must_reset_password',
-            'occupation', 'occupation_label', 'work_location', 'work_location_label'
+            'team', 'team_label', 'occupation', 'occupation_label', 'work_location', 'work_location_label', 'must_reset_password'
         ]
 
     def get_work_location_label(self, obj):

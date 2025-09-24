@@ -1,15 +1,18 @@
 import re
 import unicodedata
 from django.contrib.auth.models import User
+from django.core.exceptions import ValidationError
+from django.shortcuts import get_object_or_404
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
-from rest_framework.generics import ListAPIView
 
+from core.emails import send_plain_email
 from users.filters import UserFilter
+from users.helpers import _team_manager_user_ids
 from users.models import UserProfile
 from users.permissions import IsAdmin
-from .serializers import AdminUserUpdateSerializer, CurrentUserUpdateSerializer, PasswordResetSerializer, PublicUserSerializer, UserCreateSerializer, UserListSerializer
+from .serializers import AdminUserUpdateSerializer, CurrentUserUpdateSerializer, PasswordResetSerializer, PublicUserSerializer, UserCreateSerializer, UserListSerializer, UserPasswordResetSerializer
 from rest_framework.permissions import IsAuthenticated, IsAdminUser
 from rest_framework.viewsets import ModelViewSet
 
@@ -17,6 +20,10 @@ from django.db.models import Count
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.filters import OrderingFilter
+from rest_framework import permissions, throttling
+from django.contrib.auth.password_validation import validate_password
+from django.utils import timezone
+from rest_framework import generics
 
 class UserViewSet(ModelViewSet):
     queryset = User.objects.all().select_related('profile').order_by('username')
@@ -174,3 +181,101 @@ class AdminBulkCreateUsers(APIView):
             "total_created": len(created_users),
             "message": "Users seeded successfully."
         }, status=201)
+    
+
+class PasswordResetRequestThrottle(throttling.AnonRateThrottle):
+    rate = "10/hour"
+
+class PasswordResetRequestView(APIView):
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [PasswordResetRequestThrottle]
+
+    def post(self, request):
+        username = (request.data.get("username") or "").strip()
+        # Do not leak existence
+        try:
+            user = User.objects.select_related("profile").get(username=username)
+            profile = user.profile
+            
+            if profile.reset_password_request:
+                return Response(
+                    {"detail": "If the account exists, the request was recorded."},
+                    status=200
+                )
+            
+            profile.reset_password_request = True
+            profile.save(update_fields=["reset_password_request"])
+            # (Optional) notify admins via email/telegram here
+
+            # build recipient list: superusers + team managers (deduped, no empty emails)
+            superuser_emails = list(
+                User.objects.filter(is_active=True, is_superuser=True)
+                .exclude(email="")
+                .values_list("email", flat=True)
+            )
+            manager_ids = _team_manager_user_ids(getattr(profile, "team", "") or "")
+            manager_emails = list(
+                User.objects.filter(id__in=manager_ids, is_active=True)
+                .exclude(email="")
+                .values_list("email", flat=True)
+            )
+
+            recipients = list({*superuser_emails, *manager_emails})
+
+            if recipients:
+                # compose a concise notification (Turkish)
+                requested_at = timezone.localtime().strftime("%d.%m.%Y %H:%M")
+                full_name = user.get_full_name() or user.username
+                team = getattr(profile, "team", "") or "—"
+                body = (
+                    f"Parola sıfırlama talebi gönderildi.\n\n"
+                    f"Kullanıcı: {full_name} (username: {user.username})\n"
+                    f"Takım: {team}\n"
+                    f"Tarih: {requested_at}\n\n"
+                    f"Lütfen sistemden onaylayın."
+                )
+                subject = f"[GEMKOM] Parola sıfırlama talebi: {user.username}"
+
+                try:
+                    send_plain_email(subject=subject, body=body, to=recipients)
+                except Exception as e:
+                    # don't leak errors to the client; log if you have logging set up
+                    # logger.exception("Failed to send reset-password notification email")
+                    pass
+        except User.DoesNotExist:
+            pass
+        return Response({"detail": "If the account exists, the request was recorded."}, status=200)
+    
+class AdminListResetRequestsView(generics.ListAPIView):
+    permission_classes = [permissions.IsAdminUser]
+    serializer_class = UserPasswordResetSerializer  # or a lightweight serializer
+    def get_queryset(self):
+        return User.objects.filter(profile__reset_password_request=True).select_related("profile")
+    
+
+class AdminResetPasswordView(APIView):
+    permission_classes = [permissions.IsAdminUser]
+
+    def post(self, request, user_id):
+        temp_password = request.data.get("temp_password")  # or generate
+        if not temp_password:
+            from secrets import token_urlsafe
+            temp_password = token_urlsafe(8)
+
+        try:
+            validate_password(temp_password)  # enforces validators
+        except ValidationError as e:
+            return Response({"detail": e.messages}, status=400)
+
+        user = get_object_or_404(User.objects.select_related("profile"), pk=user_id)
+        user.set_password(temp_password)
+        user.save(update_fields=["password"])
+
+        profile = user.profile
+        profile.must_reset_password = True
+        profile.reset_password_request = False
+        profile.temp_password_set_at = timezone.now()
+        profile.save(update_fields=["must_reset_password", "reset_password_request", "temp_password_set_at"])
+
+        # (Optional) email/telegram temp password to user; or return it once:
+        return Response({"temp_password": temp_password, "detail": "Temporary password set; user must change it on next login."}, status=200)

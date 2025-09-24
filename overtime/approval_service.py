@@ -11,27 +11,15 @@ from approvals.services import (
     resolve_group_user_ids,
 )
 from core.emails import send_plain_email
+from users.helpers import _team_manager_user_ids
 from .models import OvertimeRequest
 
 
 # ------- Config -------
-TEAM_MANAGER_OCCUPATION = "manager"             # your UserProfile.occupation value for managers
+         # your UserProfile.occupation value for managers
 OVERTIME_POLICY_NAME    = "Overtime – Default"  # pick policy explicitly by name
 TEAM_MANAGER_STAGE_ORDER = 1                    # Stage #1 = Team Manager; Stage #2+ = policy-configured approvers
 TEAM_HR_CODE = "human_resources" 
-
-
-# ------- Helpers -------
-def _team_manager_user_ids(team: str) -> list[int]:
-    if not team:
-        return []
-    return list(
-        User.objects.filter(
-            is_active=True,
-            profile__team=team,
-            profile__occupation=TEAM_MANAGER_OCCUPATION,
-        ).values_list("id", flat=True)
-    )
 
 def _dedupe_ordered(ids: list[int]) -> list[int]:
     seen, ordered = set(), []

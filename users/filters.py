@@ -15,6 +15,10 @@ class UserFilter(filters.FilterSet):
     work_location = CharInFilter(field_name='profile__work_location', lookup_expr='in')
     occupation = CharInFilter(field_name='profile__occupation', lookup_expr='in')
 
+    reset_password_request = filters.BooleanFilter(
+        field_name='profile__reset_password_request'  # or 'reset_password_request' if on User
+    )
+
     class Meta:
         model = User
-        fields = ['username', 'team', 'work_location', 'occupation']
+        fields = ['username', 'team', 'work_location', 'occupation', 'reset_password_request']

@@ -16,6 +16,8 @@ from users.permissions import IsAdmin, IsMachiningUserOrAdmin
 from django.db.models import Q, Count, Sum, DecimalField, Value
 from django.db.models.functions import Coalesce
 
+from config.pagination import CustomPageNumberPagination
+
 # Create your views here.
 
 from rest_framework import generics, permissions
@@ -42,15 +44,6 @@ class MachineListCreateView(generics.ListCreateAPIView):
         not_completed = Q(machine_tasks__completion_date__isnull=True)
 
         qs = Machine.objects.all()
-
-        # (If you still want manual query params in addition to the filterset)
-        used_in = self.request.query_params.get("used_in")
-        is_active = self.request.query_params.get("is_active")
-        if used_in:
-            qs = qs.filter(used_in=used_in)
-        if is_active is not None:
-            # parse to bool if needed; the filterset can also handle this
-            qs = qs.filter(is_active=is_active in ("1", "true", "True"))
 
         return (
             qs.annotate(
@@ -115,33 +108,36 @@ class UsedInChoicesView(APIView):
             {"value": k, "label": v} for k, v in Machine.USED_IN_CHOICES
         ])
     
-class MachineFaultListCreateView(APIView):
-    permission_classes = [IsAuthenticated]
+class MachineFaultListCreateView(generics.ListCreateAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = MachineFaultSerializer
+    pagination_class = CustomPageNumberPagination
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    filterset_fields = ["machine", "reported_by"]
+    search_fields = ["description"]
+    ordering_fields = ["reported_at", "id"]
+    ordering = ["-reported_at"]
 
-    def get(self, request):
-        query = Q()
-        user = request.user
+    def get_queryset(self):
+        user = self.request.user
         profile = getattr(user, 'profile', None)
 
+        query = Q()
         # Restrict non-admin, non-maintenance users to their own faults
-        if not user.is_admin and getattr(profile, 'team', '') != 'maintenance':
+        if not getattr(user, "is_admin", False) and getattr(profile, "team", "") != "maintenance":
             query &= Q(reported_by=user)
 
-        machine_id = request.GET.get("machine_id")
+        machine_id = self.request.query_params.get("machine_id")
         if machine_id:
             query &= Q(machine=machine_id)
 
-        faults = MachineFault.objects.filter(query)
-        serializer = MachineFaultSerializer(faults, many=True)
-        return Response(serializer.data)
+        return (MachineFault.objects
+                .filter(query)
+                .select_related("machine", "reported_by"))
 
-    def post(self, request):
-        serializer = MachineFaultSerializer(data=request.data)
-        if serializer.is_valid():
-            fault = serializer.save(reported_by=request.user)
-            self.send_telegram_notification(fault, request.user)
-            return Response(serializer.data, status=201)
-        return Response(serializer.errors, status=400)
+    def perform_create(self, serializer):
+        fault = serializer.save(reported_by=self.request.user)
+        self.send_telegram_notification(fault, self.request.user)
     
 
     def send_telegram_notification(self, fault, user):
