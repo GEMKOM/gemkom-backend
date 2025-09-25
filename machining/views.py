@@ -4,6 +4,7 @@ from django.db.models import F, Sum, ExpressionWrapper, FloatField
 from machines.models import Machine
 from machining.filters import TaskFilter
 from machining.permissions import MachiningProtectedView
+from machining.services.timers import categorize_timer_segments
 from users.permissions import IsAdmin, IsMachiningUserOrAdmin
 from .models import Task, TaskKeyCounter, Timer
 from .serializers import HoldTaskSerializer, PlanningListItemSerializer, TaskPlanBulkListSerializer, TaskPlanUpdateItemSerializer, TaskSerializer, TimerSerializer
@@ -20,6 +21,7 @@ from rest_framework import permissions, status, views
 from .serializers import MachineTimelineSegmentSerializer
 from .services.timeline import _build_bulk_machine_timelines, _ensure_valid_range  # _parse_ms is small; OK to re-use
 from rest_framework import status
+from collections import defaultdict
 
 class TimerStartView(MachiningProtectedView):
     def post(self, request):
@@ -535,3 +537,113 @@ class MachineTimelineView(APIView):
             "machines": items,
             "overall_totals": overall,
         }, status=status.HTTP_200_OK)
+    
+
+class JobHoursReportView(APIView):
+    """
+    GET /machining/reports/job-hours/?q=<partial job_no>&start_after=<ms|sec>&start_before=<ms|sec>
+    - q: partial job_no (required). Matches Task.job_no via icontains.
+    - Optional start_after / start_before to constrain by timer.start_time (epoch ms or seconds).
+    Returns:
+    {
+      "query": "...",
+      "job_nos": ["J-1001", "J-1001A", ...],
+      "results": [
+        {
+          "job_no": "J-1001",
+          "users": [
+            {"user": "alice", "weekday_work": 12.5, "after_hours": 3.0, "sunday": 0.0, "total": 15.5},
+            {"user": "bob",   "weekday_work":  8.0, "after_hours": 5.5, "sunday": 2.0, "total": 15.5}
+          ],
+          "totals": {"weekday_work": 20.5, "after_hours": 8.5, "sunday": 2.0, "total": 31.0}
+        },
+        ...
+      ]
+    }
+    """
+    permission_classes = [IsAdmin]
+
+    def _parse_ms(self, x):
+        if x is None or x == "":
+            return None
+        try:
+            v = int(x)
+            return v * 1000 if v < 1_000_000_000_000 else v
+        except ValueError:
+            return None
+
+    def get(self, request):
+        q = (request.query_params.get("q") or "").strip()
+        if not q:
+            return Response({"error": "q (partial job_no) is required"}, status=400)
+
+        start_after_ms = self._parse_ms(request.query_params.get("start_after"))
+        start_before_ms = self._parse_ms(request.query_params.get("start_before"))
+
+        # Find all matching job_nos (non-null, non-empty), keep stable ordering
+        matched_job_nos_qs = (
+            Task.objects
+            .filter(job_no__isnull=False)
+            .filter(job_no__icontains=q)
+            .order_by("job_no")
+            .values_list("job_no", flat=True)
+            .distinct()
+        )
+        job_nos = list(matched_job_nos_qs)
+
+        if not job_nos:
+            return Response({"query": q, "job_nos": [], "results": []}, status=200)
+
+        # Fetch relevant timers once; we slice by job_no in Python per bucket calc
+        timers = (
+            Timer.objects
+            .select_related("user", "issue_key")
+            .filter(issue_key__job_no__in=job_nos, finish_time__isnull=False)
+        )
+        if start_after_ms is not None:
+            timers = timers.filter(start_time__gte=start_after_ms)
+        if start_before_ms is not None:
+            timers = timers.filter(start_time__lte=start_before_ms)
+
+        # Aggregate per (job_no -> user -> buckets)
+        per_job_user = defaultdict(lambda: defaultdict(lambda: {"weekday_work": 0.0, "after_hours": 0.0, "sunday": 0.0}))
+
+        for t in timers:
+            buckets = categorize_timer_segments(t.start_time, t.finish_time)
+            j = t.issue_key.job_no or ""
+            u = t.user.username
+            d = per_job_user[j][u]
+            d["weekday_work"] += buckets["weekday_work"] / 3600.0
+            d["after_hours"]  += buckets["after_hours"]  / 3600.0
+            d["sunday"]       += buckets["sunday"]       / 3600.0
+
+        # Build response
+        results = []
+        for j in job_nos:
+            users_map = per_job_user.get(j, {})
+            users_list = []
+            totals = {"weekday_work": 0.0, "after_hours": 0.0, "sunday": 0.0, "total": 0.0}
+
+            for user, vals in sorted(users_map.items(), key=lambda kv: kv[0]):  # sort by username
+                ww = round(vals["weekday_work"], 2)
+                ah = round(vals["after_hours"], 2)
+                su = round(vals["sunday"], 2)
+                tot = round(ww + ah + su, 2)
+                users_list.append({"user": user, "weekday_work": ww, "after_hours": ah, "sunday": su, "total": tot})
+
+                totals["weekday_work"] += ww
+                totals["after_hours"]  += ah
+                totals["sunday"]       += su
+                totals["total"]        += tot
+
+            # Round totals
+            for k in totals:
+                totals[k] = round(totals[k], 2)
+
+            results.append({
+                "job_no": j,
+                "users": users_list,
+                "totals": totals,
+            })
+
+        return Response({"query": q, "job_nos": job_nos, "results": results}, status=200)
