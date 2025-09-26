@@ -10,9 +10,9 @@ from django_filters.rest_framework import DjangoFilterBackend
 from core.emails import send_plain_email
 from users.filters import UserFilter
 from users.helpers import _team_manager_user_ids
-from users.models import UserProfile
-from users.permissions import IsAdmin
-from .serializers import AdminUserUpdateSerializer, CurrentUserUpdateSerializer, PasswordResetSerializer, PublicUserSerializer, UserCreateSerializer, UserListSerializer, UserPasswordResetSerializer
+from users.models import UserProfile, WageRate
+from users.permissions import IsAdmin, IsHRorAuthorized
+from .serializers import AdminUserUpdateSerializer, CurrentUserUpdateSerializer, PasswordResetSerializer, PublicUserSerializer, UserCreateSerializer, UserListSerializer, UserPasswordResetSerializer, WageRateSerializer
 from rest_framework.permissions import IsAuthenticated, IsAdminUser
 from rest_framework.viewsets import ModelViewSet
 
@@ -24,6 +24,8 @@ from rest_framework import permissions, throttling
 from django.contrib.auth.password_validation import validate_password
 from django.utils import timezone
 from rest_framework import generics
+from django.db.models import Q, Max
+from rest_framework.generics import ListCreateAPIView, RetrieveUpdateDestroyAPIView
 
 class UserViewSet(ModelViewSet):
     queryset = User.objects.all().select_related('profile').order_by('username')
@@ -279,3 +281,49 @@ class AdminResetPasswordView(APIView):
 
         # (Optional) email/telegram temp password to user; or return it once:
         return Response({"temp_password": temp_password, "detail": "Temporary password set; user must change it on next login."}, status=200)
+    
+
+class WageRateListCreateView(ListCreateAPIView):
+    permission_classes = [IsAuthenticated, IsHRorAuthorized]
+    serializer_class = WageRateSerializer
+
+    def get_queryset(self):
+        qs = WageRate.objects.select_related("user", "user__profile").all()
+
+        user_q = self.request.query_params.get("user")
+        current = self.request.query_params.get("current") == "true"
+
+        if user_q:
+            qs = qs.filter(Q(user__username=user_q) | Q(user__id__iexact=user_q))
+
+        if current:
+            today = timezone.localdate()
+            latest = (
+                WageRate.objects
+                .filter(effective_from__lte=today)
+                .values("user")
+                .annotate(mx=Max("effective_from"))
+                .values_list("user", "mx")
+            )
+            pairs = list(latest)
+            if not pairs:
+                return WageRate.objects.none()
+            cond = Q()
+            for uid, eff in pairs:
+                cond |= Q(user_id=uid, effective_from=eff)
+            qs = qs.filter(cond)
+
+        return qs
+
+    def perform_create(self, serializer):
+        u = self.request.user
+        serializer.save(created_by=u, updated_by=u)
+
+
+class WageRateDetailView(RetrieveUpdateDestroyAPIView):
+    permission_classes = [IsAuthenticated, IsHRorAuthorized]
+    serializer_class = WageRateSerializer
+    queryset = WageRate.objects.select_related("user", "user__profile").all()
+
+    def perform_update(self, serializer):
+        serializer.save(updated_by=self.request.user)

@@ -1,6 +1,6 @@
 from django.contrib.auth.models import User
 from rest_framework import serializers
-from .models import UserProfile
+from .models import UserProfile, WageRate
 
 class PublicUserSerializer(serializers.ModelSerializer):
     team = serializers.CharField(source='profile.team')
@@ -150,3 +150,44 @@ class AdminUserUpdateSerializer(serializers.ModelSerializer):
         profile.save()
 
         return instance
+
+class UserMiniSerializer(serializers.ModelSerializer):
+    # Pull selected fields from the related UserProfile
+    team = serializers.CharField(source="profile.team", read_only=True)
+    team_label = serializers.CharField(source="profile.get_team_display", read_only=True)
+    occupation = serializers.CharField(source="profile.occupation", read_only=True)
+    occupation_label = serializers.CharField(source="profile.get_occupation_display", read_only=True)
+    work_location = serializers.CharField(source="profile.work_location", read_only=True)
+
+    class Meta:
+        model = User
+        fields = [
+            "id", "username", "first_name", "last_name",
+            "team", "team_label", "occupation", "occupation_label", "work_location",
+        ]
+
+
+class WageRateSerializer(serializers.ModelSerializer):
+    # keep `user` as the writable id (PK)
+    user = serializers.PrimaryKeyRelatedField(queryset=User.objects.all())
+    # add a read-only expanded view
+    user_info = UserMiniSerializer(source="user", read_only=True)
+
+    class Meta:
+        model = WageRate
+        fields = [
+            "id", "user", "user_info",               # <- both id and expanded info
+            "effective_from", "currency",
+            "base_hourly", "after_hours_multiplier", "sunday_multiplier",
+            "note", "created_at", "created_by", "updated_at", "updated_by",
+        ]
+        read_only_fields = ["created_at", "created_by", "updated_at", "updated_by"]
+
+    def create(self, validated_data):
+        validated_data["created_by"] = self.context["request"].user
+        validated_data["updated_by"] = self.context["request"].user
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        validated_data["updated_by"] = self.context["request"].user
+        return super().update(instance, validated_data)
