@@ -1,5 +1,5 @@
 from django.urls import path
-from .views import AdminBulkCreateUsers, AdminListResetRequestsView, AdminResetPasswordView, CurrentUserView, ForcedPasswordResetView, OccupationChoicesView, PasswordResetRequestView, TeamChoicesView, UserViewSet, WageRateDetailView, WageRateListCreateView
+from .views import AdminBulkCreateUsers, AdminListResetRequestsView, AdminResetPasswordView, CurrentUserView, ForcedPasswordResetView, OccupationChoicesView, PasswordResetRequestView, TeamChoicesView, UserViewSet, UserWageRateListView, WageRateDetailView, WageRateListCreateView
 from rest_framework.routers import DefaultRouter
 
 router = DefaultRouter()
@@ -16,6 +16,7 @@ urlpatterns = [
     path("forgot-password/<int:user_id>", AdminResetPasswordView.as_view(), name="admin_reset_user_pw"),
     path("wages/", WageRateListCreateView.as_view(), name="wage-list-create"),
     path("wages/<int:pk>/", WageRateDetailView.as_view(), name="wage-detail"),
+    path("<int:user_id>/wages/", UserWageRateListView.as_view(), name="user-wage-list"),
 
 ]
 

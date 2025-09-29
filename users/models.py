@@ -83,7 +83,6 @@ class WageRate(models.Model):
 
     # Base hourly rate for weekday work window (Mon–Fri 07:30–17:00, Europe/Istanbul)
     base_monthly = models.DecimalField(max_digits=12, decimal_places=4)
-    base_hourly = models.DecimalField(max_digits=12, decimal_places=4)
 
     # Multipliers for your three pay buckets; keep simple now, flexible later
     after_hours_multiplier = models.DecimalField(max_digits=6, decimal_places=3, default=1.5)
@@ -113,4 +112,4 @@ class WageRate(models.Model):
         ]
 
     def __str__(self):
-        return f"{self.user.username} @ {self.effective_from} {self.base_hourly} {self.currency}"
+        return f"{self.user.username} @ {self.effective_from} {self.base_monthly} {self.currency}"

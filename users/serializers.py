@@ -152,7 +152,6 @@ class AdminUserUpdateSerializer(serializers.ModelSerializer):
         return instance
 
 class UserMiniSerializer(serializers.ModelSerializer):
-    # Pull selected fields from the related UserProfile
     team = serializers.CharField(source="profile.team", read_only=True)
     team_label = serializers.CharField(source="profile.get_team_display", read_only=True)
     occupation = serializers.CharField(source="profile.occupation", read_only=True)
@@ -166,19 +165,41 @@ class UserMiniSerializer(serializers.ModelSerializer):
             "team", "team_label", "occupation", "occupation_label", "work_location",
         ]
 
+class UserWageOverviewSerializer(serializers.ModelSerializer):
+    """
+    Represents one user + their *current* wage (if any).
+    The current wage fields are annotated in the queryset.
+    """
+    user_info = UserMiniSerializer(source="*", read_only=True)
+    has_wage = serializers.BooleanField(read_only=True)
+    current_wage = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = ["id", "user_info", "has_wage", "current_wage"]
+
+    def get_current_wage(self, obj):
+        if getattr(obj, "current_wage_id", None) is None:
+            return None
+        return {
+            "id": obj.current_wage_id,
+            "effective_from": obj.current_effective_from,
+            "base_monthly": obj.current_base_monthly,
+            "after_hours_multiplier": obj.current_after_hours_multiplier,
+            "sunday_multiplier": obj.current_sunday_multiplier,
+        }
 
 class WageRateSerializer(serializers.ModelSerializer):
-    # keep `user` as the writable id (PK)
-    user = serializers.PrimaryKeyRelatedField(queryset=User.objects.all())
-    # add a read-only expanded view
+    from django.contrib.auth.models import User as DjangoUser
+    user = serializers.PrimaryKeyRelatedField(queryset=DjangoUser.objects.all())
     user_info = UserMiniSerializer(source="user", read_only=True)
 
     class Meta:
         model = WageRate
         fields = [
-            "id", "user", "user_info",               # <- both id and expanded info
+            "id", "user", "user_info",
             "effective_from", "currency",
-            "base_hourly", "after_hours_multiplier", "sunday_multiplier",
+            "base_monthly", "after_hours_multiplier", "sunday_multiplier",
             "note", "created_at", "created_by", "updated_at", "updated_by",
         ]
         read_only_fields = ["created_at", "created_by", "updated_at", "updated_by"]
@@ -191,3 +212,8 @@ class WageRateSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
         validated_data["updated_by"] = self.context["request"].user
         return super().update(instance, validated_data)
+    
+class WageRateSlimSerializer(WageRateSerializer):
+    class Meta(WageRateSerializer.Meta):
+        # reuse existing fields, just drop user-related ones
+        fields = [f for f in WageRateSerializer.Meta.fields if f not in ("user_info")]

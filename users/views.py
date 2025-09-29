@@ -8,11 +8,11 @@ from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
 
 from core.emails import send_plain_email
-from users.filters import UserFilter
+from users.filters import UserFilter, WageOrderingFilter
 from users.helpers import _team_manager_user_ids
 from users.models import UserProfile, WageRate
 from users.permissions import IsAdmin, IsHRorAuthorized
-from .serializers import AdminUserUpdateSerializer, CurrentUserUpdateSerializer, PasswordResetSerializer, PublicUserSerializer, UserCreateSerializer, UserListSerializer, UserPasswordResetSerializer, WageRateSerializer
+from .serializers import AdminUserUpdateSerializer, CurrentUserUpdateSerializer, PasswordResetSerializer, PublicUserSerializer, UserCreateSerializer, UserListSerializer, UserPasswordResetSerializer, UserWageOverviewSerializer, WageRateSerializer, WageRateSlimSerializer
 from rest_framework.permissions import IsAuthenticated, IsAdminUser
 from rest_framework.viewsets import ModelViewSet
 
@@ -24,8 +24,8 @@ from rest_framework import permissions, throttling
 from django.contrib.auth.password_validation import validate_password
 from django.utils import timezone
 from rest_framework import generics
-from django.db.models import Q, Max
-from rest_framework.generics import ListCreateAPIView, RetrieveUpdateDestroyAPIView
+from django.db.models import Q, Max, OuterRef, Subquery, Case, When, BooleanField
+from rest_framework.generics import ListCreateAPIView, RetrieveUpdateDestroyAPIView, ListAPIView
 
 class UserViewSet(ModelViewSet):
     queryset = User.objects.all().select_related('profile').order_by('username')
@@ -285,39 +285,59 @@ class AdminResetPasswordView(APIView):
 
 class WageRateListCreateView(ListCreateAPIView):
     permission_classes = [IsAuthenticated, IsHRorAuthorized]
-    serializer_class = WageRateSerializer
+    filter_backends = [WageOrderingFilter]  # <— built-in ordering, dynamic fields
+
+    def get_serializer_class(self):
+        mode = (self.request.query_params.get("mode") or "overview").lower()
+        return WageRateSerializer if mode == "records" and self.request.method == "GET" else (
+            WageRateSerializer if self.request.method == "POST" else UserWageOverviewSerializer
+        )
 
     def get_queryset(self):
-        qs = WageRate.objects.select_related("user", "user__profile").all()
+        mode = (self.request.query_params.get("mode") or "overview").lower()
 
-        user_q = self.request.query_params.get("user")
-        current = self.request.query_params.get("current") == "true"
+        if self.request.method == "POST":
+            return WageRate.objects.none()
 
-        if user_q:
-            qs = qs.filter(Q(user__username=user_q) | Q(user__id__iexact=user_q))
+        # overview mode: users with annotated current wage
+        today = timezone.localdate()
+        latest = (
+            WageRate.objects
+            .filter(user=OuterRef("pk"), effective_from__lte=today)
+            .order_by("-effective_from")
+        )
 
-        if current:
-            today = timezone.localdate()
-            latest = (
-                WageRate.objects
-                .filter(effective_from__lte=today)
-                .values("user")
-                .annotate(mx=Max("effective_from"))
-                .values_list("user", "mx")
+        qs = (
+            User.objects.select_related("profile")
+            .annotate(
+                current_wage_id=Subquery(latest.values("id")[:1]),
+                current_effective_from=Subquery(latest.values("effective_from")[:1]),
+                current_currency=Subquery(latest.values("currency")[:1]),
+                current_base_monthly=Subquery(latest.values("base_monthly")[:1]),
+                current_after_hours_multiplier=Subquery(latest.values("after_hours_multiplier")[:1]),
+                current_sunday_multiplier=Subquery(latest.values("sunday_multiplier")[:1]),
+                has_wage=Case(When(current_wage_id__isnull=False, then=True), default=False, output_field=BooleanField()),
             )
-            pairs = list(latest)
-            if not pairs:
-                return WageRate.objects.none()
-            cond = Q()
-            for uid, eff in pairs:
-                cond |= Q(user_id=uid, effective_from=eff)
-            qs = qs.filter(cond)
+        )
+
+        # optional filters
+        team = (self.request.query_params.get("team") or "").strip()
+        if team:
+            qs = qs.filter(profile__team=team)
+
+        search = (self.request.query_params.get("search") or "").strip()
+        if search:
+            qs = qs.filter(
+                Q(username__icontains=search) |
+                Q(first_name__icontains=search) |
+                Q(last_name__icontains=search)
+            )
+
+        work_location = (self.request.query_params.get("work_location") or "").lower()
+        if work_location in {"office", "workshop"}:
+            qs = qs.filter(profile__work_location=work_location)
 
         return qs
-
-    def perform_create(self, serializer):
-        u = self.request.user
-        serializer.save(created_by=u, updated_by=u)
 
 
 class WageRateDetailView(RetrieveUpdateDestroyAPIView):
@@ -327,3 +347,46 @@ class WageRateDetailView(RetrieveUpdateDestroyAPIView):
 
     def perform_update(self, serializer):
         serializer.save(updated_by=self.request.user)
+
+
+class UserWageRateListView(ListAPIView):
+    """
+    GET /users/<user_id>/wages/
+    Query params:
+      - as_of=YYYY-MM-DD    (default: today)
+      - current=true        (only latest as of date)
+      - include_future=true|false  (default: true)
+      - ordering=...        (uses WageOrderingFilter)
+    """
+    permission_classes = [IsAuthenticated, IsHRorAuthorized]
+    serializer_class = WageRateSlimSerializer
+
+    def get_queryset(self):
+        user_obj = get_object_or_404(User, pk=self.kwargs["user_id"])
+        qs = WageRate.objects.select_related("user", "user__profile").filter(user=user_obj)
+
+        # as_of date
+        as_of_param = (self.request.query_params.get("as_of") or "").strip()
+        if as_of_param:
+            try:
+                as_of_date = timezone.datetime.strptime(as_of_param, "%Y-%m-%d").date()
+            except ValueError:
+                as_of_date = timezone.localdate()
+        else:
+            as_of_date = timezone.localdate()
+
+        # include_future
+        include_future = (self.request.query_params.get("include_future") or "true").lower() == "true"
+        if not include_future:
+            qs = qs.filter(effective_from__lte=as_of_date)
+
+        # current=true → only the latest as of date
+        if (self.request.query_params.get("current") or "").lower() == "true":
+            latest = (
+                WageRate.objects
+                .filter(user=user_obj, effective_from__lte=as_of_date)
+                .order_by("-effective_from")
+            )
+            qs = qs.filter(id__in=Subquery(latest.values("id")[:1]))
+
+        return qs

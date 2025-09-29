@@ -27,7 +27,7 @@ class UserAdmin(BaseUserAdmin):
 
 @admin.register(WageRate)
 class WageRateAdmin(admin.ModelAdmin):
-    list_display = ("user", "effective_from", "base_hourly", "currency")
+    list_display = ("user", "effective_from", "base_monthly", "currency")
     ordering = ("user__username", "-effective_from")
 
     def has_view_permission(self, request, obj=None):
