@@ -276,8 +276,7 @@ class AdminResetPasswordView(APIView):
         profile = user.profile
         profile.must_reset_password = True
         profile.reset_password_request = False
-        profile.temp_password_set_at = timezone.now()
-        profile.save(update_fields=["must_reset_password", "reset_password_request", "temp_password_set_at"])
+        profile.save(update_fields=["must_reset_password", "reset_password_request"])
 
         # (Optional) email/telegram temp password to user; or return it once:
         return Response({"temp_password": temp_password, "detail": "Temporary password set; user must change it on next login."}, status=200)
