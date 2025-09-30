@@ -9,6 +9,8 @@ from rest_framework.views import APIView
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework import status, permissions
+
+from procurement.permissions import IsFinanceAuthorized
 from .models import (
     PaymentSchedule, PaymentTerms, PurchaseOrder, PurchaseOrderLine, PurchaseRequestDraft, Supplier, Item, PurchaseRequest, 
     PurchaseRequestItem, SupplierOffer, ItemOffer
@@ -59,7 +61,7 @@ class PaymentTermsViewSet(viewsets.ModelViewSet):
     - DELETE: instead of deleting, set active=False (soft delete).
     """
     serializer_class = PaymentTermsSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsFinanceAuthorized]
     filter_backends = [SearchFilter, OrderingFilter]
     search_fields = ["name", "code", "active", "is_custom"]
     ordering_fields = ["name", "updated_at"]
@@ -94,7 +96,7 @@ class SupplierViewSet(viewsets.ModelViewSet):
     queryset = Supplier.objects.filter(is_active=True)
     serializer_class = SupplierSerializer
     filter_backends = [SearchFilter, OrderingFilter]
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsFinanceAuthorized]
     search_fields = ["name", "contact_person", "email", "default_payment_terms"]
     ordering_fields = ["id", "name", "updated_at"]
     
@@ -108,7 +110,7 @@ class SupplierViewSet(viewsets.ModelViewSet):
 class ItemViewSet(viewsets.ModelViewSet):
     queryset = Item.objects.all()
     serializer_class = ItemSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsFinanceAuthorized]
 
     filter_backends = [DjangoFilterBackend, OrderingFilter, SearchFilter]
     filterset_fields = {
@@ -131,7 +133,7 @@ class ItemViewSet(viewsets.ModelViewSet):
 class PurchaseRequestViewSet(viewsets.ModelViewSet):
     queryset = PurchaseRequest.objects.all()
     serializer_class = PurchaseRequestSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsFinanceAuthorized]
     filter_backends = [DjangoFilterBackend, OrderingFilter]
     filterset_class = PurchaseRequestFilter
     ordering_fields = ['id', 'title', 'requestor', 'priority', 'status', 'created_at', 'total_amount_eur']  # Add any fields you want to allow
@@ -163,7 +165,7 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
             return PurchaseRequestCreateSerializer
         return PurchaseRequestSerializer
     
-    @action(detail=True, methods=["POST"], permission_classes=[permissions.IsAuthenticated])
+    @action(detail=True, methods=["POST"], permission_classes=[IsFinanceAuthorized])
     def submit(self, request, pk=None):
         pr = self.get_object()
         if pr.status == 'cancelled':
@@ -174,7 +176,7 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
             return Response({"detail": str(e)}, status=400)
         return Response({"detail": "Submitted."})
 
-    @action(detail=True, methods=["POST"], permission_classes=[permissions.IsAuthenticated])
+    @action(detail=True, methods=["POST"], permission_classes=[IsFinanceAuthorized])
     def approve(self, request, pk=None):
         pr = self.get_object()
         if pr.status == 'cancelled':
@@ -187,7 +189,7 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
             return Response({"detail": str(e)}, status=400)
         return Response({"detail": "Approved."})
 
-    @action(detail=True, methods=["POST"], permission_classes=[permissions.IsAuthenticated])
+    @action(detail=True, methods=["POST"], permission_classes=[IsFinanceAuthorized])
     def reject(self, request, pk=None):
         pr = self.get_object()
         if pr.status == 'cancelled':
@@ -208,7 +210,7 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
     
-    @action(detail=False, methods=['get'], permission_classes=[permissions.IsAuthenticated])
+    @action(detail=False, methods=['get'], permission_classes=[IsFinanceAuthorized])
     def pending_approval(self, request):
         user = request.user
         ct_pr = ContentType.objects.get_for_model(PurchaseRequest)
@@ -246,7 +248,7 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
         return Response(ser.data)
 
         
-    @action(detail=False, methods=['get'], permission_classes=[permissions.IsAuthenticated])
+    @action(detail=False, methods=['get'], permission_classes=[IsFinanceAuthorized])
     def approved_by_me(self, request):
         """
         Purchase requests where I have approved (optionally filter by date range).
@@ -292,7 +294,7 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
         return Response(ser.data)
 
 
-    @action(detail=True, methods=["POST"], permission_classes=[permissions.IsAuthenticated])
+    @action(detail=True, methods=["POST"], permission_classes=[IsFinanceAuthorized])
     def generate_pos(self, request, pk=None):
         """
         Manually create POs from recommended offers for this PR.
@@ -305,7 +307,7 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
         data = PurchaseOrderListSerializer(pos, many=True).data
         return Response({"detail": f"Created {len(pos)} PO(s).", "purchase_orders": data}, status=201)
     
-    @action(detail=True, methods=["POST"], permission_classes=[permissions.IsAuthenticated])
+    @action(detail=True, methods=["POST"], permission_classes=[IsFinanceAuthorized])
     def cancel(self, request, pk=None):
         pr = self.get_object()
         reason = request.data.get("reason", "")
@@ -319,7 +321,7 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
     
 class PurchaseRequestDraftViewSet(viewsets.ModelViewSet):
     queryset = PurchaseRequestDraft.objects.all()
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsFinanceAuthorized]
     filter_backends = [DjangoFilterBackend, OrderingFilter]
     filterset_fields = ['id', 'requestor', 'title']
     ordering_fields = ['id', 'requestor', 'title', 'needed_date', 'priority']
@@ -356,7 +358,7 @@ class PurchaseRequestDraftViewSet(viewsets.ModelViewSet):
 class PurchaseRequestItemViewSet(viewsets.ModelViewSet):
     queryset = PurchaseRequestItem.objects.all()
     serializer_class = PurchaseRequestItemSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsFinanceAuthorized]
     
     def get_queryset(self):
         purchase_request_id = self.request.query_params.get('purchase_request', None)
@@ -367,7 +369,7 @@ class PurchaseRequestItemViewSet(viewsets.ModelViewSet):
 class SupplierOfferViewSet(viewsets.ModelViewSet):
     queryset = SupplierOffer.objects.all()
     serializer_class = SupplierOfferSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsFinanceAuthorized]
     
     def get_queryset(self):
         purchase_request_id = self.request.query_params.get('purchase_request', None)
@@ -378,7 +380,7 @@ class SupplierOfferViewSet(viewsets.ModelViewSet):
 class ItemOfferViewSet(viewsets.ModelViewSet):
     queryset = ItemOffer.objects.all()
     serializer_class = ItemOfferSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsFinanceAuthorized]
     
     def get_queryset(self):
         purchase_request_id = self.request.query_params.get('purchase_request', None)
@@ -416,7 +418,7 @@ class ItemOfferViewSet(viewsets.ModelViewSet):
 
 
 class StatusChoicesView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsFinanceAuthorized]
 
     def get(self, request):
         return Response([
@@ -424,7 +426,7 @@ class StatusChoicesView(APIView):
         ])
     
 class BasisChoicesView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsFinanceAuthorized]
 
     def get(self, request):
         return Response([
@@ -434,7 +436,7 @@ class BasisChoicesView(APIView):
 
 class PurchaseOrderViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = PurchaseOrder.objects.all()
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsFinanceAuthorized]
     filter_backends = [DjangoFilterBackend, OrderingFilter]
     filterset_fields = ['status', 'supplier', 'pr']
     # allow API consumer to override, but we’ll default to next_unpaid_due
@@ -552,7 +554,7 @@ class ProcurementReportViewSet(viewsets.GenericViewSet):
     All procurement reports under /procurement/reports/<report-name>/.
     Uses DRF pagination (paginate_queryset / get_paginated_response).
     """
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsFinanceAuthorized]
 
     @action(detail=False, methods=["get"], url_path="items")
     def items(self, request):
