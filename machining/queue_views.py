@@ -5,7 +5,7 @@ from django.db import transaction
 
 from machining.permissions import HasQueueSecret
 from machining.models import JobCostRecalcQueue
-from machining.services.costing import recompute_job_cost_snapshot
+from machining.services.costing import recompute_task_cost_snapshot
 
 class DrainCostQueueView(APIView):
     permission_classes = [HasQueueSecret]
@@ -23,7 +23,7 @@ class DrainCostQueueView(APIView):
                 if not rows:
                     break
             for r in rows:
-                recompute_job_cost_snapshot(r.job_no)
-                JobCostRecalcQueue.objects.filter(job_no=r.job_no).delete()
+                recompute_task_cost_snapshot(r.task_id)
+                JobCostRecalcQueue.objects.filter(task_id=r.task_id).delete()
                 processed += 1
-        return Response({"processed": processed}, status=200)
+        return Response({"processed": processed})

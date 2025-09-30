@@ -75,7 +75,8 @@ class Timer(models.Model):
 from django.db import models
 
 class JobCostAgg(models.Model):
-    job_no = models.CharField(max_length=100, primary_key=True)
+    task = models.OneToOneField("machining.Task", on_delete=models.CASCADE, primary_key=True)
+    job_no_cached = models.CharField(max_length=100, db_index=True)  # display/filter
     currency = models.CharField(max_length=3, default="EUR")
     hours_ww = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     hours_ah = models.DecimalField(max_digits=12, decimal_places=2, default=0)
@@ -86,12 +87,10 @@ class JobCostAgg(models.Model):
     total_cost = models.DecimalField(max_digits=16, decimal_places=2, default=0)
     updated_at = models.DateTimeField(auto_now=True)
 
-    def __str__(self):
-        return f"{self.job_no} total={self.total_cost} {self.currency}"
-
 class JobCostAggUser(models.Model):
-    job_no = models.CharField(max_length=100)
+    task = models.ForeignKey("machining.Task", on_delete=models.CASCADE)
     user = models.ForeignKey("auth.User", on_delete=models.CASCADE)
+    job_no_cached = models.CharField(max_length=100, db_index=True)
     currency = models.CharField(max_length=3, default="EUR")
     hours_ww = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     hours_ah = models.DecimalField(max_digits=12, decimal_places=2, default=0)
@@ -103,14 +102,8 @@ class JobCostAggUser(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        unique_together = ("job_no", "user")
-
-    def __str__(self):
-        return f"{self.job_no} / {self.user} = {self.total_cost} {self.currency}"
+        unique_together = ("task", "user")
 
 class JobCostRecalcQueue(models.Model):
-    job_no = models.CharField(max_length=100, primary_key=True)
+    task = models.OneToOneField("machining.Task", on_delete=models.CASCADE, primary_key=True)
     enqueued_at = models.DateTimeField(auto_now=True)
-
-    def __str__(self):
-        return f"{self.job_no} @ {self.enqueued_at}"

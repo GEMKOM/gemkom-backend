@@ -3,7 +3,7 @@ from django.core.management.base import BaseCommand
 from django.db import transaction
 
 from machining.models import JobCostRecalcQueue
-from machining.services.costing import recompute_job_cost_snapshot
+from machining.services.costing import recompute_task_cost_snapshot
 
 class Command(BaseCommand):
     help = "Drains job_cost_recalc_queue and recomputes job cost snapshots."
@@ -18,24 +18,23 @@ class Command(BaseCommand):
         while True:
             # lock a batch (skip locked allows multiple workers)
             with transaction.atomic():
-                pending = (
+                jobs = list(
                     JobCostRecalcQueue.objects
                     .select_for_update(skip_locked=True)
                     .order_by("enqueued_at")[:batch]
                 )
-                jobs = list(pending)
                 if not jobs:
                     break
                 # don't delete yet; if we crash, they’ll remain for next run
 
             for row in jobs:
                 try:
-                    recompute_job_cost_snapshot(row.job_no)
+                    recompute_task_cost_snapshot(row.task_id)
                     processed += 1
                     # delete after successful recompute
-                    JobCostRecalcQueue.objects.filter(job_no=row.job_no).delete()
+                    JobCostRecalcQueue.objects.filter(task_id=row.task_id).delete()
                 except Exception as e:
                     # leave in queue; next run will retry
-                    self.stderr.write(f"Failed {row.job_no}: {e}")
+                    self.stderr.write(f"Failed {row.task_id}: {e}")
 
         self.stdout.write(self.style.SUCCESS(f"Processed {processed} jobs"))

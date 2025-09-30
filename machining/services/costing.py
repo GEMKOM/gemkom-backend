@@ -41,18 +41,20 @@ def _build_wage_picker(user_ids):
     return pick
 
 @transaction.atomic
-def recompute_job_cost_snapshot(job_no: str):
-    timers = (
-        Timer.objects
-        .select_related("user", "issue_key")
-        .filter(issue_key__job_no=job_no, finish_time__isnull=False)
-    )
+def recompute_task_cost_snapshot(task_id: int):
+    # pull timers by issue_key_id
+    timers = (Timer.objects.select_related("user", "issue_key")
+              .filter(issue_key_id=task_id, finish_time__isnull=False))
     timers = list(timers)
-    # wipe aggregates if no timers
+
+    # wipe if none
+    JobCostAgg.objects.filter(task_id=task_id).delete()
+    JobCostAggUser.objects.filter(task_id=task_id).delete()
     if not timers:
-        JobCostAgg.objects.filter(job_no=job_no).delete()
-        JobCostAggUser.objects.filter(job_no=job_no).delete()
         return
+
+    task = timers[0].issue_key  # same for all
+    job_no_label = task.job_no or ""
 
     user_ids = {t.user_id for t in timers}
     pick_wage = _build_wage_picker(user_ids)
@@ -111,21 +113,26 @@ def recompute_job_cost_snapshot(job_no: str):
     tot_c_su = sum((v["c_su"] for v in per_user.values()), Decimal("0"))
     total_cost = q2(tot_c_ww + tot_c_ah + tot_c_su)
 
-    JobCostAgg.objects.filter(job_no=job_no).delete()
-    JobCostAggUser.objects.filter(job_no=job_no).delete()
+    JobCostAgg.objects.filter(task_id=task_id).delete()
+    JobCostAggUser.objects.filter(task_id=task_id).delete()
 
     JobCostAgg.objects.create(
-        job_no=job_no, currency="EUR",
-        hours_ww=q2(tot_h_ww), hours_ah=q2(tot_h_ah), hours_su=q2(tot_h_su),
-        cost_ww=q2(tot_c_ww),  cost_ah=q2(tot_c_ah),  cost_su=q2(tot_c_su),
-        total_cost=total_cost,
-    )
+            task_id=task_id,
+            job_no_cached=job_no_label,
+            currency="EUR",
+            hours_ww=q2(tot_h_ww), hours_ah=q2(tot_h_ah), hours_su=q2(tot_h_su),
+            cost_ww=q2(tot_c_ww),  cost_ah=q2(tot_c_ah),  cost_su=q2(tot_c_su),
+            total_cost=total_cost,
+        )
 
     # per-user rows (optional table)
     for uid, v in per_user.items():
         u_tot = q2(v["c_ww"] + v["c_ah"] + v["c_su"])
         JobCostAggUser.objects.create(
-            job_no=job_no, user_id=uid, currency="EUR",
+            task_id=task_id,
+            user_id=uid,
+            job_no_cached=job_no_label,
+            currency="EUR",
             hours_ww=q2(v["h_ww"]), hours_ah=q2(v["h_ah"]), hours_su=q2(v["h_su"]),
             cost_ww=q2(v["c_ww"]),  cost_ah=q2(v["c_ah"]),  cost_su=q2(v["c_su"]),
             total_cost=u_tot,
