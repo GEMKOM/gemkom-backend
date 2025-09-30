@@ -74,7 +74,7 @@ INSTALLED_APPS = [
     'users',
     'core',
     'corsheaders',
-    'machining',
+    'machining.apps.MachiningConfig',
     'machines',
     'procurement',
     "approvals",
