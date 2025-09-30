@@ -46,6 +46,8 @@ EMAIL_USE_TLS = os.environ.get("EMAIL_USE_TLS", "true").lower() == "true"
 EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER")        # e.g. onat@yourcompany.com
 EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD")  # that user's password (or app password)
 
+QUEUE_SECRET = os.getenv("QUEUE_SECRET", "")
+
 
 ALLOWED_HOSTS = ['gemkom-backend-716746493353.europe-west3.run.app',
                  '127.0.0.1', 'localhost']  # for now

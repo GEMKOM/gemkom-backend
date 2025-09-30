@@ -70,3 +70,47 @@ class Timer(models.Model):
     class Meta:
         ordering = ['-start_time']
 
+
+# machining/models.py (add at bottom)
+from django.db import models
+
+class JobCostAgg(models.Model):
+    job_no = models.CharField(max_length=100, primary_key=True)
+    currency = models.CharField(max_length=3, default="EUR")
+    hours_ww = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    hours_ah = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    hours_su = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    cost_ww  = models.DecimalField(max_digits=16, decimal_places=2, default=0)
+    cost_ah  = models.DecimalField(max_digits=16, decimal_places=2, default=0)
+    cost_su  = models.DecimalField(max_digits=16, decimal_places=2, default=0)
+    total_cost = models.DecimalField(max_digits=16, decimal_places=2, default=0)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.job_no} total={self.total_cost} {self.currency}"
+
+class JobCostAggUser(models.Model):
+    job_no = models.CharField(max_length=100)
+    user = models.ForeignKey("auth.User", on_delete=models.CASCADE)
+    currency = models.CharField(max_length=3, default="EUR")
+    hours_ww = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    hours_ah = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    hours_su = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    cost_ww  = models.DecimalField(max_digits=16, decimal_places=2, default=0)
+    cost_ah  = models.DecimalField(max_digits=16, decimal_places=2, default=0)
+    cost_su  = models.DecimalField(max_digits=16, decimal_places=2, default=0)
+    total_cost = models.DecimalField(max_digits=16, decimal_places=2, default=0)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ("job_no", "user")
+
+    def __str__(self):
+        return f"{self.job_no} / {self.user} = {self.total_cost} {self.currency}"
+
+class JobCostRecalcQueue(models.Model):
+    job_no = models.CharField(max_length=100, primary_key=True)
+    enqueued_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.job_no} @ {self.enqueued_at}"

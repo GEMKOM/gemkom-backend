@@ -6,7 +6,7 @@ from machining.filters import TaskFilter
 from machining.permissions import MachiningProtectedView
 from machining.services.timers import categorize_timer_segments
 from users.permissions import IsAdmin, IsMachiningUserOrAdmin
-from .models import Task, TaskKeyCounter, Timer
+from .models import JobCostAgg, JobCostAggUser, Task, TaskKeyCounter, Timer
 from .serializers import HoldTaskSerializer, PlanningListItemSerializer, TaskPlanBulkListSerializer, TaskPlanUpdateItemSerializer, TaskSerializer, TimerSerializer
 from django.db.models import Q, Count, Avg
 from rest_framework.views import APIView
@@ -647,3 +647,45 @@ class JobHoursReportView(APIView):
             })
 
         return Response({"query": q, "job_nos": job_nos, "results": results}, status=200)
+    
+
+class JobCostSnapshotView(APIView):
+    permission_classes = [permissions.IsAuthenticated]  # or IsAdmin
+
+    def get(self, request, job_no: str):
+        agg = JobCostAgg.objects.filter(job_no=job_no).first()
+        if not agg:
+            return Response({"detail": "not found"}, status=404)
+        users = list(
+            JobCostAggUser.objects
+            .filter(job_no=job_no)
+            .select_related("user")
+            .values(
+                "user_id",
+                "user__username",
+                "currency",
+                "hours_ww","hours_ah","hours_su",
+                "cost_ww","cost_ah","cost_su","total_cost",
+                "updated_at",
+            )
+        )
+        return Response({
+            "job_no": agg.job_no,
+            "currency": agg.currency,
+            "hours": {"weekday_work": float(agg.hours_ww), "after_hours": float(agg.hours_ah), "sunday": float(agg.hours_su)},
+            "costs": {"weekday_work": float(agg.cost_ww), "after_hours": float(agg.cost_ah), "sunday": float(agg.cost_su)},
+            "total_cost": float(agg.total_cost),
+            "updated_at": agg.updated_at,
+            "users": [
+                {
+                    "user_id": u["user_id"],
+                    "user": u["user__username"],
+                    "currency": u["currency"],
+                    "hours": {"weekday_work": float(u["hours_ww"]), "after_hours": float(u["hours_ah"]), "sunday": float(u["hours_su"])},
+                    "costs": {"weekday_work": float(u["cost_ww"]), "after_hours": float(u["cost_ah"]), "sunday": float(u["cost_su"])},
+                    "total_cost": float(u["total_cost"]),
+                    "updated_at": u["updated_at"],
+                }
+                for u in users
+            ]
+        })

@@ -1,5 +1,7 @@
 from django.urls import path
-from .views import HoldTaskViewSet, InitTaskKeyCounterView, JobHoursReportView, MachineTimelineView, PlanningBulkSaveView, PlanningListView, TaskBulkCreateView, TimerDetailView, TimerReportView, TimerStartView, TimerStopView, TimerManualEntryView, TimerListView, UnmarkTaskCompletedView
+
+from machining.queue_views import DrainCostQueueView
+from .views import HoldTaskViewSet, InitTaskKeyCounterView, JobCostSnapshotView, JobHoursReportView, MachineTimelineView, PlanningBulkSaveView, PlanningListView, TaskBulkCreateView, TimerDetailView, TimerReportView, TimerStartView, TimerStopView, TimerManualEntryView, TimerListView, UnmarkTaskCompletedView
 from rest_framework.routers import DefaultRouter
 from .views import TaskViewSet, MarkTaskCompletedView
 
@@ -23,7 +25,13 @@ urlpatterns = [
     path('planning/bulk-save/', PlanningBulkSaveView.as_view(), name='planning-bulk-save'),
     path('analytics/machine-timeline/', MachineTimelineView.as_view(), name='analytics-machine-timeline'),
     path("reports/job-hours/", JobHoursReportView.as_view(), name="job-hours-report"),
+    path("reports/job-costs/<str:job_no>/", JobCostSnapshotView.as_view()),
 
 ]
 
+queue_urlpatterns = [
+    path("internal/drain-job-cost-queue/", DrainCostQueueView.as_view()),
+]
+
 urlpatterns += router.urls
+urlpatterns += queue_urlpatterns
