@@ -855,42 +855,169 @@ class JobHoursReportView(APIView):
     
 
 class JobCostSnapshotView(APIView):
-    permission_classes = [permissions.IsAuthenticated]  # or IsAdmin
+    permission_classes = [permissions.IsAuthenticated]
 
-    def get(self, request, job_no: str):
-        agg = JobCostAgg.objects.filter(job_no=job_no).first()
-        if not agg:
+    def get(self, request, job_no: str | None = None):
+        job_like = (request.query_params.get("job_like") or "").strip()
+        breakdown = (request.query_params.get("breakdown") or "").strip()  # supports "job_no"
+
+        # ----- filters (exact job or partial) -----
+        agg_filter = {}
+        if job_like:
+            agg_filter["job_no_cached__icontains"] = job_like   # switch to __istartswith if preferred
+        elif job_no:
+            agg_filter["job_no_cached"] = job_no
+        else:
+            return Response({"detail": "Provide job_no path param or ?job_like=..."}, status=400)
+
+        # ----- header totals across all matched tasks -----
+        task_aggs = JobCostAgg.objects.filter(**agg_filter)
+        if not task_aggs.exists():
             return Response({"detail": "not found"}, status=404)
-        users = list(
+
+        totals = task_aggs.aggregate(
+            hours_ww=Sum("hours_ww"), hours_ah=Sum("hours_ah"), hours_su=Sum("hours_su"),
+            cost_ww=Sum("cost_ww"),   cost_ah=Sum("cost_ah"),   cost_su=Sum("cost_su"),
+            total_cost=Sum("total_cost"),
+            updated_at=Max("updated_at"),
+        )
+
+        # ----- users merged across all matched jobs -----
+        users_qs = (
             JobCostAggUser.objects
-            .filter(job_no=job_no)
+            .filter(**agg_filter)
             .select_related("user")
-            .values(
-                "user_id",
-                "user__username",
-                "currency",
-                "hours_ww","hours_ah","hours_su",
-                "cost_ww","cost_ah","cost_su","total_cost",
-                "updated_at",
+            .values("user_id", "user__username", "currency")
+            .annotate(
+                hours_ww=Sum("hours_ww"), hours_ah=Sum("hours_ah"), hours_su=Sum("hours_su"),
+                cost_ww=Sum("cost_ww"),   cost_ah=Sum("cost_ah"),   cost_su=Sum("cost_su"),
+                total_cost=Sum("total_cost"),
+                updated_at=Max("updated_at"),
             )
         )
-        return Response({
-            "job_no": agg.job_no,
-            "currency": agg.currency,
-            "hours": {"weekday_work": float(agg.hours_ww), "after_hours": float(agg.hours_ah), "sunday": float(agg.hours_su)},
-            "costs": {"weekday_work": float(agg.cost_ww), "after_hours": float(agg.cost_ah), "sunday": float(agg.cost_su)},
-            "total_cost": float(agg.total_cost),
-            "updated_at": agg.updated_at,
-            "users": [
-                {
-                    "user_id": u["user_id"],
-                    "user": u["user__username"],
-                    "currency": u["currency"],
-                    "hours": {"weekday_work": float(u["hours_ww"]), "after_hours": float(u["hours_ah"]), "sunday": float(u["hours_su"])},
-                    "costs": {"weekday_work": float(u["cost_ww"]), "after_hours": float(u["cost_ah"]), "sunday": float(u["cost_su"])},
-                    "total_cost": float(u["total_cost"]),
-                    "updated_at": u["updated_at"],
+
+        # ----- visibility rules -----
+        show_all_money = can_view_all_money(request.user)
+        show_header_totals_only = can_view_header_totals_only(request.user)
+        show_all_users_hours = can_view_all_users_hours(request.user)
+
+        if not show_all_users_hours:
+            # Everyone else: only see their own row
+            users_qs = users_qs.filter(user_id=request.user.id)
+
+        # ----- build users payload with masking -----
+        users = []
+        for u in users_qs.order_by(F("total_cost").desc(nulls_last=True), "user__username"):
+            hours = {
+                "weekday_work": float(u["hours_ww"] or 0),
+                "after_hours":  float(u["hours_ah"] or 0),
+                "sunday":       float(u["hours_su"] or 0),
+            }
+
+            if show_all_money:
+                costs = {
+                    "weekday_work": float(u["cost_ww"] or 0),
+                    "after_hours":  float(u["cost_ah"] or 0),
+                    "sunday":       float(u["cost_su"] or 0),
                 }
-                for u in users
-            ]
-        })
+                total_cost = float(u["total_cost"] or 0)
+                currency = u["currency"]
+            else:
+                # No per-user money for everyone except managers/superusers
+                costs = {"weekday_work": None, "after_hours": None, "sunday": None}
+                total_cost = None
+                currency = None
+
+            users.append({
+                "user_id": u["user_id"],
+                "user": u["user__username"],
+                "currency": currency,
+                "hours": hours,
+                "costs": costs,
+                "total_cost": total_cost,
+                "updated_at": u["updated_at"],
+            })
+
+        # ----- header masking -----
+        header_hours = {
+            "weekday_work": float(totals["hours_ww"] or 0),
+            "after_hours":  float(totals["hours_ah"] or 0),
+            "sunday":       float(totals["hours_su"] or 0),
+        }
+
+        if show_all_money:
+            header_costs = {
+                "weekday_work": float(totals["cost_ww"] or 0),
+                "after_hours":  float(totals["cost_ah"] or 0),
+                "sunday":       float(totals["cost_su"] or 0),
+            }
+            header_total = float(totals["total_cost"] or 0)
+            header_currency = "EUR"
+        elif show_header_totals_only:
+            # Manufacturing/Planning: expose only the grand total; hide per-category
+            header_costs = {"weekday_work": None, "after_hours": None, "sunday": None}
+            header_total = float(totals["total_cost"] or 0)
+            header_currency = "EUR"
+        else:
+            # Everyone else: hide all money
+            header_costs = {"weekday_work": None, "after_hours": None, "sunday": None}
+            header_total = None
+            header_currency = None
+
+        resp = {
+            "query": {"job_no": job_no, "job_like": job_like or None},
+            "currency": header_currency,
+            "hours": header_hours,
+            "costs": header_costs,
+            "total_cost": header_total,
+            "updated_at": totals["updated_at"],
+            "users": users,
+        }
+
+        # ----- optional per-job breakdown -----
+        if breakdown == "job_no":
+            per_job = (
+                JobCostAgg.objects.filter(**agg_filter)
+                .values("job_no_cached")
+                .annotate(
+                    hours_ww=Sum("hours_ww"), hours_ah=Sum("hours_ah"), hours_su=Sum("hours_su"),
+                    cost_ww=Sum("cost_ww"),   cost_ah=Sum("cost_ah"),   cost_su=Sum("cost_su"),
+                    total_cost=Sum("total_cost"),
+                    updated_at=Max("updated_at"),
+                )
+                .order_by("job_no_cached")
+            )
+
+            by_job = []
+            for row in per_job:
+                item = {
+                    "job_no": row["job_no_cached"],
+                    "hours": {
+                        "weekday_work": float(row["hours_ww"] or 0),
+                        "after_hours":  float(row["hours_ah"] or 0),
+                        "sunday":       float(row["hours_su"] or 0),
+                    },
+                    "updated_at": row["updated_at"],
+                }
+
+                if show_all_money:
+                    item["costs"] = {
+                        "weekday_work": float(row["cost_ww"] or 0),
+                        "after_hours":  float(row["cost_ah"] or 0),
+                        "sunday":       float(row["cost_su"] or 0),
+                    }
+                    item["total_cost"] = float(row["total_cost"] or 0)
+                elif show_header_totals_only:
+                    # Manufacturing/Planning: per-job total only
+                    item["costs"] = {"weekday_work": None, "after_hours": None, "sunday": None}
+                    item["total_cost"] = float(row["total_cost"] or 0)
+                else:
+                    # Others: no money
+                    item["costs"] = {"weekday_work": None, "after_hours": None, "sunday": None}
+                    item["total_cost"] = None
+
+                by_job.append(item)
+
+            resp["by_job"] = by_job
+
+        return Response(resp, status=200)

@@ -285,6 +285,8 @@ class AdminResetPasswordView(APIView):
 class WageRateListCreateView(ListCreateAPIView):
     permission_classes = [IsAuthenticated, IsHRorAuthorized]
     filter_backends = [WageOrderingFilter]  # <— built-in ordering, dynamic fields
+    ordering_fields = ['effective_from', 'created_at', 'id']  # allowed fields
+    ordering = ['-effective_from', '-id']  # default if ?ordering= not provided
 
     def get_serializer_class(self):
         mode = (self.request.query_params.get("mode") or "overview").lower()
