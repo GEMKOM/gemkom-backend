@@ -1,6 +1,7 @@
 import time
 from rest_framework.response import Response
 from django.db.models import Q, F, Sum, Max, Count, Value, DecimalField, Min
+from django.db.models import F, FloatField, ExpressionWrapper
 from django.db.models.functions import Coalesce
 from machines.models import Machine
 from machining.filters import TaskFilter
