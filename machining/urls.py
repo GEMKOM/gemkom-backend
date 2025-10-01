@@ -1,7 +1,7 @@
 from django.urls import path
 
 from machining.queue_views import DrainCostQueueView
-from .views import HoldTaskViewSet, InitTaskKeyCounterView, JobCostSnapshotView, JobHoursReportView, MachineTimelineView, PlanningBulkSaveView, PlanningListView, TaskBulkCreateView, TimerDetailView, TimerReportView, TimerStartView, TimerStopView, TimerManualEntryView, TimerListView, UnmarkTaskCompletedView
+from .views import HoldTaskViewSet, InitTaskKeyCounterView, JobCostSnapshotView, JobHoursReportView, MachineTimelineView, PlanningAggregateView, PlanningBulkSaveView, PlanningListView, ProductionPlanView, TaskBulkCreateView, TimerDetailView, TimerReportView, TimerStartView, TimerStopView, TimerManualEntryView, TimerListView, UnmarkTaskCompletedView
 from rest_framework.routers import DefaultRouter
 from .views import TaskViewSet, MarkTaskCompletedView
 
@@ -23,9 +23,11 @@ urlpatterns = [
     path('tasks/init-counter/', InitTaskKeyCounterView.as_view(), name='init-task-key-counter'),
     path('planning/list/', PlanningListView.as_view(), name='planning-list'),
     path('planning/bulk-save/', PlanningBulkSaveView.as_view(), name='planning-bulk-save'),
+    path("planning/overview/", PlanningAggregateView.as_view(), name="planning-window"),
     path('analytics/machine-timeline/', MachineTimelineView.as_view(), name='analytics-machine-timeline'),
     path("reports/job-hours/", JobHoursReportView.as_view(), name="job-hours-report"),
     path("reports/job-costs/<str:job_no>/", JobCostSnapshotView.as_view()),
+    path('reports/production-plan/', ProductionPlanView.as_view(), name='production-plan'),
 
 ]
 

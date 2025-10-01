@@ -110,9 +110,9 @@ class PlanningListItemSerializer(serializers.ModelSerializer):
             # plan state
             'in_plan', 'planned_start_ms', 'planned_end_ms', 'plan_order', 'plan_locked',
             # hours
-            'estimated_hours', 'total_hours_spent', 'remaining_hours',
+            'estimated_hours', 'total_hours_spent', 'remaining_hours', 
             # useful for initial auto-sort
-            'finish_time',
+            'completion_date'
         ]
 
     # Sum finished timers (epoch-ms → hours)
@@ -135,6 +135,36 @@ class PlanningListItemSerializer(serializers.ModelSerializer):
         est = float(obj.estimated_hours or 0)
         spent = self._sum_timer_hours(obj)
         return round(max(0.0, est - spent), 2)
+    
+
+class ProductionPlanSerializer(serializers.ModelSerializer):
+    total_hours_spent = serializers.SerializerMethodField()
+    actual_start_ms = serializers.IntegerField(source='first_timer_start', read_only=True)
+
+    class Meta:
+        model = Task
+        fields = [
+            # identity
+            'key', 'name', 'job_no', 'planned_start_ms', 
+            'planned_end_ms', 'estimated_hours', 'total_hours_spent', 
+            'completion_date', 'actual_start_ms'
+        ]
+
+    # Sum finished timers (epoch-ms → hours)
+    def _sum_timer_hours(self, obj: Task) -> float:
+        qs = Timer.objects.filter(issue_key=obj).exclude(finish_time__isnull=True).only('start_time', 'finish_time')
+        total_ms = 0
+        for t in qs:
+            if t.start_time is None:
+                continue
+            end = t.finish_time
+            if end is None or end <= t.start_time:
+                continue
+            total_ms += (end - t.start_time)
+        return round(total_ms / 3_600_000.0, 2)
+
+    def get_total_hours_spent(self, obj):
+        return self._sum_timer_hours(obj)
 
 
 class TaskPlanBulkListSerializer(serializers.ListSerializer):
@@ -278,3 +308,4 @@ class MachineTimelineSegmentSerializer(serializers.Serializer):
     task_name = serializers.CharField(allow_null=True)
     is_hold   = serializers.BooleanField()
     category  = serializers.CharField()  # "work" | "hold" | "idle"
+

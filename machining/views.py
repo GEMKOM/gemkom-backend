@@ -1,13 +1,14 @@
 import time
 from rest_framework.response import Response
-from django.db.models import F, Sum, ExpressionWrapper, FloatField
+from django.db.models import Q, F, Sum, Max, Count, Value, DecimalField, Min
+from django.db.models.functions import Coalesce
 from machines.models import Machine
 from machining.filters import TaskFilter
 from machining.permissions import MachiningProtectedView
 from machining.services.timers import categorize_timer_segments
 from users.permissions import IsAdmin, IsMachiningUserOrAdmin
 from .models import JobCostAgg, JobCostAggUser, Task, TaskKeyCounter, Timer
-from .serializers import HoldTaskSerializer, PlanningListItemSerializer, TaskPlanBulkListSerializer, TaskPlanUpdateItemSerializer, TaskSerializer, TimerSerializer
+from .serializers import HoldTaskSerializer, PlanningListItemSerializer, ProductionPlanSerializer, TaskPlanBulkListSerializer, TaskPlanUpdateItemSerializer, TaskSerializer, TimerSerializer
 from django.db.models import Q, Count, Avg
 from rest_framework.views import APIView
 from rest_framework.generics import RetrieveUpdateDestroyAPIView
@@ -354,11 +355,12 @@ class PlanningListView(APIView):
         t1 = _parse_ms(request.query_params.get('start_before'))
 
         qs = Task.objects.select_related('machine_fk').filter(
-            machine_fk_id=machine_id,
-            is_hold_task=False,
-            completion_date__isnull=True,
-            completed_by__isnull=True,
-        )
+                machine_fk_id=machine_id,
+                is_hold_task=False,
+                completion_date__isnull=True,
+                completed_by__isnull=True
+
+            )
 
         if only_in_plan:
             qs = qs.filter(in_plan=True)
@@ -381,6 +383,36 @@ class PlanningListView(APIView):
         data = PlanningListItemSerializer(qs, many=True).data
         return Response(data, status=200)
 
+
+class ProductionPlanView(APIView):
+    """
+    GET /machining/planning/list/?machine_fk=5&only_in_plan=false&start_after=<ms|sec>&start_before=<ms|sec>
+    - Excludes hold tasks
+    - Returns BOTH in-plan and backlog (unless only_in_plan=true)
+    - Includes estimated_hours, total_hours_spent, remaining_hours
+    """
+    permission_classes = [IsMachiningUserOrAdmin]
+
+    def get(self, request):
+        machine_id = request.query_params.get('machine_fk')
+        if not machine_id:
+            return Response({"error": "machine_fk is required"}, status=400)
+
+        qs = Task.objects.select_related('machine_fk').prefetch_related('timers').annotate(first_timer_start=Min('timers__start_time')).filter(
+                machine_fk_id=machine_id,
+                is_hold_task=False
+            )
+
+        qs = qs.order_by(
+            F('in_plan').desc(),
+            F('plan_order').asc(nulls_last=True),
+            F('planned_start_ms').asc(nulls_last=True),
+            F('finish_time').asc(nulls_last=True),
+            'key'
+        )
+
+        data = ProductionPlanSerializer(qs, many=True).data
+        return Response(data, status=200)
 
 class PlanningBulkSaveView(APIView):
     """
@@ -455,6 +487,178 @@ class PlanningBulkSaveView(APIView):
         updated_objs = bulk_updater.update(instances_in_order, rows)
 
         return Response({"updated": PlanningListItemSerializer(updated_objs, many=True).data}, status=200)
+    
+
+# views.py
+from django.db.models import Q, F, Sum, Max, Count, Value, DecimalField
+from django.db.models.functions import Coalesce
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+
+from users.permissions import IsMachiningUserOrAdmin
+from machines.models import Machine
+from .models import Task
+
+
+class PlanningAggregateView(APIView):
+    """
+    GET /machining/planning/aggregate/?machine_fk=<id|all>
+
+    Returns aggregate metrics per machine and overall, without listing tasks.
+
+    Filters included in all aggregations:
+      - in_plan = True
+      - is_hold_task = False
+      - completion_date IS NULL
+      - completed_by IS NULL
+
+    Response shape:
+    {
+      "machines": [
+        {
+          "machine_id": 5,
+          "machine_name": "Doosan DBC130L II",
+          "totals": {
+            "total_estimated_hours": 42.5,
+            "latest_planned_end_ms": 1729000000000,
+            "task_count": 9
+          },
+          "jobs": [
+            {
+              "job_no": "J-001",
+              "total_estimated_hours": 30.5,
+              "latest_planned_end_ms": 1728800000000,
+              "task_count": 6
+            },
+            {
+              "job_no": null,
+              "total_estimated_hours": 12.0,
+              "latest_planned_end_ms": 1729000000000,
+              "task_count": 3
+            }
+          ]
+        },
+        ...
+      ],
+      "overall_totals": {
+        "total_estimated_hours": 60.5,
+        "latest_planned_end_ms": 1729000000000,
+        "task_count": 13
+      }
+    }
+    """
+    permission_classes = [IsMachiningUserOrAdmin]
+
+    def get(self, request):
+        # --- Machine selection
+        machine_param = request.query_params.get("machine_fk")
+        if machine_param and str(machine_param).lower() != "all":
+            try:
+                machine_ids = [int(machine_param)]
+            except (TypeError, ValueError):
+                return Response({"error": "machine_fk must be an integer id or 'all'."}, status=400)
+            machines = Machine.objects.filter(id__in=machine_ids).only("id", "name")
+        else:
+            machines = Machine.objects.filter(used_in="machining", is_active=True).only("id", "name", "machine_type")
+            machine_ids = list(machines.values_list("id", flat=True))
+
+        machines_by_id = {m.id: m for m in machines}
+
+        # --- Base queryset: active, in-plan, non-hold tasks, not completed
+        agg_base = Task.objects.filter(
+            machine_fk_id__in=machine_ids,
+            in_plan=True,
+            is_hold_task=False,
+            completion_date__isnull=True,
+            completed_by__isnull=True,
+        )
+
+        # --- Per-machine totals
+        per_machine = (
+            agg_base
+            .values("machine_fk_id")
+            .annotate(
+                total_estimated_hours=Coalesce(
+                    Sum("estimated_hours"), Value(0, output_field=DecimalField(max_digits=12, decimal_places=2))
+                ),
+                latest_planned_end_ms=Max("planned_end_ms"),
+                task_count=Count("key", distinct=True),
+            )
+        )
+        per_machine_map = {row["machine_fk_id"]: row for row in per_machine}
+
+        # --- Per-machine, grouped-by-job_no totals
+        per_machine_jobs = (
+            agg_base
+            .values("machine_fk_id", "job_no")
+            .annotate(
+                total_estimated_hours=Coalesce(
+                    Sum("estimated_hours"), Value(0, output_field=DecimalField(max_digits=12, decimal_places=2))
+                ),
+                latest_planned_end_ms=Max("planned_end_ms"),
+                task_count=Count("key", distinct=True),
+            )
+            .order_by("machine_fk_id", "job_no")
+        )
+
+        # Build {machine_id: [job rows...]}
+        jobs_map = {mid: [] for mid in machine_ids}
+        for row in per_machine_jobs:
+            mid = row["machine_fk_id"]
+            jobs_map.setdefault(mid, []).append({
+                "job_no": row["job_no"],  # can be None
+                "total_estimated_hours": float(row["total_estimated_hours"] or 0),
+                "latest_planned_end_ms": row["latest_planned_end_ms"],
+                "task_count": int(row["task_count"] or 0),
+            })
+
+        # --- Compose response
+        items = []
+        overall = {
+            "total_estimated_hours": 0.0,
+            "latest_planned_end_ms": None,
+            "task_count": 0,
+        }
+
+        for mid in machine_ids:
+            m = machines_by_id.get(mid)
+            name = getattr(m, "name", None)
+
+            totals_row = per_machine_map.get(mid, {
+                "total_estimated_hours": 0,
+                "latest_planned_end_ms": None,
+                "task_count": 0,
+            })
+
+            total_est = float(totals_row["total_estimated_hours"] or 0)
+            latest_end = totals_row["latest_planned_end_ms"]
+            count = int(totals_row["task_count"] or 0)
+
+            items.append({
+                "machine_id": mid,
+                "machine_name": name,
+                "machine_type_label": m.get_machine_type_display(),
+                "totals": {
+                    "total_estimated_hours": total_est,
+                    "latest_planned_end_ms": latest_end,
+                    "task_count": count,
+                },
+                "jobs": jobs_map.get(mid, []),
+            })
+
+            # overall roll-up
+            overall["total_estimated_hours"] += total_est
+            overall["task_count"] += count
+            if latest_end is not None and (
+                overall["latest_planned_end_ms"] is None or latest_end > overall["latest_planned_end_ms"]
+            ):
+                overall["latest_planned_end_ms"] = latest_end
+
+        return Response({
+            "machines": items,
+            "overall_totals": overall,
+        }, status=status.HTTP_200_OK)
     
 class MachineTimelineView(APIView):
     """
