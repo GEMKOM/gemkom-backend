@@ -1,6 +1,6 @@
 from rest_framework.permissions import BasePermission, SAFE_METHODS
 
-FINANCE_TEAMS  = {"finance", "procurement", "management"}  # note: your enum uses 'human_resouces'
+FINANCE_TEAMS  = {"finance", "procurement", "management", "external_workshops"}  # note: your enum uses 'human_resouces'
 
 
 def _is_finance_authorized(user) -> bool:
