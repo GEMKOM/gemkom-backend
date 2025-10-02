@@ -5,7 +5,7 @@ from django.db.models import F, FloatField, ExpressionWrapper
 from django.db.models.functions import Coalesce
 from machines.models import Machine
 from machining.filters import TaskFilter
-from machining.permissions import MachiningProtectedView
+from machining.permissions import MachiningProtectedView, can_view_all_money, can_view_all_users_hours, can_view_header_totals_only
 from machining.services.timers import categorize_timer_segments
 from users.permissions import IsAdmin, IsMachiningUserOrAdmin
 from .models import JobCostAgg, JobCostAggUser, Task, TaskKeyCounter, Timer
@@ -24,6 +24,11 @@ from .serializers import MachineTimelineSegmentSerializer
 from .services.timeline import _build_bulk_machine_timelines, _ensure_valid_range  # _parse_ms is small; OK to re-use
 from rest_framework import status
 from collections import defaultdict
+
+try:
+    from django.contrib.postgres.aggregates import ArrayAgg  # type: ignore
+except Exception:  # pragma: no cover
+    ArrayAgg = None  # fallback path below
 
 class TimerStartView(MachiningProtectedView):
     def post(self, request):
@@ -853,171 +858,183 @@ class JobHoursReportView(APIView):
 
         return Response({"query": q, "job_nos": job_nos, "results": results}, status=200)
     
+    
+class JobCostListView(APIView):
+    """
+    GET /costs/jobs/totals/?job_like=283&startswith=true&min_total=0&ordering=-total_cost
+    Returns 1 row per job_no with hours + cost breakdown (+ masking by role).
+    """
+    permission_classes = [permissions.IsAuthenticated]
 
-class JobCostSnapshotView(APIView):
+    def get(self, request):
+        job_no   = (request.query_params.get("job_no") or "").strip()
+        ordering   = (request.query_params.get("ordering") or "-total_cost").strip()
+
+        qs = JobCostAgg.objects.all()
+        if job_no:
+            field = "job_no_cached__icontains"
+            qs = qs.filter(**{field: job_no})
+
+        agg = (
+            qs.values("job_no_cached")
+              .annotate(
+                  hours_ww=Sum("hours_ww"),
+                  hours_ah=Sum("hours_ah"),
+                  hours_su=Sum("hours_su"),
+                  cost_ww=Sum("cost_ww"),
+                  cost_ah=Sum("cost_ah"),
+                  cost_su=Sum("cost_su"),
+                  total_cost=Sum("total_cost"),
+                  updated_at=Max("updated_at"),
+              )
+        )
+
+        allowed = {
+            "job_no": "job_no_cached", "-job_no": "-job_no_cached",
+            "total_cost": "total_cost", "-total_cost": "-total_cost",
+            "updated_at": "updated_at", "-updated_at": "-updated_at",
+        }
+        agg = agg.order_by(allowed.get(ordering, "-total_cost"))
+
+        results = []
+        for row in agg:
+            item = {
+                "job_no": row["job_no_cached"],
+                "hours": {
+                    "weekday_work": float(row["hours_ww"] or 0),
+                    "after_hours":  float(row["hours_ah"] or 0),
+                    "sunday":       float(row["hours_su"] or 0),
+                },
+                "updated_at": row["updated_at"],
+            }
+
+            item["costs"] = {
+                "weekday_work": float(row["cost_ww"] or 0),
+                "after_hours":  float(row["cost_ah"] or 0),
+                "sunday":       float(row["cost_su"] or 0),
+            }
+            item["total_cost"] = float(row["total_cost"] or 0)
+            item["currency"] = "EUR"
+
+
+            results.append(item)
+
+        return Response({"count": len(results), "results": results}, status=200)
+    
+class JobCostDetailView(APIView):
+    """
+    GET /costs/jobs/users/<job_no>/
+    GET /costs/jobs/users/?job_like=283
+
+    Returns ONLY per-user rows (aggregated across matched jobs).
+    - management/superusers/staff: hours + full costs per user + issue_keys
+    - manufacturing/planning: hours only + issue_keys (no money)
+    - others: 403
+    """
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, job_no: str | None = None):
+        # ----- access control -----
+        if not can_view_all_users_hours(request.user):
+            return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+
+        # ----- query params -----
         job_like = (request.query_params.get("job_like") or "").strip()
-        breakdown = (request.query_params.get("breakdown") or "").strip()  # supports "job_no"
+        ordering = (request.query_params.get("ordering") or "-total_cost").strip()
 
         # ----- filters (exact job or partial) -----
         agg_filter = {}
         if job_like:
-            agg_filter["job_no_cached__icontains"] = job_like   # switch to __istartswith if preferred
+            agg_filter["job_no_cached__icontains"] = job_like  # swap to __istartswith if preferred
         elif job_no:
             agg_filter["job_no_cached"] = job_no
         else:
             return Response({"detail": "Provide job_no path param or ?job_like=..."}, status=400)
 
-        # ----- header totals across all matched tasks -----
-        task_aggs = JobCostAgg.objects.filter(**agg_filter)
-        if not task_aggs.exists():
-            return Response({"detail": "not found"}, status=404)
-
-        totals = task_aggs.aggregate(
-            hours_ww=Sum("hours_ww"), hours_ah=Sum("hours_ah"), hours_su=Sum("hours_su"),
-            cost_ww=Sum("cost_ww"),   cost_ah=Sum("cost_ah"),   cost_su=Sum("cost_su"),
+        # ----- base per-user aggregation across matched jobs -----
+        annotations = dict(
+            hours_ww=Sum("hours_ww"),
+            hours_ah=Sum("hours_ah"),
+            hours_su=Sum("hours_su"),
+            cost_ww=Sum("cost_ww"),
+            cost_ah=Sum("cost_ah"),
+            cost_su=Sum("cost_su"),
             total_cost=Sum("total_cost"),
             updated_at=Max("updated_at"),
         )
 
-        # ----- users merged across all matched jobs -----
+        # If Postgres, annotate distinct TI keys per user in SQL
+        if ArrayAgg is not None:
+            annotations["issue_keys"] = ArrayAgg("task__key", distinct=True)
+
         users_qs = (
             JobCostAggUser.objects
             .filter(**agg_filter)
             .select_related("user")
             .values("user_id", "user__username", "currency")
-            .annotate(
-                hours_ww=Sum("hours_ww"), hours_ah=Sum("hours_ah"), hours_su=Sum("hours_su"),
-                cost_ww=Sum("cost_ww"),   cost_ah=Sum("cost_ah"),   cost_su=Sum("cost_su"),
-                total_cost=Sum("total_cost"),
-                updated_at=Max("updated_at"),
-            )
+            .annotate(**annotations)
         )
 
-        # ----- visibility rules -----
-        show_all_money = can_view_all_money(request.user)
-        show_header_totals_only = can_view_header_totals_only(request.user)
-        show_all_users_hours = can_view_all_users_hours(request.user)
+        # Safe ordering options
+        allowed_ordering = {
+            "user": "user__username", "-user": "-user__username",
+            "total_cost": "total_cost", "-total_cost": "-total_cost",
+            "hours": "hours_ww", "-hours": "-hours_ww",  # proxy by weekday_work hours
+            "updated_at": "updated_at", "-updated_at": "-updated_at",
+        }
+        users_qs = users_qs.order_by(allowed_ordering.get(ordering, "-total_cost"))
 
-        if not show_all_users_hours:
-            # Everyone else: only see their own row
-            users_qs = users_qs.filter(user_id=request.user.id)
+        # ----- DB-agnostic fallback to collect issue_keys if ArrayAgg is missing -----
+        keys_map = {}
+        if ArrayAgg is None:
+            for uid, key in (
+                JobCostAggUser.objects
+                .filter(**agg_filter)
+                .values_list("user_id", "task__key")
+                .distinct()
+            ):
+                if not key:
+                    continue
+                keys_map.setdefault(uid, set()).add(key)
 
-        # ----- build users payload with masking -----
-        users = []
-        for u in users_qs.order_by(F("total_cost").desc(nulls_last=True), "user__username"):
-            hours = {
-                "weekday_work": float(u["hours_ww"] or 0),
-                "after_hours":  float(u["hours_ah"] or 0),
-                "sunday":       float(u["hours_su"] or 0),
+        # ----- mask money by role -----
+        show_full = can_view_all_money(request.user)
+        show_hours_only = can_view_header_totals_only(request.user)
+
+        results = []
+        for u in users_qs:
+            # issue_keys from SQL (ArrayAgg) or fallback map
+            if ArrayAgg is not None:
+                raw_keys = u.get("issue_keys") or []
+            else:
+                raw_keys = sorted(keys_map.get(u["user_id"], set()))
+            issue_keys = sorted([k for k in raw_keys if k])
+            item = {
+                "user_id": u["user_id"],
+                "user": u["user__username"],
+                "issue_keys": issue_keys,
+                "issue_count": len(issue_keys),
+                "hours": {
+                    "weekday_work": float(u["hours_ww"] or 0),
+                    "after_hours":  float(u["hours_ah"] or 0),
+                    "sunday":       float(u["hours_su"] or 0),
+                },
+                "updated_at": u["updated_at"],
             }
 
-            if show_all_money:
-                costs = {
+            if show_full:
+                item["currency"] = u["currency"]
+                item["costs"] = {
                     "weekday_work": float(u["cost_ww"] or 0),
                     "after_hours":  float(u["cost_ah"] or 0),
                     "sunday":       float(u["cost_su"] or 0),
                 }
-                total_cost = float(u["total_cost"] or 0)
-                currency = u["currency"]
-            else:
-                # No per-user money for everyone except managers/superusers
-                costs = {"weekday_work": None, "after_hours": None, "sunday": None}
-                total_cost = None
-                currency = None
+                item["total_cost"] = float(u["total_cost"] or 0)
+            elif show_hours_only:
+                item["currency"] = None
+                item["costs"] = {"weekday_work": None, "after_hours": None, "sunday": None}
+                item["total_cost"] = None
 
-            users.append({
-                "user_id": u["user_id"],
-                "user": u["user__username"],
-                "currency": currency,
-                "hours": hours,
-                "costs": costs,
-                "total_cost": total_cost,
-                "updated_at": u["updated_at"],
-            })
+            results.append(item)
 
-        # ----- header masking -----
-        header_hours = {
-            "weekday_work": float(totals["hours_ww"] or 0),
-            "after_hours":  float(totals["hours_ah"] or 0),
-            "sunday":       float(totals["hours_su"] or 0),
-        }
-
-        if show_all_money:
-            header_costs = {
-                "weekday_work": float(totals["cost_ww"] or 0),
-                "after_hours":  float(totals["cost_ah"] or 0),
-                "sunday":       float(totals["cost_su"] or 0),
-            }
-            header_total = float(totals["total_cost"] or 0)
-            header_currency = "EUR"
-        elif show_header_totals_only:
-            # Manufacturing/Planning: expose only the grand total; hide per-category
-            header_costs = {"weekday_work": None, "after_hours": None, "sunday": None}
-            header_total = float(totals["total_cost"] or 0)
-            header_currency = "EUR"
-        else:
-            # Everyone else: hide all money
-            header_costs = {"weekday_work": None, "after_hours": None, "sunday": None}
-            header_total = None
-            header_currency = None
-
-        resp = {
-            "query": {"job_no": job_no, "job_like": job_like or None},
-            "currency": header_currency,
-            "hours": header_hours,
-            "costs": header_costs,
-            "total_cost": header_total,
-            "updated_at": totals["updated_at"],
-            "users": users,
-        }
-
-        # ----- optional per-job breakdown -----
-        if breakdown == "job_no":
-            per_job = (
-                JobCostAgg.objects.filter(**agg_filter)
-                .values("job_no_cached")
-                .annotate(
-                    hours_ww=Sum("hours_ww"), hours_ah=Sum("hours_ah"), hours_su=Sum("hours_su"),
-                    cost_ww=Sum("cost_ww"),   cost_ah=Sum("cost_ah"),   cost_su=Sum("cost_su"),
-                    total_cost=Sum("total_cost"),
-                    updated_at=Max("updated_at"),
-                )
-                .order_by("job_no_cached")
-            )
-
-            by_job = []
-            for row in per_job:
-                item = {
-                    "job_no": row["job_no_cached"],
-                    "hours": {
-                        "weekday_work": float(row["hours_ww"] or 0),
-                        "after_hours":  float(row["hours_ah"] or 0),
-                        "sunday":       float(row["hours_su"] or 0),
-                    },
-                    "updated_at": row["updated_at"],
-                }
-
-                if show_all_money:
-                    item["costs"] = {
-                        "weekday_work": float(row["cost_ww"] or 0),
-                        "after_hours":  float(row["cost_ah"] or 0),
-                        "sunday":       float(row["cost_su"] or 0),
-                    }
-                    item["total_cost"] = float(row["total_cost"] or 0)
-                elif show_header_totals_only:
-                    # Manufacturing/Planning: per-job total only
-                    item["costs"] = {"weekday_work": None, "after_hours": None, "sunday": None}
-                    item["total_cost"] = float(row["total_cost"] or 0)
-                else:
-                    # Others: no money
-                    item["costs"] = {"weekday_work": None, "after_hours": None, "sunday": None}
-                    item["total_cost"] = None
-
-                by_job.append(item)
-
-            resp["by_job"] = by_job
-
-        return Response(resp, status=200)
+        return Response({"count": len(results), "results": results}, status=200)
