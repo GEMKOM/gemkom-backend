@@ -1,6 +1,7 @@
 import time
 from rest_framework.response import Response
-from django.db.models import Q, F, Sum, Max, Count, Value, DecimalField, Min
+
+from django.db.models import Sum, Max, F, OuterRef, Exists, Q, Case, When, Value, CharField
 from django.db.models import F, FloatField, ExpressionWrapper
 from django.db.models.functions import Coalesce
 from machines.models import Machine
@@ -926,9 +927,9 @@ class JobCostDetailView(APIView):
     GET /costs/jobs/users/<job_no>/
     GET /costs/jobs/users/?job_like=283
 
-    Returns ONLY per-user rows (aggregated across matched jobs).
-    - management/superusers/staff: hours + full costs per user + issue_keys
-    - manufacturing/planning: hours only + issue_keys (no money)
+    Returns ONLY per-user rows (aggregated across matched jobs) + per-user issue list with status.
+    - management/superusers/staff: hours + full costs per user + issues[{key,status}]
+    - manufacturing/planning: hours only + issues[{key,status}] (no money)
     - others: 403
     """
     permission_classes = [permissions.IsAuthenticated]
@@ -945,34 +946,28 @@ class JobCostDetailView(APIView):
         # ----- filters (exact job or partial) -----
         agg_filter = {}
         if job_like:
-            agg_filter["job_no_cached__icontains"] = job_like  # swap to __istartswith if preferred
+            agg_filter["job_no_cached__icontains"] = job_like  # switch to __istartswith if preferred
         elif job_no:
             agg_filter["job_no_cached"] = job_no
         else:
             return Response({"detail": "Provide job_no path param or ?job_like=..."}, status=400)
 
         # ----- base per-user aggregation across matched jobs -----
-        annotations = dict(
-            hours_ww=Sum("hours_ww"),
-            hours_ah=Sum("hours_ah"),
-            hours_su=Sum("hours_su"),
-            cost_ww=Sum("cost_ww"),
-            cost_ah=Sum("cost_ah"),
-            cost_su=Sum("cost_su"),
-            total_cost=Sum("total_cost"),
-            updated_at=Max("updated_at"),
-        )
-
-        # If Postgres, annotate distinct TI keys per user in SQL
-        if ArrayAgg is not None:
-            annotations["issue_keys"] = ArrayAgg("task__key", distinct=True)
-
         users_qs = (
             JobCostAggUser.objects
             .filter(**agg_filter)
             .select_related("user")
             .values("user_id", "user__username", "currency")
-            .annotate(**annotations)
+            .annotate(
+                hours_ww=Sum("hours_ww"),
+                hours_ah=Sum("hours_ah"),
+                hours_su=Sum("hours_su"),
+                cost_ww=Sum("cost_ww"),
+                cost_ah=Sum("cost_ah"),
+                cost_su=Sum("cost_su"),
+                total_cost=Sum("total_cost"),
+                updated_at=Max("updated_at"),
+            )
         )
 
         # Safe ordering options
@@ -984,36 +979,66 @@ class JobCostDetailView(APIView):
         }
         users_qs = users_qs.order_by(allowed_ordering.get(ordering, "-total_cost"))
 
-        # ----- DB-agnostic fallback to collect issue_keys if ArrayAgg is missing -----
-        keys_map = {}
-        if ArrayAgg is None:
-            for uid, key in (
-                JobCostAggUser.objects
-                .filter(**agg_filter)
-                .values_list("user_id", "task__key")
-                .distinct()
-            ):
-                if not key:
-                    continue
-                keys_map.setdefault(uid, set()).add(key)
+        # ----- collect distinct (user_id -> {task_ids}) for issues shown in report -----
+        user_task_ids = defaultdict(set)
+        for uid, tid in (
+            JobCostAggUser.objects
+            .filter(**agg_filter)
+            .values_list("user_id", "task_id")
+            .distinct()
+        ):
+            if tid:
+                user_task_ids[uid].add(tid)
+
+        # Flatten all task ids into one set (single fetch)
+        all_task_ids = set()
+        for s in user_task_ids.values():
+            all_task_ids.update(s)
+
+        # If no tasks, we can short-circuit building issue lists
+        tasks_map = {}
+        if all_task_ids:
+            # ----- annotate tasks with "has_open_timer" and derive status -----
+            open_timer_qs = Timer.objects.filter(issue_key=OuterRef("pk"), finish_time__isnull=True)
+            tasks_with_status = (
+                Task.objects
+                .filter(pk__in=all_task_ids)
+                .annotate(
+                    has_open_timer=Exists(open_timer_qs),
+                    status=Case(
+                        When(completion_date__isnull=False, then=Value("completed")),
+                        When(has_open_timer=True, then=Value("in_progress")),
+                        default=Value("waiting"),
+                        output_field=CharField(),
+                    ),
+                )
+                .values("key", "status")
+            )
+            # Build a quick lookup: task_id -> {key, status}
+            tasks_map = {t["key"]: {"key": t["key"], "status": t["status"]} for t in tasks_with_status}
 
         # ----- mask money by role -----
         show_full = can_view_all_money(request.user)
         show_hours_only = can_view_header_totals_only(request.user)
 
+        # ----- assemble payload -----
         results = []
         for u in users_qs:
-            # issue_keys from SQL (ArrayAgg) or fallback map
-            if ArrayAgg is not None:
-                raw_keys = u.get("issue_keys") or []
-            else:
-                raw_keys = sorted(keys_map.get(u["user_id"], set()))
-            issue_keys = sorted([k for k in raw_keys if k])
+            uid = u["user_id"]
+
+            # Build issues list for this user (sorted by key)
+            issues_for_user = []
+            for tid in sorted(user_task_ids.get(uid, set())):
+                meta = tasks_map.get(tid)
+                if not meta or not meta["key"]:
+                    continue
+                issues_for_user.append({"key": meta["key"], "status": meta["status"]})
+
             item = {
-                "user_id": u["user_id"],
+                "user_id": uid,
                 "user": u["user__username"],
-                "issue_keys": issue_keys,
-                "issue_count": len(issue_keys),
+                "issues": issues_for_user,                 # <-- [{"key": "TI-00123", "status": "in_progress"}, ...]
+                "issue_count": len(issues_for_user),
                 "hours": {
                     "weekday_work": float(u["hours_ww"] or 0),
                     "after_hours":  float(u["hours_ah"] or 0),
