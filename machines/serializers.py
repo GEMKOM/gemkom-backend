@@ -13,6 +13,11 @@ class MachineSerializer(serializers.ModelSerializer):
         model = Machine
         fields = '__all__'  # Includes all fields, including JSON and label
 
+class MachineMinimalSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Machine
+        fields = ["id", "name", "code", "used_in"]
+
 class MachineGetSerializer(serializers.ModelSerializer):
     assigned_users = SimpleUserSerializer(many=True, read_only=True)
     assigned_user_ids = serializers.PrimaryKeyRelatedField(

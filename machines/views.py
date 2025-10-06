@@ -10,11 +10,10 @@ from django.utils import timezone
 import requests
 
 from machines.models import Machine, MachineCalendar, MachineFault
-from machines.serializers import MachineCalendarSerializer, MachineFaultSerializer, MachineGetSerializer, MachineListSerializer, MachineSerializer
+from machines.serializers import MachineCalendarSerializer, MachineFaultSerializer, MachineGetSerializer, MachineListSerializer, MachineMinimalSerializer, MachineSerializer
 from machining.models import Timer
 from users.permissions import IsAdmin, IsMachiningUserOrAdmin
-from django.db.models import Q, Count, Sum, DecimalField, Value
-from django.db.models.functions import Coalesce
+from django.db.models import Q
 
 from config.pagination import CustomPageNumberPagination
 
@@ -29,8 +28,8 @@ class MachineListCreateView(generics.ListCreateAPIView):
     serializer_class = MachineListSerializer
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     filterset_class = MachineFilter
-    filterset_fields = ["used_in", "is_active", "machine_type", "assigned_users"]  # <- filter by user id
-    search_fields = ["name", "code"]  # <- search by code too
+    filterset_fields = ["used_in", "is_active", "machine_type", "assigned_users"]
+    search_fields = ["name", "code"]
     ordering_fields = ["id", "name", "machine_type", "code"]
     ordering = ['id']
 
@@ -38,13 +37,31 @@ class MachineListCreateView(generics.ListCreateAPIView):
         if self.request.method == 'POST':
             return [permissions.IsAuthenticated(), IsAdmin()]
         return [permissions.IsAuthenticated()]
-    
+
+    def get_serializer_class(self):
+        if self.request.query_params.get("compact") == "true":
+            return MachineMinimalSerializer
+        return MachineListSerializer
+
     def get_queryset(self):
+        # Compact path: super lightweight list (no annotations), is_active=True
+        if self.request.query_params.get("compact") == "true":
+            qs = (Machine.objects
+                  .filter(is_active=True)
+                  .only("id", "name", "code", "used_in")
+                  .order_by("name"))
+            # filters/search/order still work because fields exist on the model
+            return qs
+
+        # Full path: keep your current annotated queryset
+        from django.db.models import DecimalField, Q, Value
+        from django.db.models.functions import Coalesce
+        from django.db.models import Count, Sum
+
         dec_field = DecimalField(max_digits=12, decimal_places=2)
         not_completed = Q(machine_tasks__completion_date__isnull=True)
 
         qs = Machine.objects.all()
-
         return (
             qs.annotate(
                 tasks_count=Count('machine_tasks', filter=not_completed),
