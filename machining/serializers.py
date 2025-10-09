@@ -217,47 +217,94 @@ class TaskPlanBulkListSerializer(serializers.ListSerializer):
     def update(self, instances, validated_data):
         inst_by_key = {obj.key: obj for obj in instances}
 
-        to_update = []
-        changed_fields = set()
+        # Build an "intent" map so we know the final target of each item
+        intent = {}  # key -> dict of final values we will apply in phase 2
+        to_remove = []  # tasks to remove from plan outright (phase 2 only)
 
-        def set_if_changed(obj, field, value):
-            # Normalize FK input (instance or pk or None)
-            if field == "machine_fk":
-                new_id = getattr(value, "id", value)
-                if obj.machine_fk_id != new_id:
-                    obj.machine_fk_id = new_id
-                    changed_fields.add("machine_fk")
-                return
-            if getattr(obj, field) != value:
-                setattr(obj, field, value)
-                changed_fields.add(field)
+        def _get_machine_id(val, cur):
+            if val is None:
+                return cur.machine_fk_id
+            return getattr(val, "id", val)
 
         for row in validated_data:
             obj = inst_by_key[row['key']]
-
-            # REMOVE from plan
+            # If explicit remove from plan
             if row.get('in_plan') is False:
-                set_if_changed(obj, 'in_plan', False)
-                set_if_changed(obj, 'machine_fk', None)
-                set_if_changed(obj, 'planned_start_ms', None)
-                set_if_changed(obj, 'planned_end_ms', None)
-                set_if_changed(obj, 'plan_order', None)
-                set_if_changed(obj, 'plan_locked', False)
-                to_update.append(obj)
+                to_remove.append(obj.key)
                 continue
 
-            # ADD/UPDATE in plan (partial)
-            for f in ['machine_fk','planned_start_ms','planned_end_ms','plan_order','plan_locked','in_plan','name']:
-                if f in row:
-                    set_if_changed(obj, f, row[f])
+            final = {
+                "in_plan": row.get('in_plan', obj.in_plan),
+                "machine_fk_id": _get_machine_id(row.get('machine_fk'), obj),
+                "planned_start_ms": row.get('planned_start_ms', obj.planned_start_ms),
+                "planned_end_ms": row.get('planned_end_ms', obj.planned_end_ms),
+                "plan_order": row.get('plan_order', obj.plan_order),
+                "plan_locked": row.get('plan_locked', obj.plan_locked),
+                "name": row.get('name', obj.name),
+            }
+            intent[obj.key] = final
 
-            to_update.append(obj)
+        # -----------------------------
+        # PHASE 1: neutralize conflicts
+        # -----------------------------
+        # Any task that will occupy a (machine, plan_order) slot should have its current
+        # plan_order cleared first, so we don't hit the unique constraint when swapping.
+        phase1 = []
+        for key, final in intent.items():
+            obj = inst_by_key[key]
 
-        if to_update and changed_fields:
-            Task.objects.bulk_update(to_update, list(changed_fields))
+            # Only neutralize tasks that will be "in plan" with a concrete order
+            if final["in_plan"] and final["plan_order"] is not None:
+                # If it already has an order (even the same), clear it first
+                if obj.plan_order is not None:
+                    obj.plan_order = None
+                    phase1.append(obj)
 
-        return to_update
+        # Also neutralize tasks that are being removed from plan? Not necessary for uniqueness,
+        # but harmless; we can do it directly in phase 2.
 
+        if phase1:
+            Task.objects.bulk_update(phase1, ["plan_order"])
+
+        # -----------------------------
+        # PHASE 2: apply final states
+        # -----------------------------
+        phase2 = []
+        fields2 = set()
+
+        def set_if_changed(obj, field, value):
+            if getattr(obj, field) != value:
+                setattr(obj, field, value)
+                fields2.add(field)
+
+        # 2a) removals from plan
+        for key in to_remove:
+            obj = inst_by_key[key]
+            set_if_changed(obj, 'in_plan', False)
+            set_if_changed(obj, 'machine_fk_id', None)
+            set_if_changed(obj, 'planned_start_ms', None)
+            set_if_changed(obj, 'planned_end_ms', None)
+            set_if_changed(obj, 'plan_order', None)
+            set_if_changed(obj, 'plan_locked', False)
+            phase2.append(obj)
+
+        # 2b) intended finals
+        for key, final in intent.items():
+            obj = inst_by_key[key]
+            # apply final fields
+            set_if_changed(obj, 'in_plan', final['in_plan'])
+            set_if_changed(obj, 'machine_fk_id', final['machine_fk_id'])
+            set_if_changed(obj, 'planned_start_ms', final['planned_start_ms'])
+            set_if_changed(obj, 'planned_end_ms', final['planned_end_ms'])
+            set_if_changed(obj, 'plan_order', final['plan_order'])
+            set_if_changed(obj, 'plan_locked', final['plan_locked'])
+            set_if_changed(obj, 'name', final['name'])
+            phase2.append(obj)
+
+        if phase2 and fields2:
+            Task.objects.bulk_update(phase2, list(fields2))
+
+        return list(inst_by_key.values())
 
 class TaskPlanUpdateItemSerializer(serializers.ModelSerializer):
     key = serializers.CharField()

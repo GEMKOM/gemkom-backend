@@ -543,6 +543,12 @@ class PlanningBulkSaveView(APIView):
                 "conflicts": db_conflicts},
                 status=400
             )
+        
+        instances_in_order = [inst_map[k] for k in keys]
+        bulk_updater = TaskPlanBulkListSerializer(child=TaskPlanUpdateItemSerializer())
+        updated_objs = bulk_updater.update(instances_in_order, rows)
+
+        return Response({"updated": PlanningListItemSerializer(updated_objs, many=True).data}, status=200)
     
 
 # views.py

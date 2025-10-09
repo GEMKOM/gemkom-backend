@@ -182,7 +182,6 @@ class MachineFaultListCreateView(generics.ListCreateAPIView):
             f"👤 *Talep Eden:* {talep_eden}\n"
             f"🖥 *Makine:* {machine_name}\n"
             f"📄 *Açıklama:* {description}\n"
-            f"📅 *Tarih:* {reported_at}\n"
         )
 
         url = f"https://api.telegram.org/bot{TELEGRAM_MAINTENANCE_BOT_TOKEN}/sendMessage"
@@ -262,9 +261,8 @@ class MachineFaultDetailView(APIView):
         message = (
             "✅ *Bakım Talebi Çözüldü*\n"
             f"👤 *Çözen:* {resolved_by}\n"
-            f"🖥 *Makine/Asset:* {machine_name}\n"
+            f"🖥 *Makine:* {machine_name}\n"
             f"📄 *Açıklama:* {description}\n"
-            f"📅 *Çözüm Tarihi:* {resolved_at}\n"
         )
 
         url = f"https://api.telegram.org/bot{TELEGRAM_MAINTENANCE_BOT_TOKEN}/sendMessage"
