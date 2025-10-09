@@ -1,7 +1,7 @@
 from django.conf import settings
 from config.settings import TELEGRAM_MAINTENANCE_BOT_TOKEN
 from machines.calendar import DEFAULT_WEEK_TEMPLATE
-from machines.filters import MachineFilter
+from machines.filters import MachineFaultFilter, MachineFilter
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
@@ -129,10 +129,16 @@ class MachineFaultListCreateView(generics.ListCreateAPIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = MachineFaultSerializer
     pagination_class = CustomPageNumberPagination
+
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    filterset_class = MachineFaultFilter
+    # keep your original simple filters too (redundant but harmless with filterset_class)
     filterset_fields = ["machine", "reported_by"]
-    search_fields = ["description"]
-    ordering_fields = ["reported_at", "id"]
+
+    # Expanded search to cover fallback fields + machine name/code
+    search_fields = ["description", "asset_name", "location", "machine__name", "machine__code"]
+
+    ordering_fields = ["reported_at", "id", "resolved_at", "is_breaking", "is_maintenance"]
     ordering = ["-reported_at"]
 
     def get_queryset(self):
@@ -144,50 +150,56 @@ class MachineFaultListCreateView(generics.ListCreateAPIView):
         if not getattr(user, "is_admin", False) and getattr(profile, "team", "") != "maintenance":
             query &= Q(reported_by=user)
 
+        # Backwards-compat: still honor ?machine_id=... (also provided by filterset_class)
         machine_id = self.request.query_params.get("machine_id")
         if machine_id:
-            query &= Q(machine=machine_id)
+            query &= Q(machine_id=machine_id)
 
-        return (MachineFault.objects
-                .filter(query)
-                .select_related("machine", "reported_by"))
+        return (
+            MachineFault.objects
+            .filter(query)
+            .select_related("machine", "reported_by", "resolved_by", "assigned_to")
+        )
 
     def perform_create(self, serializer):
         fault = serializer.save(reported_by=self.request.user)
         self.send_telegram_notification(fault, self.request.user)
-    
 
-    def send_telegram_notification(self, fault, user):
-        CHAT_ID = "-4944950975"
+    # --- Notifications ---
+    def send_telegram_notification(self, fault: MachineFault, user):
+        if not TELEGRAM_MAINTENANCE_BOT_TOKEN:
+            return  # quietly skip if token not configured
+
+        CHAT_ID = "-4944950975"  # your group/chat
 
         reported_at = timezone.localtime(fault.reported_at).strftime("%d.%m.%Y %H:%M")
-        machine_name = fault.machine.name if fault.machine else "Bilinmiyor"
+        machine_name = fault.machine.name if fault.machine else (fault.asset_name or "Bilinmiyor")
         description = fault.description or "Yok"
         talep_eden = user.get_full_name() or user.username
-        message = f"""🛠 *Yeni Bakım Talebi*
-            👤 *Talep Eden:* {talep_eden}
-            🖥 *Makine:* {machine_name}  
-            📄 *Açıklama:* {description}  
-            📅 *Tarih:* {reported_at}
-        """
+
+        message = (
+            "🛠 *Yeni Bakım Talebi*\n"
+            f"👤 *Talep Eden:* {talep_eden}\n"
+            f"🖥 *Makine:* {machine_name}\n"
+            f"📄 *Açıklama:* {description}\n"
+            f"📅 *Tarih:* {reported_at}\n"
+        )
 
         url = f"https://api.telegram.org/bot{TELEGRAM_MAINTENANCE_BOT_TOKEN}/sendMessage"
-        payload = {
-            "chat_id": CHAT_ID,
-            "text": message,
-            "parse_mode": "Markdown"
-        }
-
+        payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"}
         try:
             requests.post(url, data=payload, timeout=5)
         except requests.RequestException as e:
             print("Telegram bildirim hatası:", e)
 
+
 class MachineFaultDetailView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated]
 
     def get_object(self, pk):
-        return get_object_or_404(MachineFault, pk=pk)
+        return get_object_or_404(
+            MachineFault.objects.select_related("machine", "reported_by", "resolved_by", "assigned_to"), pk=pk
+        )
 
     def get(self, request, pk):
         fault = self.get_object(pk)
@@ -195,59 +207,68 @@ class MachineFaultDetailView(APIView):
         return Response(serializer.data)
 
     def put(self, request, pk):
+        """
+        Your current semantics:
+        - If the fault is not resolved yet, a PUT marks it resolved (stamps resolved_by/at),
+          then stops active timers on that machine if it's a breaking fault.
+        - If already resolved, allow partial updates without touching resolution fields.
+        """
         fault = self.get_object(pk)
         serializer = MachineFaultSerializer(fault, data=request.data, partial=True)
 
-        if serializer.is_valid():
-            if not fault.resolved_at:
-                updated_fault = serializer.save(
-                    resolved_by=request.user,
-                    resolved_at=timezone.now()
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=400)
+
+        if not fault.resolved_at:
+            updated_fault = serializer.save(
+                resolved_by=request.user,
+                resolved_at=timezone.now()
+            )
+
+            # Stop active timers if it's a breaking fault and a concrete machine exists
+            if updated_fault.is_breaking and updated_fault.machine:
+                active_timers = Timer.objects.filter(
+                    machine_fk=updated_fault.machine,
+                    finish_time__isnull=True
                 )
+                now_ms = int(timezone.now().timestamp() * 1000)
+                for t in active_timers:
+                    t.finish_time = now_ms
+                    t.stopped_by = request.user
+                    t.save(update_fields=["finish_time", "stopped_by"])
+            self.send_resolution_notification(updated_fault, request.user)
+        else:
+            serializer.save()
 
-                # ✅ Stop active timers if it's a breaking fault
-                if updated_fault.is_breaking and updated_fault.machine:
-                    active_timers = Timer.objects.filter(machine_fk=updated_fault.machine, finish_time__isnull=True)
-                    for timer in active_timers:
-                        timer.finish_time = int(timezone.now().timestamp() * 1000)
-                        timer.stopped_by = request.user
-                        timer.save()
-
-                self.send_resolution_notification(updated_fault, request.user)
-            else:
-                serializer.save()
-
-            return Response(serializer.data)
-
-        return Response(serializer.errors, status=400)
+        return Response(serializer.data)
 
     def delete(self, request, pk):
         fault = self.get_object(pk)
         fault.delete()
         return Response(status=204)
-    
-    def send_resolution_notification(self, fault, user):
+
+    # --- Notifications ---
+    def send_resolution_notification(self, fault: MachineFault, user):
+        if not TELEGRAM_MAINTENANCE_BOT_TOKEN:
+            return  # quietly skip if token not configured
+
         CHAT_ID = "-4944950975"
 
         resolved_at = timezone.localtime(fault.resolved_at).strftime("%d.%m.%Y %H:%M")
-        machine_name = fault.machine.name if fault.machine else "Bilinmiyor"
+        machine_name = fault.machine.name if fault.machine else (fault.asset_name or "Bilinmiyor")
         description = fault.resolution_description or "Yok"
         resolved_by = user.get_full_name() or user.username
 
-        message = f"""✅ *Bakım Talebi Çözüldü*
-            👤 *Çözen:* {resolved_by}
-            🖥 *Makine:* {machine_name}
-            📄 *Açıklama:* {description}
-            📅 *Çözüm Tarihi:* {resolved_at}
-        """
+        message = (
+            "✅ *Bakım Talebi Çözüldü*\n"
+            f"👤 *Çözen:* {resolved_by}\n"
+            f"🖥 *Makine/Asset:* {machine_name}\n"
+            f"📄 *Açıklama:* {description}\n"
+            f"📅 *Çözüm Tarihi:* {resolved_at}\n"
+        )
 
         url = f"https://api.telegram.org/bot{TELEGRAM_MAINTENANCE_BOT_TOKEN}/sendMessage"
-        payload = {
-            "chat_id": CHAT_ID,
-            "text": message,
-            "parse_mode": "Markdown"
-        }
-
+        payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"}
         try:
             requests.post(url, data=payload, timeout=5)
         except requests.RequestException as e:

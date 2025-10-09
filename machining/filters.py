@@ -41,5 +41,6 @@ class TaskFilter(django_filters.FilterSet):
             'finish_time__lte',
             'machine_fk',
             'has_timer',
+            'in_plan',
         ]
 

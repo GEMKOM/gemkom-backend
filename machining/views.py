@@ -247,7 +247,7 @@ class TaskViewSet(ModelViewSet):
     permission_classes = [IsMachiningUserOrAdmin]
     filterset_class = TaskFilter
     pagination_class = CustomPageNumberPagination
-    ordering_fields = ['key', 'job_no', 'image_no', 'position_no', 'completion_date', 'created_at', 'total_hours_spent', 'estimated_hours', 'finish_time']  # Add any fields you want to allow
+    ordering_fields = ['key', 'job_no', 'image_no', 'position_no', 'completion_date', 'created_at', 'total_hours_spent', 'estimated_hours', 'finish_time', 'plan_order']  # Add any fields you want to allow
     ordering = ['-completion_date']  # Default ordering
 
     def get_queryset(self):
@@ -470,30 +470,79 @@ class PlanningBulkSaveView(APIView):
         bulk_validate.is_valid(raise_exception=True)  # only triggers list-level validate()
 
         # 3b) Optional: DB preflight for intended (machine_fk, plan_order) conflicts (friendlier 400)
-        intended = []
+        intended_map = {}  # key -> (mid, order, in_plan)
         for r in rows:
-            if r.get("in_plan", True):
-                key = r["key"]
-                mid = getattr(r.get("machine_fk"), "id", None)
-                if mid is None:
-                    mid = inst_map[key].machine_fk
-                order = r.get("plan_order", inst_map[key].plan_order)
-                if mid is not None and order is not None:
-                    intended.append((key, mid, order))
+            key = r["key"]
+            cur = inst_map[key]
+            in_plan = r.get("in_plan", cur.in_plan if hasattr(cur, "in_plan") else True)
 
-        conflicts = []
-        for key, mid, order in intended:
-            if Task.objects.filter(machine_fk_id=mid, plan_order=order, in_plan=True).exclude(key=key).exists():
-                conflicts.append({"key": key, "machine_fk": mid, "plan_order": order})
-        if conflicts:
-            return Response({"error": "plan_order conflicts with existing tasks", "conflicts": conflicts}, status=400)
+            # machine_fk may be instance or id or None
+            mid = r.get("machine_fk")
+            if hasattr(mid, "id"):
+                mid = mid.id
+            elif mid is None:
+                mid = getattr(cur.machine_fk, "id", None)
 
-        # 4) APPLY UPDATES/REMOVES using the validated rows (no re-validation)
-        instances_in_order = [inst_map[k] for k in keys]
-        bulk_updater = TaskPlanBulkListSerializer(child=TaskPlanUpdateItemSerializer())
-        updated_objs = bulk_updater.update(instances_in_order, rows)
+            order = r.get("plan_order", getattr(cur, "plan_order", None))
+            intended_map[key] = (mid, order, in_plan)
 
-        return Response({"updated": PlanningListItemSerializer(updated_objs, many=True).data}, status=200)
+        # (b1) Detect intra-payload duplicates (two items target same (mid, order))
+        payload_conflicts = []
+        seen = {}
+        for key, (mid, order, in_plan) in intended_map.items():
+            if in_plan and mid is not None and order is not None:
+                token = (mid, order)
+                if token in seen:
+                    payload_conflicts.append({
+                        "key": key,
+                        "machine_fk": mid,
+                        "plan_order": order,
+                        "conflicts_with": seen[token],
+                        "source": "payload"
+                    })
+                else:
+                    seen[token] = key
+
+        if payload_conflicts:
+            return Response(
+                {"error": "Duplicate plan_order within payload",
+                "conflicts": payload_conflicts},
+                status=400
+            )
+
+        # (b2) Check DB conflicts for the intended positions, but ignore keys in this batch
+        #     (because they will be updated together).
+        db_conflicts = []
+        batch_keys = set(keys)
+
+        # Gather all (mid, order) pairs we intend to occupy
+        targets = [(mid, order) for (mid, order, in_plan) in intended_map.values()
+                if in_plan and mid is not None and order is not None]
+
+        # Short-circuit if nothing to check
+        if targets:
+            # Efficient enough for typical plan sizes; build a combined OR query
+            from django.db.models import Q
+            q = Q(in_plan=True)
+            # OR over all target pairs
+            pair_q = Q()
+            for mid, order in targets:
+                pair_q |= (Q(machine_fk_id=mid) & Q(plan_order=order))
+            q &= pair_q
+
+            # Ignore any tasks that are part of this same bulk update
+            qs = Task.objects.filter(q).exclude(key__in=batch_keys)
+
+            # If anything remains, those are *real* conflicts
+            if qs.exists():
+                db_conflicts = list(qs.values("key", "machine_fk_id", "plan_order"))
+
+        if db_conflicts:
+            return Response(
+                {"error": "plan_order conflicts with existing tasks (outside this payload)",
+                "conflicts": db_conflicts},
+                status=400
+            )
     
 
 # views.py

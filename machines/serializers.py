@@ -98,15 +98,45 @@ class MachineListSerializer(serializers.ModelSerializer):
 
     
 class MachineFaultSerializer(serializers.ModelSerializer):
+    # Readable helpers
     machine_name = serializers.CharField(source='machine.name', read_only=True)
     reported_by_username = serializers.CharField(source='reported_by.username', read_only=True)
     resolved_by_username = serializers.CharField(source='resolved_by.username', read_only=True)
+    assigned_to_username = serializers.CharField(source='assigned_to.username', read_only=True)
+    is_resolved = serializers.SerializerMethodField()
+
+    def get_is_resolved(self, obj):
+        return bool(obj.resolved_at)
 
     class Meta:
         model = MachineFault
-        fields = ['id', 'machine', 'machine_name', 'description', 'reported_by', 'reported_by_username',
-                  'reported_at', 'resolved_at', 'is_breaking', 'is_maintenance', 'resolution_description', 'resolved_by', 'resolved_by_username']
-        read_only_fields = ['id', 'reported_by', 'reported_at']
+        fields = [
+            'id',
+            # machine can be empty; fallbacks below handle outliers
+            'machine', 'machine_name',
+            'asset_name', 'location',
+
+            'description',
+            'reported_by', 'reported_by_username', 'reported_at',
+
+            'is_breaking', 'is_maintenance',
+
+            'assigned_to', 'assigned_to_username',
+
+            'resolved_at', 'resolved_by', 'resolved_by_username',
+            'resolution_description',
+
+            'is_resolved',
+        ]
+        read_only_fields = ['id', 'reported_by', 'reported_at', 'is_resolved']
+
+    def validate(self, attrs):
+        # If no machine, require at least an asset_name to avoid totally anonymous faults
+        machine = attrs.get('machine', getattr(self.instance, 'machine', None) if self.instance else None)
+        asset_name = attrs.get('asset_name', getattr(self.instance, 'asset_name', '') if self.instance else '')
+        if not machine and not (asset_name or '').strip():
+            raise serializers.ValidationError("Provide 'asset_name' when 'machine' is not selected.")
+        return super().validate(attrs)
 
 # machining/serializers_calendar.py
 

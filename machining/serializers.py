@@ -64,7 +64,7 @@ class TaskSerializer(serializers.ModelSerializer):
         fields = [
             'key', 'name', 'job_no', 'image_no', 'position_no', 'quantity',
             'completion_date', 'completed_by', 'completed_by_username', 'estimated_hours', 'total_hours_spent', 'machine_fk', 'finish_time', 'machine_name',
-            'planned_start_ms', 'planned_end_ms', 'plan_order', 'plan_locked'
+            'in_plan', 'planned_start_ms', 'planned_end_ms', 'plan_order'
         ]
         read_only_fields = ['completed_by', 'completion_date']
 

@@ -53,6 +53,17 @@ class Task(models.Model):
             models.Index(fields=['machine_fk', 'plan_order']),
             models.Index(fields=['machine_fk', 'planned_start_ms']),
         ]
+
+    def save(self, *args, **kwargs):
+        if self.completion_date is not None:
+            # Completed tasks must not occupy plan slots
+            self.in_plan = False
+            self.plan_order = None
+            # Optionally clear other planning fields:
+            # self.planned_start_ms = None
+            # self.planned_end_ms = None
+            # self.plan_locked = False
+        super().save(*args, **kwargs)
     
 
 class Timer(models.Model):
