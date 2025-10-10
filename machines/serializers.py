@@ -51,11 +51,11 @@ class MachineGetSerializer(serializers.ModelSerializer):
         ).exists()
 
     def get_has_active_timer(self, obj):
-        from machining.models import Timer
+        from tasks.models import Timer
         return Timer.objects.filter(machine_fk=obj, finish_time__isnull=True).exists()
 
     def get_active_timer_ids(self, obj):
-        from machining.models import Timer
+        from tasks.models import Timer
         return list(Timer.objects.filter(machine_fk=obj, finish_time__isnull=True).values_list('id', flat=True))
 
 class MachineListSerializer(serializers.ModelSerializer):
@@ -93,7 +93,7 @@ class MachineListSerializer(serializers.ModelSerializer):
         ).exists()
 
     def get_has_active_timer(self, obj):
-        from machining.models import Timer
+        from tasks.models import Timer
         return Timer.objects.filter(machine_fk=obj, finish_time__isnull=True).exists()
 
     

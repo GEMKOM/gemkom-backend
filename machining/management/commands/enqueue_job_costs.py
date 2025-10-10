@@ -6,7 +6,8 @@ from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.utils.timezone import make_aware, get_default_timezone
 
-from machining.models import Timer, JobCostRecalcQueue
+from tasks.models import Timer
+from machining.models import JobCostRecalcQueue
 from machining.services.costing import recompute_task_cost_snapshot
 
 
@@ -44,7 +45,10 @@ class Command(BaseCommand):
         batch = int(opts.get("batch") or 500)
         do_recompute = bool(opts.get("recompute"))
 
-        qs = Timer.objects.filter(issue_key_id__isnull=False)
+        # The new Timer model uses a GenericForeignKey.
+        # We query on `object_id` instead of the old `issue_key_id`.
+        # We also need to ensure we are only looking at timers for machining Tasks.
+        qs = Timer.objects.filter(object_id__isnull=False, content_type__app_label='machining', content_type__model='task')
 
         # Convert date boundaries to epoch-ms (local)
         if since:
@@ -55,9 +59,9 @@ class Command(BaseCommand):
             qs = qs.filter(start_time__lte=end_ms)
 
         task_ids = (
-            qs.values_list("issue_key_id", flat=True)
+            qs.values_list("object_id", flat=True)
               .distinct()
-              .order_by("issue_key_id")
+              .order_by("object_id")
         )
         if limit:
             task_ids = task_ids[:limit]

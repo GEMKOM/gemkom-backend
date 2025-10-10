@@ -11,7 +11,7 @@ import requests
 
 from machines.models import Machine, MachineCalendar, MachineFault
 from machines.serializers import MachineCalendarSerializer, MachineFaultSerializer, MachineGetSerializer, MachineListSerializer, MachineMinimalSerializer, MachineSerializer
-from machining.models import Timer
+from tasks.models import Timer
 from users.permissions import IsAdmin, IsMachiningUserOrAdmin
 from django.db.models import Q
 
@@ -58,15 +58,15 @@ class MachineListCreateView(generics.ListCreateAPIView):
         from django.db.models.functions import Coalesce
         from django.db.models import Count, Sum
 
-        dec_field = DecimalField(max_digits=12, decimal_places=2)
-        not_completed = Q(machine_tasks__completion_date__isnull=True)
+        dec_field = DecimalField(max_digits=12, decimal_places=2)        
+        not_completed = Q(machining_task_related__completion_date__isnull=True)
 
         qs = Machine.objects.all()
         return (
             qs.annotate(
-                tasks_count=Count('machine_tasks', filter=not_completed),
+                tasks_count=Count('machining_task_related', filter=not_completed),
                 total_estimated_hours=Sum(
-                    Coalesce('machine_tasks__estimated_hours', Value(0, output_field=dec_field)),
+                    Coalesce('machining_task_related__estimated_hours', Value(0, output_field=dec_field)),
                     filter=not_completed,
                     output_field=dec_field,
                 ),

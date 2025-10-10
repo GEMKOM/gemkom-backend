@@ -3,7 +3,7 @@ from django.db.models import Q
 
 from machines.calendar import DEFAULT_WEEK_TEMPLATE, _get_calendar
 from machines.models import Machine
-from ..models import Timer, Task
+from tasks.models import Timer
 from datetime import datetime, timedelta, time as dtime
 from django.utils import timezone
 

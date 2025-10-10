@@ -2,12 +2,15 @@ from rest_framework import serializers
 
 from machines.calendar import validate_plan_interval
 from machines.models import Machine
-from .models import Task, TaskKeyCounter, Timer
+from .models import Task
+from tasks.models import Timer, TaskKeyCounter
 from django.db import transaction
 from django.utils import timezone
 from datetime import timedelta
+from django.contrib.contenttypes.models import ContentType
 
 class TimerSerializer(serializers.ModelSerializer):
+    # --- Fields for creating/updating a Timer ---
     username = serializers.CharField(source='user.username', read_only=True)
     stopped_by_first_name = serializers.CharField(source='stopped_by.first_name', read_only=True)
     stopped_by_last_name = serializers.CharField(source='stopped_by.last_name', read_only=True)
@@ -21,6 +24,11 @@ class TimerSerializer(serializers.ModelSerializer):
     duration = serializers.FloatField(read_only=True)
     estimated_hours = serializers.DecimalField(source='issue_key.estimated_hours', read_only=True, max_digits=10, decimal_places=2)
 
+    # --- Fields for creating/updating a Timer with a Generic Foreign Key ---
+    # We accept 'task_key' and 'task_type' from the frontend for convenience.
+    task_key = serializers.CharField(write_only=True, source='object_id')
+    task_type = serializers.ChoiceField(write_only=True, choices=['machining', 'cnc_cutting'])
+
     class Meta:
         model = Timer
         fields = [
@@ -28,6 +36,7 @@ class TimerSerializer(serializers.ModelSerializer):
             'user',
             'username',
             'issue_key',
+            'task_key', 'task_type', # Write-only fields
             'start_time',
             'finish_time',
             'comment',
@@ -46,11 +55,30 @@ class TimerSerializer(serializers.ModelSerializer):
             'duration',
             'estimated_hours',
         ]
-        read_only_fields = ['id', 'user']
+        read_only_fields = ['id', 'user', 'issue_key']
 
     def create(self, validated_data):
         validated_data['user'] = self.context['request'].user
+        
+        # --- Handle Generic Foreign Key ---
+        task_type_name = validated_data.pop('task_type')
+        app_label = 'machining' if task_type_name == 'machining' else 'cnc_cutting'
+        model_name = 'task' if task_type_name == 'machining' else 'cnctask'
+        
+        try:
+            # This is the correct way to get the ContentType for the GFK
+            content_type = ContentType.objects.get(app_label=app_label, model=model_name)
+            validated_data['content_type'] = content_type
+        except ContentType.DoesNotExist:
+            raise serializers.ValidationError(f"Invalid task_type: {task_type_name}")
+
         return super().create(validated_data)
+
+    def to_representation(self, instance):
+        # When reading, 'issue_key' is the GFK object. We need its primary key.
+        ret = super().to_representation(instance)
+        ret['issue_key'] = instance.object_id
+        return ret
     
 class TaskSerializer(serializers.ModelSerializer):
     key = serializers.CharField(required=False)
@@ -69,13 +97,16 @@ class TaskSerializer(serializers.ModelSerializer):
         read_only_fields = ['completed_by', 'completion_date']
 
     def get_total_hours_spent(self, obj):
-        timers = obj.timers.exclude(finish_time__isnull=True)
+        # Use the reverse generic relation. Django automatically provides this.
+        # The related_name on the GFK is 'issue_key'.
+        timers = obj.issue_key.exclude(finish_time__isnull=True)
         total_millis = sum((t.finish_time - t.start_time) for t in timers)
         return round(total_millis / (1000 * 60 * 60), 2)  # Convert ms to hours
     
     def create(self, validated_data):
         if 'key' not in validated_data or not validated_data['key']:
             with transaction.atomic():
+                # Use the generic TaskKeyCounter from the 'tasks' app
                 counter = TaskKeyCounter.objects.select_for_update().get(prefix="TI")
                 next_key_number = counter.current + 1
                 counter.current = next_key_number
@@ -117,7 +148,8 @@ class PlanningListItemSerializer(serializers.ModelSerializer):
 
     # Sum finished timers (epoch-ms → hours)
     def _sum_timer_hours(self, obj: Task) -> float:
-        qs = Timer.objects.filter(issue_key=obj).exclude(finish_time__isnull=True).only('start_time', 'finish_time')
+        # Use the reverse generic relation
+        qs = obj.issue_key.exclude(finish_time__isnull=True).only('start_time', 'finish_time')
         total_ms = 0
         for t in qs:
             if t.start_time is None:
@@ -152,7 +184,8 @@ class ProductionPlanSerializer(serializers.ModelSerializer):
 
     # Sum finished timers (epoch-ms → hours)
     def _sum_timer_hours(self, obj: Task) -> float:
-        qs = Timer.objects.filter(issue_key=obj).exclude(finish_time__isnull=True).only('start_time', 'finish_time')
+        # Use the reverse generic relation
+        qs = obj.issue_key.exclude(finish_time__isnull=True).only('start_time', 'finish_time')
         total_ms = 0
         for t in qs:
             if t.start_time is None:
@@ -355,4 +388,3 @@ class MachineTimelineSegmentSerializer(serializers.Serializer):
     task_name = serializers.CharField(allow_null=True)
     is_hold   = serializers.BooleanField()
     category  = serializers.CharField()  # "work" | "hold" | "idle"
-

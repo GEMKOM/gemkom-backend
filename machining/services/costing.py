@@ -12,7 +12,7 @@ from users.models import WageRate
 from machining.models import JobCostAgg, JobCostAggUser
 from machining.services.timers import split_timer_by_local_day_and_bucket
 from machining.fx_utils import build_fx_lookup
-from machining.models import Task, Timer  # adjust if Timer lives elsewhere
+from tasks.models import Timer  # adjust if Timer lives elsewhere
 
 
 WAGE_MONTH_HOURS = 225

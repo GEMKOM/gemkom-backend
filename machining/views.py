@@ -7,9 +7,10 @@ from django.db.models.functions import Coalesce
 from machines.models import Machine
 from machining.filters import TaskFilter
 from machining.permissions import MachiningProtectedView, can_view_all_money, can_view_all_users_hours, can_view_header_totals_only
+from tasks.models import Timer, TaskKeyCounter
 from machining.services.timers import categorize_timer_segments
 from users.permissions import IsAdmin, IsMachiningUserOrAdmin
-from .models import JobCostAgg, JobCostAggUser, Task, TaskKeyCounter, Timer
+from .models import JobCostAgg, JobCostAggUser, Task
 from .serializers import HoldTaskSerializer, PlanningListItemSerializer, ProductionPlanSerializer, TaskPlanBulkListSerializer, TaskPlanUpdateItemSerializer, TaskSerializer, TimerSerializer
 from django.db.models import Q, Count, Avg
 from rest_framework.views import APIView
@@ -34,6 +35,12 @@ except Exception:  # pragma: no cover
 class TimerStartView(MachiningProtectedView):
     def post(self, request):
         data = request.data.copy()
+        # The frontend will now send 'task_key' and 'task_type'
+        # Our updated serializer handles converting this to a GFK
+        if 'issue_key' in data:
+            data['task_key'] = data.pop('issue_key')
+        # We must specify the task type for the GFK. This endpoint is for machining tasks.
+        data['task_type'] = 'machining'
         data["manual_entry"] = False
         serializer = TimerSerializer(data=data, context={'request': request})
         if serializer.is_valid():
@@ -46,7 +53,7 @@ class TimerStopView(APIView):
     def post(self, request):
         timer_id = request.data.get("timer_id")
         try:
-            timer = Timer.objects.get(id=timer_id)
+            timer = Timer.objects.select_related('user__profile').get(id=timer_id)
             request_user = request.user
             request_profile = request_user.profile
             timer_user = timer.user
@@ -70,7 +77,7 @@ class TimerStopView(APIView):
             finish_time_from_request = request.data.get("finish_time")
 
             # Update allowed fields
-            for field in ['finish_time', 'comment', 'machine']:
+            for field in ['finish_time', 'comment', 'machine_fk']:
                 if field in request.data:
                     setattr(timer, field, request.data[field])
 
@@ -88,6 +95,12 @@ class TimerStopView(APIView):
 class TimerManualEntryView(MachiningProtectedView):
     def post(self, request):
         data = request.data.copy()
+        # The frontend will now send 'task_key' and 'task_type'
+        # Our updated serializer handles converting this to a GFK
+        if 'issue_key' in data:
+            data['task_key'] = data.pop('issue_key')
+        # We must specify the task type for the GFK. This endpoint is for machining tasks.
+        data['task_type'] = 'machining'
         data["manual_entry"] = True
         serializer = TimerSerializer(data=data, context={'request': request})
         if serializer.is_valid():
@@ -115,10 +128,12 @@ class TimerListView(MachiningProtectedView):
             query &= Q(user=request.user)
 
         if "issue_key" in request.GET:
-            query &= Q(issue_key=request.GET["issue_key"])
+            # Query the GFK via its object_id
+            query &= Q(object_id=request.GET["issue_key"])
 
         if "machine_fk" in request.GET:
             query &= Q(machine_fk=request.GET["machine_fk"])
+            
 
         start_after = request.GET.get("start_after")
         start_before = request.GET.get("start_before")
@@ -137,9 +152,11 @@ class TimerListView(MachiningProtectedView):
             return Response({"error": "Invalid timestamp"}, status=400)
 
         if "job_no" in request.GET:
-            query &= Q(issue_key__job_no=request.GET["job_no"])
+            # This requires a more complex query across the GFK relationship
+            # For now, we assume the frontend filters by task_key directly
+            pass
 
-        timers = Timer.objects.annotate(
+        timers = Timer.objects.prefetch_related('issue_key').annotate(
                     duration=ExpressionWrapper(
                         (F('finish_time') - F('start_time')) / 3600000.0,
                         output_field=FloatField()
@@ -251,7 +268,9 @@ class TaskViewSet(ModelViewSet):
     ordering = ['-completion_date']  # Default ordering
 
     def get_queryset(self):
-        return Task.objects.filter(is_hold_task=False).prefetch_related('timers')
+        # 'issue_key' is the GenericRelation from tasks.Timer back to this Task
+        # prefetch_related works seamlessly with it for great performance.
+        return Task.objects.filter(is_hold_task=False).prefetch_related('issue_key')
     
 class TaskBulkCreateView(APIView):
     permission_classes = [IsAdmin]
@@ -264,6 +283,7 @@ class TaskBulkCreateView(APIView):
         tasks_to_create = [task for task in tasks_data if not task.get('key')]
 
         with transaction.atomic():
+            # Use the generic TaskKeyCounter from the 'tasks' app
             counter = TaskKeyCounter.objects.select_for_update().get(prefix="TI")
             start = counter.current + 1
             counter.current += len(tasks_to_create)
@@ -331,6 +351,7 @@ class InitTaskKeyCounterView(APIView):
     permission_classes = [IsAdmin]  # 🔒 restrict who can call this
 
     def post(self, request):
+        # Use the generic TaskKeyCounter from the 'tasks' app
         counter, created = TaskKeyCounter.objects.get_or_create(prefix="TI", defaults={"current": 0})
         return Response({
             "status": "created" if created else "already_exists",
@@ -405,7 +426,11 @@ class ProductionPlanView(APIView):
         if not machine_id:
             return Response({"error": "machine_fk is required"}, status=400)
 
-        qs = Task.objects.select_related('machine_fk').prefetch_related('timers').annotate(first_timer_start=Min('timers__start_time')).filter(
+        # Use the reverse GFK relation 'issue_key'
+        from django.db.models import Min
+        from tasks.models import Timer as NewTimer
+
+        qs = Task.objects.select_related('machine_fk').prefetch_related('issue_key').annotate(first_timer_start=Min('issue_key__start_time')).filter(
                 machine_fk_id=machine_id,
                 is_hold_task=False
             )
@@ -863,7 +888,7 @@ class JobHoursReportView(APIView):
         # Fetch relevant timers once; we slice by job_no in Python per bucket calc
         timers = (
             Timer.objects
-            .select_related("user", "issue_key")
+            .select_related("user").prefetch_related("issue_key")
             .filter(issue_key__job_no__in=job_nos, finish_time__isnull=False)
         )
         if start_after_ms is not None:
@@ -1054,7 +1079,9 @@ class JobCostDetailView(APIView):
         tasks_map = {}
         if all_task_ids:
             # ----- annotate tasks with "has_open_timer" and derive status -----
-            open_timer_qs = Timer.objects.filter(issue_key=OuterRef("pk"), finish_time__isnull=True)
+            from django.contrib.contenttypes.models import ContentType
+            task_content_type = ContentType.objects.get_for_model(Task)
+            open_timer_qs = Timer.objects.filter(content_type=task_content_type, object_id=OuterRef("pk"), finish_time__isnull=True)
             tasks_with_status = (
                 Task.objects
                 .filter(pk__in=all_task_ids)
