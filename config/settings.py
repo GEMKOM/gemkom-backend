@@ -71,6 +71,7 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'rest_framework',
+    'storages',
     'users',
     'core',
     'corsheaders',
@@ -218,3 +219,35 @@ STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# --- Supabase Storage Configuration (S3-Compatible) ---
+
+# Your Supabase Project ID is the subdomain in your endpoint URL.
+SUPABASE_PROJECT_ID = os.environ.get('SUPABASE_PROJECT_ID')
+
+# The name of the bucket you created in Supabase Storage (e.g., 'gemcore').
+SUPABASE_BUCKET_NAME = os.environ.get('SUPABASE_BUCKET_NAME')
+
+# Credentials are the same for all buckets in a Supabase project
+AWS_S3_ACCESS_KEY_ID = os.environ.get('SUPABASE_S3_ACCESS_KEY_ID')
+AWS_S3_SECRET_ACCESS_KEY = os.environ.get('SUPABASE_S3_SECRET_ACCESS_KEY')
+
+# The S3-compatible endpoint for your Supabase project.
+AWS_S3_ENDPOINT_URL = f'https://{SUPABASE_PROJECT_ID}.supabase.co/storage/v1/s3' # <-- Added /s3
+
+# Set the default storage to your custom private storage class.
+# Any FileField without a `storage` argument will use this.
+DEFAULT_FILE_STORAGE = 'core.storages.PrivateMediaStorage'
+
+AWS_QUERYSTRING_AUTH = True # This will generate expiring URLs for private files.
+
+# --- Boto3/S3 Specific Configuration ---
+# This is crucial for S3-compatible services like Supabase. It forces boto3
+# to use path-style addressing (e.g., endpoint/bucket/key) instead of
+# virtual-hosted-style addressing (e.g., bucket.endpoint/key).
+AWS_S3_ADDRESSING_STYLE = 'path'
+
+# Explicitly set the region. Boto3 requires this, even for S3-compatible
+# providers. Find your region in Supabase Dashboard > Project Settings > Infrastructure.
+# It will be something like 'eu-west-2', 'us-east-1', etc.
+AWS_S3_REGION_NAME = os.environ.get('SUPABASE_REGION')

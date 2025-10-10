@@ -1,85 +1,27 @@
 from rest_framework import serializers
-
-from machines.calendar import validate_plan_interval
-from machines.models import Machine
 from .models import Task
-from tasks.models import Timer, TaskKeyCounter
+from tasks.models import TaskKeyCounter 
+from tasks.serializers import BaseTimerSerializer
 from django.db import transaction
-from django.utils import timezone
-from datetime import timedelta
-from django.contrib.contenttypes.models import ContentType
 
-class TimerSerializer(serializers.ModelSerializer):
-    # --- Fields for creating/updating a Timer ---
-    username = serializers.CharField(source='user.username', read_only=True)
-    stopped_by_first_name = serializers.CharField(source='stopped_by.first_name', read_only=True)
-    stopped_by_last_name = serializers.CharField(source='stopped_by.last_name', read_only=True)
-    issue_name = serializers.CharField(source='issue_key.name', read_only=True)
+
+class TimerSerializer(BaseTimerSerializer):
+    """
+    Extends the BaseTimerSerializer to include fields specific to a Machining Task.
+    """
     issue_is_hold_task = serializers.BooleanField(source='issue_key.is_hold_task', read_only=True)
     job_no = serializers.CharField(source='issue_key.job_no', read_only=True)
     image_no = serializers.CharField(source='issue_key.image_no', read_only=True)
     position_no = serializers.CharField(source='issue_key.position_no', read_only=True)
     quantity = serializers.IntegerField(source='issue_key.quantity', read_only=True)
-    machine_name = serializers.CharField(source='machine_fk.name', read_only=True)  # ✅ add this line
-    duration = serializers.FloatField(read_only=True)
     estimated_hours = serializers.DecimalField(source='issue_key.estimated_hours', read_only=True, max_digits=10, decimal_places=2)
 
-    # --- Fields for creating/updating a Timer with a Generic Foreign Key ---
-    # We accept 'task_key' and 'task_type' from the frontend for convenience.
-    task_key = serializers.CharField(write_only=True, source='object_id')
-    task_type = serializers.ChoiceField(write_only=True, choices=['machining', 'cnc_cutting'])
-
-    class Meta:
-        model = Timer
-        fields = [
-            'id',
-            'user',
-            'username',
-            'issue_key',
-            'task_key', 'task_type', # Write-only fields
-            'start_time',
-            'finish_time',
-            'comment',
-            'machine_fk',        # This will now be the machine FK ID
-            'machine_name',    # ✅ Human-readable name
-            'issue_name',
-            'issue_is_hold_task',
-            'job_no',
-            'image_no',
-            'position_no',
-            'quantity',
-            'manual_entry',
-            'stopped_by',
-            'stopped_by_first_name',
-            'stopped_by_last_name',
-            'duration',
-            'estimated_hours',
+    class Meta(BaseTimerSerializer.Meta):
+        # Inherit fields from the base and add the new ones
+        fields = BaseTimerSerializer.Meta.fields + [
+            'issue_is_hold_task', 'job_no', 'image_no', 'position_no', 'quantity', 'estimated_hours'
         ]
-        read_only_fields = ['id', 'user', 'issue_key']
 
-    def create(self, validated_data):
-        validated_data['user'] = self.context['request'].user
-        
-        # --- Handle Generic Foreign Key ---
-        task_type_name = validated_data.pop('task_type')
-        app_label = 'machining' if task_type_name == 'machining' else 'cnc_cutting'
-        model_name = 'task' if task_type_name == 'machining' else 'cnctask'
-        
-        try:
-            # This is the correct way to get the ContentType for the GFK
-            content_type = ContentType.objects.get(app_label=app_label, model=model_name)
-            validated_data['content_type'] = content_type
-        except ContentType.DoesNotExist:
-            raise serializers.ValidationError(f"Invalid task_type: {task_type_name}")
-
-        return super().create(validated_data)
-
-    def to_representation(self, instance):
-        # When reading, 'issue_key' is the GFK object. We need its primary key.
-        ret = super().to_representation(instance)
-        ret['issue_key'] = instance.object_id
-        return ret
-    
 class TaskSerializer(serializers.ModelSerializer):
     key = serializers.CharField(required=False)
     completed_by_username = serializers.CharField(source='completed_by.username', read_only=True)

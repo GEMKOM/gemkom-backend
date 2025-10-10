@@ -2,259 +2,81 @@ import time
 from rest_framework.response import Response
 
 from django.db.models import Sum, Max, F, OuterRef, Exists, Q, Case, When, Value, CharField
-from django.db.models import F, FloatField, ExpressionWrapper
+from django.db.models import F
 from django.db.models.functions import Coalesce
+from django.db.models.functions import Coalesce 
 from machines.models import Machine
 from machining.filters import TaskFilter
 from machining.permissions import MachiningProtectedView, can_view_all_money, can_view_all_users_hours, can_view_header_totals_only
 from tasks.models import Timer, TaskKeyCounter
 from machining.services.timers import categorize_timer_segments
-from users.permissions import IsAdmin, IsMachiningUserOrAdmin
+from users.permissions import IsAdmin, IsMachiningUserOrAdmin 
 from .models import JobCostAgg, JobCostAggUser, Task
-from .serializers import HoldTaskSerializer, PlanningListItemSerializer, ProductionPlanSerializer, TaskPlanBulkListSerializer, TaskPlanUpdateItemSerializer, TaskSerializer, TimerSerializer
-from django.db.models import Q, Count, Avg
+from tasks.views import GenericTimerDetailView, GenericTimerListView, GenericTimerManualEntryView, GenericTimerReportView, GenericTimerStartView, GenericTimerStopView 
+from .serializers import HoldTaskSerializer, PlanningListItemSerializer, ProductionPlanSerializer, TaskPlanBulkListSerializer, TaskPlanUpdateItemSerializer, TaskSerializer
+from django.db.models import Q, Count
 from rest_framework.views import APIView
-from rest_framework.generics import RetrieveUpdateDestroyAPIView
 from rest_framework.viewsets import ModelViewSet
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.permissions import IsAuthenticated
 from config.pagination import CustomPageNumberPagination  # ✅ Use your custom paginator
 from rest_framework.filters import OrderingFilter
 from django.db import transaction
-from rest_framework import permissions, status, views
-from .serializers import MachineTimelineSegmentSerializer
+from rest_framework import permissions, status
 from .services.timeline import _build_bulk_machine_timelines, _ensure_valid_range  # _parse_ms is small; OK to re-use
 from rest_framework import status
 from collections import defaultdict
 
-try:
-    from django.contrib.postgres.aggregates import ArrayAgg  # type: ignore
-except Exception:  # pragma: no cover
-    ArrayAgg = None  # fallback path below
 
-class TimerStartView(MachiningProtectedView):
-    def post(self, request):
-        data = request.data.copy()
-        # The frontend will now send 'task_key' and 'task_type'
-        # Our updated serializer handles converting this to a GFK
-        if 'issue_key' in data:
-            data['task_key'] = data.pop('issue_key')
-        # We must specify the task type for the GFK. This endpoint is for machining tasks.
-        data['task_type'] = 'machining'
-        data["manual_entry"] = False
-        serializer = TimerSerializer(data=data, context={'request': request})
-        if serializer.is_valid():
-            timer = serializer.save()
-            return Response({"id": timer.id}, status=200)
-        return Response(serializer.errors, status=400)
-
-# API View for maintenance to be able to stop maintenance timers.
-class TimerStopView(APIView):
-    def post(self, request):
-        timer_id = request.data.get("timer_id")
-        try:
-            timer = Timer.objects.select_related('user__profile').get(id=timer_id)
-            request_user = request.user
-            request_profile = request_user.profile
-            timer_user = timer.user
-            timer_profile = timer_user.profile
-            same_team = request_profile.team == timer_profile.team
-
-            # Default deny
-            allowed = False
-
-            if request_user.is_admin or timer_user == request_user:
-                allowed = True
-            elif request_profile.work_location == "office" and (same_team or (timer_profile.team == "machining" and request_profile.team == "manufacturing")):
-                allowed = True
-            elif getattr(request_profile, "is_lead", False) and same_team:
-                allowed = True
-
-            if not allowed:
-                return Response("Permission denied for this timer.", status=403)
-
-            was_running = timer.finish_time is None
-            finish_time_from_request = request.data.get("finish_time")
-
-            # Update allowed fields
-            for field in ['finish_time', 'comment', 'machine_fk']:
-                if field in request.data:
-                    setattr(timer, field, request.data[field])
-
-            # ✅ Automatically set stopped_by
-            if was_running and finish_time_from_request:
-                timer.stopped_by = request.user
-
-            timer.save()
-            return Response("Timer stopped and updated.", status=200)
-
-        except Timer.DoesNotExist:
-            return Response("Timer not found.", status=404)
-
-
-class TimerManualEntryView(MachiningProtectedView):
-    def post(self, request):
-        data = request.data.copy()
-        # The frontend will now send 'task_key' and 'task_type'
-        # Our updated serializer handles converting this to a GFK
-        if 'issue_key' in data:
-            data['task_key'] = data.pop('issue_key')
-        # We must specify the task type for the GFK. This endpoint is for machining tasks.
-        data['task_type'] = 'machining'
-        data["manual_entry"] = True
-        serializer = TimerSerializer(data=data, context={'request': request})
-        if serializer.is_valid():
-            timer = serializer.save()
-            return Response({"id": timer.id}, status=200)
-        return Response(serializer.errors, status=400)
-
-class TimerListView(MachiningProtectedView):
-    def get(self, request):
-        ordering = request.GET.get("ordering", "-finish_time")
-
-        query = Q()
-
-        if request.GET.get("is_active") == "true":
-            query &= Q(finish_time__isnull=True)
-        elif request.GET.get("is_active") == "false":
-            query &= Q(finish_time__isnull=False)
-
-        user_param = request.GET.get("user")
-
-        if request.user and request.user.is_admin:
-            if user_param:
-                query &= Q(user__username=user_param)
-        else:
-            query &= Q(user=request.user)
-
-        if "issue_key" in request.GET:
-            # Query the GFK via its object_id
-            query &= Q(object_id=request.GET["issue_key"])
-
-        if "machine_fk" in request.GET:
-            query &= Q(machine_fk=request.GET["machine_fk"])
-            
-
-        start_after = request.GET.get("start_after")
-        start_before = request.GET.get("start_before")
-        try:
-            if start_after:
-                ts = int(start_after)
-                if ts < 1_000_000_000_000:
-                    ts *= 1000
-                query &= Q(start_time__gte=ts)
-            if start_before:
-                ts = int(start_before)
-                if ts < 1_000_000_000_000:
-                    ts *= 1000
-                query &= Q(start_time__lte=ts)
-        except ValueError:
-            return Response({"error": "Invalid timestamp"}, status=400)
-
-        if "job_no" in request.GET:
-            # This requires a more complex query across the GFK relationship
-            # For now, we assume the frontend filters by task_key directly
-            pass
-
-        timers = Timer.objects.prefetch_related('issue_key').annotate(
-                    duration=ExpressionWrapper(
-                        (F('finish_time') - F('start_time')) / 3600000.0,
-                        output_field=FloatField()
-                    )
-                ).filter(query).order_by(ordering)
-        paginator = CustomPageNumberPagination()  # ✅ use your custom paginator
-        page = paginator.paginate_queryset(timers, request)
-        serializer = TimerSerializer(page, many=True)
-        return paginator.get_paginated_response(serializer.data)
-
-
-class TimerDetailView(RetrieveUpdateDestroyAPIView):
-    queryset = Timer.objects.all()
-    serializer_class = TimerSerializer
+class TimerStartView(GenericTimerStartView):
+    """
+    Starts a timer for a 'machining' task.
+    Inherits all logic from the generic view and passes the task_type.
+    """
     permission_classes = [IsMachiningUserOrAdmin]
 
-    def get_queryset(self):
-        user = self.request.user
-        if user.is_admin:
-            return Timer.objects.all()
-        return Timer.objects.filter(user=user)
+    def post(self, request, *args, **kwargs):
+        return super().post(request, task_type='machining')
 
-    def perform_update(self, serializer):
-        serializer.save(stopped_by=self.request.user if self.request.data.get("finish_time") else serializer.instance.stopped_by)
+# API View for maintenance to be able to stop maintenance timers.
+class TimerStopView(GenericTimerStopView):
+    """
+    Stops any timer. The logic is already generic.
+    """
+    permission_classes = [IsAuthenticated] # Or your specific permission
 
-    def destroy(self, request, *args, **kwargs):
-        user = request.user
+class TimerManualEntryView(GenericTimerManualEntryView):
+    """
+    Creates a manual timer for a 'machining' task.
+    """
+    permission_classes = [IsMachiningUserOrAdmin]
 
-        if not user.is_admin:
-            return Response({"error": "You are not allowed to delete this timer."}, status=403)
+    def post(self, request, *args, **kwargs):
+        return super().post(request, task_type='machining')
 
-        return super().destroy(request, *args, **kwargs)
+class TimerListView(GenericTimerListView):
+    """
+    Lists timers for 'machining' tasks.
+    """
+    permission_classes = [IsMachiningUserOrAdmin]
 
+    def get(self, request, *args, **kwargs):
+        return super().get(request, task_type='machining')
 
-class TimerReportView(APIView):
+class TimerDetailView(GenericTimerDetailView):
+    """
+    Retrieve, update, or delete a 'machining' timer instance.
+    """
+    permission_classes = [IsMachiningUserOrAdmin]
+
+class TimerReportView(GenericTimerReportView):
+    """
+    Generates aggregate reports for 'machining' timers.
+    """
     permission_classes = [IsAdmin]
 
-    def get(self, request):
-        # Optional query params
-        group_by = request.query_params.get('group_by', 'user')  # user, machine, job_no
-        manual_only = request.query_params.get('manual_only') == 'true'
-        start_after = request.query_params.get('start_after')
-        start_before = request.query_params.get('start_before')
-
-        # Valid group_by fields
-        valid_groups = {
-            'user': 'user__username',
-            'machine': 'machine_fk',
-            'job_no': 'issue_key__job_no',
-            'issue_key': 'issue_key',
-        }
-        group_field = valid_groups.get(group_by)
-        if not group_field:
-            return Response({'error': 'Invalid group_by value'}, status=400)
-
-        # Base queryset
-        timers = Timer.objects.all()
-
-        # Filters
-        if manual_only:
-            timers = timers.filter(manual_entry=True)
-        if start_after:
-            try:
-                start_after_ts = int(start_after)
-                timers = timers.filter(start_time__gte=start_after_ts)
-            except ValueError:
-                return Response({'error': 'start_after must be a timestamp'}, status=400)
-        if start_before:
-            try:
-                start_before_ts = int(start_before)
-                timers = timers.filter(start_time__lte=start_before_ts)
-            except ValueError:
-                return Response({'error': 'start_before must be a timestamp'}, status=400)
-
-        # Only consider timers that are stopped
-        timers = timers.exclude(finish_time__isnull=True)
-
-        # Calculate duration (seconds), convert to hours
-        duration_expr = ExpressionWrapper(
-            (F('finish_time') - F('start_time')) / (1000 * 3600.0),
-            output_field=FloatField()
-        )
-
-        report = (
-            timers
-            .values(group_field)
-            .annotate(
-                total_hours=Sum(duration_expr),
-                avg_duration=Avg(duration_expr),
-                timer_count=Count('id'),
-                group=F(group_field),
-            )
-            .values('group', 'total_hours', 'avg_duration', 'timer_count')
-            .order_by('group')
-        )
-
-        return Response(report)
-    
+    def get(self, request, *args, **kwargs):
+        return super().get(request, task_type='machining')
 
 
 class TaskViewSet(ModelViewSet):
