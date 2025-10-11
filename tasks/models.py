@@ -1,10 +1,16 @@
 from django.db import models
 from django.contrib.auth.models import User
-from django.contrib.contenttypes.fields import GenericForeignKey
+from django.contrib.contenttypes.fields import GenericForeignKey, GenericRelation
 from django.contrib.contenttypes.models import ContentType
+import os
 
 from machines.models import Machine
+from core.storages import PrivateMediaStorage
 
+def task_attachment_upload_path(instance, filename):
+    """Generic upload path for any task attachment."""
+    # file will be uploaded to MEDIA_ROOT/task_attachments/<app_label>/<task_key>/<filename>
+    return os.path.join('task_attachments', instance.content_type.app_label, str(instance.object_id), filename)
 
 class TaskKeyCounter(models.Model):
     """
@@ -39,6 +45,13 @@ class BaseTask(models.Model):
     planned_end_ms = models.BigIntegerField(null=True, blank=True)
     plan_order = models.IntegerField(null=True, blank=True)
     plan_locked = models.BooleanField(default=False)
+    
+    # Generic relation to the new TaskFile model.
+    # This allows `task.files.all()` to work on any BaseTask subclass.
+    files = GenericRelation(
+        'tasks.TaskFile',
+        content_type_field='content_type',
+        object_id_field='object_id')
 
     class Meta:
         abstract = True # This is crucial! It means this model won't create a DB table.
@@ -67,3 +80,19 @@ class Timer(models.Model):
             models.Index(fields=["content_type", "object_id"]),
         ]
 
+
+class TaskFile(models.Model):
+    """
+    Represents a file attached to any task model that inherits from BaseTask.
+    """
+    file = models.FileField(upload_to=task_attachment_upload_path, storage=PrivateMediaStorage())
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+    uploaded_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
+
+    # Generic Foreign Key to link to any Task type
+    content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE)
+    object_id = models.CharField(max_length=255) # Use CharField to match Task's primary key
+    task = GenericForeignKey('content_type', 'object_id')
+
+    def __str__(self):
+        return f"File for {self.object_id} - {os.path.basename(self.file.name)}"

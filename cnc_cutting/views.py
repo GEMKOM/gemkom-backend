@@ -1,25 +1,27 @@
-from rest_framework.generics import ListCreateAPIView, RetrieveUpdateDestroyAPIView
+from rest_framework.viewsets import ModelViewSet
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.parsers import MultiPartParser, FormParser
+from django.db.models import Count
 
 from .models import CncTask
-from .serializers import CncTaskSerializer
+from .serializers import CncTaskListSerializer, CncTaskDetailSerializer
 
-class CncTaskListCreateView(ListCreateAPIView):
+class CncTaskViewSet(ModelViewSet):
     """
-    API view to list all CNC tasks or create a new one.
+    ViewSet for listing, creating, retrieving, updating, and deleting CNC tasks.
     Handles multipart/form-data for file uploads.
     """
-    queryset = CncTask.objects.all().order_by('-key')
-    serializer_class = CncTaskSerializer
+    # Combine querysets for both list and detail views for efficiency
+    queryset = CncTask.objects.prefetch_related('issue_key', 'parts', 'files').annotate(parts_count=Count('parts')).order_by('-key')
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser] # Important for file uploads
 
-
-class CncTaskDetailView(RetrieveUpdateDestroyAPIView):
-    """
-    API view to retrieve, update, or delete a single CNC task.
-    """
-    queryset = CncTask.objects.all()
-    serializer_class = CncTaskSerializer
-    permission_classes = [IsAuthenticated]
+    def get_serializer_class(self):
+        """
+        Return the appropriate serializer class based on the action.
+        - CncTaskListSerializer for the 'list' action.
+        - CncTaskDetailSerializer for all other actions (create, retrieve, update).
+        """
+        if self.action == 'list':
+            return CncTaskListSerializer
+        return CncTaskDetailSerializer
