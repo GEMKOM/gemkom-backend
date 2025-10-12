@@ -2,6 +2,7 @@ import json
 from rest_framework import serializers
 from .models import CncTask, CncPart
 from tasks.models import TaskKeyCounter, TaskFile
+from tasks.serializers import TaskFileSerializer
 from django.db import transaction
 from django.db.utils import IntegrityError
 
@@ -12,20 +13,7 @@ class CncPartSerializer(serializers.ModelSerializer):
     """
     class Meta:
         model = CncPart
-        fields = ['id', 'job_no', 'image_no', 'position_no', 'weight_kg']
-
-
-class TaskFileSerializer(serializers.ModelSerializer):
-    """
-    Serializer for the generic TaskFile model.
-    """
-    file_url = serializers.URLField(source='file.url', read_only=True)
-    file_name = serializers.CharField(source='file.name', read_only=True)
-    uploaded_by_username = serializers.CharField(source='uploaded_by.username', read_only=True)
-
-    class Meta:
-        model = TaskFile
-        fields = ['id', 'file_url', 'file_name', 'uploaded_at', 'uploaded_by_username']
+        fields = ['id', 'cnc_task', 'job_no', 'image_no', 'position_no', 'weight_kg']
 
 
 class CncTaskListSerializer(serializers.ModelSerializer):
@@ -33,7 +21,7 @@ class CncTaskListSerializer(serializers.ModelSerializer):
     A lightweight serializer for listing CncTask instances.
     It excludes the nested 'parts' for performance.
     """
-    machine_name = serializers.CharField(source='machine_fk.name', read_only=True)  # ✅ add this line
+    machine_name = serializers.CharField(source='machine_fk.name', read_only=True, allow_null=True)
     completed_by_username = serializers.CharField(source='completed_by.username', read_only=True)
     total_hours_spent = serializers.SerializerMethodField()
     parts_count = serializers.IntegerField(read_only=True)
@@ -64,12 +52,13 @@ class CncTaskDetailSerializer(serializers.ModelSerializer):
     # It's read-only for retrieval (detail view).
     parts = CncPartSerializer(many=True, read_only=True)
     files = TaskFileSerializer(many=True, read_only=True)
+    machine_name = serializers.CharField(source='machine_fk.name', read_only=True, allow_null=True)
 
     class Meta:
         model = CncTask
         fields = [
             'key', 'name', 'nesting_id', 'material', 'dimensions',
-            'thickness_mm', 'parts', 'files'
+            'thickness_mm', 'parts', 'files', 'machine_fk', 'machine_name'
         ]
         read_only_fields = ['key']
         extra_kwargs = {
