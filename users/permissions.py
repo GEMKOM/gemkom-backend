@@ -12,6 +12,7 @@ class IsMachiningUserOrAdmin(BasePermission):
                 user.is_superuser
                 or user.is_admin
                 or getattr(profile, "team", "").lower() == "machining"
+                or getattr(profile, "work_location", "").lower() == "office"
             )
         )
 
