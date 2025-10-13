@@ -40,7 +40,7 @@ steps:
         '--region', 'europe-west3',
         '--platform', 'managed',
         '--allow-unauthenticated',
-        '--set-env-vars',
+        '--update-env-vars',
         *env_vars # Use the alias (*) to reference the defined environment variables.
       ]
 
