@@ -243,10 +243,51 @@ class MachineFaultDetailView(APIView):
 
     def delete(self, request, pk):
         fault = self.get_object(pk)
+
+        # Superusers can delete anything.
+        # Other users can only delete faults they reported, and only if the fault is not yet resolved.
+        can_delete = request.user.is_superuser or (
+            fault.reported_by == request.user and not fault.resolved_at
+        )
+
+        if not can_delete:
+            return Response(
+                {"detail": "You do not have permission to delete this fault report. It may be resolved or you are not the reporter."},
+                status=403
+            )
+        
+        # If the fault is not yet resolved, send a cancellation notification.
+        if not fault.resolved_at:
+            self.send_cancellation_notification(fault, request.user)
+
         fault.delete()
-        return Response(status=204)
+        return Response(status=204)  # No Content
 
     # --- Notifications ---
+    def send_cancellation_notification(self, fault: MachineFault, user):
+        if not TELEGRAM_MAINTENANCE_BOT_TOKEN:
+            return
+
+        CHAT_ID = "-4944950975"
+
+        machine_name = fault.machine.name if fault.machine else (fault.asset_name or "Bilinmiyor")
+        description = fault.description or "Yok"
+        cancelled_by = user.get_full_name() or user.username
+
+        message = (
+            "❌ *Bakım Talebi İptal Edildi*\n"
+            f"👤 *İptal Eden:* {cancelled_by}\n"
+            f"🖥 *Makine:* {machine_name}\n"
+            f"📄 *Açıklama:* {description}\n"
+        )
+
+        url = f"https://api.telegram.org/bot{TELEGRAM_MAINTENANCE_BOT_TOKEN}/sendMessage"
+        payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"}
+        try:
+            requests.post(url, data=payload, timeout=5)
+        except requests.RequestException as e:
+            print("Telegram iptal bildirimi hatası:", e)
+
     def send_resolution_notification(self, fault: MachineFault, user):
         if not TELEGRAM_MAINTENANCE_BOT_TOKEN:
             return  # quietly skip if token not configured

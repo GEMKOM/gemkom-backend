@@ -58,7 +58,7 @@ class CncTaskDetailSerializer(serializers.ModelSerializer):
         model = CncTask
         fields = [
             'key', 'name', 'nesting_id', 'material', 'dimensions',
-            'thickness_mm', 'parts', 'files', 'machine_fk', 'machine_name'
+            'thickness_mm', 'parts', 'files', 'machine_fk', 'machine_name', 'estimated_hours'
         ]
         read_only_fields = ['key']
         extra_kwargs = {
