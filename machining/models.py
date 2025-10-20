@@ -44,6 +44,17 @@ class Task(BaseTask):
             # self.planned_start_ms = None
             # self.planned_end_ms = None
             # self.plan_locked = False
+        if self.pk:
+            try:
+                old = Task.objects.only('machine_fk').get(pk=self.pk)
+                if old.machine_fk_id != (self.machine_fk_id or None):
+                    self.in_plan = False
+                    self.plan_order = None
+                    self.planned_start_ms = None
+                    self.planned_end_ms = None
+            except Task.DoesNotExist:
+                pass
+
         super().save(*args, **kwargs)    
 
 # machining/models.py (add at bottom)

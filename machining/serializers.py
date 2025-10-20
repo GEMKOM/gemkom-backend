@@ -41,14 +41,20 @@ class TaskSerializer(serializers.ModelSerializer):
 
 
     def validate(self, attrs):
-        # Partial update'de eksik alanlar için instance değerlerini kullan
         instance = getattr(self, 'instance', None)
 
-        in_plan = attrs.get('in_plan', getattr(instance, 'in_plan', None))
+        # If machine changes, unplan this task (your rule)
+        if instance and 'machine_fk' in attrs and attrs['machine_fk'] != instance.machine_fk:
+            attrs['in_plan'] = False
+            attrs['plan_order'] = None
+            attrs['planned_start_ms'] = None
+            attrs['planned_end_ms'] = None
+
+        # ✅ Only enforce unique constraint if still planned
+        in_plan = attrs.get('in_plan', getattr(instance, 'in_plan', False))
         machine_fk = attrs.get('machine_fk', getattr(instance, 'machine_fk', None))
         plan_order = attrs.get('plan_order', getattr(instance, 'plan_order', None))
 
-        # Sadece gerçekten plandayken ve plan_order doluyken kontrol et
         if in_plan and plan_order is not None and machine_fk is not None:
             qs = Task.objects.filter(
                 machine_fk=machine_fk,
@@ -61,6 +67,7 @@ class TaskSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({
                     "plan_order": "Bu makinede aynı plan sırası zaten kullanılıyor (in_plan=True iken benzersiz olmalı)."
                 })
+
         return attrs
 
     def get_total_hours_spent(self, obj):
