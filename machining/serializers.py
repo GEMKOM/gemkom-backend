@@ -37,6 +37,31 @@ class TaskSerializer(serializers.ModelSerializer):
             'in_plan', 'planned_start_ms', 'planned_end_ms', 'plan_order'
         ]
         read_only_fields = ['completed_by', 'completion_date']
+        validators = []
+
+
+    def validate(self, attrs):
+        # Partial update'de eksik alanlar için instance değerlerini kullan
+        instance = getattr(self, 'instance', None)
+
+        in_plan = attrs.get('in_plan', getattr(instance, 'in_plan', None))
+        machine_fk = attrs.get('machine_fk', getattr(instance, 'machine_fk', None))
+        plan_order = attrs.get('plan_order', getattr(instance, 'plan_order', None))
+
+        # Sadece gerçekten plandayken ve plan_order doluyken kontrol et
+        if in_plan and plan_order is not None and machine_fk is not None:
+            qs = Task.objects.filter(
+                machine_fk=machine_fk,
+                plan_order=plan_order,
+                in_plan=True,
+            )
+            if instance is not None:
+                qs = qs.exclude(pk=instance.pk)
+            if qs.exists():
+                raise serializers.ValidationError({
+                    "plan_order": "Bu makinede aynı plan sırası zaten kullanılıyor (in_plan=True iken benzersiz olmalı)."
+                })
+        return attrs
 
     def get_total_hours_spent(self, obj):
         # Use the reverse generic relation. Django automatically provides this.
