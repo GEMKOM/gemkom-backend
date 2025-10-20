@@ -1,11 +1,3 @@
-options:
-  logging: CLOUD_LOGGING_ONLY
-
-substitutions:
-  # Define an anchor (&) for the environment variables that can be reused.
-  _ENV_VARS: &env_vars >-
-    DB_NAME=$_DB_NAME,DB_USER=$_DB_USER,DB_PASSWORD=$_DB_PASSWORD,DB_HOST=$_DB_HOST,DB_PORT=$_DB_PORT,SUPABASE_PROJECT_ID=$_SUPABASE_PROJECT_ID,SUPABASE_BUCKET_NAME=$_SUPABASE_BUCKET_NAME,SUPABASE_S3_ACCESS_KEY_ID=$_SUPABASE_S3_ACCESS_KEY_ID,SUPABASE_S3_SECRET_ACCESS_KEY=$_SUPABASE_S3_SECRET_ACCESS_KEY,SUPABASE_REGION=$_SUPABASE_REGION
-
 steps:
   - name: 'gcr.io/cloud-builders/docker'
     args: ['build', '-t', 'gcr.io/gemkom-backend-463510/gemkom-backend', '.']
@@ -40,8 +32,6 @@ steps:
         '--region', 'europe-west3',
         '--platform', 'managed',
         '--allow-unauthenticated',
-        '--set-env-vars',
-        *env_vars # Use the alias (*) to reference the defined environment variables.
       ]
 
 images:

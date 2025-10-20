@@ -139,7 +139,8 @@ class GenericTimerListView(APIView):
             query &= Q(finish_time__isnull=False)
 
         user_param = request.GET.get("user")
-        if request.user and request.user.is_staff: # Use is_staff for admin-like abilities
+        # Check if user has admin-like abilities (work_location is 'office')
+        if request.user and getattr(request.user, 'profile', None) and request.user.profile.work_location == 'office':
             if user_param:
                 query &= Q(user__username=user_param)
         else:
@@ -200,7 +201,8 @@ class GenericTimerDetailView(RetrieveUpdateDestroyAPIView):
 
     def get_queryset(self):
         user = self.request.user
-        if user.is_staff: # Use is_staff for admin-like abilities
+        # Admins (office staff) can see all timers
+        if user and getattr(user, 'profile', None) and user.profile.work_location == 'office':
             return Timer.objects.all()
         return Timer.objects.filter(user=user)
 
@@ -212,7 +214,8 @@ class GenericTimerDetailView(RetrieveUpdateDestroyAPIView):
             serializer.save()
 
     def destroy(self, request, *args, **kwargs):
-        if not request.user.is_staff:
+        # Only admins (office staff) can delete timers
+        if not (request.user and getattr(request.user, 'profile', None) and request.user.profile.work_location == 'office'):
             return Response({"error": "You do not have permission to delete timers."}, status=status.HTTP_403_FORBIDDEN)
         return super().destroy(request, *args, **kwargs)
 

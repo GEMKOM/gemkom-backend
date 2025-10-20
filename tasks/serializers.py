@@ -1,7 +1,20 @@
 from rest_framework import serializers
 from django.contrib.contenttypes.models import ContentType
 
-from .models import Timer
+from .models import Timer, TaskFile
+
+
+class TaskFileSerializer(serializers.ModelSerializer):
+    """
+    Serializer for the generic TaskFile model.
+    """
+    file_url = serializers.URLField(source='file.url', read_only=True)
+    file_name = serializers.CharField(source='file.name', read_only=True)
+    uploaded_by_username = serializers.CharField(source='uploaded_by.username', read_only=True)
+
+    class Meta:
+        model = TaskFile
+        fields = ['id', 'file_url', 'file_name', 'uploaded_at', 'uploaded_by_username']
 
 
 class BaseTimerSerializer(serializers.ModelSerializer):

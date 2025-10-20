@@ -9,6 +9,7 @@ from machines.models import Machine
 from machining.filters import TaskFilter
 from machining.permissions import MachiningProtectedView, can_view_all_money, can_view_all_users_hours, can_view_header_totals_only
 from tasks.models import Timer, TaskKeyCounter
+from tasks.view_mixins import TaskFileMixin
 from machining.services.timers import categorize_timer_segments
 from users.permissions import IsAdmin, IsMachiningUserOrAdmin 
 from .models import JobCostAgg, JobCostAggUser, Task
@@ -79,7 +80,7 @@ class TimerReportView(GenericTimerReportView):
         return super().get(request, task_type='machining')
 
 
-class TaskViewSet(ModelViewSet):
+class TaskViewSet(TaskFileMixin, ModelViewSet):
     queryset = Task.objects.all()
     serializer_class = TaskSerializer
     filter_backends = [DjangoFilterBackend, OrderingFilter]
@@ -92,7 +93,7 @@ class TaskViewSet(ModelViewSet):
     def get_queryset(self):
         # 'issue_key' is the GenericRelation from tasks.Timer back to this Task
         # prefetch_related works seamlessly with it for great performance.
-        return Task.objects.filter(is_hold_task=False).prefetch_related('issue_key')
+        return Task.objects.filter(is_hold_task=False).select_related('machine_fk').prefetch_related('issue_key')
     
 class TaskBulkCreateView(APIView):
     permission_classes = [IsAdmin]

@@ -1,25 +1,47 @@
-from rest_framework.generics import ListCreateAPIView, RetrieveUpdateDestroyAPIView
+from rest_framework.viewsets import ModelViewSet
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.parsers import MultiPartParser, FormParser
+from django.db.models import Count
+from rest_framework import viewsets, mixins
 
-from .models import CncTask
-from .serializers import CncTaskSerializer
+from .models import CncTask, CncPart
+from tasks.models import TaskFile
+from .serializers import CncTaskListSerializer, CncTaskDetailSerializer, CncPartSerializer
+from tasks.serializers import TaskFileSerializer
+from tasks.view_mixins import TaskFileMixin
 
-class CncTaskListCreateView(ListCreateAPIView):
+class CncTaskViewSet(TaskFileMixin, ModelViewSet):
     """
-    API view to list all CNC tasks or create a new one.
+    ViewSet for listing, creating, retrieving, updating, and deleting CNC tasks.
     Handles multipart/form-data for file uploads.
     """
-    queryset = CncTask.objects.all().order_by('-key')
-    serializer_class = CncTaskSerializer
+    # Combine querysets for both list and detail views for efficiency
+    queryset = CncTask.objects.select_related('machine_fk').prefetch_related('issue_key', 'parts', 'files').annotate(parts_count=Count('parts')).order_by('-key')
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser] # Important for file uploads
 
+    def get_serializer_class(self):
+        """
+        Return the appropriate serializer class based on the action.
+        - CncTaskListSerializer for the 'list' action.
+        - CncTaskDetailSerializer for all other actions (create, retrieve, update).
+        """
+        if self.action == 'list':
+            return CncTaskListSerializer
+        return CncTaskDetailSerializer
 
-class CncTaskDetailView(RetrieveUpdateDestroyAPIView):
+class CncPartViewSet(ModelViewSet):
     """
-    API view to retrieve, update, or delete a single CNC task.
+    ViewSet for creating, retrieving, updating, and deleting CncPart instances.
     """
-    queryset = CncTask.objects.all()
-    serializer_class = CncTaskSerializer
+    queryset = CncPart.objects.all()
+    serializer_class = CncPartSerializer
+    permission_classes = [IsAuthenticated]
+
+class CncTaskFileViewSet(mixins.DestroyModelMixin, viewsets.GenericViewSet):
+    """
+    ViewSet for deleting a TaskFile.
+    """
+    queryset = TaskFile.objects.all()
+    serializer_class = TaskFileSerializer
     permission_classes = [IsAuthenticated]
