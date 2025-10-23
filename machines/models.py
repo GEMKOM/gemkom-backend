@@ -19,6 +19,7 @@ class Machine(models.Model):
         ('CTEDO', 'Dolap Tipi Elektrot Kurutma Fırını'),
         ('OC', 'Tavan Vinci'),
         ('WD', 'Kaynak Makinesi'),
+        ('AWD', 'Argon Kaynak Makinesi'),
         ('3PB', 'Üç Silindirli Sac Büküm Makinesi'),
         ('LAPTOP', 'Dizüstü Bilgisayar'),
     ]
