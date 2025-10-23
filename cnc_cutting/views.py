@@ -1,14 +1,49 @@
 from rest_framework.viewsets import ModelViewSet
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, IsAdminUser
 from rest_framework.parsers import MultiPartParser, FormParser
 from django.db.models import Count
 from rest_framework import viewsets, mixins
 
 from .models import CncTask, CncPart
 from tasks.models import TaskFile
-from .serializers import CncTaskListSerializer, CncTaskDetailSerializer, CncPartSerializer
+from tasks.views import (
+    GenericTimerDetailView,
+    GenericTimerListView,
+    GenericTimerManualEntryView,
+    GenericTimerReportView,
+    GenericTimerStartView,
+    GenericTimerStopView,
+)
+from .serializers import CncTaskListSerializer, CncTaskDetailSerializer, CncPartSerializer, CncTimerSerializer
 from tasks.serializers import TaskFileSerializer
 from tasks.view_mixins import TaskFileMixin
+
+
+class TimerStartView(GenericTimerStartView):
+    permission_classes = [IsAuthenticated]
+    def post(self, request, *args, **kwargs):
+        return super().post(request, task_type='cnc_cutting')
+
+class TimerStopView(GenericTimerStopView):
+    permission_classes = [IsAuthenticated]
+
+class TimerManualEntryView(GenericTimerManualEntryView):
+    permission_classes = [IsAuthenticated]
+    def post(self, request, *args, **kwargs):
+        return super().post(request, task_type='cnc_cutting')
+
+class TimerListView(GenericTimerListView):
+    permission_classes = [IsAuthenticated]
+    def get(self, request, *args, **kwargs):
+        return super().get(request, task_type='cnc_cutting')
+
+class TimerDetailView(GenericTimerDetailView):
+    permission_classes = [IsAuthenticated]
+
+class TimerReportView(GenericTimerReportView):
+    permission_classes = [IsAdminUser]
+    def get(self, request, *args, **kwargs):
+        return super().get(request, task_type='cnc_cutting')
 
 class CncTaskViewSet(TaskFileMixin, ModelViewSet):
     """

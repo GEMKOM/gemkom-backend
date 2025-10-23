@@ -2,7 +2,7 @@ import json
 from rest_framework import serializers
 from .models import CncTask, CncPart
 from tasks.models import TaskKeyCounter, TaskFile
-from tasks.serializers import TaskFileSerializer
+from tasks.serializers import BaseTimerSerializer, TaskFileSerializer
 from django.db import transaction
 from django.db.utils import IntegrityError
 
@@ -14,6 +14,20 @@ class CncPartSerializer(serializers.ModelSerializer):
     class Meta:
         model = CncPart
         fields = ['id', 'cnc_task', 'job_no', 'image_no', 'position_no', 'weight_kg']
+
+
+class CncTimerSerializer(BaseTimerSerializer):
+    """
+    Extends the BaseTimerSerializer to include fields specific to a CncTask.
+    """
+    nesting_id = serializers.CharField(source='issue_key.nesting_id', read_only=True)
+    material = serializers.CharField(source='issue_key.material', read_only=True)
+
+    class Meta(BaseTimerSerializer.Meta):
+        # Inherit fields from the base and add the new ones
+        fields = BaseTimerSerializer.Meta.fields + [
+            'nesting_id', 'material'
+        ]
 
 
 class CncTaskListSerializer(serializers.ModelSerializer):

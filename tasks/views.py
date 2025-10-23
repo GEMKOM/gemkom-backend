@@ -17,10 +17,10 @@ def _get_task_model_from_type(task_type):
     if task_type == 'machining':
         from machining.models import Task
         return Task
-    # Add other task types here in the future
-    # elif task_type == 'cnc_cutting':
-    #     from cnc_cutting.models import CncTask
-    #     return CncTask
+    # Add other task types here
+    elif task_type == 'cnc_cutting':
+        from cnc_cutting.models import CncTask
+        return CncTask
     return None
 
 def get_timer_serializer_class(task_type):
@@ -28,9 +28,9 @@ def get_timer_serializer_class(task_type):
     if task_type == 'machining':
         from machining.serializers import TimerSerializer
         return TimerSerializer
-    # Add other types here in the future
-    # elif task_type == 'cnc_cutting':
-    #     from cnc_cutting.serializers import TimerSerializer
+    elif task_type == 'cnc_cutting':
+        from cnc_cutting.serializers import CncTimerSerializer
+        return CncTimerSerializer
     return BaseTimerSerializer
 
 class GenericTimerStartView(APIView):
