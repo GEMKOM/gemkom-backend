@@ -6,6 +6,8 @@ class CharInFilter(django_filters.BaseInFilter, django_filters.CharFilter):
 
 class MachineFilter(django_filters.FilterSet):
     name = django_filters.CharFilter(field_name="name", lookup_expr="icontains")
+    code = django_filters.CharFilter(field_name="name", lookup_expr="icontains")
+    assigned_users = django_filters.BaseInFilter(field_name='assigned_users', lookup_expr='in')
     machine_type = django_filters.CharFilter(field_name="machine_type", lookup_expr="exact")
     used_in = django_filters.CharFilter(field_name="used_in", lookup_expr="exact")
     is_active = django_filters.BooleanFilter(field_name="is_active")
@@ -13,7 +15,7 @@ class MachineFilter(django_filters.FilterSet):
 
     class Meta:
         model = Machine
-        fields = ["name", "machine_type", "used_in", "is_active", "exclude_used_in"]
+        fields = ["name", "code", "assigned_users", "machine_type", "used_in", "is_active", "exclude_used_in"]
 
     def filter_exclude_used_in(self, queryset, name, value):
         # value is a list when comma-separated values are provided
