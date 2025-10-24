@@ -20,6 +20,8 @@ class Machine(models.Model):
         ('OC', 'Tavan Vinci'),
         ('WD', 'Kaynak Makinesi'),
         ('AWD', 'Argon Kaynak Makinesi'),
+        ('EWD', 'Elektrik Kaynak Makinesi'),
+        ('SWD', 'Tozaltı Kaynak Makinesi'),
         ('3PB', 'Üç Silindirli Sac Büküm Makinesi'),
         ('LAPTOP', 'Dizüstü Bilgisayar'),
     ]
