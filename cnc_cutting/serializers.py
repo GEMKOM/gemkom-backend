@@ -1,5 +1,7 @@
 import json
 from rest_framework import serializers
+
+from machines.models import Machine
 from .models import CncTask, CncPart
 from tasks.models import TaskKeyCounter, TaskFile
 from tasks.serializers import BaseTimerSerializer, TaskFileSerializer
@@ -51,7 +53,7 @@ class CncTaskListSerializer(serializers.ModelSerializer):
         model = CncTask
         fields = [
             'key', 'machine_fk', 'machine_name', 'name', 'nesting_id', 'material', 'dimensions',
-            'thickness_mm', 'completion_date', 'completed_by', 'completed_by_username', 'estimated_hours', 'total_hours_spent', 'parts_count',
+            'thickness_mm', 'completion_date', 'completed_by', 'completed_by_username', 'estimated_hours', 'total_hours_spent', 'parts_count', 'in_plan'
         ]
 
 
@@ -121,3 +123,77 @@ class CncTaskDetailSerializer(serializers.ModelSerializer):
             TaskFile.objects.bulk_create(task_files_to_create)
 
         return cnc_task
+
+
+# --- Planning Serializers ---
+
+class CncPlanningListItemSerializer(serializers.ModelSerializer):
+    """
+    Serializer for listing CNC tasks in a planning view. Includes calculated fields.
+    """
+    total_hours_spent = serializers.FloatField(read_only=True)
+    remaining_hours = serializers.FloatField(read_only=True)
+
+    class Meta:
+        model = CncTask
+        fields = [
+            'key', 'name', 'in_plan', 'plan_order', 'plan_locked',
+            'planned_start_ms', 'planned_end_ms', 'estimated_hours',
+            'total_hours_spent', 'remaining_hours', 'machine_fk'
+        ]
+
+
+class CncProductionPlanSerializer(serializers.ModelSerializer):
+    """
+    Serializer for the production plan view, which may include additional fields
+    like the first time a timer was started for the task.
+    """
+    first_timer_start = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = CncTask
+        fields = [
+            'key', 'name', 'in_plan', 'plan_order', 'plan_locked',
+            'planned_start_ms', 'planned_end_ms', 'estimated_hours',
+            'first_timer_start', 'machine_fk'
+        ]
+
+
+class CncTaskPlanUpdateItemSerializer(serializers.ModelSerializer):
+    """
+    Serializer for validating a single item in a bulk planning update.
+    It allows partial updates.
+    """
+    key = serializers.CharField()
+    machine_fk = serializers.PrimaryKeyRelatedField(
+        queryset=Machine.objects.all(), required=False, allow_null=True
+    )
+
+    class Meta:
+        model = CncTask
+        fields = [
+            'key', 'in_plan', 'machine_fk', 'planned_start_ms',
+            'planned_end_ms', 'plan_order', 'plan_locked'
+        ]
+        extra_kwargs = {
+            'in_plan': {'required': False},
+            'planned_start_ms': {'required': False},
+            'planned_end_ms': {'required': False},
+            'plan_order': {'required': False, 'allow_null': True},
+            'plan_locked': {'required': False},
+        }
+
+
+class CncTaskPlanBulkListSerializer(serializers.ListSerializer):
+    """
+    List serializer to handle bulk updates and validations for CNC task planning.
+    """
+    def update(self, instances, validated_data):
+        instance_map = {instance.key: instance for instance in instances}
+        result = []
+        for data in validated_data:
+            instance = instance_map.get(data['key'])
+            if instance:
+                # This is a simplified update. The generic view handles the logic.
+                result.append(self.child.update(instance, data))
+        return result

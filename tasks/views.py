@@ -6,6 +6,8 @@ from rest_framework.generics import RetrieveUpdateDestroyAPIView
 from django.db.models import Q, F, ExpressionWrapper, FloatField, Sum, Avg, Count
 from django.contrib.contenttypes.models import ContentType
 from collections import defaultdict
+from django.db import transaction
+import time
 
 # Create your views here.
 from .models import Timer
@@ -22,6 +24,12 @@ def _get_task_model_from_type(task_type):
         from cnc_cutting.models import CncTask
         return CncTask
     return None
+
+def _parse_ms(val):
+    """Helper to parse a timestamp (ms or seconds) into milliseconds."""
+    if val is None: return None
+    ts = int(val)
+    return ts * 1000 if ts < 1_000_000_000_000 else ts
 
 def get_timer_serializer_class(task_type):
     """Dynamically returns the appropriate timer serializer."""
@@ -284,3 +292,231 @@ class GenericTimerReportView(APIView):
                 return Response(sorted(final_report, key=lambda x: x['group'] or ''))
 
         return Response(report)
+
+
+class GenericMarkTaskCompletedView(APIView):
+    """
+    A generic view to mark any task as completed.
+    """
+    def post(self, request, task_type):
+        task_key = request.data.get('key')
+        if not task_key:
+            return Response({'error': 'Task key is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        TaskModel = _get_task_model_from_type(task_type)
+        if not TaskModel:
+            return Response({"error": f"Invalid task_type '{task_type}'"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            task = TaskModel.objects.get(key=task_key)
+            task.completed_by = request.user
+            task.completion_date = int(time.time() * 1000)  # current time in ms
+            task.save()
+            return Response({'status': 'Task marked as completed.'})
+        except TaskModel.DoesNotExist:
+            return Response({'error': 'Task not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+
+class GenericUnmarkTaskCompletedView(APIView):
+    """
+    A generic view to unmark any task as completed.
+    """
+    def post(self, request, task_type):
+        task_key = request.data.get('key')
+        if not task_key:
+            return Response({'error': 'Task key is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        TaskModel = _get_task_model_from_type(task_type)
+        if not TaskModel:
+            return Response({"error": f"Invalid task_type '{task_type}'"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            task = TaskModel.objects.get(key=task_key)
+            task.completed_by = None
+            task.completion_date = None
+            task.save()
+            return Response({'status': 'Task completion removed.'})
+        except TaskModel.DoesNotExist:
+            return Response({'error': 'Task not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+
+class GenericPlanningListView(APIView):
+    """
+    A generic view to list planned and backlog tasks for a specific resource (e.g., a machine).
+
+    Configurable attributes:
+    - `task_model`: The task model class (e.g., `machining.Task`).
+    - `serializer_class`: The serializer for the response items.
+    - `resource_fk_field`: The name of the ForeignKey field on the task model that
+      links to the resource (e.g., 'machine_fk').
+    """
+    task_model = None
+    serializer_class = None
+    resource_fk_field = None
+
+    def get(self, request):
+        resource_id = request.query_params.get(self.resource_fk_field)
+        if not resource_id:
+            return Response({"error": f"{self.resource_fk_field} is required"}, status=400)
+
+        only_in_plan = str(request.query_params.get('only_in_plan', 'false')).lower() == 'true'
+        t0 = _parse_ms(request.query_params.get('start_after'))
+        t1 = _parse_ms(request.query_params.get('start_before'))
+
+        # Base query: active, non-hold, uncompleted tasks for the resource
+        qs = self.task_model.objects.select_related(self.resource_fk_field).filter(
+                **{f'{self.resource_fk_field}_id': resource_id},
+                is_hold_task=False,
+                completion_date__isnull=True,
+                completed_by__isnull=True
+            )
+
+        # Filter for in-plan tasks and date ranges
+        if only_in_plan:
+            qs = qs.filter(in_plan=True)
+            if t0 is not None and t1 is not None:
+                qs = qs.filter(planned_start_ms__lte=t1, planned_end_ms__gte=t0)
+        else:
+            # Show both in-plan (matching date range) and all backlog tasks
+            q_in_plan = Q(in_plan=True)
+            if t0 is not None and t1 is not None:
+                q_in_plan &= Q(planned_start_ms__lte=t1, planned_end_ms__gte=t0)
+            qs = qs.filter(q_in_plan | Q(in_plan=False))
+
+        # Consistent ordering for planning views
+        qs = qs.order_by(
+            F('in_plan').desc(),
+            F('plan_order').asc(nulls_last=True),
+            F('planned_start_ms').asc(nulls_last=True),
+            F('finish_time').asc(nulls_last=True),
+            'key'
+        )
+
+        data = self.serializer_class(qs, many=True).data
+        return Response(data, status=200)
+
+
+class GenericProductionPlanView(APIView):
+    """
+    A generic view for a production plan, annotating tasks with their first timer start.
+
+    Configurable attributes:
+    - `task_model`, `serializer_class`, `resource_fk_field`
+    """
+    task_model = None
+    serializer_class = None
+    resource_fk_field = None
+
+    def get(self, request):
+        from django.db.models import Min
+
+        resource_id = request.query_params.get(self.resource_fk_field)
+        if not resource_id:
+            return Response({"error": f"{self.resource_fk_field} is required"}, status=400)
+
+        qs = self.task_model.objects.select_related(self.resource_fk_field).prefetch_related('issue_key').annotate(
+            first_timer_start=Min('issue_key__start_time')
+        ).filter(
+            **{f'{self.resource_fk_field}_id': resource_id},
+            is_hold_task=False
+        )
+
+        qs = qs.order_by(
+            F('in_plan').desc(),
+            F('plan_order').asc(nulls_last=True),
+            F('planned_start_ms').asc(nulls_last=True),
+            F('finish_time').asc(nulls_last=True),
+            'key'
+        )
+
+        data = self.serializer_class(qs, many=True).data
+        return Response(data, status=200)
+
+
+class GenericPlanningBulkSaveView(APIView):
+    """
+    A generic view to bulk-update planning fields on tasks.
+
+    Configurable attributes:
+    - `task_model`: The task model class.
+    - `item_serializer_class`: Serializer for validating individual items in the payload.
+    - `bulk_list_serializer_class`: List serializer for bulk validation and updates.
+    - `response_serializer_class`: Serializer for the success response payload.
+    - `resource_fk_field`: The name of the resource ForeignKey field.
+    """
+    task_model = None
+    item_serializer_class = None
+    bulk_list_serializer_class = None
+    response_serializer_class = None
+    resource_fk_field = None
+
+    @transaction.atomic
+    def post(self, request):
+        items = request.data.get('items', [])
+        if not isinstance(items, list) or not items:
+            return Response({"error": "Body must include non-empty 'items' array"}, status=400)
+
+        # 1. Item-level validation
+        item_ser = self.item_serializer_class(data=items, many=True)
+        item_ser.is_valid(raise_exception=True)
+        rows = item_ser.validated_data
+
+        # 2. Fetch existing tasks and check for missing keys
+        keys = [row['key'] for row in rows]
+        existing_qs = self.task_model.objects.select_for_update().filter(key__in=keys)
+        inst_map = {t.key: t for t in existing_qs}
+        missing = [k for k in keys if k not in inst_map]
+        if missing:
+            return Response({"error": "Some tasks not found", "keys": missing}, status=400)
+
+        # 3. List-level validation (e.g., resource consistency)
+        existing_resource_map = {t.key: getattr(t, self.resource_fk_field) for t in existing_qs}
+        raw_by_key = {d['key']: d for d in items if isinstance(d, dict) and 'key' in d}
+        raw_rows_in_order = [raw_by_key[k] for k in keys]
+        bulk_validate = self.bulk_list_serializer_class(
+            child=self.item_serializer_class(),
+            data=raw_rows_in_order,
+            context={"existing_resource_map": existing_resource_map, "resource_fk_field": self.resource_fk_field},
+        )
+        bulk_validate.is_valid(raise_exception=True)
+
+        # 4. Pre-flight check for plan_order conflicts (DB and intra-payload)
+        intended_map = {}
+        for r in rows:
+            key = r["key"]
+            cur = inst_map[key]
+            in_plan = r.get("in_plan", cur.in_plan if hasattr(cur, "in_plan") else True)
+            rid_obj = r.get(self.resource_fk_field)
+            rid = rid_obj.id if hasattr(rid_obj, "id") else getattr(getattr(cur, self.resource_fk_field, None), "id", None)
+            order = r.get("plan_order", getattr(cur, "plan_order", None))
+            intended_map[key] = (rid, order, in_plan)
+
+        # 4a. Intra-payload conflicts
+        payload_conflicts, seen = [], {}
+        for key, (rid, order, in_plan) in intended_map.items():
+            if in_plan and rid is not None and order is not None:
+                token = (rid, order)
+                if token in seen:
+                    payload_conflicts.append({"key": key, self.resource_fk_field: rid, "plan_order": order, "conflicts_with": seen[token]})
+                else: seen[token] = key
+        if payload_conflicts:
+            return Response({"error": "Duplicate plan_order within payload", "conflicts": payload_conflicts}, status=400)
+
+        # 4b. DB conflicts (excluding tasks in this batch)
+        targets = [(rid, order) for (rid, order, in_plan) in intended_map.values() if in_plan and rid is not None and order is not None]
+        if targets:
+            q_pairs = Q()
+            for rid, order in targets:
+                q_pairs |= (Q(**{f'{self.resource_fk_field}_id': rid}) & Q(plan_order=order))
+            
+            conflict_qs = self.task_model.objects.filter(Q(in_plan=True) & q_pairs).exclude(key__in=keys)
+            if conflict_qs.exists():
+                db_conflicts = list(conflict_qs.values("key", f'{self.resource_fk_field}_id', "plan_order"))
+                return Response({"error": "plan_order conflicts with existing tasks", "conflicts": db_conflicts}, status=400)
+
+        # 5. Perform the bulk update
+        instances_in_order = [inst_map[k] for k in keys]
+        bulk_updater = self.bulk_list_serializer_class(child=self.item_serializer_class())
+        updated_objs = bulk_updater.update(instances_in_order, rows)
+
+        return Response({"updated": self.response_serializer_class(updated_objs, many=True).data}, status=200)

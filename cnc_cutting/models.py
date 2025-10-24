@@ -1,6 +1,7 @@
 from django.db import models
 from tasks.models import BaseTask
 from django.contrib.contenttypes.fields import GenericRelation
+from machines.models import Machine
 
 
 class CncTask(BaseTask):
@@ -8,11 +9,21 @@ class CncTask(BaseTask):
     A CNC-specific task. Inherits common fields from BaseTask
     and adds fields unique to CNC cutting.
     """
+    machine_fk = models.ForeignKey(
+        Machine,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='cnc_tasks',
+        help_text="The CNC machine assigned to this task."
+    )
     # Example CNC-specific fields:
     nesting_id = models.CharField(max_length=100, null=True, blank=True, db_index=True)
     material = models.CharField(max_length=100, null=True, blank=True)
     dimensions = models.CharField(max_length=100, null=True, blank=True)
     thickness_mm = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    processed_by_warehouse = models.BooleanField(default=False)
+
 
     # This creates the reverse relationship from a CncTask back to all its Timers.
     # It allows `prefetch_related('issue_key')` to work on CncTask querysets.

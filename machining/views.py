@@ -1,4 +1,3 @@
-import time
 from rest_framework.response import Response
 
 from django.db.models import Sum, Max, F, OuterRef, Exists, Q, Case, When, Value, CharField
@@ -7,17 +6,18 @@ from django.db.models.functions import Coalesce
 from django.db.models.functions import Coalesce 
 from machines.models import Machine
 from machining.filters import TaskFilter
-from machining.permissions import MachiningProtectedView, can_view_all_money, can_view_all_users_hours, can_view_header_totals_only
+from machining.permissions import can_view_all_money, can_view_all_users_hours, can_view_header_totals_only
+from .models import Task
 from tasks.models import Timer, TaskKeyCounter
 from tasks.view_mixins import TaskFileMixin
-from machining.services.timers import categorize_timer_segments
+from machining.services.timers import categorize_timer_segments 
 from users.permissions import IsAdmin, IsMachiningUserOrAdmin 
 from .models import JobCostAgg, JobCostAggUser, Task
-from tasks.views import GenericTimerDetailView, GenericTimerListView, GenericTimerManualEntryView, GenericTimerReportView, GenericTimerStartView, GenericTimerStopView 
+from tasks.views import GenericMarkTaskCompletedView, GenericTimerDetailView, GenericTimerListView, GenericTimerManualEntryView, GenericTimerReportView, GenericTimerStartView, GenericTimerStopView, GenericUnmarkTaskCompletedView
 from .serializers import HoldTaskSerializer, PlanningListItemSerializer, ProductionPlanSerializer, TaskPlanBulkListSerializer, TaskPlanUpdateItemSerializer, TaskSerializer
 from django.db.models import Q, Count
 from rest_framework.views import APIView
-from rest_framework.viewsets import ModelViewSet
+from rest_framework.viewsets import GenericViewSet, ModelViewSet
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.permissions import IsAuthenticated
 from config.pagination import CustomPageNumberPagination  # ✅ Use your custom paginator
@@ -26,6 +26,7 @@ from django.db import transaction
 from rest_framework import permissions, status
 from .services.timeline import _build_bulk_machine_timelines, _ensure_valid_range  # _parse_ms is small; OK to re-use
 from rest_framework import status
+from tasks.views import GenericPlanningBulkSaveView, GenericPlanningListView, GenericProductionPlanView
 from collections import defaultdict
 
 
@@ -79,7 +80,7 @@ class TimerReportView(GenericTimerReportView):
     def get(self, request, *args, **kwargs):
         return super().get(request, task_type='machining')
 
-#HELLO
+
 class TaskViewSet(TaskFileMixin, ModelViewSet):
     queryset = Task.objects.all()
     serializer_class = TaskSerializer
@@ -136,39 +137,17 @@ class HoldTaskViewSet(ModelViewSet):
         return Task.objects.filter(is_hold_task=True)
 
 
-class MarkTaskCompletedView(APIView):
+class MarkTaskCompletedView(GenericMarkTaskCompletedView):
     permission_classes = [IsMachiningUserOrAdmin]
 
     def post(self, request):
-        task_key = request.data.get('key')
-        if not task_key:
-            return Response({'error': 'Task key is required.'}, status=400)
+        return super().post(request, task_type='machining')
 
-        try:
-            task = Task.objects.get(key=task_key)
-            task.completed_by = request.user
-            task.completion_date = int(time.time() * 1000)  # current time in ms
-            task.save()
-            return Response({'status': 'Task marked as completed.'})
-        except Task.DoesNotExist:
-            return Response({'error': 'Task not found.'}, status=404)
-
-class UnmarkTaskCompletedView(APIView):
+class UnmarkTaskCompletedView(GenericUnmarkTaskCompletedView):
     permission_classes = [IsAdmin]
 
     def post(self, request):
-        task_key = request.data.get('key')
-        if not task_key:
-            return Response({'error': 'Task key is required.'}, status=400)
-
-        try:
-            task = Task.objects.get(key=task_key)
-            task.completed_by = None
-            task.completion_date = None
-            task.save()
-            return Response({'status': 'Task completion removed.'})
-        except Task.DoesNotExist:
-            return Response({'error': 'Task not found.'}, status=404)
+        return super().post(request, task_type='machining')
         
 class InitTaskKeyCounterView(APIView):
     permission_classes = [IsAdmin]  # 🔒 restrict who can call this
@@ -187,216 +166,36 @@ def _parse_ms(val):
     ts = int(val)
     return ts * 1000 if ts < 1_000_000_000_000 else ts
 
-class PlanningListView(APIView):
+class PlanningListView(GenericPlanningListView):
     """
     GET /machining/planning/list/?machine_fk=5&only_in_plan=false&start_after=<ms|sec>&start_before=<ms|sec>
-    - Excludes hold tasks
-    - Returns BOTH in-plan and backlog (unless only_in_plan=true)
-    - Includes estimated_hours, total_hours_spent, remaining_hours
+    Inherits from the generic planning list view, providing machining-specifics.
     """
     permission_classes = [IsMachiningUserOrAdmin]
-
-    def get(self, request):
-        machine_id = request.query_params.get('machine_fk')
-        if not machine_id:
-            return Response({"error": "machine_fk is required"}, status=400)
-
-        only_in_plan = str(request.query_params.get('only_in_plan', 'false')).lower() == 'true'
-        t0 = _parse_ms(request.query_params.get('start_after'))
-        t1 = _parse_ms(request.query_params.get('start_before'))
-
-        qs = Task.objects.select_related('machine_fk').filter(
-                machine_fk_id=machine_id,
-                is_hold_task=False,
-                completion_date__isnull=True,
-                completed_by__isnull=True
-
-            )
-
-        if only_in_plan:
-            qs = qs.filter(in_plan=True)
-            if t0 is not None and t1 is not None:
-                qs = qs.filter(planned_start_ms__lte=t1, planned_end_ms__gte=t0)
-        else:
-            q_in_plan = Q(in_plan=True)
-            if t0 is not None and t1 is not None:
-                q_in_plan &= Q(planned_start_ms__lte=t1, planned_end_ms__gte=t0)
-            qs = qs.filter(q_in_plan | Q(in_plan=False))
-
-        qs = qs.order_by(
-            F('in_plan').desc(),
-            F('plan_order').asc(nulls_last=True),
-            F('planned_start_ms').asc(nulls_last=True),
-            F('finish_time').asc(nulls_last=True),
-            'key'
-        )
-
-        data = PlanningListItemSerializer(qs, many=True).data
-        return Response(data, status=200)
+    task_model = Task
+    serializer_class = PlanningListItemSerializer
+    resource_fk_field = 'machine_fk'
 
 
-class ProductionPlanView(APIView):
+class ProductionPlanView(GenericProductionPlanView):
     """
-    GET /machining/planning/list/?machine_fk=5&only_in_plan=false&start_after=<ms|sec>&start_before=<ms|sec>
-    - Excludes hold tasks
-    - Returns BOTH in-plan and backlog (unless only_in_plan=true)
-    - Includes estimated_hours, total_hours_spent, remaining_hours
+    Inherits from the generic production plan view, providing machining-specifics.
     """
     permission_classes = [IsMachiningUserOrAdmin]
+    task_model = Task
+    serializer_class = ProductionPlanSerializer
+    resource_fk_field = 'machine_fk'
 
-    def get(self, request):
-        machine_id = request.query_params.get('machine_fk')
-        if not machine_id:
-            return Response({"error": "machine_fk is required"}, status=400)
-
-        # Use the reverse GFK relation 'issue_key'
-        from django.db.models import Min
-        from tasks.models import Timer as NewTimer
-
-        qs = Task.objects.select_related('machine_fk').prefetch_related('issue_key').annotate(first_timer_start=Min('issue_key__start_time')).filter(
-                machine_fk_id=machine_id,
-                is_hold_task=False
-            )
-
-        qs = qs.order_by(
-            F('in_plan').desc(),
-            F('plan_order').asc(nulls_last=True),
-            F('planned_start_ms').asc(nulls_last=True),
-            F('finish_time').asc(nulls_last=True),
-            'key'
-        )
-
-        data = ProductionPlanSerializer(qs, many=True).data
-        return Response(data, status=200)
-
-class PlanningBulkSaveView(APIView):
+class PlanningBulkSaveView(GenericPlanningBulkSaveView):
     """
-    POST /machining/planning/bulk-save/
-    {
-      "items": [
-        {"key":"TI-001","in_plan": true,  "machine_fk":5,"planned_start_ms":..., "planned_end_ms":..., "plan_order":1, "plan_locked":true},
-        {"key":"TI-002","in_plan": false}
-      ]
-    }
-
-    Behavior (existing tasks only):
-      - in_plan:false -> remove from plan (clear planning fields)
-      - in_plan:true  -> add to plan or update plan fields (partial)
-      - Missing keys  -> 400 with list of missing
+    Inherits from the generic bulk save view, providing machining-specifics.
     """
     permission_classes = [IsMachiningUserOrAdmin]
-
-    @transaction.atomic
-    def post(self, request):
-        items = request.data.get('items', [])
-        if not isinstance(items, list) or not items:
-            return Response({"error": "Body must include non-empty 'items' array"}, status=400)
-
-        # 1) ITEM-LEVEL VALIDATION (once, on raw payload)
-        item_ser = TaskPlanUpdateItemSerializer(data=items, many=True)
-        item_ser.is_valid(raise_exception=True)
-        rows = item_ser.validated_data  # machine_fk may now be a Machine instance
-
-        # 2) FETCH EXISTING (lock) & fail if any key is missing
-        keys = [row['key'] for row in rows]
-        existing_qs = Task.objects.select_for_update().filter(key__in=keys)
-        inst_map = {t.key: t for t in existing_qs}
-        missing = [k for k in keys if k not in inst_map]
-        if missing:
-            return Response({"error": "Some tasks not found", "keys": missing}, status=400)
-
-        existing_machine_map = {t.key: t.machine_fk for t in existing_qs}
-
-        # 3) LIST-LEVEL PAYLOAD UNIQUENESS (run on raw subset to avoid instance coercion)
-        raw_by_key = {d['key']: d for d in items if isinstance(d, dict) and 'key' in d}
-        raw_rows_in_order = [raw_by_key[k] for k in keys]
-        bulk_validate = TaskPlanBulkListSerializer(
-            child=TaskPlanUpdateItemSerializer(),
-            data=raw_rows_in_order,
-            context={"existing_machine_map": existing_machine_map},
-        )
-        bulk_validate.is_valid(raise_exception=True)  # only triggers list-level validate()
-
-        # 3b) Optional: DB preflight for intended (machine_fk, plan_order) conflicts (friendlier 400)
-        intended_map = {}  # key -> (mid, order, in_plan)
-        for r in rows:
-            key = r["key"]
-            cur = inst_map[key]
-            in_plan = r.get("in_plan", cur.in_plan if hasattr(cur, "in_plan") else True)
-
-            # machine_fk may be instance or id or None
-            mid = r.get("machine_fk")
-            if hasattr(mid, "id"):
-                mid = mid.id
-            elif mid is None:
-                mid = getattr(cur.machine_fk, "id", None)
-
-            order = r.get("plan_order", getattr(cur, "plan_order", None))
-            intended_map[key] = (mid, order, in_plan)
-
-        # (b1) Detect intra-payload duplicates (two items target same (mid, order))
-        payload_conflicts = []
-        seen = {}
-        for key, (mid, order, in_plan) in intended_map.items():
-            if in_plan and mid is not None and order is not None:
-                token = (mid, order)
-                if token in seen:
-                    payload_conflicts.append({
-                        "key": key,
-                        "machine_fk": mid,
-                        "plan_order": order,
-                        "conflicts_with": seen[token],
-                        "source": "payload"
-                    })
-                else:
-                    seen[token] = key
-
-        if payload_conflicts:
-            return Response(
-                {"error": "Duplicate plan_order within payload",
-                "conflicts": payload_conflicts},
-                status=400
-            )
-
-        # (b2) Check DB conflicts for the intended positions, but ignore keys in this batch
-        #     (because they will be updated together).
-        db_conflicts = []
-        batch_keys = set(keys)
-
-        # Gather all (mid, order) pairs we intend to occupy
-        targets = [(mid, order) for (mid, order, in_plan) in intended_map.values()
-                if in_plan and mid is not None and order is not None]
-
-        # Short-circuit if nothing to check
-        if targets:
-            # Efficient enough for typical plan sizes; build a combined OR query
-            from django.db.models import Q
-            q = Q(in_plan=True)
-            # OR over all target pairs
-            pair_q = Q()
-            for mid, order in targets:
-                pair_q |= (Q(machine_fk_id=mid) & Q(plan_order=order))
-            q &= pair_q
-
-            # Ignore any tasks that are part of this same bulk update
-            qs = Task.objects.filter(q).exclude(key__in=batch_keys)
-
-            # If anything remains, those are *real* conflicts
-            if qs.exists():
-                db_conflicts = list(qs.values("key", "machine_fk_id", "plan_order"))
-
-        if db_conflicts:
-            return Response(
-                {"error": "plan_order conflicts with existing tasks (outside this payload)",
-                "conflicts": db_conflicts},
-                status=400
-            )
-        
-        instances_in_order = [inst_map[k] for k in keys]
-        bulk_updater = TaskPlanBulkListSerializer(child=TaskPlanUpdateItemSerializer())
-        updated_objs = bulk_updater.update(instances_in_order, rows)
-
-        return Response({"updated": PlanningListItemSerializer(updated_objs, many=True).data}, status=200)
+    task_model = Task
+    item_serializer_class = TaskPlanUpdateItemSerializer
+    bulk_list_serializer_class = TaskPlanBulkListSerializer
+    response_serializer_class = PlanningListItemSerializer
+    resource_fk_field = 'machine_fk'
     
 
 # views.py
