@@ -14,9 +14,14 @@ class MachineSerializer(serializers.ModelSerializer):
         fields = '__all__'  # Includes all fields, including JSON and label
 
 class MachineMinimalSerializer(serializers.ModelSerializer):
+    assigned_users = SimpleUserSerializer(many=True, read_only=True)
+    machine_type_label = serializers.SerializerMethodField()
     class Meta:
         model = Machine
-        fields = ["id", "name", "code", "used_in"]
+        fields = ["id", "name", "code", "used_in", "assigned_users", "machine_type", "machine_type_label"]
+
+    def get_machine_type_label(self, obj):
+        return obj.get_machine_type_display()
 
 class MachineGetSerializer(serializers.ModelSerializer):
     assigned_users = SimpleUserSerializer(many=True, read_only=True)

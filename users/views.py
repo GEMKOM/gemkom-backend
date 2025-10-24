@@ -8,6 +8,7 @@ from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
 
 from core.emails import send_plain_email
+from machines.serializers import SimpleUserSerializer
 from users.filters import UserFilter, WageOrderingFilter
 from users.helpers import _team_manager_user_ids
 from users.models import UserProfile, WageRate
@@ -62,6 +63,8 @@ class UserViewSet(ModelViewSet):
         return [IsAdmin()]
     
     def get_serializer_class(self):
+        if self.request.query_params.get("for_dropdown") == "true":
+            return SimpleUserSerializer
         if self.action == 'create':
             return UserCreateSerializer
         elif self.action in ['update', 'partial_update']:

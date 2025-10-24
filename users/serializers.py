@@ -2,6 +2,12 @@ from django.contrib.auth.models import User
 from rest_framework import serializers
 from .models import UserProfile, WageRate
 
+
+class SimpleUserSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ['id', 'username', 'first_name', 'last_name']
+
 class PublicUserSerializer(serializers.ModelSerializer):
     team = serializers.CharField(source='profile.team')
     team_label = serializers.SerializerMethodField()
