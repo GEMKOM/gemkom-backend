@@ -23,6 +23,7 @@ class CncTask(BaseTask):
     dimensions = models.CharField(max_length=100, null=True, blank=True)
     thickness_mm = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
     processed_by_warehouse = models.BooleanField(default=False)
+    processed_warehouse_date = models.DateField(null=True, blank=True)
 
 
     # This creates the reverse relationship from a CncTask back to all its Timers.

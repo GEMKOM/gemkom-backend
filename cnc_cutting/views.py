@@ -1,3 +1,4 @@
+import time
 from rest_framework.viewsets import ModelViewSet
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.parsers import MultiPartParser, FormParser
@@ -6,6 +7,9 @@ from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import OrderingFilter
 from rest_framework import viewsets, mixins
 from users.permissions import IsCuttingUserOrAdmin, IsOfficeUserOrAdmin
+from django.utils import timezone
+from rest_framework.response import Response
+from rest_framework import status
 
 from .models import CncTask, CncPart
 from tasks.models import TaskFile
@@ -75,7 +79,22 @@ class UnmarkTaskCompletedView(GenericUnmarkTaskCompletedView):
     def post(self, request):
         return super().post(request, task_type='cnc_cutting')
 
+class MarkTaskWareHouseProcessedView(GenericMarkTaskCompletedView):
+    permission_classes = [IsAuthenticated]
 
+    def post(self, request):
+        task_key = request.data.get('key')
+        if not task_key:
+            return Response({'error': 'Task key is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            task = CncTask.objects.get(key=task_key)
+            task.processed_by_warehouse = True
+            task.processed_warehouse_date = timezone.now().date()
+            task.save()
+            return Response({'status': 'Task marked as processed by warehouse.'}, status=status.HTTP_200_OK)
+        except CncTask.DoesNotExist:
+            return Response({'error': 'Task not found.'}, status=status.HTTP_404_NOT_FOUND)
 # --- Planning Views ---
 
 class PlanningListView(GenericPlanningListView):
