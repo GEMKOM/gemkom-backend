@@ -15,6 +15,37 @@ class IsMachiningUserOrAdmin(BasePermission):
                 or getattr(profile, "work_location", "").lower() == "office"
             )
         )
+    
+class IsCuttingUserOrAdmin(BasePermission):
+    def has_permission(self, request, view):
+        user = request.user
+        profile = getattr(user, "profile", None)
+
+        return (
+            user
+            and user.is_authenticated
+            and (
+                user.is_superuser
+                or user.is_admin
+                or getattr(profile, "team", "").lower() == "cutting"
+                or getattr(profile, "work_location", "").lower() == "office"
+            )
+        )
+
+class IsOfficeUserOrAdmin(BasePermission):
+    def has_permission(self, request, view):
+        user = request.user
+        profile = getattr(user, "profile", None)
+
+        return (
+            user
+            and user.is_authenticated
+            and (
+                user.is_superuser
+                or user.is_admin
+                or getattr(profile, "work_location", "").lower() == "office"
+            )
+        )
 
 class IsAdmin(BasePermission):
     def has_permission(self, request, view):

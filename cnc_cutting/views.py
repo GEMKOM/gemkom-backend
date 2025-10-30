@@ -1,10 +1,11 @@
 from rest_framework.viewsets import ModelViewSet
-from rest_framework.permissions import IsAuthenticated, IsAdminUser
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.parsers import MultiPartParser, FormParser
 from django.db.models import Count
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import OrderingFilter
 from rest_framework import viewsets, mixins
+from users.permissions import IsCuttingUserOrAdmin, IsOfficeUserOrAdmin
 
 from .models import CncTask, CncPart
 from tasks.models import TaskFile
@@ -57,7 +58,7 @@ class TimerDetailView(GenericTimerDetailView):
     permission_classes = [IsAuthenticated]
 
 class TimerReportView(GenericTimerReportView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsOfficeUserOrAdmin]
     def get(self, request, *args, **kwargs):
         return super().get(request, task_type='cnc_cutting')
 
@@ -69,7 +70,7 @@ class MarkTaskCompletedView(GenericMarkTaskCompletedView):
 
 
 class UnmarkTaskCompletedView(GenericUnmarkTaskCompletedView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsCuttingUserOrAdmin]
 
     def post(self, request):
         return super().post(request, task_type='cnc_cutting')
@@ -81,7 +82,7 @@ class PlanningListView(GenericPlanningListView):
     """
     GET /cnc_cutting/planning/list/?machine_fk=...
     """
-    permission_classes = [IsAuthenticated] # TODO: Define more specific CNC permissions if needed
+    permission_classes = [IsAuthenticated]
     task_model = CncTask
     serializer_class = CncPlanningListItemSerializer
     resource_fk_field = 'machine_fk'
@@ -99,7 +100,7 @@ class PlanningBulkSaveView(GenericPlanningBulkSaveView):
     """
     POST /cnc_cutting/planning/bulk-save/
     """
-    permission_classes = [IsAdminUser] # Planning updates are typically restricted
+    permission_classes = [IsOfficeUserOrAdmin] # Planning updates are typically restricted
     task_model = CncTask
     item_serializer_class = CncTaskPlanUpdateItemSerializer
     bulk_list_serializer_class = CncTaskPlanBulkListSerializer
