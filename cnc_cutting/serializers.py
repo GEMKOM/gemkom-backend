@@ -137,7 +137,8 @@ class CncPlanningListItemSerializer(serializers.ModelSerializer):
     class Meta:
         model = CncTask
         fields = [
-            'key', 'name', 'in_plan', 'plan_order', 'plan_locked',
+            'key', 'name', 'nesting_id', 'material', 'dimensions',
+            'thickness_mm', 'in_plan', 'plan_order', 'plan_locked',
             'planned_start_ms', 'planned_end_ms', 'estimated_hours',
             'total_hours_spent', 'remaining_hours', 'machine_fk'
         ]
