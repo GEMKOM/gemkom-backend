@@ -434,7 +434,7 @@ class BasisChoicesView(APIView):
         ])
 
 
-class PurchaseOrderViewSet(viewsets.ReadOnlyModelViewSet):
+class PurchaseOrderViewSet(viewsets.ModelViewSet):
     queryset = PurchaseOrder.objects.all()
     permission_classes = [IsFinanceAuthorized]
     filter_backends = [DjangoFilterBackend, OrderingFilter]
@@ -442,6 +442,15 @@ class PurchaseOrderViewSet(viewsets.ReadOnlyModelViewSet):
     # allow API consumer to override, but we’ll default to next_unpaid_due
     ordering_fields = ['id', 'created_at', 'total_amount', 'next_unpaid_due']
     ordering = ['next_unpaid_due', 'id']  # default: earliest first, ties by id
+
+    def create(self, request, *args, **kwargs):
+        return Response(status=status.HTTP_405_METHOD_NOT_ALLOWED)
+
+    def update(self, request, *args, **kwargs):
+        return Response(status=status.HTTP_405_METHOD_NOT_ALLOWED)
+
+    def partial_update(self, request, *args, **kwargs):
+        return Response(status=status.HTTP_405_METHOD_NOT_ALLOWED)
 
     def _with_payment_annos(self, qs):
         unpaid_exists = PaymentSchedule.objects.filter(
@@ -498,6 +507,24 @@ class PurchaseOrderViewSet(viewsets.ReadOnlyModelViewSet):
             else PurchaseOrderListSerializer
         )
     
+    def perform_destroy(self, instance):
+        """
+        Deletes a Purchase Order. This is a destructive action.
+        - Only Admins can perform this.
+        - The associated Purchase Request is cancelled.
+        - All related PO lines, schedules, and allocations are deleted via CASCADE.
+        """
+        if not self.request.user.is_staff:
+            raise PermissionDenied("Only administrators can delete a purchase order.")
+
+        pr = instance.pr
+
+        with transaction.atomic():
+            instance.delete()
+            if pr:
+                cancel_purchase_request(pr, self.request.user, reason=f"Related PO-{instance.id} was deleted.")
+
+
     @action(detail=True, methods=["POST"])
     @transaction.atomic
     def mark_schedule_paid(self, request, pk=None):
