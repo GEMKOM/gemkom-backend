@@ -31,5 +31,6 @@ class CncTaskFilter(django_filters.FilterSet):
             'is_hold_task',
             'machine_fk',
             'has_timer',
-            'thickness_mm'
+            'thickness_mm',
+            'processed_by_warehouse'
         ]

@@ -29,6 +29,7 @@ router.register(r'files', CncTaskFileViewSet, basename='cnctaskfile')
 urlpatterns = [ # Custom task actions first
     path('tasks/mark-completed/', MarkTaskCompletedView.as_view(), name='mark-task-completed'),
     path('tasks/unmark-completed/', UnmarkTaskCompletedView.as_view(), name='unmark-task-completed'),
+    path('tasks/warehouse-process/', MarkTaskWareHouseProcessedView.as_view(), name='mark-task-completed'),
     # Generic Timer URLs for CNC Cutting
     path("timers/start/", TimerStartView.as_view(), name="timer-start"),
     path("timers/stop/", TimerStopView.as_view(), name="timer-stop"),
@@ -36,7 +37,7 @@ urlpatterns = [ # Custom task actions first
     path("timers/", TimerListView.as_view(), name="timer-list"),
     path("timer-report/", TimerReportView.as_view(), name="timer-report"),
     path('timers/<int:pk>/', TimerDetailView.as_view(), name='timer-detail'),
-    path('tasks/warehouse-process/', MarkTaskWareHouseProcessedView.as_view(), name='mark-task-completed'),
+    
 
     # Planning URLs
     path('planning/list/', PlanningListView.as_view(), name='planning-list'),
