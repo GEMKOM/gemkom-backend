@@ -23,12 +23,12 @@ class CncTimerSerializer(BaseTimerSerializer):
     Extends the BaseTimerSerializer to include fields specific to a CncTask.
     """
     nesting_id = serializers.CharField(source='issue_key.nesting_id', read_only=True)
-    material = serializers.CharField(source='issue_key.material', read_only=True)
+    thickness_mm = serializers.CharField(source='issue_key.thickness_mm', read_only=True)
 
     class Meta(BaseTimerSerializer.Meta):
         # Inherit fields from the base and add the new ones
         fields = BaseTimerSerializer.Meta.fields + [
-            'nesting_id', 'material'
+            'nesting_id', 'thickness_mm'
         ]
 
 
