@@ -151,6 +151,11 @@ class CncTaskViewSet(TaskFileMixin, ModelViewSet):
         if self.action == 'list':
             return CncTaskListSerializer
         return CncTaskDetailSerializer
+    
+    def get_queryset(self):
+        # 'issue_key' is the GenericRelation from tasks.Timer back to this Task
+        # prefetch_related works seamlessly with it for great performance.
+        return CncTask.objects.filter(is_hold_task=False)
 
 
 class CncHoldTaskViewSet(ModelViewSet):
