@@ -36,6 +36,7 @@ from .serializers import (
     CncTaskPlanUpdateItemSerializer,
     CncTaskPlanBulkListSerializer,
 )
+from .serializers import CncHoldTaskSerializer
 from .filters import CncTaskFilter
 from tasks.serializers import TaskFileSerializer
 from tasks.view_mixins import TaskFileMixin
@@ -150,6 +151,20 @@ class CncTaskViewSet(TaskFileMixin, ModelViewSet):
         if self.action == 'list':
             return CncTaskListSerializer
         return CncTaskDetailSerializer
+
+
+class CncHoldTaskViewSet(ModelViewSet):
+    """
+    ViewSet for listing CNC hold tasks.
+    """
+    queryset = CncTask.objects.all()
+    serializer_class = CncHoldTaskSerializer
+    filter_backends = [DjangoFilterBackend]
+    permission_classes = [IsAuthenticated]
+    filterset_class = CncTaskFilter
+
+    def get_queryset(self):
+        return CncTask.objects.filter(is_hold_task=True)
 
 class CncPartViewSet(ModelViewSet):
     """

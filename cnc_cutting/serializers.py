@@ -125,6 +125,17 @@ class CncTaskDetailSerializer(serializers.ModelSerializer):
         return cnc_task
 
 
+class CncHoldTaskSerializer(serializers.ModelSerializer):
+    """
+    A lightweight serializer for listing CNC hold tasks.
+    """
+    class Meta:
+        model = CncTask
+        fields = [
+            'key', 'name', 'nesting_id'
+        ]
+        read_only_fields = ['key', 'name', 'nesting_id']
+
 # --- Planning Serializers ---
 
 class CncPlanningListItemSerializer(serializers.ModelSerializer):
