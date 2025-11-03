@@ -188,7 +188,7 @@ def _build_bulk_machine_timelines(machine_ids, start_after_ms, start_before_ms):
     # Pull timers intersecting requested range
     timers = (
         Timer.objects
-        .select_related('issue_key', 'machine_fk')
+        .prefetch_related('issue_key').select_related('machine_fk')
         .filter(machine_fk_id__in=machine_ids)
         .filter(Q(finish_time__gte=start_after_ms) | Q(finish_time__isnull=True))
         .filter(start_time__lte=start_before_ms)
