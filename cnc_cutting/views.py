@@ -139,7 +139,7 @@ class CncTaskViewSet(TaskFileMixin, ModelViewSet):
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser] # Important for file uploads
     filterset_class = CncTaskFilter
-    ordering_fields = ['key', 'name', 'nesting_id', 'material', 'thickness_mm', 'completion_date', 'estimated_hours']
+    ordering_fields = ['key', 'name', 'nesting_id', 'material', 'thickness_mm', 'completion_date', 'estimated_hours', 'plan_order']
     ordering = ['-key']
     
     def get_serializer_class(self):
