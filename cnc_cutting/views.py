@@ -1,4 +1,5 @@
 import time
+from rest_framework.views import APIView
 from rest_framework.viewsets import ModelViewSet
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.parsers import MultiPartParser, FormParser
@@ -11,7 +12,7 @@ from django.utils import timezone
 from rest_framework.response import Response
 from rest_framework import status
 
-from .models import CncTask, CncPart
+from .models import CncTask, CncPart, RemnantPlate
 from tasks.models import TaskFile
 from tasks.views import (
     GenericTimerDetailView,
@@ -31,6 +32,7 @@ from .serializers import (
     CncTaskDetailSerializer,
     CncPartSerializer,
     CncTimerSerializer,
+    RemnantPlateSerializer,
     CncPlanningListItemSerializer,
     CncProductionPlanSerializer,
     CncTaskPlanUpdateItemSerializer,
@@ -186,3 +188,30 @@ class CncTaskFileViewSet(mixins.DestroyModelMixin, viewsets.GenericViewSet):
     queryset = TaskFile.objects.all()
     serializer_class = TaskFileSerializer
     permission_classes = [IsAuthenticated]
+
+class RemnantPlateViewSet(ModelViewSet):
+    """
+    ViewSet for listing, creating, retrieving, updating, and deleting RemnantPlate instances.
+    """
+    serializer_class = RemnantPlateSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        """
+        For 'list' and 'retrieve' actions, only show remnant plates that are not assigned to a task.
+        For other actions (update, delete), allow access to any remnant plate.
+        """
+        return RemnantPlate.objects.filter(assigned_to__isnull=True)
+
+class RemnantPlateBulkCreateView(APIView):
+    """
+    View for bulk creating RemnantPlate instances.
+    Expects a list of remnant plate objects in the request body.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        serializer = RemnantPlateSerializer(data=request.data, many=True)
+        serializer.is_valid(raise_exception=True)
+        instances = serializer.save()
+        return Response(RemnantPlateSerializer(instances, many=True).data, status=status.HTTP_201_CREATED)

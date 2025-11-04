@@ -2,7 +2,7 @@ import json
 from rest_framework import serializers
 
 from machines.models import Machine
-from .models import CncTask, CncPart
+from .models import CncTask, CncPart, RemnantPlate
 from tasks.models import TaskKeyCounter, TaskFile
 from tasks.serializers import BaseTimerSerializer, TaskFileSerializer
 from django.db import transaction
@@ -135,6 +135,16 @@ class CncHoldTaskSerializer(serializers.ModelSerializer):
             'key', 'name', 'nesting_id'
         ]
         read_only_fields = ['key', 'name', 'nesting_id']
+
+
+class RemnantPlateSerializer(serializers.ModelSerializer):
+    """
+    Serializer for the RemnantPlate model.
+    """
+    class Meta:
+        model = RemnantPlate
+        fields = ['id', 'thickness_mm', 'dimensions', 'quantity', 'material', 'assigned_to']
+
 
 # --- Planning Serializers ---
 

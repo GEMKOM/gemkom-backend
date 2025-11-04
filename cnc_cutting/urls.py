@@ -1,8 +1,8 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .views import (
-    CncHoldTaskViewSet,
     CncTaskViewSet,
+    CncHoldTaskViewSet,
     CncPartViewSet,
     CncTaskFileViewSet,
     TimerStartView,
@@ -17,6 +17,8 @@ from .views import (
     PlanningListView,
     ProductionPlanView,
     PlanningBulkSaveView,
+    RemnantPlateViewSet,
+    RemnantPlateBulkCreateView,
 
 )
 
@@ -27,11 +29,13 @@ router.register(r'tasks', CncTaskViewSet, basename='cnctask')
 router.register(r'hold-tasks', CncHoldTaskViewSet, basename='cnchold-task')
 router.register(r'parts', CncPartViewSet, basename='cncpart')
 router.register(r'files', CncTaskFileViewSet, basename='cnctaskfile')
+router.register(r'remnants', RemnantPlateViewSet, basename='remnantplate')
 
 urlpatterns = [ # Custom task actions first
     path('tasks/mark-completed/', MarkTaskCompletedView.as_view(), name='mark-task-completed'),
     path('tasks/unmark-completed/', UnmarkTaskCompletedView.as_view(), name='unmark-task-completed'),
     path('tasks/warehouse-process/', MarkTaskWareHouseProcessedView.as_view(), name='mark-task-completed'),
+    path('remnant-plates/bulk-create/', RemnantPlateBulkCreateView.as_view(), name='remnant-plate-bulk-create'),
     # Generic Timer URLs for CNC Cutting
     path("timers/start/", TimerStartView.as_view(), name="timer-start"),
     path("timers/stop/", TimerStopView.as_view(), name="timer-stop"),

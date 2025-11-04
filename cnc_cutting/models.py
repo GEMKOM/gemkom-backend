@@ -38,6 +38,25 @@ class CncTask(BaseTask):
     def __str__(self):
         return f"CncTask {self.key} - {self.nesting_id or 'No Nesting ID'}"
 
+    def save(self, *args, **kwargs):
+        if self.completion_date is not None:
+            # Completed tasks must not occupy plan slots
+            self.in_plan = False
+            self.plan_order = None
+
+        if self.pk:
+            try:
+                old = CncTask.objects.only('machine_fk').get(pk=self.pk)
+                if old.machine_fk_id != (self.machine_fk_id or None):
+                    self.in_plan = False
+                    self.plan_order = None
+                    self.planned_start_ms = None
+                    self.planned_end_ms = None
+            except CncTask.DoesNotExist:
+                pass
+
+        super().save(*args, **kwargs)
+
 
 class CncPart(models.Model):
     """
@@ -58,3 +77,22 @@ class CncPart(models.Model):
 
     def __str__(self):
         return f"Part for Job {self.job_no} (Pos: {self.position_no or 'N/A'}) in Nest {self.cnc_task.key}"
+
+class RemnantPlate(models.Model):
+    thickness_mm = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    dimensions = models.CharField(max_length=100, null=True, blank=True)
+    quantity = models.IntegerField(null=True, blank=True)
+    material = models.CharField(max_length=100, null=True, blank=True)
+    assigned_to = models.ForeignKey(CncTask, on_delete=models.SET_NULL, null=True, blank=True, related_name='remnant_plates')
+
+    # This creates the reverse relationship from a CncTask back to all its Timers.
+    # It allows `prefetch_related('issue_key')` to work on CncTask querysets.
+    issue_key = GenericRelation(
+        'tasks.Timer',
+        content_type_field='content_type',
+        object_id_field='object_id',
+    )
+
+    # Add any other fields you need for CNC tasks.
+    def __str__(self):
+        return f"Remnant Plate {self.id} - {self.material} {self.thickness_mm}mm ({self.dimensions})"
