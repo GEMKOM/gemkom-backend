@@ -24,6 +24,7 @@ class CncTask(BaseTask):
     thickness_mm = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
     processed_by_warehouse = models.BooleanField(default=False)
     processed_warehouse_date = models.DateField(null=True, blank=True)
+    heat_number = models.CharField(max_length=100, null=True, blank=True)
 
 
     # This creates the reverse relationship from a CncTask back to all its Timers.
@@ -84,6 +85,8 @@ class RemnantPlate(models.Model):
     quantity = models.IntegerField(null=True, blank=True)
     material = models.CharField(max_length=100, null=True, blank=True)
     assigned_to = models.ForeignKey(CncTask, on_delete=models.SET_NULL, null=True, blank=True, related_name='remnant_plates')
+    heat_number = models.CharField(max_length=100, null=True, blank=True)
+
 
     # This creates the reverse relationship from a CncTask back to all its Timers.
     # It allows `prefetch_related('issue_key')` to work on CncTask querysets.
