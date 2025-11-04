@@ -11,6 +11,7 @@ from users.permissions import IsCuttingUserOrAdmin, IsOfficeUserOrAdmin
 from django.utils import timezone
 from rest_framework.response import Response
 from rest_framework import status
+from rest_framework.decorators import action
 
 from .models import CncTask, CncPart, RemnantPlate
 from tasks.models import TaskFile
@@ -202,16 +203,16 @@ class RemnantPlateViewSet(ModelViewSet):
         For other actions (update, delete), allow access to any remnant plate.
         """
         return RemnantPlate.objects.filter(assigned_to__isnull=True)
-
-class RemnantPlateBulkCreateView(APIView):
-    """
-    View for bulk creating RemnantPlate instances.
-    Expects a list of remnant plate objects in the request body.
-    """
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request, *args, **kwargs):
-        serializer = RemnantPlateSerializer(data=request.data, many=True)
+    
+    @action(detail=False, methods=['post'], url_path='bulk-create')
+    def bulk_create(self, request, *args, **kwargs):
+        """
+        Handles bulk creation of RemnantPlate instances.
+        Expects a POST request to `/api/cnc_cutting/remnants/bulk-create/`
+        with a list of remnant plate objects in the request body.
+        """
+        serializer = self.get_serializer(data=request.data, many=True)
         serializer.is_valid(raise_exception=True)
         instances = serializer.save()
-        return Response(RemnantPlateSerializer(instances, many=True).data, status=status.HTTP_201_CREATED)
+        response_serializer = self.get_serializer(instances, many=True)
+        return Response(response_serializer.data, status=status.HTTP_201_CREATED)

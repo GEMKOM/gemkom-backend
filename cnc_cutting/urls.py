@@ -18,7 +18,6 @@ from .views import (
     ProductionPlanView,
     PlanningBulkSaveView,
     RemnantPlateViewSet,
-    RemnantPlateBulkCreateView,
 
 )
 
@@ -35,7 +34,6 @@ urlpatterns = [ # Custom task actions first
     path('tasks/mark-completed/', MarkTaskCompletedView.as_view(), name='mark-task-completed'),
     path('tasks/unmark-completed/', UnmarkTaskCompletedView.as_view(), name='unmark-task-completed'),
     path('tasks/warehouse-process/', MarkTaskWareHouseProcessedView.as_view(), name='mark-task-completed'),
-    path('remnant-plates/bulk-create/', RemnantPlateBulkCreateView.as_view(), name='remnant-plate-bulk-create'),
     # Generic Timer URLs for CNC Cutting
     path("timers/start/", TimerStartView.as_view(), name="timer-start"),
     path("timers/stop/", TimerStopView.as_view(), name="timer-stop"),
