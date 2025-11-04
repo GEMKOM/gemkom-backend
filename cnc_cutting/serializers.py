@@ -1,4 +1,5 @@
 import json
+from core.serializers import NullablePKRelatedField
 from rest_framework import serializers
 
 from machines.models import Machine
@@ -69,11 +70,15 @@ class CncTaskDetailSerializer(serializers.ModelSerializer):
     parts = CncPartSerializer(many=True, read_only=True)
     files = TaskFileSerializer(many=True, read_only=True)
     machine_name = serializers.CharField(source='machine_fk.name', read_only=True, allow_null=True)
+    selected_plate = NullablePKRelatedField(
+        queryset=RemnantPlate.objects.all(),
+        required=False, allow_null=True
+    )
 
     class Meta:
         model = CncTask
         fields = [
-            'key', 'name', 'nesting_id', 'material', 'dimensions',
+            'key', 'name', 'nesting_id', 'material', 'dimensions', 'selected_plate',
             'thickness_mm', 'parts', 'files', 'machine_fk', 'machine_name', 'estimated_hours'
         ]
         read_only_fields = ['key']
@@ -123,6 +128,20 @@ class CncTaskDetailSerializer(serializers.ModelSerializer):
             TaskFile.objects.bulk_create(task_files_to_create)
 
         return cnc_task
+    
+    def update(self, instance, validated_data):
+        # Pull selected_plate explicitly so we can clear it if provided as None/empty
+        selected_plate = validated_data.pop('selected_plate', serializers.empty)
+
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+
+        if selected_plate is not serializers.empty:
+            # Can be an instance or None (to remove)
+            instance.selected_plate = selected_plate
+
+        instance.save()
+        return instance
 
 
 class CncHoldTaskSerializer(serializers.ModelSerializer):
@@ -143,7 +162,7 @@ class RemnantPlateSerializer(serializers.ModelSerializer):
     """
     class Meta:
         model = RemnantPlate
-        fields = ['id', 'thickness_mm', 'dimensions', 'quantity', 'material', 'assigned_to']
+        fields = ['id', 'thickness_mm', 'dimensions', 'quantity', 'material']
 
 
 # --- Planning Serializers ---

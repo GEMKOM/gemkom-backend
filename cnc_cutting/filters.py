@@ -1,5 +1,5 @@
 import django_filters
-from .models import CncTask
+from .models import CncTask, RemnantPlate
 from django.db.models import Count
 
 class CncTaskFilter(django_filters.FilterSet):
@@ -33,4 +33,23 @@ class CncTaskFilter(django_filters.FilterSet):
             'has_timer',
             'thickness_mm',
             'processed_by_warehouse'
+        ]
+
+
+class RemnantPlateFilter(django_filters.FilterSet):
+    """
+    Filters for the RemnantPlate model.
+    CharFields are filtered using case-insensitive 'contains'.
+    """
+    dimensions = django_filters.CharFilter(lookup_expr='icontains')
+    material = django_filters.CharFilter(lookup_expr='icontains')
+    heat_number = django_filters.CharFilter(lookup_expr='icontains')
+    # Filter for remnant plates that are not assigned to any task
+    unassigned = django_filters.BooleanFilter(field_name='cnc_tasks', lookup_expr='isnull')
+
+    class Meta:
+        model = RemnantPlate
+        fields = [
+            'thickness_mm', 'dimensions', 'quantity',
+            'material', 'heat_number', 'unassigned'
         ]

@@ -40,7 +40,7 @@ from .serializers import (
     CncTaskPlanBulkListSerializer,
 )
 from .serializers import CncHoldTaskSerializer
-from .filters import CncTaskFilter
+from .filters import CncTaskFilter, RemnantPlateFilter
 from tasks.serializers import TaskFileSerializer
 from tasks.view_mixins import TaskFileMixin
 
@@ -194,16 +194,27 @@ class RemnantPlateViewSet(ModelViewSet):
     """
     ViewSet for listing, creating, retrieving, updating, and deleting RemnantPlate instances.
     """
+    queryset = RemnantPlate.objects.all()
     serializer_class = RemnantPlateSerializer
     permission_classes = [IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, OrderingFilter]
+    filterset_class = RemnantPlateFilter
+    ordering_fields = ['thickness_mm', 'dimensions', 'quantity', 'material', 'heat_number']
+    ordering = ['-id']
 
     def get_queryset(self):
         """
-        For 'list' and 'retrieve' actions, only show remnant plates that are not assigned to a task.
-        For other actions (update, delete), allow access to any remnant plate.
+        By default, for 'list' actions, only show remnant plates that are not assigned to a task
+        (i.e., no CncTask has selected them). This can be changed by using the `unassigned` filter.
+        For other actions (retrieve, update, delete), allow access to any remnant plate.
         """
-        return RemnantPlate.objects.filter(assigned_to__isnull=True)
-    
+        qs = super().get_queryset()
+        if self.action == 'list':
+            # Default to showing only unassigned plates if no specific filter for assignment is given.
+            if 'unassigned' not in self.request.query_params:
+                return qs.filter(cnc_tasks__isnull=True)
+        return qs
+
     @action(detail=False, methods=['post'], url_path='bulk-create')
     def bulk_create(self, request, *args, **kwargs):
         """
