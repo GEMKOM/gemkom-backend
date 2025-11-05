@@ -354,6 +354,10 @@ class GenericPlanningListView(APIView):
     serializer_class = None
     resource_fk_field = None
 
+    # These need to be defined in the child class for filtering to work
+    filter_backends = []
+    filterset_class = None
+
     def get(self, request):
         resource_id = request.query_params.get(self.resource_fk_field)
         if not resource_id:
@@ -370,6 +374,11 @@ class GenericPlanningListView(APIView):
                 completion_date__isnull=True,
                 completed_by__isnull=True
             )
+
+        # Manually apply the filters from the filterset_class
+        if self.filterset_class:
+            filterset = self.filterset_class(request.query_params, queryset=qs)
+            qs = filterset.qs
 
         # Filter for in-plan tasks and date ranges
         if only_in_plan:

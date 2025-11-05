@@ -108,6 +108,10 @@ class PlanningListView(GenericPlanningListView):
     permission_classes = [IsAuthenticated]
     task_model = CncTask
     serializer_class = CncPlanningListItemSerializer
+    filter_backends = [DjangoFilterBackend, OrderingFilter]
+    filterset_class = CncTaskFilter
+    ordering_fields = ['key', 'name', 'nesting_id', 'material', 'thickness_mm', 'completion_date', 'estimated_hours', 'plan_order']
+    ordering = ['-key']
     resource_fk_field = 'machine_fk'
 
 class ProductionPlanView(GenericProductionPlanView):
