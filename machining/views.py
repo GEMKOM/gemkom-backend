@@ -10,7 +10,7 @@ from machining.permissions import can_view_all_money, can_view_all_users_hours, 
 from .models import Task
 from tasks.models import Timer, TaskKeyCounter
 from tasks.view_mixins import TaskFileMixin
-from machining.services.timers import categorize_timer_segments 
+from machining.services.timers import categorize_timer_segments, _get_business_tz, W_START, W_END 
 from users.permissions import IsAdmin, IsMachiningUserOrAdmin 
 from .models import JobCostAgg, JobCostAggUser, Task
 from tasks.views import GenericMarkTaskCompletedView, GenericTimerDetailView, GenericTimerListView, GenericTimerManualEntryView, GenericTimerReportView, GenericTimerStartView, GenericTimerStopView, GenericUnmarkTaskCompletedView
@@ -767,3 +767,350 @@ class JobCostDetailView(APIView):
             results.append(item)
 
         return Response({"count": len(results), "results": results}, status=200)
+
+
+class DailyUserReportView(APIView):
+    """
+    GET /machining/reports/daily-user-report/?date=2024-01-15
+    
+    Returns a daily report showing what each user did during the day:
+    - Tasks they worked on (with duration in minutes, estimated hours, and total hours spent)
+    - Idle time (gaps between timers within working hours)
+    - Total working time and idle time
+    - Total tasks completed by the user
+    
+    Only includes users with team='machining'.
+    
+    Response shape:
+    {
+      "date": "2024-01-15",
+      "users": [
+        {
+          "user_id": 1,
+          "username": "john",
+          "first_name": "John",
+          "last_name": "Doe",
+          "tasks": [
+            {
+              "timer_id": 123,
+              "task_key": "TI-001",
+              "task_name": "Task 1",
+              "job_no": "J-100",
+              "start_time": 1705312800000,
+              "finish_time": 1705316400000,
+              "duration_minutes": 60,
+              "estimated_hours": 8.0,
+              "total_hours_spent": 3.5,
+              "comment": "Worked on task",
+              "machine_name": "Doosan DBC130L II",
+              "manual_entry": false
+            }
+          ],
+          "idle_periods": [
+            {
+              "start_time": 1705316400000,
+              "finish_time": 1705318200000,
+              "duration_minutes": 30
+            }
+          ],
+          "total_work_hours": 8.0,
+          "total_idle_hours": 1.5,
+          "total_tasks_completed": 15
+        }
+      ]
+    }
+    """
+    permission_classes = [IsMachiningUserOrAdmin]
+
+    def _get_working_hours_for_date(self, date_obj, tz):
+        """Get working hours window for a specific date (07:30-17:00 on weekdays)"""
+        from datetime import datetime
+        weekday = date_obj.weekday()  # 0=Mon, 6=Sun
+        
+        if weekday >= 5:  # Saturday or Sunday
+            return None, None
+        
+        work_start = datetime.combine(date_obj, W_START, tz)
+        work_end = datetime.combine(date_obj, W_END, tz)
+        
+        return int(work_start.timestamp() * 1000), int(work_end.timestamp() * 1000)
+
+    def _calculate_idle_periods(self, timers, work_start_ms, work_end_ms, now_ms):
+        """Calculate idle periods between timers within working hours"""
+        idle_periods = []
+        
+        # If no working hours defined (e.g., weekend), return empty
+        if not work_start_ms or not work_end_ms:
+            return idle_periods
+        
+        if not timers:
+            # If no timers, the entire working day is idle
+            idle_periods.append({
+                "start_time": work_start_ms,
+                "finish_time": min(work_end_ms, now_ms),
+                "duration_minutes": round((min(work_end_ms, now_ms) - work_start_ms) / 60000.0, 0)
+            })
+            return idle_periods
+        
+        # Sort timers by start_time
+        sorted_timers = sorted(timers, key=lambda t: t['start_time'])
+        
+        # Check for idle time before first timer (within working hours)
+        first_timer_start = sorted_timers[0]['start_time']
+        if first_timer_start > work_start_ms:
+            idle_start = work_start_ms
+            idle_end = min(first_timer_start, work_end_ms, now_ms)
+            if idle_end > idle_start:
+                idle_periods.append({
+                    "start_time": idle_start,
+                    "finish_time": idle_end,
+                    "duration_minutes": round((idle_end - idle_start) / 60000.0, 0)
+                })
+        
+        # Check for idle time between timers (within working hours)
+        for i in range(len(sorted_timers) - 1):
+            # Use actual finish time if timer finished, otherwise use clipped finish_time
+            if sorted_timers[i].get('timer_finished') and sorted_timers[i].get('actual_finish_time'):
+                current_end = sorted_timers[i]['actual_finish_time']
+            else:
+                # Timer still running, use clipped time
+                current_end = sorted_timers[i]['finish_time']
+            
+            next_start = sorted_timers[i + 1]['start_time']
+            
+            if next_start > current_end:
+                # Only count idle time if it's within working hours
+                idle_start = max(current_end, work_start_ms)
+                idle_end = min(next_start, work_end_ms, now_ms)
+                if idle_end > idle_start:
+                    idle_periods.append({
+                        "start_time": idle_start,
+                        "finish_time": idle_end,
+                        "duration_minutes": round((idle_end - idle_start) / 60000.0, 0)
+                    })
+        
+        # Check for idle time after last timer (within working hours)
+        if sorted_timers:
+            last_timer = sorted_timers[-1]
+            # Only count idle time if the timer actually finished (not still running)
+            if last_timer.get('timer_finished') and last_timer.get('actual_finish_time'):
+                last_timer_end = last_timer['actual_finish_time']
+                # Check if timer ended before work end time
+                if last_timer_end < work_end_ms:
+                    idle_start = max(last_timer_end, work_start_ms)
+                    idle_end = min(work_end_ms, now_ms)
+                    if idle_end > idle_start:
+                        idle_periods.append({
+                            "start_time": idle_start,
+                            "finish_time": idle_end,
+                            "duration_minutes": round((idle_end - idle_start) / 60000.0, 0)
+                        })
+        
+        return idle_periods
+
+    def get(self, request):
+        from datetime import datetime, date, time
+        from django.contrib.auth.models import User
+        from django.utils import timezone
+        from collections import defaultdict
+        
+        # Parse date parameter (default to today)
+        date_str = request.query_params.get('date')
+        if date_str:
+            try:
+                report_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+            except ValueError:
+                return Response({"error": "Invalid date format. Use YYYY-MM-DD"}, status=400)
+        else:
+            report_date = timezone.now().date()
+        
+        # Get timezone using existing utility
+        tz_business = _get_business_tz()
+        
+        # Calculate day boundaries in UTC (epoch ms)
+        day_start_dt = datetime.combine(report_date, time(0, 0), tz_business)
+        day_end_dt = datetime.combine(report_date, time(23, 59, 59), tz_business)
+        day_start_ms = int(day_start_dt.timestamp() * 1000)
+        day_end_ms = int(day_end_dt.timestamp() * 1000)
+        now_ms = int(timezone.now().timestamp() * 1000)
+        
+        # Get working hours for this date
+        work_start_ms, work_end_ms = self._get_working_hours_for_date(report_date, tz_business)
+        
+        # Get all timers for this day from users with team='machining'
+        # Note: issue_key is a GenericForeignKey, so it can't be used with select_related
+        timers = (
+            Timer.objects
+            .select_related('user', 'machine_fk', 'user__profile')
+            .prefetch_related('issue_key')
+            .filter(
+                start_time__gte=day_start_ms,
+                start_time__lt=day_end_ms + 86400000,  # Include next day start for finish_time
+                user__profile__team='machining'  # Only machining team users
+            )
+            .order_by('user_id', 'start_time')
+        )
+        
+        # Group timers by user and collect task keys for bulk query
+        user_timers = defaultdict(list)
+        task_keys_set = set()
+        
+        for timer in timers:
+            # Only include timers that actually overlap with the report date
+            timer_end = timer.finish_time or now_ms
+            if timer_end < day_start_ms or timer.start_time > day_end_ms:
+                continue
+            
+            # Clip timer to day boundaries
+            timer_start = max(timer.start_time, day_start_ms)
+            timer_end_clipped = min(timer_end, day_end_ms, now_ms)
+            
+            if timer_end_clipped <= timer_start:
+                continue
+            
+            task = timer.issue_key
+            task_key = getattr(task, 'key', None) if task else None
+            if task_key:
+                task_keys_set.add(task_key)
+            
+            task_name = getattr(task, 'name', None) if task else None
+            job_no = getattr(task, 'job_no', None) if task else None
+            
+            duration_ms = timer_end_clipped - timer_start
+            duration_minutes = round(duration_ms / 60000.0, 0)
+            
+            # Store whether timer actually finished and its actual end time for idle calculation
+            timer_finished = timer.finish_time is not None
+            actual_timer_end = timer.finish_time if timer_finished else None
+            
+            user_timers[timer.user_id].append({
+                "timer_id": timer.id,  # Store timer ID
+                "start_time": timer_start,
+                "finish_time": timer_end_clipped,
+                "timer_finished": timer_finished,  # Track if timer actually finished
+                "actual_finish_time": actual_timer_end,  # Store actual end time (None if still running)
+                "task_key": task_key,
+                "task_name": task_name,
+                "job_no": job_no,
+                "duration_minutes": duration_minutes,
+                "comment": timer.comment,
+                "machine_name": timer.machine_fk.name if timer.machine_fk else None,
+                "manual_entry": timer.manual_entry,
+                "_task_obj": task,  # Store task object for later use
+            })
+        
+        # Pre-calculate total_hours_spent for all tasks (bulk query for performance)
+        task_totals = {}
+        if task_keys_set:
+            tasks_with_timers = Task.objects.filter(key__in=task_keys_set).prefetch_related('issue_key')
+            for task in tasks_with_timers:
+                # Calculate total hours spent across all timers for this task
+                task_timers = task.issue_key.exclude(finish_time__isnull=True)
+                total_ms = sum(
+                    (t.finish_time - t.start_time) 
+                    for t in task_timers 
+                    if t.start_time is not None and t.finish_time is not None and t.finish_time > t.start_time
+                )
+                total_hours = round(total_ms / 3600000.0, 2) if total_ms > 0 else 0.0
+                task_totals[task.key] = {
+                    "estimated_hours": float(task.estimated_hours) if task.estimated_hours else None,
+                    "total_hours_spent": total_hours,
+                }
+        
+        # Build response for each user
+        # Filter to only include users with team=machining
+        users_data = []
+        user_ids = list(user_timers.keys())
+        users = User.objects.filter(
+            id__in=user_ids,
+            profile__team='machining'
+        ).select_related('profile')
+        users_by_id = {u.id: u for u in users}
+        
+        # Pre-calculate total tasks completed on this day for all machining users
+        completed_task_counts = {}
+        if users_by_id:
+            from django.db.models import Count
+            completed_counts = (
+                Task.objects
+                .filter(
+                    completed_by_id__in=users_by_id.keys(),
+                    completion_date__gte=day_start_ms,
+                    completion_date__lt=day_end_ms + 86400000  # Include up to end of day
+                )
+                .values('completed_by_id')
+                .annotate(count=Count('key'))
+            )
+            completed_task_counts = {item['completed_by_id']: item['count'] for item in completed_counts}
+        
+        for user_id, timer_list in user_timers.items():
+            user = users_by_id.get(user_id)
+            if not user:
+                continue
+            
+            # Enrich timer list with task totals and remove internal _task_obj
+            enriched_tasks = []
+            for timer_data in timer_list:
+                task_key = timer_data.get("task_key")
+                task_info = task_totals.get(task_key, {}) if task_key else {}
+                
+                enriched_task = {
+                    "timer_id": timer_data.get("timer_id"),
+                    "start_time": timer_data["start_time"],
+                    "finish_time": timer_data["finish_time"],
+                    "task_key": timer_data["task_key"],
+                    "task_name": timer_data["task_name"],
+                    "job_no": timer_data["job_no"],
+                    "duration_minutes": timer_data["duration_minutes"],
+                    "estimated_hours": task_info.get("estimated_hours"),
+                    "total_hours_spent": task_info.get("total_hours_spent", 0.0),
+                    "comment": timer_data["comment"],
+                    "machine_name": timer_data["machine_name"],
+                    "manual_entry": timer_data["manual_entry"],
+                }
+                enriched_tasks.append(enriched_task)
+            
+            # Calculate idle periods
+            idle_periods = self._calculate_idle_periods(
+                timer_list, 
+                work_start_ms, 
+                work_end_ms, 
+                now_ms
+            )
+            
+            # Calculate totals
+            total_work_ms = sum(t['finish_time'] - t['start_time'] for t in timer_list)
+            total_work_hours = round(total_work_ms / 3600000.0, 2)
+            
+            total_idle_ms = sum(
+                (p['finish_time'] - p['start_time']) 
+                for p in idle_periods
+            )
+            # Subtract 40 minutes (lunch time) from total idle time
+            # Negative values indicate they kept the timer open during lunch
+            LUNCH_TIME_MS = 40 * 60 * 1000  # 40 minutes in milliseconds
+            total_idle_ms_adjusted = total_idle_ms - LUNCH_TIME_MS
+            total_idle_hours = round(total_idle_ms_adjusted / 3600000.0, 2)
+            
+            # Get total tasks completed by this user
+            total_tasks_completed = completed_task_counts.get(user.id, 0)
+            
+            users_data.append({
+                "user_id": user.id,
+                "username": user.username,
+                "first_name": user.first_name or "",
+                "last_name": user.last_name or "",
+                "tasks": enriched_tasks,
+                "idle_periods": idle_periods,
+                "total_work_hours": total_work_hours,
+                "total_idle_hours": total_idle_hours,
+                "total_tasks_completed": total_tasks_completed,
+            })
+        
+        # Sort by username
+        users_data.sort(key=lambda x: x['username'])
+        
+        return Response({
+            "date": report_date.isoformat(),
+            "users": users_data,
+        }, status=200)
