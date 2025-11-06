@@ -53,7 +53,7 @@ class CncTaskListSerializer(serializers.ModelSerializer):
     class Meta:
         model = CncTask
         fields = [
-            'key', 'machine_fk', 'machine_name', 'name', 'nesting_id', 'material', 'dimensions',
+            'key', 'machine_fk', 'machine_name', 'name', 'nesting_id', 'material', 'dimensions', 'quantity',
             'thickness_mm', 'completion_date', 'completed_by', 'completed_by_username', 'estimated_hours', 'total_hours_spent', 'parts_count', 'in_plan', 'plan_order', 'plan_order'
         ]
 
