@@ -94,6 +94,7 @@ class CncPart(models.Model):
 
     # --- Costing ---
     weight_kg = models.DecimalField(max_digits=10, decimal_places=3, null=True, blank=True, help_text="Weight of the single part in kg.")
+    quantity = models.IntegerField(null=True, blank=True)
 
     def __str__(self):
         return f"Part for Job {self.job_no} (Pos: {self.position_no or 'N/A'}) in Nest {self.cnc_task.key}"

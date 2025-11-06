@@ -16,7 +16,7 @@ class CncPartSerializer(serializers.ModelSerializer):
     """
     class Meta:
         model = CncPart
-        fields = ['id', 'cnc_task', 'job_no', 'image_no', 'position_no', 'weight_kg']
+        fields = ['id', 'cnc_task', 'job_no', 'image_no', 'position_no', 'weight_kg', 'quantity']
 
 
 class CncTimerSerializer(BaseTimerSerializer):
