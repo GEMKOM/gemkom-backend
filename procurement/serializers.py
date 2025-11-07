@@ -18,6 +18,19 @@ class PaymentTermsSerializer(serializers.ModelSerializer):
         model = PaymentTerms
         fields = ["id", "name", "code", "is_custom", "active", "default_lines", "created_at", "updated_at"]
 
+    def validate_default_lines(self, value):
+        """
+        Validate that the sum of percentages in default_lines is exactly 100,
+        unless the list is empty (allowed for fully custom terms).
+        """
+        if not value:
+            return value  # Empty list is valid
+
+        total = sum(Decimal(str(line.get("percentage") or 0)) for line in value)
+        if total != Decimal("100.00"):
+            raise serializers.ValidationError(f"The sum of percentages in default_lines must be exactly 100. The current sum is {total}.")
+        return value
+
 class PaymentScheduleSerializer(serializers.ModelSerializer):
     # Derived fields (server-side)
     base_tax = serializers.SerializerMethodField()
