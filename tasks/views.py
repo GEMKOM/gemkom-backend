@@ -118,11 +118,35 @@ class GenericTimerManualEntryView(GenericTimerStartView):
     and just flips the 'manual_entry' flag.
     """
     def post(self, request, task_type):
-        response = super().post(request, task_type)
-        if response.status_code == status.HTTP_200_OK:
-            timer_id = response.data['id']
-            Timer.objects.filter(id=timer_id).update(manual_entry=True)
-        return response
+        # --- Overlap validation for manual entries ---
+        machine_fk_id = request.data.get("machine_fk")
+        start_time_str = request.data.get("start_time")
+        finish_time_str = request.data.get("finish_time")
+
+        # Only validate if machine and times are provided
+        if machine_fk_id and start_time_str and finish_time_str:
+            try:
+                start_time = _parse_ms(start_time_str)
+                finish_time = _parse_ms(finish_time_str)
+
+                # Check for overlapping timers on the same machine.
+                # An overlap exists if (StartA < EndB) and (EndA > StartB).
+                # We exclude timers where finish_time is null (still running).
+                overlapping_timers = Timer.objects.filter(
+                    machine_fk_id=machine_fk_id,
+                    start_time__lt=finish_time,
+                    finish_time__gt=start_time,
+                )
+
+                if overlapping_timers.exists():
+                    return Response(
+                        {"error": "An existing timer for this machine overlaps with the specified time frame."},
+                        status=status.HTTP_409_CONFLICT
+                    )
+            except (ValueError, TypeError):
+                return Response({"error": "Invalid timestamp format for start_time or finish_time."}, status=status.HTTP_400_BAD_REQUEST)
+
+        return super().post(request, task_type)
 
 
 class GenericTimerListView(APIView):

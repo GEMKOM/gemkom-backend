@@ -1050,6 +1050,7 @@ class DailyUserReportView(APIView):
             
             # Enrich timer list with task totals and remove internal _task_obj
             enriched_tasks = []
+            enriched_hold_tasks = []
             for timer_data in timer_list:
                 task_key = timer_data.get("task_key")
                 task_info = task_totals.get(task_key, {}) if task_key else {}
@@ -1068,7 +1069,12 @@ class DailyUserReportView(APIView):
                     "machine_name": timer_data["machine_name"],
                     "manual_entry": timer_data["manual_entry"],
                 }
-                enriched_tasks.append(enriched_task)
+
+                task_obj = timer_data.get("_task_obj")
+                if task_obj and getattr(task_obj, 'is_hold_task', False):
+                    enriched_hold_tasks.append(enriched_task)
+                else:
+                    enriched_tasks.append(enriched_task)
             
             # Calculate idle periods
             idle_periods = self._calculate_idle_periods(
@@ -1079,8 +1085,28 @@ class DailyUserReportView(APIView):
             )
             
             # Calculate totals
-            total_work_ms = sum(t['finish_time'] - t['start_time'] for t in timer_list)
+            regular_task_timers = [t for t in timer_list if not (t.get("_task_obj") and getattr(t.get("_task_obj"), 'is_hold_task', False))]
+            hold_task_timers = [t for t in timer_list if t.get("_task_obj") and getattr(t.get("_task_obj"), 'is_hold_task', False)]
+            
+            total_work_ms = 0
+            if work_start_ms and work_end_ms:
+                for t in regular_task_timers:
+                    overlap_start = max(t['start_time'], work_start_ms)
+                    overlap_end = min(t['finish_time'], work_end_ms)
+                    if overlap_end > overlap_start:
+                        total_work_ms += (overlap_end - overlap_start)
+
             total_work_hours = round(total_work_ms / 3600000.0, 2)
+
+            total_hold_ms = 0
+            if work_start_ms and work_end_ms:
+                for t in hold_task_timers:
+                    overlap_start = max(t['start_time'], work_start_ms)
+                    overlap_end = min(t['finish_time'], work_end_ms)
+                    if overlap_end > overlap_start:
+                        total_hold_ms += (overlap_end - overlap_start)
+
+            total_hold_hours = round(total_hold_ms / 3600000.0, 2)
             
             total_idle_ms = sum(
                 (p['finish_time'] - p['start_time']) 
@@ -1088,7 +1114,7 @@ class DailyUserReportView(APIView):
             )
             # Subtract 40 minutes (lunch time) from total idle time
             # Negative values indicate they kept the timer open during lunch
-            LUNCH_TIME_MS = 40 * 60 * 1000  # 40 minutes in milliseconds
+            LUNCH_TIME_MS = 60 * 60 * 1000  # 40 minutes in milliseconds
             total_idle_ms_adjusted = total_idle_ms - LUNCH_TIME_MS
             total_idle_hours = round(total_idle_ms_adjusted / 3600000.0, 2)
             
@@ -1101,8 +1127,10 @@ class DailyUserReportView(APIView):
                 "first_name": user.first_name or "",
                 "last_name": user.last_name or "",
                 "tasks": enriched_tasks,
+                "hold_tasks": enriched_hold_tasks,
                 "idle_periods": idle_periods,
                 "total_work_hours": total_work_hours,
+                "total_hold_hours": total_hold_hours,
                 "total_idle_hours": total_idle_hours,
                 "total_tasks_completed": total_tasks_completed,
             })
