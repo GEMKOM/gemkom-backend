@@ -186,6 +186,41 @@ class CncPartViewSet(ModelViewSet):
     serializer_class = CncPartSerializer
     permission_classes = [IsAuthenticated]
 
+    @action(detail=False, methods=['post'], url_path='bulk-create')
+    def bulk_create(self, request, *args, **kwargs):
+        """
+        Handles bulk creation of CncPart instances.
+        Expects a POST request to `/api/cnc_cutting/parts/bulk-create/`
+        with a list of CncPart objects in the request body.
+        """
+        # Ensure the serializer handles multiple objects
+        serializer = self.get_serializer(data=request.data, many=True)
+        serializer.is_valid(raise_exception=True)
+        
+        # Save all valid instances
+        instances = serializer.save()
+        
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+    
+    @action(detail=False, methods=['delete'], url_path='bulk-delete')
+    def bulk_delete(self, request, *args, **kwargs):
+        """
+        Handles bulk deletion of CncPart instances.
+        Expects a DELETE request to `/api/cnc_cutting/parts/bulk-delete/`
+        with a list of CncPart IDs in the request body.
+        e.g. {"ids": [1, 2, 3]}
+        """
+        part_ids = request.data.get('ids', [])
+        if not isinstance(part_ids, list) or not part_ids:
+            return Response({"error": "A list of part 'ids' is required in the request body."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Filter for parts that exist and perform deletion
+        queryset = self.get_queryset()
+        parts_to_delete = queryset.filter(id__in=part_ids)
+        count, _ = parts_to_delete.delete()
+
+        return Response({'status': f'{count} parts deleted successfully.'}, status=status.HTTP_204_NO_CONTENT)
+
 class CncTaskFileViewSet(mixins.DestroyModelMixin, viewsets.GenericViewSet):
     """
     ViewSet for deleting a TaskFile.
