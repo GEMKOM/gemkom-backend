@@ -6,6 +6,9 @@ class TaskFilter(django_filters.FilterSet):
     key = django_filters.CharFilter(lookup_expr='exact')
     name = django_filters.CharFilter(lookup_expr='icontains')
     job_no = django_filters.CharFilter(lookup_expr='icontains')
+    position_no = django_filters.CharFilter(lookup_expr='icontains')
+    image_no = django_filters.CharFilter(lookup_expr='icontains')
+
     completion_date__isnull = django_filters.BooleanFilter(field_name='completion_date', lookup_expr='isnull')
 
     completion_date = django_filters.DateFilter(field_name='completion_date')
