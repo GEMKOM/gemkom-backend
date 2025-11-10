@@ -25,7 +25,7 @@ class TimerSerializer(BaseTimerSerializer):
 class TaskSerializer(serializers.ModelSerializer):
     key = serializers.CharField(required=False)
     completed_by_username = serializers.CharField(source='completed_by.username', read_only=True)
-    total_hours_spent = serializers.SerializerMethodField()
+    total_hours_spent = serializers.FloatField(read_only=True)
     machine_name = serializers.CharField(source='machine_fk.name', read_only=True)  # ✅ add this line
     
 
@@ -70,13 +70,6 @@ class TaskSerializer(serializers.ModelSerializer):
 
         return attrs
 
-    def get_total_hours_spent(self, obj):
-        # Use the reverse generic relation. Django automatically provides this.
-        # The related_name on the GFK is 'issue_key'.
-        timers = obj.issue_key.exclude(finish_time__isnull=True)
-        total_millis = sum((t.finish_time - t.start_time) for t in timers)
-        return round(total_millis / (1000 * 60 * 60), 2)  # Convert ms to hours
-    
     def create(self, validated_data):
         if 'key' not in validated_data or not validated_data['key']:
             with transaction.atomic():

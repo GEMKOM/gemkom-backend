@@ -1,6 +1,6 @@
 from rest_framework.response import Response
 
-from django.db.models import Sum, Max, F, OuterRef, Exists, Q, Case, When, Value, CharField
+from django.db.models import Sum, Max, F, OuterRef, Exists, Q, Case, When, Value, CharField, ExpressionWrapper, FloatField
 from django.db.models import F
 from django.db.models.functions import Coalesce
 from django.db.models.functions import Coalesce 
@@ -94,7 +94,16 @@ class TaskViewSet(TaskFileMixin, ModelViewSet):
     def get_queryset(self):
         # 'issue_key' is the GenericRelation from tasks.Timer back to this Task
         # prefetch_related works seamlessly with it for great performance.
-        return Task.objects.filter(is_hold_task=False).select_related('machine_fk').prefetch_related('issue_key')
+        return Task.objects.filter(is_hold_task=False).select_related('machine_fk').prefetch_related('issue_key').annotate(
+            total_hours_spent=Coalesce(
+                ExpressionWrapper(
+                    Sum('issue_key__finish_time', filter=Q(issue_key__finish_time__isnull=False)) -
+                    Sum('issue_key__start_time', filter=Q(issue_key__finish_time__isnull=False)),
+                    output_field=FloatField()
+                ) / 3600000.0,
+                Value(0.0)
+            )
+        )
     
 class TaskBulkCreateView(APIView):
     permission_classes = [IsAdmin]
