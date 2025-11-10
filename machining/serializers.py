@@ -25,7 +25,7 @@ class TimerSerializer(BaseTimerSerializer):
 class TaskSerializer(serializers.ModelSerializer):
     key = serializers.CharField(required=False)
     completed_by_username = serializers.CharField(source='completed_by.username', read_only=True)
-    total_hours_spent = serializers.FloatField(read_only=True)
+    total_hours_spent = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True, coerce_to_string=False)
     machine_name = serializers.CharField(source='machine_fk.name', read_only=True)  # ✅ add this line
     
 
