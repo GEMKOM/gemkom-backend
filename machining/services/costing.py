@@ -1,5 +1,6 @@
 # machining/services/costing.py
 from __future__ import annotations
+from django.db.models import Avg
 from collections import defaultdict
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
@@ -10,6 +11,7 @@ from django.db import transaction
 from django.contrib.auth.models import User
 from users.models import WageRate
 from machining.models import JobCostAgg, JobCostAggUser
+from machining.models import Task as MachiningTask
 from machining.services.timers import split_timer_by_local_day_and_bucket
 from machining.fx_utils import build_fx_lookup
 from tasks.models import Timer  # adjust if Timer lives elsewhere
@@ -18,6 +20,41 @@ from tasks.models import Timer  # adjust if Timer lives elsewhere
 WAGE_MONTH_HOURS = 225
 
 def _build_wage_picker(user_ids):
+    # --- BEGIN: Calculate system-wide average wages per currency ---
+    all_wages_avg = (
+        WageRate.objects
+        .values('currency')
+        .annotate(
+            avg_base_monthly=Avg('base_monthly'),
+            avg_ah_multiplier=Avg('after_hours_multiplier'),
+            avg_su_multiplier=Avg('sunday_multiplier')
+        )
+    )
+
+    average_wages_by_currency = {}
+    for avg_data in all_wages_avg:
+        currency = avg_data['currency']
+        average_wages_by_currency[currency] = {
+            "user_id": None,  # Indicates this is a fallback
+            "effective_from": date(1970, 1, 1),
+            "currency": currency,
+            "base_monthly": avg_data['avg_base_monthly'] or Decimal('0'),
+            "after_hours_multiplier": avg_data['avg_ah_multiplier'] or Decimal('1.5'),
+            "sunday_multiplier": avg_data['avg_su_multiplier'] or Decimal('2.0'),
+        }
+
+    # --- BEGIN: Create a "last resort" default wage if no averages exist ---
+    if 'TRY' not in average_wages_by_currency:
+        average_wages_by_currency['TRY'] = {
+            "user_id": None,
+            "effective_from": date(1970, 1, 1),
+            "currency": "TRY",
+            "base_monthly": Decimal('1.0'),  # Use a nominal non-zero value
+            "after_hours_multiplier": Decimal('1.5'),
+            "sunday_multiplier": Decimal('2.0'),
+        }
+    # --- END: Calculate system-wide average wages ---
+
     rows = (
         WageRate.objects
         .filter(user_id__in=user_ids)
@@ -31,25 +68,46 @@ def _build_wage_picker(user_ids):
     for uid, lst in by_user.items():
         by_user_dates[uid] = [x["effective_from"] for x in lst]
 
+
     def pick(uid: int, d: date):
         lst = by_user.get(uid)
         if not lst:
-            return None
-        idx = bisect_right(by_user_dates[uid], d) - 1
-        return lst[idx] if idx >= 0 else None
+            # --- BEGIN: Fallback to system-wide average ---
+            # If user has no wage rates, use the average for 'TRY' as a default.
+            # You can change 'TRY' to another default currency if needed.
+            return average_wages_by_currency.get('TRY')
+            # --- END: Fallback to system-wide average ---
+
+        # Find the index of the wage rate effective on or before the given date
+        idx_before = bisect_right(by_user_dates[uid], d) - 1
+        wage_before = lst[idx_before] if idx_before >= 0 else None
+
+        if wage_before:
+            return wage_before
+        
+        # If no rate is found before the date, return the earliest (first) one available for the user.
+        return lst[0]
 
     return pick
 
 @transaction.atomic
-def recompute_task_cost_snapshot(task_id: int):
-    # pull timers by issue_key_id
-    timers = (Timer.objects.select_related("user", "issue_key")
-              .filter(issue_key_id=task_id, finish_time__isnull=False))
+def recompute_task_cost_snapshot(task_key: str):
+    from django.contrib.contenttypes.models import ContentType
+
+    # Get the ContentType for the MachiningTask model.
+    task_content_type = ContentType.objects.get_for_model(MachiningTask)
+
+    # Correctly filter timers using the GenericForeignKey fields: content_type and object_id.
+    timers = (
+        Timer.objects.select_related("user")
+        .prefetch_related("issue_key")
+        .filter(content_type=task_content_type, object_id=task_key, finish_time__isnull=False)
+    )
     timers = list(timers)
 
     # wipe if none
-    JobCostAgg.objects.filter(task_id=task_id).delete()
-    JobCostAggUser.objects.filter(task_id=task_id).delete()
+    JobCostAgg.objects.filter(task_id=task_key).delete()
+    JobCostAggUser.objects.filter(task_id=task_key).delete()
     if not timers:
         return
 
@@ -74,8 +132,9 @@ def recompute_task_cost_snapshot(task_id: int):
 
             wage = pick_wage(t.user_id, d)
             if not wage:
-                # >>> CHANGE: if no wage for THIS USER on THIS DATE → ignore both hours & cost
-                continue
+                # This block should now be unreachable due to the guaranteed fallback wage.
+                # We will proceed with a nominal wage to ensure hours are always counted.
+                pass
 
             # >>> CHANGE: monthly → hourly
             base_monthly = Decimal(wage["base_monthly"])
@@ -113,11 +172,11 @@ def recompute_task_cost_snapshot(task_id: int):
     tot_c_su = sum((v["c_su"] for v in per_user.values()), Decimal("0"))
     total_cost = q2(tot_c_ww + tot_c_ah + tot_c_su)
 
-    JobCostAgg.objects.filter(task_id=task_id).delete()
-    JobCostAggUser.objects.filter(task_id=task_id).delete()
+    JobCostAgg.objects.filter(task_id=task_key).delete()
+    JobCostAggUser.objects.filter(task_id=task_key).delete()
 
     JobCostAgg.objects.create(
-            task_id=task_id,
+            task_id=task_key,
             job_no_cached=job_no_label,
             currency="EUR",
             hours_ww=q2(tot_h_ww), hours_ah=q2(tot_h_ah), hours_su=q2(tot_h_su),
@@ -129,7 +188,7 @@ def recompute_task_cost_snapshot(task_id: int):
     for uid, v in per_user.items():
         u_tot = q2(v["c_ww"] + v["c_ah"] + v["c_su"])
         JobCostAggUser.objects.create(
-            task_id=task_id,
+            task_id=task_key,
             user_id=uid,
             job_no_cached=job_no_label,
             currency="EUR",
