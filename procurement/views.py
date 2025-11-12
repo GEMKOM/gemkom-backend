@@ -12,13 +12,14 @@ from rest_framework import status, permissions
 
 from procurement.permissions import IsFinanceAuthorized
 from .models import (
-    PaymentSchedule, PaymentTerms, PurchaseOrder, PurchaseOrderLine, PurchaseRequestDraft, Supplier, Item, PurchaseRequest, 
-    PurchaseRequestItem, SupplierOffer, ItemOffer
+    PaymentSchedule, PaymentTerms, PurchaseOrder, PurchaseOrderLine, PurchaseRequestDraft, Supplier, Item, PurchaseRequest,
+    PurchaseRequestItem, SupplierOffer, ItemOffer, DepartmentRequest
 )
 from .serializers import (
     PaymentTermsSerializer, PurchaseRequestDraftDetailSerializer, PurchaseRequestDraftListSerializer, SupplierSerializer, ItemSerializer,
     PurchaseRequestSerializer, PurchaseRequestCreateSerializer,
-    PurchaseRequestItemSerializer, SupplierOfferSerializer, ItemOfferSerializer
+    PurchaseRequestItemSerializer, SupplierOfferSerializer, ItemOfferSerializer,
+    DepartmentRequestSerializer
 )
 from django.db.models import Exists, OuterRef, F, Q
 from rest_framework.decorators import action
@@ -723,3 +724,190 @@ class ProcurementReportViewSet(viewsets.GenericViewSet):
         if page is not None:
             return self.get_paginated_response(page)
         return Response(rows)
+
+
+class DepartmentRequestViewSet(viewsets.ModelViewSet):
+    """
+    Simple ViewSet for department requests.
+    Flow: Department user creates -> Department head approves -> Planning marks as transferred
+    """
+    queryset = DepartmentRequest.objects.all()
+    serializer_class = DepartmentRequestSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, OrderingFilter]
+    filterset_fields = ['status', 'department', 'priority', 'requestor']
+    ordering_fields = ['id', 'created_at', 'needed_date', 'priority']
+    ordering = ['-created_at']
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = DepartmentRequest.objects.select_related('requestor', 'approved_by')
+
+        # Prefetch approval workflows
+        from approvals.models import ApprovalWorkflow
+        wf_qs = (
+            ApprovalWorkflow.objects
+            .select_related("policy")
+            .prefetch_related(
+                "stage_instances",
+                "stage_instances__decisions__approver",
+            )
+            .order_by("-created_at")
+        )
+        qs = qs.prefetch_related(Prefetch("approvals", queryset=wf_qs))
+
+        # Filter based on user role
+        # Superusers and planning team see all
+        if user.is_superuser or (hasattr(user, 'profile') and user.profile.team == 'planning'):
+            return qs
+
+        # Regular users see only their own requests
+        return qs.filter(requestor=user)
+
+    @action(detail=True, methods=['POST'], permission_classes=[permissions.IsAuthenticated])
+    def approve(self, request, pk=None):
+        """Approve department request (department head)"""
+        dr = self.get_object()
+
+        if dr.status != 'submitted':
+            return Response({"detail": "Only submitted requests can be approved."}, status=400)
+
+        try:
+            from procurement.department_approval_service import decide_department_request
+            decide_department_request(dr, request.user, approve=True, comment=request.data.get("comment", ""))
+        except PermissionError as e:
+            return Response({"detail": str(e)}, status=403)
+        except Exception as e:
+            return Response({"detail": str(e)}, status=400)
+
+        return Response({"detail": "Request approved."})
+
+    @action(detail=True, methods=['POST'], permission_classes=[permissions.IsAuthenticated])
+    def reject(self, request, pk=None):
+        """Reject department request (department head)"""
+        dr = self.get_object()
+
+        if dr.status != 'submitted':
+            return Response({"detail": "Only submitted requests can be rejected."}, status=400)
+
+        try:
+            from procurement.department_approval_service import decide_department_request
+            decide_department_request(dr, request.user, approve=False, comment=request.data.get("comment", ""))
+        except PermissionError as e:
+            return Response({"detail": str(e)}, status=403)
+        except Exception as e:
+            return Response({"detail": str(e)}, status=400)
+
+        return Response({"detail": "Request rejected."})
+
+    @action(detail=False, methods=['GET'], permission_classes=[permissions.IsAuthenticated])
+    def my_requests(self, request):
+        """Get current user's department requests"""
+        user = request.user
+        queryset = self.get_queryset().filter(requestor=user)
+
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['GET'], permission_classes=[permissions.IsAuthenticated])
+    def pending_approval(self, request):
+        """Get department requests pending approval by current user"""
+        user = request.user
+        ct_dr = ContentType.objects.get_for_model(DepartmentRequest)
+
+        # Get open CURRENT stages where I am an approver and haven't decided
+        my_decision_qs = ApprovalDecision.objects.filter(stage_instance=OuterRef('pk'), approver=user)
+
+        stages_qs = (
+            ApprovalStageInstance.objects
+            .filter(
+                workflow__content_type=ct_dr,
+                order=F('workflow__current_stage_order'),
+                is_complete=False,
+                is_rejected=False,
+                approver_user_ids__contains=[user.id],
+            )
+            .annotate(already_decided=Exists(my_decision_qs))
+            .filter(already_decided=False)
+            .values_list('workflow__object_id', flat=True)
+        )
+
+        queryset = (
+            self.get_queryset()
+            .filter(id__in=Subquery(stages_qs), status='submitted')
+            .exclude(requestor=user)
+            .order_by('-created_at')
+        )
+
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['GET'], permission_classes=[permissions.IsAuthenticated])
+    def approved_requests(self, request):
+        """Get approved department requests waiting to be processed by planning"""
+        user = request.user
+
+        # Only planning team and superusers can see this
+        if not (user.is_superuser or (hasattr(user, 'profile') and user.profile.team == 'planning')):
+            return Response({"detail": "Only planning team can access this endpoint."}, status=403)
+
+        queryset = self.get_queryset().filter(status='approved').order_by('-approved_at')
+
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+    
+    @action(detail=False, methods=['GET'], permission_classes=[permissions.IsAuthenticated])
+    def completed_requests(self, request):
+        """Get approved department requests waiting to be processed by planning"""
+        user = request.user
+
+        # Only planning team and superusers can see this
+        if not (user.is_superuser or (hasattr(user, 'profile') and user.profile.team == 'planning')):
+            return Response({"detail": "Only planning team can access this endpoint."}, status=403)
+
+        queryset = self.get_queryset().filter(status='transferred').order_by('-approved_at')
+
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['PATCH'], permission_classes=[permissions.IsAuthenticated])
+    def mark_transferred(self, request, pk=None):
+        """
+        Mark approved department request as transferred (planning team only).
+        Simply changes status to 'transferred'.
+        """
+        dr = self.get_object()
+        user = request.user
+
+        # Only planning team and superusers can mark as transferred
+        if not (user.is_superuser or (hasattr(user, 'profile') and user.profile.team == 'planning')):
+            return Response({"detail": "Only planning team can mark requests as transferred."}, status=403)
+
+        if dr.status != 'approved':
+            return Response({"detail": "Only approved requests can be marked as transferred."}, status=400)
+
+        # Simply change status
+        dr.status = 'transferred'
+        dr.save(update_fields=['status'])
+
+        return Response({"detail": "Department request marked as transferred."})
