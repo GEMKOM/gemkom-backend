@@ -1121,9 +1121,9 @@ class DailyUserReportView(APIView):
                 (p['finish_time'] - p['start_time']) 
                 for p in idle_periods
             )
-            # Subtract 40 minutes (lunch time) from total idle time
+            # Subtract 60 minutes (lunch time) from total idle time
             # Negative values indicate they kept the timer open during lunch
-            LUNCH_TIME_MS = 60 * 60 * 1000  # 40 minutes in milliseconds
+            LUNCH_TIME_MS = 60 * 60 * 1000  # 60 minutes in milliseconds
             total_idle_ms_adjusted = total_idle_ms - LUNCH_TIME_MS
             total_idle_hours = round(total_idle_ms_adjusted / 3600000.0, 2)
             

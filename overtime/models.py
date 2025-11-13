@@ -154,7 +154,7 @@ class OvertimeRequest(models.Model):
 
 class OvertimeEntry(models.Model):
     request = models.ForeignKey(OvertimeRequest, on_delete=models.CASCADE, related_name="entries")
-    user = models.ForeignKey(User, on_delete=models.PROTECT, related_name="overtime_entries")
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="overtime_entries")
     job_no = models.CharField(max_length=100)
     description = models.TextField(blank=True)
     approved_hours = models.DecimalField(max_digits=7, decimal_places=2, null=True, blank=True)
