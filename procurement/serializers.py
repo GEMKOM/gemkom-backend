@@ -4,10 +4,12 @@ from django.utils import timezone
 
 from approvals.serializers import WorkflowSerializer
 from .models import (
-    PaymentSchedule, PaymentTerms, PurchaseOrder, PurchaseOrderLine, PurchaseOrderLineAllocation, PurchaseRequestDraft, PurchaseRequestItemAllocation, Supplier, Item, PurchaseRequest,
-    PurchaseRequestItem, SupplierOffer, ItemOffer, DepartmentRequest
+    PaymentSchedule, PaymentTerms, PurchaseOrder, PurchaseOrderLine, PurchaseOrderLineAllocation,
+    PurchaseRequestDraft, PurchaseRequestItemAllocation, Supplier, Item, PurchaseRequest,
+    PurchaseRequestItem, SupplierOffer, ItemOffer
 )
 from decimal import Decimal
+from django.db import models
 
 from django.contrib.contenttypes.models import ContentType
 
@@ -366,86 +368,3 @@ class PurchaseOrderDetailSerializer(PurchaseOrderListSerializer):
 
     class Meta(PurchaseOrderListSerializer.Meta):
         fields = PurchaseOrderListSerializer.Meta.fields + ['lines']
-
-
-# Department Request Serializers
-class DepartmentRequestSerializer(serializers.ModelSerializer):
-    requestor_username = serializers.ReadOnlyField(source='requestor.username')
-    requestor_full_name = serializers.SerializerMethodField()
-    approved_by_username = serializers.ReadOnlyField(source='approved_by.username')
-    status_label = serializers.SerializerMethodField()
-    approval = serializers.SerializerMethodField()
-
-    class Meta:
-        model = DepartmentRequest
-        fields = [
-            'id', 'request_number', 'title', 'description', 'department',
-            'needed_date', 'items', 'requestor', 'requestor_username', 'requestor_full_name',
-            'priority', 'status', 'status_label',
-            'approved_by', 'approved_by_username', 'approved_at', 'rejection_reason',
-            'created_at', 'submitted_at', 'approval'
-        ]
-        read_only_fields = [
-            'request_number', 'created_at', 'submitted_at',
-            'approved_by', 'approved_at',
-            # derived from the authenticated user
-            'department', 'requestor'
-        ]
-
-    def get_requestor_full_name(self, obj):
-        if obj.requestor:
-            return f"{obj.requestor.first_name} {obj.requestor.last_name}".strip() or obj.requestor.username
-        return ""
-
-    def get_status_label(self, obj):
-        return obj.get_status_display()
-
-    def get_approval(self, obj):
-        wfs = getattr(obj, "approvals", None)
-        wf = None
-        if wfs is not None:
-            wf = next(iter(sorted(wfs.all(), key=lambda w: w.created_at, reverse=True)), None)
-        else:
-            ct = ContentType.objects.get_for_model(DepartmentRequest)
-            wf = ApprovalWorkflow.objects.filter(content_type=ct, object_id=obj.id).order_by("-created_at").first()
-
-        if not wf:
-            return None
-        return WorkflowSerializer(wf, context=self.context).data
-
-    def create(self, validated_data):
-        """
-        Create a new department request and automatically submit it for approval.
-        """
-        from procurement.department_approval_service import submit_department_request
-
-        # Ensure requestor is set to current user
-        request = self.context.get('request')
-        if request and hasattr(request, 'user'):
-            validated_data['requestor'] = request.user
-            # Also ensure department matches the user's team
-            try:
-                team = getattr(getattr(request.user, 'profile', None), 'team', None)
-                if team:
-                    validated_data['department'] = team
-            except Exception:
-                # If profile access fails, leave any provided department as-is
-                pass
-
-        # Validate items before creation
-        items = validated_data.get('items', [])
-        if not items:
-            raise serializers.ValidationError({"items": "Cannot create request without items."})
-
-        # Create the request object (initially as draft)
-        dr = DepartmentRequest.objects.create(**validated_data)
-
-        # Automatically submit for approval
-        try:
-            submit_department_request(dr, dr.requestor)
-        except Exception as e:
-            # If submission fails, delete the created request and raise error
-            dr.delete()
-            raise serializers.ValidationError({"detail": f"Failed to submit request: {str(e)}"})
-
-        return dr

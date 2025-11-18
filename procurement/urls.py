@@ -1,16 +1,16 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .views import (
-    BasisChoicesView, PaymentTermsViewSet, ProcurementReportViewSet, PurchaseOrderViewSet, PurchaseRequestDraftViewSet, StatusChoicesView, SupplierViewSet, ItemViewSet,
+    BasisChoicesView, PaymentTermsViewSet, ProcurementReportViewSet, PurchaseOrderViewSet,
+    PurchaseRequestDraftViewSet, StatusChoicesView, SupplierViewSet, ItemViewSet,
     PurchaseRequestViewSet, PurchaseRequestItemViewSet,
-    SupplierOfferViewSet, ItemOfferViewSet, DepartmentRequestViewSet
+    SupplierOfferViewSet, ItemOfferViewSet,
 )
 
 # Create router and register viewsets
 router = DefaultRouter()
 router.register(r'suppliers', SupplierViewSet)
 router.register(r'items', ItemViewSet)
-router.register(r'department-requests', DepartmentRequestViewSet)
 router.register(r'purchase-requests', PurchaseRequestViewSet)
 router.register(r'purchase-request-items', PurchaseRequestItemViewSet)
 router.register(r'purchase-request-draft', PurchaseRequestDraftViewSet)

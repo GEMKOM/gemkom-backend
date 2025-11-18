@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from procurement.models import PurchaseOrder, PurchaseOrderLine
+from procurement.models import PurchaseOrder, PurchaseOrderLine, Item
 
 # Register your models here.
 class PurchaseOrderLineInline(admin.TabularInline):
@@ -13,3 +13,11 @@ class PurchaseOrderAdmin(admin.ModelAdmin):
     list_display = ('id','supplier','pr','currency','total_amount','status','priority','created_at')
     list_filter = ('status','currency','priority','supplier')
     inlines = [PurchaseOrderLineInline]
+
+
+@admin.register(Item)
+class ItemAdmin(admin.ModelAdmin):
+    list_display = ('code', 'name', 'unit')
+    search_fields = ('code', 'name')  # Required for autocomplete
+    list_filter = ('unit',)
+    ordering = ('code',)

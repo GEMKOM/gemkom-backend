@@ -82,6 +82,7 @@ INSTALLED_APPS = [
     'overtime',
     'tasks',
     'cnc_cutting',
+    'planning',
 ]
 
 MIDDLEWARE = [

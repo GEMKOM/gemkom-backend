@@ -1,10 +1,19 @@
-# procurement/department_approval_service.py
+# planning/services.py
 from __future__ import annotations
 
 from django.db import transaction
-from django.contrib.auth.models import User
 from django.utils import timezone
+from django.core.exceptions import ValidationError
+from django.contrib.auth.models import User
+from collections import defaultdict
+from decimal import Decimal
 
+from .models import DepartmentRequest, PlanningRequest, PlanningRequestItem
+from procurement.models import (
+    PurchaseRequest,
+    PurchaseRequestItem,
+    PurchaseRequestItemAllocation,
+)
 from approvals.services import (
     create_workflow,
     get_workflow,
@@ -13,11 +22,156 @@ from approvals.services import (
     auto_bypass_self_approver,
 )
 from approvals.models import ApprovalPolicy, ApprovalStageInstance, ApprovalWorkflow
-
-from .models import DepartmentRequest
 from core.emails import send_plain_email
 from users.helpers import _team_manager_user_ids
 
+
+@transaction.atomic
+def create_planning_request_from_department(dept_request: DepartmentRequest, created_by_user):
+    """
+    Planning creates a new PlanningRequest by mapping DepartmentRequest items to catalog Items.
+
+    Workflow:
+    1. Planning reviews approved DepartmentRequest
+    2. Maps each raw item description to an actual catalog Item (creates if needed)
+    3. Creates PlanningRequest with properly structured items
+
+    This function creates the shell. Planning then adds/edits PlanningRequestItems manually.
+    """
+    if dept_request.status != 'approved':
+        raise ValidationError("Can only create planning requests from approved department requests.")
+
+    # Create shell
+    planning_request = PlanningRequest.objects.create(
+        title=dept_request.title,
+        description=dept_request.description,
+        needed_date=dept_request.needed_date,
+        department_request=dept_request,
+        created_by=created_by_user,
+        priority=dept_request.priority,
+        status='draft',
+    )
+
+    # Mark department request as transferred
+    dept_request.status = 'transferred'
+    dept_request.save(update_fields=['status'])
+
+    return planning_request
+
+
+@transaction.atomic
+def convert_planning_request_to_purchase_request(
+    planning_request: PlanningRequest,
+    converted_by_user
+) -> PurchaseRequest:
+    """
+    Procurement converts a ready PlanningRequest to a PurchaseRequest.
+
+    Groups PlanningRequestItems by (item, priority, specifications) and creates
+    PurchaseRequestItems with allocations.
+
+    Args:
+        planning_request: The PlanningRequest to convert (must be status='ready')
+        converted_by_user: The procurement user performing the conversion
+
+    Returns:
+        The created PurchaseRequest (in draft status, ready for offers)
+    """
+    if planning_request.status != 'ready':
+        raise ValidationError("Can only convert planning requests with status 'ready'.")
+
+    if not planning_request.items.exists():
+        raise ValidationError("Cannot convert planning request with no items.")
+
+    # Create PR shell (draft so procurement can add offers)
+    pr = PurchaseRequest.objects.create(
+        title=planning_request.title,
+        description=planning_request.description,
+        needed_date=planning_request.needed_date,
+        requestor=converted_by_user,
+        priority=planning_request.priority,
+        status='draft',  # Not submitted yet - procurement needs to add offers
+    )
+
+    # Group planning items by (item, priority, specifications)
+    # This merges multiple job allocations of the same item into one PR line
+    grouped = defaultdict(list)
+
+    for pl_item in planning_request.items.all().select_related('item'):
+        key = (
+            pl_item.item.id,
+            pl_item.priority,
+            pl_item.specifications
+        )
+        grouped[key].append({
+            'job_no': pl_item.job_no,
+            'quantity': pl_item.quantity,
+            'item': pl_item.item,
+        })
+
+    # Create PurchaseRequestItems with allocations
+    order = 0
+    for (item_id, priority, specs), job_allocations in grouped.items():
+        item = job_allocations[0]['item']  # Same item for all in this group
+        total_qty = sum(ja['quantity'] for ja in job_allocations)
+
+        # Create merged PR item
+        pri = PurchaseRequestItem.objects.create(
+            purchase_request=pr,
+            item=item,
+            quantity=total_qty,
+            priority=priority,
+            specifications=specs,
+            order=order,
+        )
+        order += 1
+
+        # Create allocations for each job
+        for ja in job_allocations:
+            PurchaseRequestItemAllocation.objects.create(
+                purchase_request_item=pri,
+                job_no=ja['job_no'],
+                quantity=ja['quantity'],
+            )
+
+    # Mark planning request as converted
+    planning_request.status = 'converted'
+    planning_request.converted_at = timezone.now()
+    planning_request.purchase_request = pr
+    planning_request.save(update_fields=['status', 'converted_at', 'purchase_request'])
+
+    return pr
+
+
+@transaction.atomic
+def mark_planning_request_ready(planning_request: PlanningRequest):
+    """
+    Planning marks the request as ready for procurement.
+    Validates that all items are properly mapped.
+    """
+    if planning_request.status != 'draft':
+        raise ValidationError("Can only mark draft planning requests as ready.")
+
+    if not planning_request.items.exists():
+        raise ValidationError("Cannot mark empty planning request as ready.")
+
+    # Validate all items
+    for pl_item in planning_request.items.all():
+        if not pl_item.item:
+            raise ValidationError("All items must be mapped to catalog items.")
+        if pl_item.quantity <= 0:
+            raise ValidationError("All items must have positive quantities.")
+        if not pl_item.job_no:
+            raise ValidationError("All items must have a job number.")
+
+    planning_request.status = 'ready'
+    planning_request.ready_at = timezone.now()
+    planning_request.save(update_fields=['status', 'ready_at'])
+
+    return planning_request
+
+
+# ===== Department Request Approval Services =====
 
 # ------- Config -------
 DEPARTMENT_REQUEST_POLICY_NAME = "Department Request – Default"
@@ -221,29 +375,6 @@ def submit_department_request(dr: DepartmentRequest, by_user):
             "priority": dr.priority,
         },
     }
-
-    def _builder(stage, _subject):
-        """
-        Stage 1 (order == DEPARTMENT_HEAD_STAGE_ORDER):
-            - Resolve department head(s) for dr.department.
-            - If none → return [] (stage will be auto-skipped)
-        Stage 2+:
-            - Use the policy-configured users/groups on the stage.
-        """
-        if stage.order == DEPARTMENT_HEAD_STAGE_ORDER:
-            u_ids = _team_manager_user_ids(dr.department)  # may be empty → will be skipped by _skip_empty_stages
-            return _dedupe_ordered(u_ids), []
-
-        # For all later stages, use the configured assignments
-        u_ids = list(stage.approver_users.values_list("id", flat=True))
-        g_ids = list(stage.approver_groups.values_list("id", flat=True))
-        u_ids += resolve_group_user_ids(g_ids)
-
-        # Safety fallback (shouldn't trigger if policy is set correctly)
-        if not u_ids:
-            u_ids = list(User.objects.filter(is_active=True, is_superuser=True).values_list("id", flat=True))
-
-        return _dedupe_ordered(u_ids), []
 
     def _builder_with_mapping(stage, _subject):
         # Stage 1: merge policy approvers with managing-team managers

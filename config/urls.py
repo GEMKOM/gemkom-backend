@@ -26,4 +26,5 @@ urlpatterns = [
     path('procurement/', include('procurement.urls')),
     path("overtime/", include("overtime.urls")),
     path('cnc_cutting/', include('cnc_cutting.urls')),
+    path('planning/', include('planning.urls')),
 ]
