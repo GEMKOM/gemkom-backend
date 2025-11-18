@@ -25,6 +25,7 @@ class BaseTimerSerializer(serializers.ModelSerializer):
     issue_name = serializers.CharField(source='issue_key.name', read_only=True)
     machine_name = serializers.CharField(source='machine_fk.name', read_only=True)
     duration = serializers.FloatField(read_only=True)
+    task_total_hours = serializers.FloatField(read_only=True)
 
     # --- Fields for creating/updating a Timer with a Generic Foreign Key ---
     task_key = serializers.CharField(write_only=True, source='object_id')
@@ -36,6 +37,7 @@ class BaseTimerSerializer(serializers.ModelSerializer):
             'id', 'user', 'username', 'issue_key', 'task_key', 'task_type',
             'start_time', 'finish_time', 'comment', 'machine_fk', 'machine_name', 'issue_name',
             'manual_entry', 'stopped_by', 'stopped_by_first_name', 'stopped_by_last_name', 'duration',
+            'task_total_hours',
         ]
         read_only_fields = ['id', 'user', 'issue_key']
 

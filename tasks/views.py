@@ -3,7 +3,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated, IsAdminUser
 from rest_framework.generics import RetrieveUpdateDestroyAPIView
-from django.db.models import Q, F, ExpressionWrapper, FloatField, Sum, Avg, Count
+from django.db.models import Q, F, ExpressionWrapper, FloatField, Sum, Avg, Count, OuterRef, Subquery
 from django.contrib.contenttypes.models import ContentType
 from collections import defaultdict
 from django.db import transaction
@@ -202,11 +202,24 @@ class GenericTimerListView(APIView):
                 task_keys = TaskModel.objects.filter(job_no__icontains=request.GET['job_no']).values_list('key', flat=True)
                 query &= Q(object_id__in=list(task_keys))
 
+        # Subquery to calculate total hours for each task
+        task_total_hours_subquery = Timer.objects.filter(
+            content_type=OuterRef('content_type'),
+            object_id=OuterRef('object_id'),
+            finish_time__isnull=False
+        ).values('content_type', 'object_id').annotate(
+            total=Sum(ExpressionWrapper(
+                (F('finish_time') - F('start_time')) / 3600000.0,
+                output_field=FloatField()
+            ))
+        ).values('total')
+
         timers = Timer.objects.prefetch_related('issue_key').annotate(
             duration=ExpressionWrapper(
                 (F('finish_time') - F('start_time')) / 3600000.0,
                 output_field=FloatField()
-            )
+            ),
+            task_total_hours=Subquery(task_total_hours_subquery)
         ).filter(query).order_by(ordering)
 
         paginator = CustomPageNumberPagination()
