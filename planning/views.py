@@ -8,6 +8,7 @@ from rest_framework.filters import OrderingFilter
 from django.db.models import Q, F, OuterRef, Exists, Subquery
 from django.db.models.query import Prefetch
 from django.contrib.contenttypes.models import ContentType
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 
 from .models import DepartmentRequest, PlanningRequest, PlanningRequestItem, FileAttachment, FileAsset
 from procurement.models import Item
@@ -59,6 +60,7 @@ class DepartmentRequestViewSet(viewsets.ModelViewSet):
     serializer_class = DepartmentRequestSerializer
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend, OrderingFilter]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
     filterset_fields = ['status', 'department', 'priority', 'requestor']
     ordering_fields = ['id', 'created_at', 'needed_date', 'priority']
     ordering = ['-created_at']
@@ -483,6 +485,41 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
 
         attachment = _create_attachment_for_target(item, upload_serializer.validated_data, request.user)
         return Response(FileAttachmentSerializer(attachment, context={'request': request}).data, status=201)
+
+
+class FileAttachmentViewSet(viewsets.GenericViewSet):
+    """
+    ViewSet for managing file attachments.
+    Only supports delete - files are created via parent object endpoints.
+    """
+    queryset = FileAttachment.objects.all()
+    serializer_class = FileAttachmentSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def destroy(self, request, pk=None):
+        """
+        Delete a file attachment.
+        Also deletes the underlying FileAsset if no other attachments reference it.
+        """
+        try:
+            attachment = FileAttachment.objects.select_related('asset').get(pk=pk)
+        except FileAttachment.DoesNotExist:
+            return Response({"detail": "File attachment not found."}, status=404)
+
+        asset = attachment.asset
+
+        # Delete the attachment
+        attachment.delete()
+
+        # Check if asset has any remaining attachments
+        if asset and not asset.attachments.exists():
+            # Delete the actual file from storage
+            if asset.file:
+                asset.file.delete(save=False)
+            # Delete the asset record
+            asset.delete()
+
+        return Response(status=204)
 
 
 class ItemSuggestionView(APIView):

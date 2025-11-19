@@ -60,6 +60,33 @@ def create_planning_request_from_department(dept_request: DepartmentRequest, cre
 
 
 @transaction.atomic
+def create_standalone_planning_request(
+    title: str,
+    description: str,
+    needed_date,
+    priority: str,
+    created_by
+) -> PlanningRequest:
+    """
+    Create a standalone PlanningRequest without a DepartmentRequest.
+
+    Used when planning team needs to create requests directly without
+    going through the department request workflow.
+    """
+    planning_request = PlanningRequest.objects.create(
+        title=title,
+        description=description,
+        needed_date=needed_date,
+        department_request=None,
+        created_by=created_by,
+        priority=priority,
+        status='draft',
+    )
+
+    return planning_request
+
+
+@transaction.atomic
 def convert_planning_request_to_purchase_request(
     planning_request: PlanningRequest,
     converted_by_user

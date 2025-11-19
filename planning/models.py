@@ -52,7 +52,7 @@ class DepartmentRequest(models.Model):
     title = models.CharField(max_length=200)
     description = models.TextField(blank=True)
     department = models.CharField(max_length=100)  # Used to auto-select department head approvers
-    needed_date = models.DateField(default=timezone.now)
+    needed_date = models.DateField(default=timezone.localdate)
 
     # Items as JSON - flexible structure
     items = models.JSONField(default=list, blank=True)

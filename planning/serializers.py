@@ -2,11 +2,23 @@ from rest_framework import serializers
 from django.db import models as django_models
 from django.contrib.contenttypes.models import ContentType
 from decimal import Decimal
+from datetime import datetime
+import json
 
 from .models import DepartmentRequest, PlanningRequest, PlanningRequestItem, FileAsset, FileAttachment
 from procurement.models import Item
 from approvals.serializers import WorkflowSerializer
 from approvals.models import ApprovalWorkflow
+
+
+class SafeDateField(serializers.DateField):
+    """
+    DateField that tolerates datetime values by converting to date().
+    """
+    def to_representation(self, value):
+        if isinstance(value, datetime):
+            value = value.date()
+        return super().to_representation(value)
 
 
 class AttachmentUploadSerializer(serializers.Serializer):
@@ -46,6 +58,7 @@ class DepartmentRequestSerializer(serializers.ModelSerializer):
     approved_by_username = serializers.ReadOnlyField(source='approved_by.username')
     status_label = serializers.SerializerMethodField()
     approval = serializers.SerializerMethodField()
+    needed_date = SafeDateField()
     files = FileAttachmentSerializer(many=True, read_only=True)
     attachments = AttachmentUploadSerializer(many=True, write_only=True, required=False)
 
@@ -106,19 +119,39 @@ class DepartmentRequestSerializer(serializers.ModelSerializer):
                 # If profile access fails, leave any provided department as-is
                 pass
 
-        # Validate items before creation
+        # Normalize items before creation (multipart often sends JSON string)
         items = validated_data.get('items', [])
+        if isinstance(items, str):
+            try:
+                items = json.loads(items)
+                validated_data['items'] = items
+            except Exception:
+                raise serializers.ValidationError({"items": "Invalid items format; expected JSON list."})
         if not items:
             raise serializers.ValidationError({"items": "Cannot create request without items."})
 
-        attachments_data = validated_data.pop('attachments', [])
+        # Get uploaded files directly from request.FILES (same pattern as CncTaskDetailSerializer)
+        uploaded_files = request.FILES.getlist('files') if request else []
 
         # Create the request object (initially as draft)
         dr = DepartmentRequest.objects.create(**validated_data)
 
-        # Create the request object (initially as draft)
-        if attachments_data:
-            self._create_attachments(dr, attachments_data, request.user if request else None)
+        # Create file attachments for each uploaded file
+        if uploaded_files:
+            ct = ContentType.objects.get_for_model(dr)
+            for file in uploaded_files:
+                asset = FileAsset.objects.create(
+                    file=file,
+                    uploaded_by=request.user,
+                    description=''
+                )
+                FileAttachment.objects.create(
+                    asset=asset,
+                    uploaded_by=request.user,
+                    description='',
+                    content_type=ct,
+                    object_id=dr.id,
+                )
 
         # Automatically submit for approval
         try:
@@ -211,17 +244,53 @@ class PlanningRequestSerializer(serializers.ModelSerializer):
         return obj.get_status_display()
 
 
+class FlexibleAttachmentSerializer(serializers.Serializer):
+    """
+    Serializer for flexible file attachments that can be attached to multiple targets.
+    attach_to can contain "request" and/or item indices (0, 1, 2, ...).
+    """
+    file = serializers.FileField()
+    description = serializers.CharField(required=False, allow_blank=True, default='')
+    attach_to = serializers.ListField(
+        child=serializers.JSONField(),
+        required=True,
+        help_text='List of targets: "request" for the planning request, or item indices (0, 1, 2...)'
+    )
+
+    def validate_attach_to(self, value):
+        if not value:
+            raise serializers.ValidationError("attach_to cannot be empty.")
+        for target in value:
+            if target != "request" and not isinstance(target, int):
+                raise serializers.ValidationError(f"Invalid target '{target}'. Must be 'request' or an integer item index.")
+            if isinstance(target, int) and target < 0:
+                raise serializers.ValidationError(f"Item index {target} cannot be negative.")
+        return value
+
+
 class PlanningRequestCreateSerializer(serializers.Serializer):
     """
-    For creating a planning request from a department request.
+    For creating a planning request, optionally from a department request.
     Planning can optionally provide initial item mappings.
+
+    Files can be attached to multiple targets using the 'files' field:
+    - "request": attach to the planning request
+    - 0, 1, 2...: attach to items at those indices
     """
-    department_request_id = serializers.IntegerField()
+    department_request_id = serializers.IntegerField(required=False, allow_null=True)
+    # Fields for standalone creation (required if no department_request_id)
+    title = serializers.CharField(max_length=255, required=False)
+    description = serializers.CharField(required=False, allow_blank=True)
+    needed_date = serializers.DateField(required=False, allow_null=True)
+    priority = serializers.ChoiceField(choices=['low', 'normal', 'high', 'urgent'], default='normal', required=False)
     # Bulk items payload during creation
     items = serializers.ListField(child=serializers.DictField(), required=False)
-    attachments = AttachmentUploadSerializer(many=True, required=False)
+    # Flexible file attachments
+    files = FlexibleAttachmentSerializer(many=True, required=False)
 
     def validate_department_request_id(self, value):
+        if value is None:
+            return value
         try:
             dr = DepartmentRequest.objects.get(id=value)
         except DepartmentRequest.DoesNotExist:
@@ -232,54 +301,61 @@ class PlanningRequestCreateSerializer(serializers.Serializer):
 
         return value
 
+    def validate(self, attrs):
+        # If no department_request_id, require title
+        if not attrs.get('department_request_id'):
+            if not attrs.get('title'):
+                raise serializers.ValidationError({"title": "Title is required for standalone planning requests."})
+
+        # Validate that file attachment targets reference valid item indices
+        files_data = attrs.get('files', [])
+        items_data = attrs.get('items', [])
+        num_items = len(items_data)
+
+        for file_idx, file_data in enumerate(files_data):
+            for target in file_data.get('attach_to', []):
+                if isinstance(target, int) and target >= num_items:
+                    raise serializers.ValidationError({
+                        "files": f"File at index {file_idx} references item index {target}, but only {num_items} items provided."
+                    })
+
+        return attrs
+
     def create(self, validated_data):
-        from planning.services import create_planning_request_from_department
+        from planning.services import create_planning_request_from_department, create_standalone_planning_request
 
-        dr_id = validated_data['department_request_id']
-        dr = DepartmentRequest.objects.get(id=dr_id)
         user = self.context['request'].user
-        attachments_data = validated_data.get('attachments', [])
-
-        # Create planning request shell
-        planning_request = create_planning_request_from_department(dr, user)
-
-        # Auto-attach department request files to planning request
+        files_data = validated_data.get('files', [])
+        dr_id = validated_data.get('department_request_id')
         ct_pr = ContentType.objects.get_for_model(PlanningRequest)
-        for att in dr.files.all():
-            FileAttachment.objects.create(
-                asset=att.asset,
-                uploaded_by=user,
-                description=att.description,
-                source_attachment=att,
-                content_type=ct_pr,
-                object_id=planning_request.id,
-            )
+        ct_item = ContentType.objects.get_for_model(PlanningRequestItem)
 
-        # Handle new attachments on creation
-        if attachments_data:
-            for att in attachments_data:
-                source_attachment = None
-                source_id = att.get('source_attachment_id')
-                if source_id:
-                    try:
-                        source_attachment = FileAttachment.objects.get(id=source_id)
-                    except FileAttachment.DoesNotExist:
-                        raise serializers.ValidationError({"attachments": f"source_attachment_id {source_id} not found"})
-                asset = FileAsset.objects.create(
-                    file=att['file'],
-                    uploaded_by=user,
-                    description=att.get('description', '')
-                )
+        if dr_id:
+            # Create from department request
+            dr = DepartmentRequest.objects.get(id=dr_id)
+            planning_request = create_planning_request_from_department(dr, user)
+
+            # Auto-attach department request files to planning request
+            for att in dr.files.all():
                 FileAttachment.objects.create(
-                    asset=asset,
+                    asset=att.asset,
                     uploaded_by=user,
-                    description=att.get('description', ''),
-                    source_attachment=source_attachment,
+                    description=att.description,
+                    source_attachment=att,
                     content_type=ct_pr,
                     object_id=planning_request.id,
                 )
+        else:
+            # Create standalone planning request
+            planning_request = create_standalone_planning_request(
+                title=validated_data['title'],
+                description=validated_data.get('description', ''),
+                needed_date=validated_data.get('needed_date'),
+                priority=validated_data.get('priority', 'normal'),
+                created_by=user
+            )
 
-        # If items provided, create them
+        # Create items first (needed for file attachment targets)
         items_data = validated_data.get('items', [])
         max_order = planning_request.items.aggregate(max_order=django_models.Max('order')).get('max_order') or 0
         created_items = []
@@ -296,7 +372,14 @@ class PlanningRequestCreateSerializer(serializers.Serializer):
                 try:
                     item = Item.objects.get(code=item_code)
                 except Item.DoesNotExist:
-                    raise serializers.ValidationError({"items": f"Item at index {idx} with code {item_code} not found"})
+                    # Create the item if it doesn't exist
+                    item_name = item_data.get('item_name', item_code)
+                    item_unit = item_data.get('item_unit', 'adet')
+                    item = Item.objects.create(
+                        code=item_code,
+                        name=item_name,
+                        unit=item_unit
+                    )
             else:
                 raise serializers.ValidationError({"items": f"Item at index {idx} requires item_id or item_code"})
 
@@ -305,18 +388,48 @@ class PlanningRequestCreateSerializer(serializers.Serializer):
             except Exception:
                 raise serializers.ValidationError({"items": f"Item at index {idx} has invalid quantity"})
 
-            created_items.append(
-                PlanningRequestItem.objects.create(
-                    planning_request=planning_request,
-                    item=item,
-                    job_no=item_data['job_no'],
-                    quantity=quantity,
-                    priority=item_data.get('priority', 'normal'),
-                    specifications=item_data.get('specifications', ''),
-                    source_item_index=item_data.get('source_item_index'),
-                    order=max_order + idx + 1,
-                )
+            planning_item = PlanningRequestItem.objects.create(
+                planning_request=planning_request,
+                item=item,
+                job_no=item_data['job_no'],
+                quantity=quantity,
+                priority=item_data.get('priority', 'normal'),
+                specifications=item_data.get('specifications', ''),
+                source_item_index=item_data.get('source_item_index'),
+                order=max_order + idx + 1,
             )
+            created_items.append(planning_item)
+
+        # Process flexible file attachments
+        # Each file is uploaded once and can be attached to multiple targets
+        for file_data in files_data:
+            # Create the asset once
+            asset = FileAsset.objects.create(
+                file=file_data['file'],
+                uploaded_by=user,
+                description=file_data.get('description', '')
+            )
+
+            # Attach to each target
+            for target in file_data['attach_to']:
+                if target == "request":
+                    # Attach to the planning request
+                    FileAttachment.objects.create(
+                        asset=asset,
+                        uploaded_by=user,
+                        description=file_data.get('description', ''),
+                        content_type=ct_pr,
+                        object_id=planning_request.id,
+                    )
+                elif isinstance(target, int):
+                    # Attach to the item at this index
+                    FileAttachment.objects.create(
+                        asset=asset,
+                        uploaded_by=user,
+                        description=file_data.get('description', ''),
+                        content_type=ct_item,
+                        object_id=created_items[target].id,
+                    )
 
         return planning_request
 
