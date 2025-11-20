@@ -201,6 +201,13 @@ class PurchaseRequest(models.Model):
     is_active = models.BooleanField(default=True)
     is_rolling_mill = models.BooleanField(default=False)
 
+    # Link to planning requests that this purchase request is based on
+    planning_requests = models.ManyToManyField(
+        'planning.PlanningRequest',
+        blank=True,
+        related_name='purchase_requests'
+    )
+
     approvals = GenericRelation(
         ApprovalWorkflow,
         related_query_name="purchase_request",  # lets you filter from workflow side if needed

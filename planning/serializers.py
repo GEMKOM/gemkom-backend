@@ -215,7 +215,8 @@ class PlanningRequestSerializer(serializers.ModelSerializer):
     created_by_full_name = serializers.SerializerMethodField()
     status_label = serializers.SerializerMethodField()
     department_request_number = serializers.CharField(source='department_request.request_number', read_only=True)
-    purchase_request_number = serializers.CharField(source='purchase_request.request_number', read_only=True)
+    purchase_request_ids = serializers.SerializerMethodField()
+    purchase_request_numbers = serializers.SerializerMethodField()
     files = FileAttachmentSerializer(many=True, read_only=True)
     department_files = FileAttachmentSerializer(many=True, read_only=True, source='department_request.files')
 
@@ -227,12 +228,12 @@ class PlanningRequestSerializer(serializers.ModelSerializer):
             'created_by', 'created_by_username', 'created_by_full_name',
             'priority', 'status', 'status_label',
             'created_at', 'updated_at', 'ready_at', 'converted_at',
-            'purchase_request', 'purchase_request_number',
+            'purchase_request_ids', 'purchase_request_numbers',
             'items', 'files', 'department_files'
         ]
         read_only_fields = [
             'request_number', 'created_at', 'updated_at',
-            'ready_at', 'converted_at', 'created_by', 'purchase_request'
+            'ready_at', 'converted_at', 'created_by'
         ]
 
     def get_created_by_full_name(self, obj):
@@ -242,6 +243,14 @@ class PlanningRequestSerializer(serializers.ModelSerializer):
 
     def get_status_label(self, obj):
         return obj.get_status_display()
+
+    def get_purchase_request_ids(self, obj):
+        """Get IDs of all purchase requests this planning request is attached to"""
+        return [pr.id for pr in obj.purchase_requests.all()]
+
+    def get_purchase_request_numbers(self, obj):
+        """Get request numbers of all purchase requests this planning request is attached to"""
+        return [pr.request_number for pr in obj.purchase_requests.all()]
 
 
 class FlexibleAttachmentSerializer(serializers.Serializer):
@@ -287,6 +296,82 @@ class PlanningRequestCreateSerializer(serializers.Serializer):
     items = serializers.ListField(child=serializers.DictField(), required=False)
     # Flexible file attachments
     files = FlexibleAttachmentSerializer(many=True, required=False)
+
+    def to_internal_value(self, data):
+        """
+        Parse JSON strings for complex fields when sent via multipart/form-data.
+        Handles both request.data (form fields) and request.FILES (file uploads).
+        """
+        import re
+        from django.http import QueryDict
+
+        # Get the request object to access FILES
+        request = self.context.get('request')
+
+        # Convert QueryDict to regular dict for easier manipulation
+        if isinstance(data, QueryDict):
+            parsed_data = {}
+            for key in data.keys():
+                parsed_data[key] = data.get(key)
+        else:
+            parsed_data = dict(data) if not isinstance(data, dict) else data.copy()
+
+        # Parse 'items' if it's a JSON string
+        if 'items' in parsed_data and isinstance(parsed_data['items'], str):
+            try:
+                parsed_data['items'] = json.loads(parsed_data['items'])
+            except json.JSONDecodeError:
+                raise serializers.ValidationError({"items": "Invalid JSON format for items field."})
+
+        # Parse nested files structure from multipart format files[0].file, files[0].attach_to
+        # into proper list of dicts
+        files_dict = {}
+        keys_to_remove = []
+
+        # Process form data fields (attach_to, description, etc.)
+        for key in list(parsed_data.keys()):
+            if key.startswith('files['):
+                keys_to_remove.append(key)
+                match = re.match(r'files\[(\d+)\]\.(\w+)', key)
+                if match:
+                    index = int(match.group(1))
+                    field_name = match.group(2)
+
+                    if index not in files_dict:
+                        files_dict[index] = {}
+
+                    value = parsed_data[key]
+                    # Parse attach_to if it's a JSON string
+                    if field_name == 'attach_to' and isinstance(value, str):
+                        try:
+                            value = json.loads(value)
+                        except json.JSONDecodeError:
+                            raise serializers.ValidationError({
+                                "files": f"Invalid JSON format for files[{index}].attach_to"
+                            })
+
+                    files_dict[index][field_name] = value
+
+        # Process file uploads from request.FILES
+        if request and hasattr(request, 'FILES'):
+            for key in request.FILES.keys():
+                if key.startswith('files['):
+                    match = re.match(r'files\[(\d+)\]\.file', key)
+                    if match:
+                        index = int(match.group(1))
+                        if index not in files_dict:
+                            files_dict[index] = {}
+                        files_dict[index]['file'] = request.FILES[key]
+
+        # Remove the flattened keys from parsed_data
+        for key in keys_to_remove:
+            parsed_data.pop(key, None)
+
+        # Convert files_dict to list if we found any files
+        if files_dict:
+            parsed_data['files'] = [files_dict[i] for i in sorted(files_dict.keys())]
+
+        return super().to_internal_value(parsed_data)
 
     def validate_department_request_id(self, value):
         if value is None:

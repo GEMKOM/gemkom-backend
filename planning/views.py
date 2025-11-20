@@ -21,7 +21,6 @@ from .serializers import (
     AttachmentUploadSerializer,
     FileAttachmentSerializer,
 )
-from procurement.permissions import IsFinanceAuthorized
 from approvals.models import ApprovalWorkflow, ApprovalStageInstance, ApprovalDecision
 
 
@@ -266,6 +265,7 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
     serializer_class = PlanningRequestSerializer
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend, OrderingFilter]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
     filterset_fields = ['status', 'priority', 'created_by', 'department_request']
     ordering_fields = ['id', 'created_at', 'needed_date', 'priority']
     ordering = ['-created_at']
@@ -273,9 +273,10 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         qs = PlanningRequest.objects.select_related(
-            'created_by', 'department_request', 'purchase_request'
+            'created_by', 'department_request'
         ).prefetch_related(
             'items__item',
+            'purchase_requests',
             Prefetch('files', queryset=FileAttachment.objects.select_related('asset', 'uploaded_by', 'source_attachment')),
             Prefetch('department_request__files', queryset=FileAttachment.objects.select_related('asset', 'uploaded_by', 'source_attachment')),
             Prefetch('items__files', queryset=FileAttachment.objects.select_related('asset', 'uploaded_by', 'source_attachment')),
@@ -297,9 +298,16 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
             return PlanningRequestCreateSerializer
         return PlanningRequestSerializer
 
-    def perform_create(self, serializer):
-        # Handled by the serializer's create method
-        serializer.save()
+    def create(self, request, *args, **kwargs):
+        """Override create to use write serializer for input and read serializer for output."""
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        instance = serializer.save()
+
+        # Use the read serializer for the response
+        read_serializer = PlanningRequestSerializer(instance, context={'request': request})
+        headers = self.get_success_headers(read_serializer.data)
+        return Response(read_serializer.data, status=status.HTTP_201_CREATED, headers=headers)
 
     @action(detail=False, methods=['GET'], permission_classes=[permissions.IsAuthenticated])
     def ready_for_procurement(self, request):
@@ -350,25 +358,6 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
 
         attachment = _create_attachment_for_target(planning_request, upload_serializer.validated_data, request.user)
         return Response(FileAttachmentSerializer(attachment, context={'request': request}).data, status=201)
-
-    @action(detail=True, methods=['POST'], permission_classes=[IsFinanceAuthorized])
-    def convert_to_purchase_request(self, request, pk=None):
-        """Procurement converts planning request to purchase request."""
-        from planning.services import convert_planning_request_to_purchase_request
-
-        planning_request = self.get_object()
-        user = request.user
-
-        try:
-            pr = convert_planning_request_to_purchase_request(planning_request, user)
-        except ValidationError as e:
-            return Response({"detail": str(e)}, status=400)
-
-        return Response({
-            "detail": "Successfully converted to purchase request.",
-            "purchase_request_id": pr.id,
-            "request_number": pr.request_number
-        }, status=201)
 
     @action(detail=False, methods=['GET'], permission_classes=[permissions.IsAuthenticated])
     def my_requests(self, request):

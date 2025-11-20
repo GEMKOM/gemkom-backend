@@ -5,15 +5,8 @@ from django.db import transaction
 from django.utils import timezone
 from django.core.exceptions import ValidationError
 from django.contrib.auth.models import User
-from collections import defaultdict
-from decimal import Decimal
 
 from .models import DepartmentRequest, PlanningRequest, PlanningRequestItem
-from procurement.models import (
-    PurchaseRequest,
-    PurchaseRequestItem,
-    PurchaseRequestItemAllocation,
-)
 from approvals.services import (
     create_workflow,
     get_workflow,
@@ -86,88 +79,22 @@ def create_standalone_planning_request(
     return planning_request
 
 
-@transaction.atomic
-def convert_planning_request_to_purchase_request(
-    planning_request: PlanningRequest,
-    converted_by_user
-) -> PurchaseRequest:
-    """
-    Procurement converts a ready PlanningRequest to a PurchaseRequest.
-
-    Groups PlanningRequestItems by (item, priority, specifications) and creates
-    PurchaseRequestItems with allocations.
-
-    Args:
-        planning_request: The PlanningRequest to convert (must be status='ready')
-        converted_by_user: The procurement user performing the conversion
-
-    Returns:
-        The created PurchaseRequest (in draft status, ready for offers)
-    """
-    if planning_request.status != 'ready':
-        raise ValidationError("Can only convert planning requests with status 'ready'.")
-
-    if not planning_request.items.exists():
-        raise ValidationError("Cannot convert planning request with no items.")
-
-    # Create PR shell (draft so procurement can add offers)
-    pr = PurchaseRequest.objects.create(
-        title=planning_request.title,
-        description=planning_request.description,
-        needed_date=planning_request.needed_date,
-        requestor=converted_by_user,
-        priority=planning_request.priority,
-        status='draft',  # Not submitted yet - procurement needs to add offers
-    )
-
-    # Group planning items by (item, priority, specifications)
-    # This merges multiple job allocations of the same item into one PR line
-    grouped = defaultdict(list)
-
-    for pl_item in planning_request.items.all().select_related('item'):
-        key = (
-            pl_item.item.id,
-            pl_item.priority,
-            pl_item.specifications
-        )
-        grouped[key].append({
-            'job_no': pl_item.job_no,
-            'quantity': pl_item.quantity,
-            'item': pl_item.item,
-        })
-
-    # Create PurchaseRequestItems with allocations
-    order = 0
-    for (item_id, priority, specs), job_allocations in grouped.items():
-        item = job_allocations[0]['item']  # Same item for all in this group
-        total_qty = sum(ja['quantity'] for ja in job_allocations)
-
-        # Create merged PR item
-        pri = PurchaseRequestItem.objects.create(
-            purchase_request=pr,
-            item=item,
-            quantity=total_qty,
-            priority=priority,
-            specifications=specs,
-            order=order,
-        )
-        order += 1
-
-        # Create allocations for each job
-        for ja in job_allocations:
-            PurchaseRequestItemAllocation.objects.create(
-                purchase_request_item=pri,
-                job_no=ja['job_no'],
-                quantity=ja['quantity'],
-            )
-
-    # Mark planning request as converted
-    planning_request.status = 'converted'
-    planning_request.converted_at = timezone.now()
-    planning_request.purchase_request = pr
-    planning_request.save(update_fields=['status', 'converted_at', 'purchase_request'])
-
-    return pr
+# DEPRECATED: This function is no longer used
+# Planning requests are now attached to purchase requests during PR creation
+# instead of being converted 1:1
+#
+# @transaction.atomic
+# def convert_planning_request_to_purchase_request(
+#     planning_request: PlanningRequest,
+#     converted_by_user
+# ) -> PurchaseRequest:
+#     """
+#     DEPRECATED: Use PurchaseRequestCreateSerializer with planning_request_ids instead.
+#
+#     This function previously converted a single planning request to a purchase request.
+#     Now, multiple planning requests can be attached to one purchase request during creation.
+#     """
+#     pass
 
 
 @transaction.atomic

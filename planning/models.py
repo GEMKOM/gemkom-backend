@@ -37,7 +37,7 @@ class DepartmentRequest(models.Model):
         ('submitted', 'Onay Bekliyor'),
         ('approved', 'Onaylandı'),
         ('rejected', 'Reddedildi'),
-        ('transferred', 'Planlamaya Aktarıldı'),
+        ('transferred', 'Satın Almaya Aktarıldı'),
         ('cancelled', 'İptal Edildi'),
     ]
 
@@ -119,7 +119,7 @@ class PlanningRequest(models.Model):
     STATUS_CHOICES = [
         ('draft', 'Taslak'),
         ('ready', 'Satın Almaya Hazır'),
-        ('converted', 'Satın Almaya Aktarıldı'),
+        ('converted', 'Onaya Gönderildi'),
         ('cancelled', 'İptal Edildi'),
     ]
 
@@ -159,14 +159,8 @@ class PlanningRequest(models.Model):
     ready_at = models.DateTimeField(null=True, blank=True)  # when marked ready for procurement
     converted_at = models.DateTimeField(null=True, blank=True)
 
-    # Link to the resulting PR (when converted)
-    purchase_request = models.ForeignKey(
-        'procurement.PurchaseRequest',
-        null=True,
-        blank=True,
-        on_delete=models.SET_NULL,
-        related_name='planning_requests'
-    )
+    # Removed: Link to the resulting PR (when converted)
+    # This is now a many-to-many relationship on the PurchaseRequest side
 
     class Meta:
         ordering = ['-created_at']

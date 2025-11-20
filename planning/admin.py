@@ -60,7 +60,7 @@ class PlanningRequestAdmin(admin.ModelAdmin):
     list_display = ('request_number', 'title', 'status', 'priority', 'created_by', 'needed_date', 'created_at')
     list_filter = ('status', 'priority', 'created_at')
     search_fields = ('request_number', 'title', 'description')
-    readonly_fields = ('request_number', 'created_at', 'updated_at', 'ready_at', 'converted_at', 'purchase_request')
+    readonly_fields = ('request_number', 'created_at', 'updated_at', 'ready_at', 'converted_at', 'display_purchase_requests')
     inlines = [PlanningRequestItemInline, FileAttachmentInline]
 
     fieldsets = (
@@ -74,11 +74,22 @@ class PlanningRequestAdmin(admin.ModelAdmin):
             'fields': ('created_at', 'updated_at', 'ready_at', 'converted_at'),
             'classes': ('collapse',)
         }),
-        ('Result', {
-            'fields': ('purchase_request',),
+        ('Purchase Requests', {
+            'fields': ('display_purchase_requests',),
             'classes': ('collapse',)
         }),
     )
+
+    def display_purchase_requests(self, obj):
+        """Display linked purchase requests"""
+        if obj.pk:
+            # Use the reverse relationship from PurchaseRequest
+            prs = obj.purchase_requests.all()
+            if prs.exists():
+                return ', '.join([f'{pr.request_number}' for pr in prs])
+            return 'None yet'
+        return '-'
+    display_purchase_requests.short_description = 'Attached to Purchase Requests'
 
 
 @admin.register(PlanningRequestItem)

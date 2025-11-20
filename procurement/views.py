@@ -156,6 +156,7 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
                 "request_items__item",
                 "offers__supplier",
                 "purchase_orders",
+                "planning_requests",
                 Prefetch("approvals", queryset=wf_qs),  # ← use the generic relation
             )
         )

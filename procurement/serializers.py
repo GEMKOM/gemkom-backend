@@ -131,6 +131,10 @@ class PurchaseRequestSerializer(serializers.ModelSerializer):
     status_label = serializers.SerializerMethodField()
     approval = serializers.SerializerMethodField()
     purchase_orders = serializers.PrimaryKeyRelatedField(many=True, read_only=True)
+    planning_request_ids = serializers.PrimaryKeyRelatedField(
+        many=True, read_only=True, source='planning_requests'
+    )
+    planning_request_numbers = serializers.SerializerMethodField()
 
     def get_approval(self, obj):
         # if prefetch exists, use it; else fall back to query
@@ -149,7 +153,11 @@ class PurchaseRequestSerializer(serializers.ModelSerializer):
 
     def get_status_label(self, obj):
         return obj.get_status_display()
-    
+
+    def get_planning_request_numbers(self, obj):
+        """Get request numbers of all attached planning requests"""
+        return [pr.request_number for pr in obj.planning_requests.all()]
+
     class Meta:
         model = PurchaseRequest
         fields = [
@@ -157,7 +165,8 @@ class PurchaseRequestSerializer(serializers.ModelSerializer):
             'requestor', 'requestor_username', 'priority', 'status', 'status_label',
             'total_amount_eur', 'currency_rates_snapshot',
             'created_at', 'updated_at', 'submitted_at',
-            'request_items', 'offers', 'approval', 'cancelled_at', 'cancelled_by', 'cancellation_reason', 'needed_date', 'purchase_orders'
+            'request_items', 'offers', 'approval', 'cancelled_at', 'cancelled_by', 'cancellation_reason', 'needed_date', 'purchase_orders',
+            'planning_request_ids', 'planning_request_numbers'
         ]
         read_only_fields = ['request_number', 'created_at', 'updated_at', 'submitted_at', 'cancelled_at', 'cancelled_by']
 
@@ -167,12 +176,19 @@ class PurchaseRequestCreateSerializer(serializers.ModelSerializer):
     suppliers = serializers.ListField(child=serializers.DictField(), write_only=True)
     offers = serializers.DictField(write_only=True)
     recommendations = serializers.DictField(write_only=True)
+    planning_request_ids = serializers.ListField(
+        child=serializers.IntegerField(),
+        write_only=True,
+        required=False,
+        allow_empty=True
+    )
 
     class Meta:
         model = PurchaseRequest
         fields = [
             'id', 'title', 'description', 'priority',
-            'items', 'suppliers', 'offers', 'recommendations', 'total_amount_eur', 'needed_date', 'is_rolling_mill'
+            'items', 'suppliers', 'offers', 'recommendations', 'total_amount_eur', 'needed_date', 'is_rolling_mill',
+            'planning_request_ids'
         ]
         extra_kwargs = {
             'is_rolling_mill': {'required': False}  # optional, if caller may omit it
@@ -180,10 +196,13 @@ class PurchaseRequestCreateSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         from decimal import Decimal
+        from planning.models import PlanningRequest
+
         items_data = validated_data.pop('items')
         suppliers_data = validated_data.pop('suppliers')
         offers_data = validated_data.pop('offers')
         recommendations_data = validated_data.pop('recommendations')
+        planning_request_ids = validated_data.pop('planning_request_ids', [])
 
         # Create PR (needed_date should have a model default to "today")
         pr = PurchaseRequest.objects.create(
@@ -192,6 +211,22 @@ class PurchaseRequestCreateSerializer(serializers.ModelSerializer):
             status = "submitted",
             submitted_at = timezone.now()
         )
+
+        # Attach planning requests and update their status
+        if planning_request_ids:
+            planning_requests = PlanningRequest.objects.filter(
+                id__in=planning_request_ids,
+                status='ready'
+            )
+
+            # Attach to purchase request
+            pr.planning_requests.set(planning_requests)
+
+            # Update status of planning requests to 'converted'
+            planning_requests.update(
+                status='converted',
+                converted_at=timezone.now()
+            )
 
         # Build items
         request_items = []
