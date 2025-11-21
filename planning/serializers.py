@@ -195,6 +195,8 @@ class PlanningRequestItemSerializer(serializers.ModelSerializer):
     item_unit = serializers.CharField(source='item.unit', read_only=True)
     files = FileAttachmentSerializer(many=True, read_only=True)
     attachments = AttachmentUploadSerializer(many=True, write_only=True, required=False)
+    is_converted = serializers.ReadOnlyField()
+    purchase_request_info = serializers.SerializerMethodField()
 
     # For write operations
     item_id = serializers.IntegerField(write_only=True, required=False)
@@ -204,9 +206,22 @@ class PlanningRequestItemSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'item', 'item_id', 'item_code', 'item_name', 'item_unit',
             'job_no', 'quantity', 'priority', 'specifications',
-            'source_item_index', 'order', 'files', 'attachments'
+            'source_item_index', 'order', 'files', 'attachments',
+            'is_converted', 'purchase_request_info'
         ]
         read_only_fields = ['id']
+
+    def get_purchase_request_info(self, obj):
+        """Get info about purchase requests this item was converted to"""
+        purchase_requests = []
+        for pr in obj.purchase_requests.all():
+            purchase_requests.append({
+                'id': pr.id,
+                'request_number': pr.request_number,
+                'title': pr.title,
+                'status': pr.status
+            })
+        return purchase_requests if purchase_requests else None
 
 
 class PlanningRequestSerializer(serializers.ModelSerializer):
@@ -215,8 +230,8 @@ class PlanningRequestSerializer(serializers.ModelSerializer):
     created_by_full_name = serializers.SerializerMethodField()
     status_label = serializers.SerializerMethodField()
     department_request_number = serializers.CharField(source='department_request.request_number', read_only=True)
-    purchase_request_ids = serializers.SerializerMethodField()
-    purchase_request_numbers = serializers.SerializerMethodField()
+    completion_stats = serializers.SerializerMethodField()
+    purchase_request_info = serializers.SerializerMethodField()
     files = FileAttachmentSerializer(many=True, read_only=True)
     department_files = FileAttachmentSerializer(many=True, read_only=True, source='department_request.files')
 
@@ -227,13 +242,13 @@ class PlanningRequestSerializer(serializers.ModelSerializer):
             'department_request', 'department_request_number',
             'created_by', 'created_by_username', 'created_by_full_name',
             'priority', 'status', 'status_label',
-            'created_at', 'updated_at', 'ready_at', 'converted_at',
-            'purchase_request_ids', 'purchase_request_numbers',
+            'created_at', 'updated_at', 'ready_at', 'converted_at', 'completed_at',
+            'completion_stats', 'purchase_request_info',
             'items', 'files', 'department_files'
         ]
         read_only_fields = [
             'request_number', 'created_at', 'updated_at',
-            'ready_at', 'converted_at', 'created_by'
+            'ready_at', 'converted_at', 'completed_at', 'created_by'
         ]
 
     def get_created_by_full_name(self, obj):
@@ -244,13 +259,26 @@ class PlanningRequestSerializer(serializers.ModelSerializer):
     def get_status_label(self, obj):
         return obj.get_status_display()
 
-    def get_purchase_request_ids(self, obj):
-        """Get IDs of all purchase requests this planning request is attached to"""
-        return [pr.id for pr in obj.purchase_requests.all()]
+    def get_completion_stats(self, obj):
+        """Get completion statistics for this planning request"""
+        return obj.get_completion_stats()
 
-    def get_purchase_request_numbers(self, obj):
-        """Get request numbers of all purchase requests this planning request is attached to"""
-        return [pr.request_number for pr in obj.purchase_requests.all()]
+    def get_purchase_request_info(self, obj):
+        """Get info about all unique purchase requests created from this planning request's items"""
+        purchase_requests = {}
+
+        # Iterate through all items to find associated purchase requests
+        for item in obj.items.all():
+            for pr in item.purchase_requests.all():
+                if pr.id not in purchase_requests:
+                    purchase_requests[pr.id] = {
+                        'id': pr.id,
+                        'request_number': pr.request_number,
+                        'title': pr.title,
+                        'status': pr.status
+                    }
+
+        return list(purchase_requests.values())
 
 
 class FlexibleAttachmentSerializer(serializers.Serializer):

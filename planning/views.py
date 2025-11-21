@@ -21,6 +21,7 @@ from .serializers import (
     AttachmentUploadSerializer,
     FileAttachmentSerializer,
 )
+from .filters import PlanningRequestItemFilter
 from approvals.models import ApprovalWorkflow, ApprovalStageInstance, ApprovalDecision
 
 
@@ -276,7 +277,7 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
             'created_by', 'department_request'
         ).prefetch_related(
             'items__item',
-            'purchase_requests',
+            'items__purchase_requests',
             Prefetch('files', queryset=FileAttachment.objects.select_related('asset', 'uploaded_by', 'source_attachment')),
             Prefetch('department_request__files', queryset=FileAttachment.objects.select_related('asset', 'uploaded_by', 'source_attachment')),
             Prefetch('items__files', queryset=FileAttachment.objects.select_related('asset', 'uploaded_by', 'source_attachment')),
@@ -383,7 +384,7 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
     serializer_class = PlanningRequestItemSerializer
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend, OrderingFilter]
-    filterset_fields = ['planning_request', 'item', 'job_no']
+    filterset_class = PlanningRequestItemFilter
     ordering_fields = ['order', 'id']
     ordering = ['order']
 

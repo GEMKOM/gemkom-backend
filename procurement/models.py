@@ -201,9 +201,9 @@ class PurchaseRequest(models.Model):
     is_active = models.BooleanField(default=True)
     is_rolling_mill = models.BooleanField(default=False)
 
-    # Link to planning requests that this purchase request is based on
-    planning_requests = models.ManyToManyField(
-        'planning.PlanningRequest',
+    # Link to planning request items that this purchase request includes
+    planning_request_items = models.ManyToManyField(
+        'planning.PlanningRequestItem',
         blank=True,
         related_name='purchase_requests'
     )
@@ -255,19 +255,19 @@ class PurchaseRequestDraft(models.Model):
 
 class PurchaseRequestItem(models.Model):
     purchase_request = models.ForeignKey(PurchaseRequest, on_delete=models.CASCADE, related_name='request_items')
-    
+
     # Item Details
     item = models.ForeignKey(Item, on_delete=models.CASCADE, related_name='requests')
     quantity = models.DecimalField(max_digits=10, decimal_places=2)  # ADDED: Frontend sends this
     priority = models.CharField(max_length=20, choices=PurchaseRequest.PRIORITY_CHOICES, default='normal')
     specifications = models.TextField(blank=True)
-    
+
     # Ordering
     order = models.PositiveIntegerField(default=0)
-    
+
     class Meta:
         ordering = ['order']
-    
+
     def __str__(self):
         return f"{self.item.code} - {self.item.name}"
 

@@ -60,7 +60,7 @@ class PlanningRequestAdmin(admin.ModelAdmin):
     list_display = ('request_number', 'title', 'status', 'priority', 'created_by', 'needed_date', 'created_at')
     list_filter = ('status', 'priority', 'created_at')
     search_fields = ('request_number', 'title', 'description')
-    readonly_fields = ('request_number', 'created_at', 'updated_at', 'ready_at', 'converted_at', 'display_purchase_requests')
+    readonly_fields = ('request_number', 'created_at', 'updated_at', 'ready_at', 'converted_at', 'completed_at', 'display_completion_stats', 'display_purchase_requests')
     inlines = [PlanningRequestItemInline, FileAttachmentInline]
 
     fieldsets = (
@@ -68,10 +68,10 @@ class PlanningRequestAdmin(admin.ModelAdmin):
             'fields': ('request_number', 'title', 'description', 'needed_date', 'priority')
         }),
         ('Source & Status', {
-            'fields': ('department_request', 'status', 'created_by')
+            'fields': ('department_request', 'status', 'created_by', 'display_completion_stats')
         }),
         ('Timestamps', {
-            'fields': ('created_at', 'updated_at', 'ready_at', 'converted_at'),
+            'fields': ('created_at', 'updated_at', 'ready_at', 'converted_at', 'completed_at'),
             'classes': ('collapse',)
         }),
         ('Purchase Requests', {
@@ -80,26 +80,65 @@ class PlanningRequestAdmin(admin.ModelAdmin):
         }),
     )
 
-    def display_purchase_requests(self, obj):
-        """Display linked purchase requests"""
+    def display_completion_stats(self, obj):
+        """Display completion statistics"""
         if obj.pk:
-            # Use the reverse relationship from PurchaseRequest
-            prs = obj.purchase_requests.all()
-            if prs.exists():
-                return ', '.join([f'{pr.request_number}' for pr in prs])
+            stats = obj.get_completion_stats()
+            return f"{stats['converted_items']}/{stats['total_items']} items ({stats['completion_percentage']}%)"
+        return '-'
+    display_completion_stats.short_description = 'Completion'
+
+    def display_purchase_requests(self, obj):
+        """Display linked purchase requests via items"""
+        if obj.pk:
+            # Get unique purchase requests through items
+            purchase_requests = set()
+            for item in obj.items.all():
+                for pr in item.purchase_requests.all():
+                    purchase_requests.add(pr)
+
+            if purchase_requests:
+                return ', '.join([f'{pr.request_number}' for pr in sorted(purchase_requests, key=lambda x: x.request_number)])
             return 'None yet'
         return '-'
-    display_purchase_requests.short_description = 'Attached to Purchase Requests'
+    display_purchase_requests.short_description = 'Related Purchase Requests'
 
 
 @admin.register(PlanningRequestItem)
 class PlanningRequestItemAdmin(admin.ModelAdmin):
-    list_display = ('id', 'planning_request', 'item', 'job_no', 'quantity', 'priority')
+    list_display = ('id', 'planning_request', 'item', 'job_no', 'quantity', 'priority', 'display_converted_status')
     list_filter = ('priority', 'planning_request__status')
     search_fields = ('job_no', 'item__code', 'item__name')
     autocomplete_fields = ['item', 'planning_request']
     ordering = ('planning_request', 'order')
     inlines = [FileAttachmentInline]
+    readonly_fields = ('display_purchase_requests',)
+
+    fieldsets = (
+        ('Item Details', {
+            'fields': ('planning_request', 'item', 'job_no', 'quantity', 'priority', 'specifications', 'order')
+        }),
+        ('Purchase Requests', {
+            'fields': ('display_purchase_requests',),
+            'classes': ('collapse',)
+        }),
+    )
+
+    def display_converted_status(self, obj):
+        """Show if item is converted to PR"""
+        return '✓' if obj.is_converted else '✗'
+    display_converted_status.short_description = 'Converted'
+    display_converted_status.boolean = False
+
+    def display_purchase_requests(self, obj):
+        """Display linked purchase requests"""
+        if obj.pk:
+            prs = obj.purchase_requests.all()
+            if prs.exists():
+                return ', '.join([f'{pr.request_number}' for pr in prs])
+            return 'Not converted yet'
+        return '-'
+    display_purchase_requests.short_description = 'Included in Purchase Requests'
 
 
 @admin.register(FileAsset)

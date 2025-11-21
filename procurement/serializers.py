@@ -131,10 +131,7 @@ class PurchaseRequestSerializer(serializers.ModelSerializer):
     status_label = serializers.SerializerMethodField()
     approval = serializers.SerializerMethodField()
     purchase_orders = serializers.PrimaryKeyRelatedField(many=True, read_only=True)
-    planning_request_ids = serializers.PrimaryKeyRelatedField(
-        many=True, read_only=True, source='planning_requests'
-    )
-    planning_request_numbers = serializers.SerializerMethodField()
+    planning_request_info = serializers.SerializerMethodField()
 
     def get_approval(self, obj):
         # if prefetch exists, use it; else fall back to query
@@ -154,9 +151,23 @@ class PurchaseRequestSerializer(serializers.ModelSerializer):
     def get_status_label(self, obj):
         return obj.get_status_display()
 
-    def get_planning_request_numbers(self, obj):
-        """Get request numbers of all attached planning requests"""
-        return [pr.request_number for pr in obj.planning_requests.all()]
+    def get_planning_request_info(self, obj):
+        """Get unique planning requests that this PR was created from"""
+        # Get all planning request items linked to this PR
+        planning_request_items = obj.planning_request_items.select_related('planning_request').all()
+
+        # Get unique planning requests
+        planning_requests = {}
+        for pri_item in planning_request_items:
+            pr = pri_item.planning_request
+            if pr.id not in planning_requests:
+                planning_requests[pr.id] = {
+                    'id': pr.id,
+                    'request_number': pr.request_number,
+                    'title': pr.title
+                }
+
+        return list(planning_requests.values())
 
     class Meta:
         model = PurchaseRequest
@@ -166,7 +177,7 @@ class PurchaseRequestSerializer(serializers.ModelSerializer):
             'total_amount_eur', 'currency_rates_snapshot',
             'created_at', 'updated_at', 'submitted_at',
             'request_items', 'offers', 'approval', 'cancelled_at', 'cancelled_by', 'cancellation_reason', 'needed_date', 'purchase_orders',
-            'planning_request_ids', 'planning_request_numbers'
+            'planning_request_info'
         ]
         read_only_fields = ['request_number', 'created_at', 'updated_at', 'submitted_at', 'cancelled_at', 'cancelled_by']
 
@@ -176,11 +187,12 @@ class PurchaseRequestCreateSerializer(serializers.ModelSerializer):
     suppliers = serializers.ListField(child=serializers.DictField(), write_only=True)
     offers = serializers.DictField(write_only=True)
     recommendations = serializers.DictField(write_only=True)
-    planning_request_ids = serializers.ListField(
+    planning_request_item_ids = serializers.ListField(
         child=serializers.IntegerField(),
         write_only=True,
         required=False,
-        allow_empty=True
+        allow_empty=True,
+        help_text="List of PlanningRequestItem IDs to link to this purchase request"
     )
 
     class Meta:
@@ -188,7 +200,7 @@ class PurchaseRequestCreateSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'title', 'description', 'priority',
             'items', 'suppliers', 'offers', 'recommendations', 'total_amount_eur', 'needed_date', 'is_rolling_mill',
-            'planning_request_ids'
+            'planning_request_item_ids'
         ]
         extra_kwargs = {
             'is_rolling_mill': {'required': False}  # optional, if caller may omit it
@@ -196,13 +208,13 @@ class PurchaseRequestCreateSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         from decimal import Decimal
-        from planning.models import PlanningRequest
+        from planning.models import PlanningRequestItem
 
         items_data = validated_data.pop('items')
         suppliers_data = validated_data.pop('suppliers')
         offers_data = validated_data.pop('offers')
         recommendations_data = validated_data.pop('recommendations')
-        planning_request_ids = validated_data.pop('planning_request_ids', [])
+        planning_request_item_ids = validated_data.pop('planning_request_item_ids', [])
 
         # Create PR (needed_date should have a model default to "today")
         pr = PurchaseRequest.objects.create(
@@ -212,21 +224,36 @@ class PurchaseRequestCreateSerializer(serializers.ModelSerializer):
             submitted_at = timezone.now()
         )
 
-        # Attach planning requests and update their status
-        if planning_request_ids:
-            planning_requests = PlanningRequest.objects.filter(
-                id__in=planning_request_ids,
-                status='ready'
-            )
+        # Attach planning request items if provided
+        if planning_request_item_ids:
+            planning_request_items = PlanningRequestItem.objects.filter(
+                id__in=planning_request_item_ids,
+                planning_request__status='ready'
+            ).select_related('planning_request')
 
-            # Attach to purchase request
-            pr.planning_requests.set(planning_requests)
+            # Attach items to purchase request
+            pr.planning_request_items.set(planning_request_items)
 
-            # Update status of planning requests to 'converted'
-            planning_requests.update(
-                status='converted',
-                converted_at=timezone.now()
-            )
+            # Get unique planning requests and check their completion status
+            planning_requests = set(item.planning_request for item in planning_request_items)
+            for planning_request in planning_requests:
+                # Check completion stats
+                stats = planning_request.get_completion_stats()
+
+                # Mark as 'converted' if all items are now in at least one purchase request
+                if stats['completion_percentage'] == 100:
+                    if planning_request.status == 'ready':
+                        planning_request.status = 'converted'
+                        planning_request.converted_at = timezone.now()
+                    # Also mark as completed since all items are converted
+                    planning_request.status = 'completed'
+                    planning_request.completed_at = timezone.now()
+                    planning_request.save(update_fields=['status', 'converted_at', 'completed_at'])
+                elif stats['converted_items'] > 0 and planning_request.status == 'ready':
+                    # Some items are converted but not all - mark as 'converted'
+                    planning_request.status = 'converted'
+                    planning_request.converted_at = timezone.now()
+                    planning_request.save(update_fields=['status', 'converted_at'])
 
         # Build items
         request_items = []
@@ -236,17 +263,6 @@ class PurchaseRequestCreateSerializer(serializers.ModelSerializer):
                 code=item_data['code'],
                 defaults={'name': item_data['name'], 'unit': item_data['unit']}
             )
-
-            # create merged PR line
-            pri = PurchaseRequestItem.objects.create(
-                purchase_request=pr,
-                item=item,
-                quantity=item_data['quantity'],
-                priority=item_data.get('priority', 'normal'),
-                specifications=item_data.get('specifications', ''),
-                order=i
-            )
-            request_items.append(pri)
 
             # allocations payload (preferred)
             allocs = item_data.get("allocations") or []
@@ -264,7 +280,19 @@ class PurchaseRequestCreateSerializer(serializers.ModelSerializer):
                         f"({item_data['quantity']}) for item code {item.code}."
                     )
 
-                # Create allocation rows
+            # create merged PR line
+            pri = PurchaseRequestItem.objects.create(
+                purchase_request=pr,
+                item=item,
+                quantity=item_data['quantity'],
+                priority=item_data.get('priority', 'normal'),
+                specifications=item_data.get('specifications', ''),
+                order=i
+            )
+            request_items.append(pri)
+
+            # Create allocation rows
+            if allocs:
                 to_create = [
                     PurchaseRequestItemAllocation(
                         purchase_request_item=pri,

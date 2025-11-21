@@ -42,7 +42,7 @@ def create_planning_request_from_department(dept_request: DepartmentRequest, cre
         department_request=dept_request,
         created_by=created_by_user,
         priority=dept_request.priority,
-        status='draft',
+        status='ready',
     )
 
     # Mark department request as transferred
@@ -73,7 +73,7 @@ def create_standalone_planning_request(
         department_request=None,
         created_by=created_by,
         priority=priority,
-        status='draft',
+        status='ready',
     )
 
     return planning_request

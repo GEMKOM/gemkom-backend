@@ -120,6 +120,7 @@ class PlanningRequest(models.Model):
         ('draft', 'Taslak'),
         ('ready', 'Satın Almaya Hazır'),
         ('converted', 'Onaya Gönderildi'),
+        ('completed', 'Tamamlandı'),
         ('cancelled', 'İptal Edildi'),
     ]
 
@@ -158,9 +159,7 @@ class PlanningRequest(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
     ready_at = models.DateTimeField(null=True, blank=True)  # when marked ready for procurement
     converted_at = models.DateTimeField(null=True, blank=True)
-
-    # Removed: Link to the resulting PR (when converted)
-    # This is now a many-to-many relationship on the PurchaseRequest side
+    completed_at = models.DateTimeField(null=True, blank=True)  # when all items are converted
 
     class Meta:
         ordering = ['-created_at']
@@ -171,7 +170,7 @@ class PlanningRequest(models.Model):
         content_type_field='content_type',
         object_id_field='object_id'
     )
-    
+
     indexes = [
         models.Index(fields=['status', 'created_at']),
         models.Index(fields=['created_by', 'status']),
@@ -190,6 +189,48 @@ class PlanningRequest(models.Model):
             else:
                 self.request_number = f"PLR-{timezone.now().year}-0001"
         super().save(*args, **kwargs)
+
+    def get_completion_stats(self):
+        """
+        Calculate completion statistics for this planning request.
+        Returns dict with total_items, converted_items, and completion_percentage.
+        """
+        total_items = self.items.count()
+        if total_items == 0:
+            return {
+                'total_items': 0,
+                'converted_items': 0,
+                'completion_percentage': 0
+            }
+
+        # Count items that have been converted to purchase requests
+        converted_items = self.items.filter(
+            purchase_requests__isnull=False
+        ).distinct().count()
+
+        completion_percentage = round((converted_items / total_items) * 100, 2) if total_items > 0 else 0
+
+        return {
+            'total_items': total_items,
+            'converted_items': converted_items,
+            'completion_percentage': completion_percentage
+        }
+
+    def check_and_update_completion_status(self):
+        """
+        Check if all items have been converted and update status to 'completed' if needed.
+        Returns True if status was updated to completed.
+        """
+        stats = self.get_completion_stats()
+
+        # If all items are converted and status is not already completed
+        if stats['completion_percentage'] == 100 and self.status != 'completed':
+            self.status = 'completed'
+            self.completed_at = timezone.now()
+            self.save(update_fields=['status', 'completed_at'])
+            return True
+
+        return False
 
 
 class PlanningRequestItem(models.Model):
@@ -245,6 +286,11 @@ class PlanningRequestItem(models.Model):
 
     def __str__(self):
         return f"{self.item.code} - {self.job_no} - {self.quantity}"
+
+    @property
+    def is_converted(self):
+        """Check if this planning request item has been converted to a purchase request"""
+        return self.purchase_requests.exists()
 
 
 class FileAsset(models.Model):
