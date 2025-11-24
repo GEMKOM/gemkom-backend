@@ -61,6 +61,11 @@ class DepartmentRequestSerializer(serializers.ModelSerializer):
     needed_date = SafeDateField()
     files = FileAttachmentSerializer(many=True, read_only=True)
     attachments = AttachmentUploadSerializer(many=True, write_only=True, required=False)
+    request_number = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        help_text="Optional. Provide ERP reference number. If not provided, will be auto-generated."
+    )
 
     class Meta:
         model = DepartmentRequest
@@ -73,7 +78,7 @@ class DepartmentRequestSerializer(serializers.ModelSerializer):
             'files', 'attachments'
         ]
         read_only_fields = [
-            'request_number', 'created_at', 'submitted_at',
+            'created_at', 'submitted_at',
             'approved_by', 'approved_at',
             # derived from the authenticated user
             'department', 'requestor'
@@ -99,6 +104,18 @@ class DepartmentRequestSerializer(serializers.ModelSerializer):
         if not wf:
             return None
         return WorkflowSerializer(wf, context=self.context).data
+
+    def validate_request_number(self, value):
+        """Validate request_number if provided manually."""
+        if value and value.strip():
+            # Check if request_number already exists
+            if DepartmentRequest.objects.filter(request_number=value).exists():
+                raise serializers.ValidationError(
+                    f"Department request with number '{value}' already exists. Please use a unique number."
+                )
+            return value.strip()
+        # Empty/blank values will trigger auto-generation
+        return ''
 
     def create(self, validated_data):
         """
@@ -196,6 +213,7 @@ class PlanningRequestItemSerializer(serializers.ModelSerializer):
     files = FileAttachmentSerializer(many=True, read_only=True)
     attachments = AttachmentUploadSerializer(many=True, write_only=True, required=False)
     is_converted = serializers.ReadOnlyField()
+    is_available = serializers.SerializerMethodField()
     purchase_request_info = serializers.SerializerMethodField()
     planning_request_number = serializers.CharField(source='planning_request.request_number', read_only=True)
 
@@ -208,9 +226,23 @@ class PlanningRequestItemSerializer(serializers.ModelSerializer):
             'id', 'item', 'item_id', 'item_code', 'item_name', 'item_unit',
             'job_no', 'quantity', 'priority', 'specifications',
             'source_item_index', 'order', 'files', 'attachments',
-            'is_converted', 'purchase_request_info', 'planning_request', 'planning_request_number'
+            'is_converted', 'is_available', 'purchase_request_info', 'planning_request', 'planning_request_number'
         ]
         read_only_fields = ['id']
+
+    def get_is_available(self, obj):
+        """
+        Check if this planning request item is available for use in a new purchase request.
+        An item is unavailable if it's already in an active purchase request (not rejected or cancelled).
+        """
+        from django.db.models import Q
+
+        # Check if item is in any active purchase request
+        active_prs = obj.purchase_requests.exclude(
+            Q(status='rejected') | Q(status='cancelled')
+        )
+
+        return not active_prs.exists()
 
     def get_purchase_request_info(self, obj):
         """Get info about purchase requests this item was converted to"""
@@ -340,6 +372,12 @@ class PlanningRequestCreateSerializer(serializers.Serializer):
     """
     department_request_id = serializers.IntegerField(required=False, allow_null=True)
     # Fields for standalone creation (required if no department_request_id)
+    request_number = serializers.CharField(
+        max_length=50,
+        required=False,
+        allow_blank=True,
+        help_text="Optional. Provide ERP reference number. If not provided, will be auto-generated."
+    )
     title = serializers.CharField(max_length=255, required=False)
     description = serializers.CharField(required=False, allow_blank=True)
     needed_date = serializers.DateField(required=False, allow_null=True)
@@ -438,6 +476,18 @@ class PlanningRequestCreateSerializer(serializers.Serializer):
 
         return value
 
+    def validate_request_number(self, value):
+        """Validate request_number if provided manually."""
+        if value and value.strip():
+            # Check if request_number already exists
+            if PlanningRequest.objects.filter(request_number=value).exists():
+                raise serializers.ValidationError(
+                    f"Planning request with number '{value}' already exists. Please use a unique number."
+                )
+            return value.strip()
+        # Empty/blank values will trigger auto-generation
+        return ''
+
     def validate(self, attrs):
         # If no department_request_id, require title
         if not attrs.get('department_request_id'):
@@ -464,6 +514,7 @@ class PlanningRequestCreateSerializer(serializers.Serializer):
         user = self.context['request'].user
         files_data = validated_data.get('files', [])
         dr_id = validated_data.get('department_request_id')
+        manual_request_number = validated_data.get('request_number', '')
         ct_pr = ContentType.objects.get_for_model(PlanningRequest)
         ct_item = ContentType.objects.get_for_model(PlanningRequestItem)
 
@@ -471,6 +522,11 @@ class PlanningRequestCreateSerializer(serializers.Serializer):
             # Create from department request
             dr = DepartmentRequest.objects.get(id=dr_id)
             planning_request = create_planning_request_from_department(dr, user)
+
+            # If manual request_number provided, update it
+            if manual_request_number:
+                planning_request.request_number = manual_request_number
+                planning_request.save(update_fields=['request_number'])
 
             # Auto-attach department request files to planning request
             for att in dr.files.all():
@@ -491,6 +547,11 @@ class PlanningRequestCreateSerializer(serializers.Serializer):
                 priority=validated_data.get('priority', 'normal'),
                 created_by=user
             )
+
+            # If manual request_number provided, update it
+            if manual_request_number:
+                planning_request.request_number = manual_request_number
+                planning_request.save(update_fields=['request_number'])
 
         # Create items first (needed for file attachment targets)
         items_data = validated_data.get('items', [])

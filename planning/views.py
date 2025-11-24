@@ -389,7 +389,6 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
     ordering = ['order']
 
     def get_queryset(self):
-        user = self.request.user
         qs = PlanningRequestItem.objects.select_related('planning_request', 'item').prefetch_related(
             Prefetch('files', queryset=FileAttachment.objects.select_related('asset', 'uploaded_by', 'source_attachment'))
         )
@@ -399,11 +398,33 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
         if pr_id:
             qs = qs.filter(planning_request_id=pr_id)
 
-        # Only planning team can manage items
-        if not (user.is_superuser or (hasattr(user, 'profile') and user.profile.team == 'planning')):
-            return qs.none()
-
+        # All authenticated users can view (GET requests)
+        # Restrictions for write operations are handled in get_permissions()
         return qs
+
+    def get_permissions(self):
+        """
+        Allow all authenticated users to view (GET, list, retrieve).
+        Only planning team and superusers can create, update, or delete.
+        """
+        permission_classes = [permissions.IsAuthenticated]
+
+        # For write operations, require planning team or superuser
+        if self.action in ['create', 'update', 'partial_update', 'destroy', 'bulk_create', 'upload_attachment']:
+            permission_classes.append(permissions.IsAdminUser)
+
+        return [permission() for permission in permission_classes]
+
+    def check_permissions(self, request):
+        """Override to add custom team-based permission check for write operations."""
+        super().check_permissions(request)
+
+        # For write operations, check if user is planning team or superuser
+        if self.action in ['create', 'update', 'partial_update', 'destroy', 'bulk_create', 'upload_attachment']:
+            user = request.user
+            if not (user.is_superuser or (hasattr(user, 'profile') and user.profile.team == 'planning')):
+                from rest_framework.exceptions import PermissionDenied
+                raise PermissionDenied("Only planning team members can perform this action.")
 
     def perform_create(self, serializer):
         # Extract item_id if provided
@@ -475,6 +496,108 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
 
         attachment = _create_attachment_for_target(item, upload_serializer.validated_data, request.user)
         return Response(FileAttachmentSerializer(attachment, context={'request': request}).data, status=201)
+
+    @action(detail=False, methods=['GET'], permission_classes=[permissions.IsAuthenticated])
+    def available_count(self, request):
+        """
+        Get simple count of available planning request items.
+        Lightweight endpoint for info bubbles and quick stats.
+
+        Query parameters:
+        - planning_request: Filter by specific planning request ID
+        - Any other filter from PlanningRequestItemFilter
+
+        Returns:
+        {
+            "count": 45
+        }
+        """
+        from django.db.models import Q, Exists, OuterRef
+        from procurement.models import PurchaseRequest
+
+        # Start with filtered queryset
+        qs = self.filter_queryset(self.get_queryset())
+
+        # Subquery to check if item is in any active purchase request
+        active_pr_exists = PurchaseRequest.objects.filter(
+            planning_request_items=OuterRef('pk')
+        ).exclude(
+            Q(status='rejected') | Q(status='cancelled')
+        )
+
+        # Count items that are NOT in active purchase requests
+        available_count = qs.exclude(Exists(active_pr_exists)).count()
+
+        return Response({
+            "count": available_count
+        })
+
+    @action(detail=False, methods=['GET'], permission_classes=[permissions.IsAuthenticated])
+    def availability_stats(self, request):
+        """
+        Get statistics about planning request items availability.
+
+        Query parameters:
+        - planning_request: Filter by specific planning request ID
+
+        Returns:
+        {
+            "total_items": 100,
+            "available_items": 45,
+            "unavailable_items": 55,
+            "availability_percentage": 45.0
+        }
+        """
+        from django.db.models import Q, Exists, OuterRef, Count, Case, When, IntegerField
+        from procurement.models import PurchaseRequest
+
+        # Start with filtered queryset
+        qs = self.filter_queryset(self.get_queryset())
+
+        # Count total items
+        total_items = qs.count()
+
+        if total_items == 0:
+            return Response({
+                "total_items": 0,
+                "available_items": 0,
+                "unavailable_items": 0,
+                "availability_percentage": 0.0
+            })
+
+        # Subquery to check if item is in any active purchase request
+        active_pr_exists = PurchaseRequest.objects.filter(
+            planning_request_items=OuterRef('pk')
+        ).exclude(
+            Q(status='rejected') | Q(status='cancelled')
+        )
+
+        # Annotate each item with availability status and count
+        stats = qs.aggregate(
+            available_items=Count(
+                Case(
+                    When(~Exists(active_pr_exists), then=1),
+                    output_field=IntegerField()
+                )
+            ),
+            unavailable_items=Count(
+                Case(
+                    When(Exists(active_pr_exists), then=1),
+                    output_field=IntegerField()
+                )
+            )
+        )
+
+        available_items = stats['available_items'] or 0
+        unavailable_items = stats['unavailable_items'] or 0
+        availability_percentage = round((available_items / total_items * 100), 2) if total_items > 0 else 0.0
+
+        return Response({
+            "total_items": total_items,
+            "available_items": available_items,
+            "unavailable_items": unavailable_items,
+            "availability_percentage": availability_percentage
+        })
 
 
 class FileAttachmentViewSet(viewsets.GenericViewSet):

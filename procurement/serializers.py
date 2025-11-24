@@ -195,6 +195,57 @@ class PurchaseRequestCreateSerializer(serializers.ModelSerializer):
         help_text="List of PlanningRequestItem IDs to link to this purchase request"
     )
 
+    def validate_planning_request_item_ids(self, value):
+        """
+        Validate that planning request items are available (not already in active purchase requests).
+        Items are considered unavailable if they're in a purchase request that is NOT rejected or cancelled.
+        """
+        if not value:
+            return value
+
+        from planning.models import PlanningRequestItem
+        from django.db.models import Q
+
+        # Get the items
+        items = PlanningRequestItem.objects.filter(id__in=value).prefetch_related('purchase_requests')
+
+        # Check each item for existing active purchase requests
+        unavailable_items = []
+        for item in items:
+            # Check if item is already in any active purchase request (not rejected or cancelled)
+            active_prs = item.purchase_requests.exclude(
+                Q(status='rejected') | Q(status='cancelled')
+            )
+
+            if active_prs.exists():
+                pr_numbers = ', '.join([pr.request_number for pr in active_prs[:3]])  # Show first 3
+                unavailable_items.append({
+                    'item_id': item.id,
+                    'item_code': item.item.code,
+                    'item_name': item.item.name,
+                    'job_no': item.job_no,
+                    'planning_request': item.planning_request.request_number,
+                    'existing_purchase_requests': pr_numbers
+                })
+
+        if unavailable_items:
+            error_details = []
+            for item in unavailable_items:
+                error_details.append(
+                    f"Item '{item['item_code']} - {item['item_name']}' (Job: {item['job_no']}) from {item['planning_request']} "
+                    f"is already in purchase request(s): {item['existing_purchase_requests']}"
+                )
+
+            raise serializers.ValidationError({
+                'planning_request_item_ids': [
+                    "Some planning request items are already in active purchase requests:",
+                    *error_details,
+                    "Note: Items can only be reused if their purchase request is rejected or cancelled."
+                ]
+            })
+
+        return value
+
     class Meta:
         model = PurchaseRequest
         fields = [
