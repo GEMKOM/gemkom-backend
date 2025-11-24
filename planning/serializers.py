@@ -197,6 +197,7 @@ class PlanningRequestItemSerializer(serializers.ModelSerializer):
     attachments = AttachmentUploadSerializer(many=True, write_only=True, required=False)
     is_converted = serializers.ReadOnlyField()
     purchase_request_info = serializers.SerializerMethodField()
+    planning_request_number = serializers.CharField(source='planning_request.request_number', read_only=True)
 
     # For write operations
     item_id = serializers.IntegerField(write_only=True, required=False)
@@ -207,7 +208,7 @@ class PlanningRequestItemSerializer(serializers.ModelSerializer):
             'id', 'item', 'item_id', 'item_code', 'item_name', 'item_unit',
             'job_no', 'quantity', 'priority', 'specifications',
             'source_item_index', 'order', 'files', 'attachments',
-            'is_converted', 'purchase_request_info'
+            'is_converted', 'purchase_request_info', 'planning_request', 'planning_request_number'
         ]
         read_only_fields = ['id']
 
@@ -222,6 +223,7 @@ class PlanningRequestItemSerializer(serializers.ModelSerializer):
                 'status': pr.status
             })
         return purchase_requests if purchase_requests else None
+    
 
 
 class PlanningRequestSerializer(serializers.ModelSerializer):
@@ -285,14 +287,36 @@ class FlexibleAttachmentSerializer(serializers.Serializer):
     """
     Serializer for flexible file attachments that can be attached to multiple targets.
     attach_to can contain "request" and/or item indices (0, 1, 2, ...).
+
+    Can attach either:
+    1. New files via 'file' field
+    2. Existing files via 'source_attachment_id' field (references existing FileAttachment)
     """
-    file = serializers.FileField()
+    file = serializers.FileField(required=False)
+    source_attachment_id = serializers.IntegerField(required=False, help_text='ID of existing FileAttachment to reuse')
     description = serializers.CharField(required=False, allow_blank=True, default='')
     attach_to = serializers.ListField(
         child=serializers.JSONField(),
         required=True,
         help_text='List of targets: "request" for the planning request, or item indices (0, 1, 2...)'
     )
+
+    def validate(self, attrs):
+        """Ensure either file or source_attachment_id is provided, but not both."""
+        has_file = 'file' in attrs
+        has_source = 'source_attachment_id' in attrs
+
+        if not has_file and not has_source:
+            raise serializers.ValidationError(
+                "Either 'file' (new upload) or 'source_attachment_id' (existing file) must be provided."
+            )
+
+        if has_file and has_source:
+            raise serializers.ValidationError(
+                "Cannot provide both 'file' and 'source_attachment_id'. Choose one."
+            )
+
+        return attrs
 
     def validate_attach_to(self, value):
         if not value:
@@ -514,14 +538,27 @@ class PlanningRequestCreateSerializer(serializers.Serializer):
             created_items.append(planning_item)
 
         # Process flexible file attachments
-        # Each file is uploaded once and can be attached to multiple targets
+        # Each file can be either a new upload or reference to an existing file
         for file_data in files_data:
-            # Create the asset once
-            asset = FileAsset.objects.create(
-                file=file_data['file'],
-                uploaded_by=user,
-                description=file_data.get('description', '')
-            )
+            # Determine the asset to use
+            if 'file' in file_data:
+                # New file upload - create the asset
+                asset = FileAsset.objects.create(
+                    file=file_data['file'],
+                    uploaded_by=user,
+                    description=file_data.get('description', '')
+                )
+                source_attachment = None
+            else:
+                # Reference to existing attachment
+                source_attachment_id = file_data['source_attachment_id']
+                try:
+                    source_attachment = FileAttachment.objects.select_related('asset').get(id=source_attachment_id)
+                    asset = source_attachment.asset
+                except FileAttachment.DoesNotExist:
+                    raise serializers.ValidationError({
+                        "files": f"FileAttachment with id {source_attachment_id} not found"
+                    })
 
             # Attach to each target
             for target in file_data['attach_to']:
@@ -531,6 +568,7 @@ class PlanningRequestCreateSerializer(serializers.Serializer):
                         asset=asset,
                         uploaded_by=user,
                         description=file_data.get('description', ''),
+                        source_attachment=source_attachment if 'source_attachment_id' in file_data else None,
                         content_type=ct_pr,
                         object_id=planning_request.id,
                     )
@@ -540,6 +578,7 @@ class PlanningRequestCreateSerializer(serializers.Serializer):
                         asset=asset,
                         uploaded_by=user,
                         description=file_data.get('description', ''),
+                        source_attachment=source_attachment if 'source_attachment_id' in file_data else None,
                         content_type=ct_item,
                         object_id=created_items[target].id,
                     )
