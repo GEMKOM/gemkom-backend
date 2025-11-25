@@ -58,7 +58,8 @@ def create_standalone_planning_request(
     description: str,
     needed_date,
     priority: str,
-    created_by
+    created_by,
+    check_inventory: bool = False
 ) -> PlanningRequest:
     """
     Create a standalone PlanningRequest without a DepartmentRequest.
@@ -74,6 +75,7 @@ def create_standalone_planning_request(
         created_by=created_by,
         priority=priority,
         status='ready',
+        check_inventory=check_inventory,
     )
 
     return planning_request
@@ -97,32 +99,147 @@ def create_standalone_planning_request(
 #     pass
 
 
+def check_inventory_availability(planning_request: PlanningRequest) -> dict:
+    """
+    Check inventory availability for all items in a planning request.
+    Returns a dictionary with availability information for each item.
+
+    Returns:
+        dict: {
+            'items': [
+                {
+                    'planning_request_item_id': int,
+                    'item_code': str,
+                    'item_name': str,
+                    'requested_quantity': Decimal,
+                    'available_stock': Decimal,
+                    'can_fulfill': bool,
+                    'fulfillable_quantity': Decimal,
+                    'needs_purchase': bool,
+                    'purchase_quantity': Decimal
+                },
+                ...
+            ],
+            'fully_available': bool,
+            'partially_available': bool,
+            'needs_purchase': bool
+        }
+    """
+    from decimal import Decimal
+
+    items_info = []
+    all_available = True
+    some_available = False
+    needs_purchase = False
+
+    for pri in planning_request.items.all():
+        requested_qty = pri.quantity
+        available_stock = pri.item.stock_quantity
+        already_allocated = pri.quantity_from_inventory
+
+        # Calculate how much more can be allocated
+        remaining_needed = requested_qty - already_allocated
+        can_allocate = min(available_stock, remaining_needed)
+
+        can_fulfill = available_stock >= remaining_needed
+        purchase_qty = max(Decimal('0'), remaining_needed - available_stock)
+
+        if not can_fulfill:
+            all_available = False
+            needs_purchase = True
+        if can_allocate > 0:
+            some_available = True
+
+        items_info.append({
+            'planning_request_item_id': pri.id,
+            'item_code': pri.item.code,
+            'item_name': pri.item.name,
+            'requested_quantity': requested_qty,
+            'already_allocated': already_allocated,
+            'remaining_needed': remaining_needed,
+            'available_stock': available_stock,
+            'can_fulfill': can_fulfill,
+            'fulfillable_quantity': can_allocate,
+            'needs_purchase': purchase_qty > 0,
+            'purchase_quantity': purchase_qty
+        })
+
+    return {
+        'items': items_info,
+        'fully_available': all_available,
+        'partially_available': some_available and not all_available,
+        'needs_purchase': needs_purchase
+    }
+
+
 @transaction.atomic
-def mark_planning_request_ready(planning_request: PlanningRequest):
+def auto_allocate_inventory(planning_request: PlanningRequest, allocated_by_user):
     """
-    Planning marks the request as ready for procurement.
-    Validates that all items are properly mapped.
+    Automatically allocate available inventory to all items in a planning request.
+    Only allocates what's available in stock, up to the requested quantity.
+
+    Returns:
+        dict: {
+            'allocations_created': int,
+            'items_fully_allocated': int,
+            'items_partially_allocated': int,
+            'items_not_allocated': int
+        }
     """
-    if planning_request.status != 'draft':
-        raise ValidationError("Can only mark draft planning requests as ready.")
+    from decimal import Decimal
+    from .models import InventoryAllocation
 
-    if not planning_request.items.exists():
-        raise ValidationError("Cannot mark empty planning request as ready.")
+    if not planning_request.check_inventory:
+        raise ValidationError("Cannot allocate inventory to planning request without check_inventory enabled.")
 
-    # Validate all items
-    for pl_item in planning_request.items.all():
-        if not pl_item.item:
-            raise ValidationError("All items must be mapped to catalog items.")
-        if pl_item.quantity <= 0:
-            raise ValidationError("All items must have positive quantities.")
-        if not pl_item.job_no:
-            raise ValidationError("All items must have a job number.")
+    if planning_request.status != 'pending_inventory':
+        raise ValidationError(f"Cannot allocate inventory. Status must be 'pending_inventory', current status is '{planning_request.status}'.")
 
-    planning_request.status = 'ready'
-    planning_request.ready_at = timezone.now()
-    planning_request.save(update_fields=['status', 'ready_at'])
+    allocations_created = 0
+    fully_allocated = 0
+    partially_allocated = 0
+    not_allocated = 0
 
-    return planning_request
+    for pri in planning_request.items.select_for_update():
+        requested_qty = pri.quantity
+        already_allocated = pri.quantity_from_inventory
+        remaining_needed = requested_qty - already_allocated
+
+        if remaining_needed <= Decimal('0'):
+            # Already fully allocated
+            fully_allocated += 1
+            continue
+
+        available_stock = pri.item.stock_quantity
+
+        if available_stock <= Decimal('0'):
+            # No stock available
+            not_allocated += 1
+            continue
+
+        # Allocate as much as possible
+        allocate_qty = min(available_stock, remaining_needed)
+
+        InventoryAllocation.objects.create(
+            planning_request_item=pri,
+            allocated_quantity=allocate_qty,
+            allocated_by=allocated_by_user,
+            notes="Auto-allocated"
+        )
+
+        allocations_created += 1
+
+        if allocate_qty >= remaining_needed:
+            fully_allocated += 1
+        else:
+            partially_allocated += 1
+
+    return {
+        'allocations_created': allocations_created,
+        'items_fully_allocated': fully_allocated,
+        'items_partially_allocated': partially_allocated,
+        'items_not_allocated': not_allocated
+    }
 
 
 # ===== Department Request Approval Services =====

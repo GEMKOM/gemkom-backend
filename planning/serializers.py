@@ -5,7 +5,10 @@ from decimal import Decimal
 from datetime import datetime
 import json
 
-from .models import DepartmentRequest, PlanningRequest, PlanningRequestItem, FileAsset, FileAttachment
+from .models import (
+    DepartmentRequest, PlanningRequest, PlanningRequestItem,
+    FileAsset, FileAttachment, InventoryAllocation
+)
 from procurement.models import Item
 from approvals.serializers import WorkflowSerializer
 from approvals.models import ApprovalWorkflow
@@ -210,9 +213,12 @@ class PlanningRequestItemSerializer(serializers.ModelSerializer):
     item_code = serializers.CharField(source='item.code', read_only=True)
     item_name = serializers.CharField(source='item.name', read_only=True)
     item_unit = serializers.CharField(source='item.unit', read_only=True)
+    item_stock_quantity = serializers.DecimalField(source='item.stock_quantity', read_only=True, max_digits=10, decimal_places=2)
     files = FileAttachmentSerializer(many=True, read_only=True)
     attachments = AttachmentUploadSerializer(many=True, write_only=True, required=False)
     is_converted = serializers.ReadOnlyField()
+    is_fully_from_inventory = serializers.ReadOnlyField()
+    is_partially_from_inventory = serializers.ReadOnlyField()
     is_available = serializers.SerializerMethodField()
     purchase_request_info = serializers.SerializerMethodField()
     planning_request_number = serializers.CharField(source='planning_request.request_number', read_only=True)
@@ -223,12 +229,14 @@ class PlanningRequestItemSerializer(serializers.ModelSerializer):
     class Meta:
         model = PlanningRequestItem
         fields = [
-            'id', 'item', 'item_id', 'item_code', 'item_name', 'item_unit',
-            'job_no', 'quantity', 'priority', 'specifications',
+            'id', 'item', 'item_id', 'item_code', 'item_name', 'item_unit', 'item_stock_quantity',
+            'job_no', 'quantity', 'quantity_from_inventory', 'quantity_to_purchase',
+            'priority', 'specifications',
             'source_item_index', 'order', 'files', 'attachments',
-            'is_converted', 'is_available', 'purchase_request_info', 'planning_request', 'planning_request_number'
+            'is_converted', 'is_fully_from_inventory', 'is_partially_from_inventory',
+            'is_available', 'purchase_request_info', 'planning_request', 'planning_request_number'
         ]
-        read_only_fields = ['id']
+        read_only_fields = ['id', 'quantity_from_inventory', 'quantity_to_purchase']
 
     def get_is_available(self, obj):
         """
@@ -276,13 +284,15 @@ class PlanningRequestSerializer(serializers.ModelSerializer):
             'department_request', 'department_request_number',
             'created_by', 'created_by_username', 'created_by_full_name',
             'priority', 'status', 'status_label',
+            'check_inventory', 'inventory_control_completed', 'fully_from_inventory',
             'created_at', 'updated_at', 'ready_at', 'converted_at', 'completed_at',
             'completion_stats', 'purchase_request_info',
             'items', 'files', 'department_files'
         ]
         read_only_fields = [
             'request_number', 'created_at', 'updated_at',
-            'ready_at', 'converted_at', 'completed_at', 'created_by'
+            'ready_at', 'converted_at', 'completed_at', 'created_by',
+            'inventory_control_completed', 'fully_from_inventory'
         ]
 
     def get_created_by_full_name(self, obj):
@@ -382,6 +392,12 @@ class PlanningRequestCreateSerializer(serializers.Serializer):
     description = serializers.CharField(required=False, allow_blank=True)
     needed_date = serializers.DateField(required=False, allow_null=True)
     priority = serializers.ChoiceField(choices=['low', 'normal', 'high', 'urgent'], default='normal', required=False)
+    # Inventory control
+    check_inventory = serializers.BooleanField(
+        default=False,
+        required=False,
+        help_text="Whether to check and allocate from inventory"
+    )
     # Bulk items payload during creation
     items = serializers.ListField(child=serializers.DictField(), required=False)
     # Flexible file attachments
@@ -545,7 +561,8 @@ class PlanningRequestCreateSerializer(serializers.Serializer):
                 description=validated_data.get('description', ''),
                 needed_date=validated_data.get('needed_date'),
                 priority=validated_data.get('priority', 'normal'),
-                created_by=user
+                created_by=user,
+                check_inventory=validated_data.get('check_inventory', False)
             )
 
             # If manual request_number provided, update it
@@ -757,4 +774,151 @@ class BulkPlanningRequestItemSerializer(serializers.Serializer):
             'planning_request': planning_request,
             'created_items': created_items,
             'count': len(created_items)
+        }
+
+
+class InventoryAllocationSerializer(serializers.ModelSerializer):
+    """Serializer for viewing inventory allocations"""
+    item_code = serializers.CharField(source='planning_request_item.item.code', read_only=True)
+    item_name = serializers.CharField(source='planning_request_item.item.name', read_only=True)
+    job_no = serializers.CharField(source='planning_request_item.job_no', read_only=True)
+    allocated_by_username = serializers.CharField(source='allocated_by.username', read_only=True)
+
+    class Meta:
+        model = InventoryAllocation
+        fields = [
+            'id', 'planning_request_item', 'item_code', 'item_name', 'job_no',
+            'allocated_quantity', 'allocated_by', 'allocated_by_username',
+            'allocated_at', 'notes'
+        ]
+        read_only_fields = ['id', 'allocated_by', 'allocated_at']
+
+
+class AllocateInventorySerializer(serializers.Serializer):
+    """
+    Serializer for allocating inventory to planning request items.
+    Supports bulk allocation for multiple items.
+    """
+    planning_request_id = serializers.IntegerField(required=True)
+    allocations = serializers.ListField(
+        child=serializers.DictField(),
+        help_text="List of allocations with: planning_request_item_id, allocated_quantity, notes (optional)"
+    )
+
+    def validate_planning_request_id(self, value):
+        try:
+            pr = PlanningRequest.objects.get(id=value)
+        except PlanningRequest.DoesNotExist:
+            raise serializers.ValidationError("Planning request not found.")
+
+        if not pr.check_inventory:
+            raise serializers.ValidationError(
+                "Cannot allocate inventory to planning request that doesn't have check_inventory enabled."
+            )
+
+        if pr.status != 'pending_inventory':
+            raise serializers.ValidationError(
+                f"Cannot allocate inventory. Status must be 'pending_inventory', current status is '{pr.status}'."
+            )
+
+        return value
+
+    def validate_allocations(self, value):
+        """Validate each allocation in the list."""
+        if not value:
+            raise serializers.ValidationError("Allocations list cannot be empty.")
+
+        for idx, alloc_data in enumerate(value):
+            # Required fields
+            if 'planning_request_item_id' not in alloc_data:
+                raise serializers.ValidationError(
+                    f"Allocation #{idx}: 'planning_request_item_id' is required."
+                )
+            if 'allocated_quantity' not in alloc_data:
+                raise serializers.ValidationError(
+                    f"Allocation #{idx}: 'allocated_quantity' is required."
+                )
+
+            # Validate quantity is positive
+            try:
+                qty = Decimal(str(alloc_data['allocated_quantity']))
+                if qty <= 0:
+                    raise serializers.ValidationError(
+                        f"Allocation #{idx}: Quantity must be positive."
+                    )
+            except (ValueError, TypeError):
+                raise serializers.ValidationError(
+                    f"Allocation #{idx}: Invalid quantity value."
+                )
+
+        return value
+
+    def validate(self, attrs):
+        """Cross-validate planning request and items"""
+        pr_id = attrs['planning_request_id']
+        allocations = attrs['allocations']
+
+        planning_request = PlanningRequest.objects.get(id=pr_id)
+
+        for idx, alloc_data in enumerate(allocations):
+            pri_id = alloc_data['planning_request_item_id']
+            allocated_qty = Decimal(str(alloc_data['allocated_quantity']))
+
+            # Verify item belongs to planning request
+            try:
+                pri = PlanningRequestItem.objects.get(id=pri_id, planning_request=planning_request)
+            except PlanningRequestItem.DoesNotExist:
+                raise serializers.ValidationError({
+                    "allocations": f"Allocation #{idx}: Item {pri_id} not found in planning request {pr_id}."
+                })
+
+            # Check available stock
+            if pri.item.stock_quantity < allocated_qty:
+                raise serializers.ValidationError({
+                    "allocations": f"Allocation #{idx}: Insufficient stock for {pri.item.code}. "
+                                   f"Available: {pri.item.stock_quantity}, Requested: {allocated_qty}"
+                })
+
+            # Check remaining quantity needed
+            remaining_qty = pri.quantity - pri.quantity_from_inventory
+            if allocated_qty > remaining_qty:
+                raise serializers.ValidationError({
+                    "allocations": f"Allocation #{idx}: Cannot allocate {allocated_qty} for {pri.item.code}. "
+                                   f"Only {remaining_qty} remaining needed."
+                })
+
+        return attrs
+
+    def create(self, validated_data):
+        """Create inventory allocations"""
+        from django.db import transaction
+
+        pr_id = validated_data['planning_request_id']
+        allocations_data = validated_data['allocations']
+        user = self.context['request'].user
+
+        planning_request = PlanningRequest.objects.get(id=pr_id)
+        created_allocations = []
+
+        with transaction.atomic():
+            for alloc_data in allocations_data:
+                pri_id = alloc_data['planning_request_item_id']
+                allocated_qty = Decimal(str(alloc_data['allocated_quantity']))
+                notes = alloc_data.get('notes', '')
+
+                pri = PlanningRequestItem.objects.select_for_update().get(id=pri_id)
+
+                # Create allocation
+                allocation = InventoryAllocation.objects.create(
+                    planning_request_item=pri,
+                    allocated_quantity=allocated_qty,
+                    allocated_by=user,
+                    notes=notes
+                )
+                created_allocations.append(allocation)
+
+        return {
+            'planning_request': planning_request,
+            'allocations': created_allocations,
+            'count': len(created_allocations)
         }

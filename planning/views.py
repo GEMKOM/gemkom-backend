@@ -10,7 +10,10 @@ from django.db.models.query import Prefetch
 from django.contrib.contenttypes.models import ContentType
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 
-from .models import DepartmentRequest, PlanningRequest, PlanningRequestItem, FileAttachment, FileAsset
+from .models import (
+    DepartmentRequest, PlanningRequest, PlanningRequestItem,
+    FileAttachment, FileAsset, InventoryAllocation
+)
 from procurement.models import Item
 from .serializers import (
     DepartmentRequestSerializer,
@@ -20,8 +23,10 @@ from .serializers import (
     BulkPlanningRequestItemSerializer,
     AttachmentUploadSerializer,
     FileAttachmentSerializer,
+    InventoryAllocationSerializer,
+    AllocateInventorySerializer,
 )
-from .filters import PlanningRequestItemFilter
+from .filters import PlanningRequestItemFilter, PlanningRequestFilter
 from approvals.models import ApprovalWorkflow, ApprovalStageInstance, ApprovalDecision
 
 
@@ -259,15 +264,15 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
     Flow:
     1. Planning creates from approved DepartmentRequest
     2. Planning maps items (creates/selects catalog Items)
-    3. Planning marks as 'ready'
-    4. Procurement converts to PurchaseRequest
+    3. If check_inventory=true: conduct inventory control, then mark as ready/completed
+    4. Procurement converts ready requests to PurchaseRequest
     """
     queryset = PlanningRequest.objects.all()
     serializer_class = PlanningRequestSerializer
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend, OrderingFilter]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
-    filterset_fields = ['status', 'priority', 'created_by', 'department_request']
+    filterset_class = PlanningRequestFilter
     ordering_fields = ['id', 'created_at', 'needed_date', 'priority']
     ordering = ['-created_at']
 
@@ -329,25 +334,221 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
 
-    @action(detail=True, methods=['POST'], permission_classes=[permissions.IsAuthenticated])
-    def mark_ready(self, request, pk=None):
-        """Planning marks request as ready for procurement."""
-        from planning.services import mark_planning_request_ready
+    @action(detail=True, methods=['GET'], permission_classes=[permissions.IsAuthenticated])
+    def check_inventory(self, request, pk=None):
+        """
+        Check inventory availability for all items in this planning request.
+        Returns detailed availability information for each item.
+        """
+        from planning.services import check_inventory_availability
 
         planning_request = self.get_object()
         user = request.user
 
-        # Only planning team can mark ready
+        # Only planning team can check inventory
         if not (user.is_superuser or (hasattr(user, 'profile') and user.profile.team == 'planning')):
-            return Response({"detail": "Only planning team can mark requests as ready."}, status=403)
+            return Response({"detail": "Only planning team can check inventory."}, status=403)
+
+        if not planning_request.check_inventory:
+            return Response(
+                {"detail": "This planning request doesn't have inventory control enabled."},
+                status=400
+            )
+
+        availability_info = check_inventory_availability(planning_request)
+        return Response(availability_info)
+
+    @action(detail=True, methods=['POST'], permission_classes=[permissions.IsAuthenticated])
+    def auto_allocate_inventory(self, request, pk=None):
+        """
+        Automatically allocate available inventory to all items in this planning request.
+        Only allocates what's available in stock.
+
+        NOTE: This only allocates stock. You must call complete_inventory_control
+        afterwards to mark the inventory control as done and update status.
+        """
+        from planning.services import auto_allocate_inventory
+
+        planning_request = self.get_object()
+        user = request.user
+
+        # Only planning team can auto-allocate
+        if not (user.is_superuser or (hasattr(user, 'profile') and user.profile.team == 'planning')):
+            return Response({"detail": "Only planning team can allocate inventory."}, status=403)
+
+        if not planning_request.check_inventory:
+            return Response(
+                {"detail": "This planning request doesn't have inventory control enabled."},
+                status=400
+            )
+
+        if planning_request.status != 'pending_inventory':
+            return Response(
+                {"detail": f"Cannot allocate inventory. Planning request status is '{planning_request.status}'. Must be 'pending_inventory'."},
+                status=400
+            )
 
         try:
-            mark_planning_request_ready(planning_request)
+            result = auto_allocate_inventory(planning_request, user)
         except ValidationError as e:
             return Response({"detail": str(e)}, status=400)
 
+        # Refresh planning request to get updated data
+        planning_request.refresh_from_db()
         serializer = self.get_serializer(planning_request)
+
+        return Response({
+            "detail": "Inventory auto-allocation completed. Call complete_inventory_control to finalize.",
+            "allocation_stats": result,
+            "planning_request": serializer.data
+        })
+
+    @action(detail=True, methods=['POST'], permission_classes=[permissions.IsAuthenticated])
+    def allocate_inventory(self, request, pk=None):
+        """
+        Manually allocate specific quantities of inventory to planning request items.
+
+        Request body:
+        {
+            "allocations": [
+                {
+                    "planning_request_item_id": 1,
+                    "allocated_quantity": "10.00",
+                    "notes": "Optional notes"
+                },
+                ...
+            ]
+        }
+        """
+        planning_request = self.get_object()
+        user = request.user
+
+        # Only planning team can allocate
+        if not (user.is_superuser or (hasattr(user, 'profile') and user.profile.team == 'planning')):
+            return Response({"detail": "Only planning team can allocate inventory."}, status=403)
+
+        if not planning_request.check_inventory:
+            return Response(
+                {"detail": "This planning request doesn't have inventory control enabled."},
+                status=400
+            )
+
+        # Add planning_request_id to the data
+        data = request.data.copy()
+        data['planning_request_id'] = planning_request.id
+
+        serializer = AllocateInventorySerializer(data=data, context={'request': request})
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=400)
+
+        result = serializer.save()
+
+        # Refresh planning request to get updated status
+        planning_request.refresh_from_db()
+        pr_serializer = self.get_serializer(planning_request)
+
+        return Response({
+            "detail": f"Successfully allocated inventory for {result['count']} items.",
+            "allocations": InventoryAllocationSerializer(result['allocations'], many=True).data,
+            "planning_request": pr_serializer.data
+        }, status=201)
+
+    @action(detail=True, methods=['GET'], permission_classes=[permissions.IsAuthenticated])
+    def inventory_allocations(self, request, pk=None):
+        """
+        Get all inventory allocations for this planning request.
+        """
+        planning_request = self.get_object()
+
+        allocations = InventoryAllocation.objects.filter(
+            planning_request_item__planning_request=planning_request
+        ).select_related(
+            'planning_request_item__item',
+            'allocated_by'
+        ).order_by('-allocated_at')
+
+        serializer = InventoryAllocationSerializer(allocations, many=True)
         return Response(serializer.data)
+
+    @action(detail=True, methods=['POST'], permission_classes=[permissions.IsAuthenticated])
+    def complete_inventory_control(self, request, pk=None):
+        """
+        Mark inventory control as completed for this planning request.
+
+        After allocating inventory (either manually or via auto_allocate_inventory),
+        call this endpoint to finalize the inventory control process.
+
+        Logic:
+        - If ALL items are fulfilled from inventory → status='completed' (not available for procurement)
+        - If SOME/NO items from inventory → status='ready' (available for procurement)
+
+        Request body example:
+        {
+            "allocations": [
+                {
+                    "planning_request_item_id": 1,
+                    "allocated_quantity": "5.00",
+                    "notes": "Found 5 in warehouse A"
+                },
+                {
+                    "planning_request_item_id": 2,
+                    "allocated_quantity": "0.00",
+                    "notes": "Not found in inventory"
+                }
+            ]
+        }
+
+        Or if you already allocated using auto_allocate_inventory or allocate_inventory,
+        just send empty body: {}
+        """
+        planning_request = self.get_object()
+        user = request.user
+
+        # Only planning team can complete inventory control
+        if not (user.is_superuser or (hasattr(user, 'profile') and user.profile.team == 'planning')):
+            return Response({"detail": "Only planning team can complete inventory control."}, status=403)
+
+        if not planning_request.check_inventory:
+            return Response(
+                {"detail": "This planning request doesn't have inventory control enabled."},
+                status=400
+            )
+
+        # If allocations provided, create them first
+        allocations_data = request.data.get('allocations', [])
+        if allocations_data:
+            # Add planning_request_id to the data
+            data = {
+                'planning_request_id': planning_request.id,
+                'allocations': allocations_data
+            }
+
+            serializer = AllocateInventorySerializer(data=data, context={'request': request})
+            if not serializer.is_valid():
+                return Response(serializer.errors, status=400)
+
+            allocation_result = serializer.save()
+            allocations_created = allocation_result['count']
+        else:
+            allocations_created = 0
+
+        # Complete the inventory control
+        try:
+            result = planning_request.complete_inventory_control()
+        except ValueError as e:
+            return Response({"detail": str(e)}, status=400)
+
+        # Refresh and serialize
+        planning_request.refresh_from_db()
+        pr_serializer = self.get_serializer(planning_request)
+
+        return Response({
+            "detail": result['message'],
+            "status": result['status'],
+            "fully_from_inventory": result['fully_from_inventory'],
+            "allocations_created": allocations_created,
+            "planning_request": pr_serializer.data
+        })
 
     @action(detail=True, methods=['POST'], permission_classes=[permissions.IsAuthenticated], url_path='attachments')
     def upload_attachment(self, request, pk=None):

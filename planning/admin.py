@@ -6,6 +6,7 @@ from .models import (
     PlanningRequestItem,
     FileAsset,
     FileAttachment,
+    InventoryAllocation,
 )
 
 
@@ -51,16 +52,17 @@ class DepartmentRequestAdmin(admin.ModelAdmin):
 class PlanningRequestItemInline(admin.TabularInline):
     model = PlanningRequestItem
     extra = 1
-    fields = ('item', 'job_no', 'quantity', 'priority', 'specifications', 'order')
+    fields = ('item', 'job_no', 'quantity', 'quantity_from_inventory', 'quantity_to_purchase', 'priority', 'specifications', 'order')
+    readonly_fields = ('quantity_from_inventory', 'quantity_to_purchase')
     autocomplete_fields = ['item']
 
 
 @admin.register(PlanningRequest)
 class PlanningRequestAdmin(admin.ModelAdmin):
-    list_display = ('request_number', 'title', 'status', 'priority', 'created_by', 'needed_date', 'created_at')
-    list_filter = ('status', 'priority', 'created_at')
+    list_display = ('request_number', 'title', 'status', 'priority', 'check_inventory', 'inventory_control_completed', 'fully_from_inventory', 'created_by', 'needed_date', 'created_at')
+    list_filter = ('status', 'priority', 'check_inventory', 'inventory_control_completed', 'fully_from_inventory', 'created_at')
     search_fields = ('request_number', 'title', 'description')
-    readonly_fields = ('request_number', 'created_at', 'updated_at', 'ready_at', 'converted_at', 'completed_at', 'display_completion_stats', 'display_purchase_requests')
+    readonly_fields = ('request_number', 'created_at', 'updated_at', 'ready_at', 'converted_at', 'completed_at', 'inventory_control_completed', 'fully_from_inventory', 'display_completion_stats', 'display_purchase_requests')
     inlines = [PlanningRequestItemInline, FileAttachmentInline]
 
     fieldsets = (
@@ -69,6 +71,9 @@ class PlanningRequestAdmin(admin.ModelAdmin):
         }),
         ('Source & Status', {
             'fields': ('department_request', 'status', 'created_by', 'display_completion_stats')
+        }),
+        ('Inventory Control', {
+            'fields': ('check_inventory', 'inventory_control_completed', 'fully_from_inventory')
         }),
         ('Timestamps', {
             'fields': ('created_at', 'updated_at', 'ready_at', 'converted_at', 'completed_at'),
@@ -106,17 +111,20 @@ class PlanningRequestAdmin(admin.ModelAdmin):
 
 @admin.register(PlanningRequestItem)
 class PlanningRequestItemAdmin(admin.ModelAdmin):
-    list_display = ('id', 'planning_request', 'item', 'job_no', 'quantity', 'priority', 'display_converted_status')
+    list_display = ('id', 'planning_request', 'item', 'job_no', 'quantity', 'quantity_from_inventory', 'quantity_to_purchase', 'priority', 'display_converted_status')
     list_filter = ('priority', 'planning_request__status')
     search_fields = ('job_no', 'item__code', 'item__name')
     autocomplete_fields = ['item', 'planning_request']
     ordering = ('planning_request', 'order')
     inlines = [FileAttachmentInline]
-    readonly_fields = ('display_purchase_requests',)
+    readonly_fields = ('quantity_from_inventory', 'quantity_to_purchase', 'display_purchase_requests', 'display_inventory_status')
 
     fieldsets = (
         ('Item Details', {
             'fields': ('planning_request', 'item', 'job_no', 'quantity', 'priority', 'specifications', 'order')
+        }),
+        ('Inventory Allocation', {
+            'fields': ('quantity_from_inventory', 'quantity_to_purchase', 'display_inventory_status')
         }),
         ('Purchase Requests', {
             'fields': ('display_purchase_requests',),
@@ -140,6 +148,18 @@ class PlanningRequestItemAdmin(admin.ModelAdmin):
         return '-'
     display_purchase_requests.short_description = 'Included in Purchase Requests'
 
+    def display_inventory_status(self, obj):
+        """Display inventory fulfillment status"""
+        if obj.pk:
+            if obj.is_fully_from_inventory:
+                return '✓ Fully from inventory'
+            elif obj.is_partially_from_inventory:
+                return f'⚠ Partial: {obj.quantity_from_inventory} from inventory, {obj.quantity_to_purchase} to purchase'
+            else:
+                return '✗ Not from inventory'
+        return '-'
+    display_inventory_status.short_description = 'Inventory Status'
+
 
 @admin.register(FileAsset)
 class FileAssetAdmin(admin.ModelAdmin):
@@ -156,3 +176,34 @@ class FileAttachmentAdmin(admin.ModelAdmin):
     search_fields = ('description',)
     readonly_fields = ('uploaded_at', 'uploaded_by')
     raw_id_fields = ('asset', 'source_attachment')
+
+
+@admin.register(InventoryAllocation)
+class InventoryAllocationAdmin(admin.ModelAdmin):
+    list_display = ('id', 'planning_request_item', 'get_item_code', 'get_job_no', 'allocated_quantity', 'allocated_by', 'allocated_at')
+    list_filter = ('allocated_at', 'allocated_by')
+    search_fields = ('planning_request_item__item__code', 'planning_request_item__item__name', 'planning_request_item__job_no', 'notes')
+    readonly_fields = ('allocated_at', 'allocated_by')
+    autocomplete_fields = ['planning_request_item']
+    ordering = ('-allocated_at',)
+
+    fieldsets = (
+        ('Allocation Details', {
+            'fields': ('planning_request_item', 'allocated_quantity', 'notes')
+        }),
+        ('Tracking', {
+            'fields': ('allocated_by', 'allocated_at')
+        }),
+    )
+
+    def get_item_code(self, obj):
+        """Display item code"""
+        return obj.planning_request_item.item.code if obj.planning_request_item else '-'
+    get_item_code.short_description = 'Item Code'
+    get_item_code.admin_order_field = 'planning_request_item__item__code'
+
+    def get_job_no(self, obj):
+        """Display job number"""
+        return obj.planning_request_item.job_no if obj.planning_request_item else '-'
+    get_job_no.short_description = 'Job No'
+    get_job_no.admin_order_field = 'planning_request_item__job_no'

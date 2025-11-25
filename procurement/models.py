@@ -153,7 +153,16 @@ class Item(models.Model):
     code = models.CharField(max_length=255)
     name = models.CharField(max_length=255)
     unit = models.CharField(max_length=20, choices=UNIT_CHOICES)
-    
+
+    # Inventory tracking (future-proof for stock management)
+    stock_quantity = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal('0.00'),
+        validators=[MinValueValidator(Decimal('0.00'))],
+        help_text="Current available stock quantity"
+    )
+
     def __str__(self):
         return f"{self.code} - {self.name}"
 

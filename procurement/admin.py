@@ -63,7 +63,16 @@ class PurchaseRequestAdmin(admin.ModelAdmin):
 
 @admin.register(Item)
 class ItemAdmin(admin.ModelAdmin):
-    list_display = ('code', 'name', 'unit')
+    list_display = ('code', 'name', 'unit', 'stock_quantity')
     search_fields = ('code', 'name')  # Required for autocomplete
     list_filter = ('unit',)
     ordering = ('code',)
+
+    fieldsets = (
+        ('Basic Information', {
+            'fields': ('code', 'name', 'unit')
+        }),
+        ('Inventory', {
+            'fields': ('stock_quantity',)
+        }),
+    )

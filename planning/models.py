@@ -115,9 +115,16 @@ class PlanningRequest(models.Model):
     Planning maps raw item descriptions to actual catalog Items.
     Each line represents a single item+job combination.
     Procurement converts these to PurchaseRequests with offers.
+
+    Status flow:
+    - pending_inventory: Waiting for inventory control (only when check_inventory=True)
+    - ready: Ready for procurement to select (items need purchasing OR inventory control completed with remaining items)
+    - converted: Converted to purchase request and sent for approval
+    - completed: All items fulfilled from inventory (no procurement needed)
+    - cancelled: Cancelled
     """
     STATUS_CHOICES = [
-        ('draft', 'Taslak'),
+        ('pending_inventory', 'Stok Kontrolü Bekliyor'),
         ('ready', 'Satın Almaya Hazır'),
         ('converted', 'Onaya Gönderildi'),
         ('completed', 'Tamamlandı'),
@@ -152,14 +159,28 @@ class PlanningRequest(models.Model):
         related_name='created_planning_requests'
     )
     priority = models.CharField(max_length=20, choices=PRIORITY_CHOICES, default='normal')
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='draft')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='ready')
+
+    # Inventory control
+    check_inventory = models.BooleanField(
+        default=False,
+        help_text="Whether to check and allocate from inventory"
+    )
+    inventory_control_completed = models.BooleanField(
+        default=False,
+        help_text="True when inventory control process is completed"
+    )
+    fully_from_inventory = models.BooleanField(
+        default=False,
+        help_text="True if all items were fulfilled from inventory"
+    )
 
     # Timestamps
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     ready_at = models.DateTimeField(null=True, blank=True)  # when marked ready for procurement
     converted_at = models.DateTimeField(null=True, blank=True)
-    completed_at = models.DateTimeField(null=True, blank=True)  # when all items are converted
+    completed_at = models.DateTimeField(null=True, blank=True)  # when all items are fulfilled
 
     class Meta:
         ordering = ['-created_at']
@@ -180,6 +201,8 @@ class PlanningRequest(models.Model):
         return f"{self.request_number} - {self.title}"
 
     def save(self, *args, **kwargs):
+        is_new = self.pk is None
+
         if not self.request_number:
             # Auto-generate request number
             last_request = PlanningRequest.objects.order_by('-id').first()
@@ -188,6 +211,15 @@ class PlanningRequest(models.Model):
                 self.request_number = f"PLR-{timezone.now().year}-{last_number + 1:04d}"
             else:
                 self.request_number = f"PLR-{timezone.now().year}-0001"
+
+        # Set initial status based on check_inventory
+        if is_new:
+            if self.check_inventory:
+                self.status = 'pending_inventory'
+            else:
+                self.status = 'ready'
+                self.ready_at = timezone.now()
+
         super().save(*args, **kwargs)
 
     def get_completion_stats(self):
@@ -232,6 +264,57 @@ class PlanningRequest(models.Model):
 
         return False
 
+    def complete_inventory_control(self):
+        """
+        Mark inventory control as completed and update status.
+        Called when planning team confirms inventory control is done.
+
+        Logic:
+        - If ALL items fulfilled from inventory → status='completed', fully_from_inventory=True
+        - If SOME/NO items from inventory → status='ready' (available for procurement)
+
+        Returns dict with status info.
+        """
+        if not self.check_inventory:
+            raise ValueError("Cannot complete inventory control for request without check_inventory enabled.")
+
+        if self.status not in ['pending_inventory']:
+            raise ValueError(f"Cannot complete inventory control for request with status '{self.status}'.")
+
+        items = self.items.all()
+        if not items.exists():
+            raise ValueError("Cannot complete inventory control for request without items.")
+
+        # Check if all items are fully from inventory
+        all_from_inventory = all(item.is_fully_from_inventory for item in items)
+
+        self.inventory_control_completed = True
+
+        if all_from_inventory:
+            # All items fulfilled from inventory - mark as completed
+            self.status = 'completed'
+            self.completed_at = timezone.now()
+            self.fully_from_inventory = True
+            self.save(update_fields=['status', 'completed_at', 'fully_from_inventory', 'inventory_control_completed'])
+
+            return {
+                'status': 'completed',
+                'message': 'All items fulfilled from inventory. Planning request completed.',
+                'fully_from_inventory': True
+            }
+        else:
+            # Some items need purchasing - mark as ready for procurement
+            self.status = 'ready'
+            self.ready_at = timezone.now()
+            self.fully_from_inventory = False
+            self.save(update_fields=['status', 'ready_at', 'fully_from_inventory', 'inventory_control_completed'])
+
+            return {
+                'status': 'ready',
+                'message': 'Inventory control completed. Planning request ready for procurement.',
+                'fully_from_inventory': False
+            }
+
 
 class PlanningRequestItem(models.Model):
     """
@@ -258,6 +341,22 @@ class PlanningRequestItem(models.Model):
         max_digits=10,
         decimal_places=2,
         validators=[MinValueValidator(Decimal('0.01'))]
+    )
+
+    # Inventory allocation tracking
+    quantity_from_inventory = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal('0.00'),
+        validators=[MinValueValidator(Decimal('0.00'))],
+        help_text="Quantity allocated from inventory"
+    )
+    quantity_to_purchase = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal('0.00'),
+        validators=[MinValueValidator(Decimal('0.00'))],
+        help_text="Quantity that needs to be purchased"
     )
 
     # Priority & specs (can override parent or be item-specific)
@@ -291,6 +390,16 @@ class PlanningRequestItem(models.Model):
     def is_converted(self):
         """Check if this planning request item has been converted to a purchase request"""
         return self.purchase_requests.exists()
+
+    @property
+    def is_fully_from_inventory(self):
+        """Check if this item is fully fulfilled from inventory"""
+        return self.quantity_from_inventory >= self.quantity
+
+    @property
+    def is_partially_from_inventory(self):
+        """Check if this item is partially fulfilled from inventory"""
+        return self.quantity_from_inventory > Decimal('0.00') and self.quantity_from_inventory < self.quantity
 
 
 class FileAsset(models.Model):
@@ -348,3 +457,82 @@ class FileAttachment(models.Model):
 
     def __str__(self):
         return f"Attachment to {self.content_type} #{self.object_id} - {os.path.basename(self.asset.file.name)}"
+
+
+class InventoryAllocation(models.Model):
+    """
+    Tracks inventory allocation for planning request items.
+    Records when items are marked as taken from inventory.
+    Future-proof for full stock movement tracking.
+    """
+    planning_request_item = models.ForeignKey(
+        PlanningRequestItem,
+        on_delete=models.CASCADE,
+        related_name='inventory_allocations'
+    )
+
+    allocated_quantity = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal('0.01'))],
+        help_text="Quantity allocated from inventory"
+    )
+
+    # Track who allocated and when
+    allocated_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='inventory_allocations'
+    )
+    allocated_at = models.DateTimeField(auto_now_add=True)
+
+    # Future-proof: tracking fields for stock movements
+    notes = models.TextField(blank=True, help_text="Optional notes about this allocation")
+
+    class Meta:
+        ordering = ['-allocated_at']
+        indexes = [
+            models.Index(fields=['planning_request_item', 'allocated_at']),
+        ]
+
+    def __str__(self):
+        return f"Allocation: {self.allocated_quantity} of {self.planning_request_item.item.code} for {self.planning_request_item.job_no}"
+
+    def save(self, *args, **kwargs):
+        """
+        When saving, update the planning request item's quantity_from_inventory.
+        Also update the Item's stock_quantity.
+        """
+        is_new = self.pk is None
+
+        super().save(*args, **kwargs)
+
+        if is_new:
+            # Update planning request item
+            item = self.planning_request_item
+            item.quantity_from_inventory += self.allocated_quantity
+            item.quantity_to_purchase = item.quantity - item.quantity_from_inventory
+            item.save(update_fields=['quantity_from_inventory', 'quantity_to_purchase'])
+
+            # Reduce stock from Item
+            catalog_item = item.item
+            catalog_item.stock_quantity -= self.allocated_quantity
+            catalog_item.save(update_fields=['stock_quantity'])
+
+    def delete(self, *args, **kwargs):
+        """
+        When deleting, restore the quantities.
+        """
+        # Restore planning request item quantities
+        item = self.planning_request_item
+        item.quantity_from_inventory -= self.allocated_quantity
+        item.quantity_to_purchase = item.quantity - item.quantity_from_inventory
+        item.save(update_fields=['quantity_from_inventory', 'quantity_to_purchase'])
+
+        # Restore stock to Item
+        catalog_item = item.item
+        catalog_item.stock_quantity += self.allocated_quantity
+        catalog_item.save(update_fields=['stock_quantity'])
+
+        super().delete(*args, **kwargs)
