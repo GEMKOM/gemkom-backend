@@ -116,18 +116,22 @@ class ItemViewSet(viewsets.ModelViewSet):
     filterset_fields = {
         "code": ["exact", "icontains"],
         "name": ["icontains"],
+        "item_type": ["exact"],
     }
     ordering_fields = ["code", "name"]  # (plus any report fields you expose via ?ordering=…)
     search_fields = ["code", "name"]
-    
+
     def get_queryset(self):
         queryset = Item.objects.all()
         code = self.request.query_params.get('code', None)
         name = self.request.query_params.get('name', None)
+        item_type = self.request.query_params.get('item_type', None)
         if code:
             queryset = queryset.filter(code__icontains=code)
         if name:
             queryset = queryset.filter(name__icontains=name)
+        if item_type:
+            queryset = queryset.filter(item_type=item_type)
         return queryset
 
 class PurchaseRequestViewSet(viewsets.ModelViewSet):

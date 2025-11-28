@@ -63,16 +63,33 @@ class PurchaseRequestAdmin(admin.ModelAdmin):
 
 @admin.register(Item)
 class ItemAdmin(admin.ModelAdmin):
-    list_display = ('code', 'name', 'unit', 'stock_quantity')
+    list_display = ('code', 'name', 'unit', 'item_type', 'stock_quantity')
     search_fields = ('code', 'name')  # Required for autocomplete
-    list_filter = ('unit',)
+    list_filter = ('unit', 'item_type')
+    list_editable = ('item_type',)  # Allow inline editing of item_type
     ordering = ('code',)
+    actions = ['set_type_stock', 'set_type_expenditure', 'set_type_subcontracting']
 
     fieldsets = (
         ('Basic Information', {
-            'fields': ('code', 'name', 'unit')
+            'fields': ('code', 'name', 'unit', 'item_type')
         }),
         ('Inventory', {
             'fields': ('stock_quantity',)
         }),
     )
+
+    @admin.action(description='Set selected items as Stock (Stok)')
+    def set_type_stock(self, request, queryset):
+        updated = queryset.update(item_type='stock')
+        self.message_user(request, f'{updated} items updated to Stock type.')
+
+    @admin.action(description='Set selected items as Expenditure (Masraf)')
+    def set_type_expenditure(self, request, queryset):
+        updated = queryset.update(item_type='expenditure')
+        self.message_user(request, f'{updated} items updated to Expenditure type.')
+
+    @admin.action(description='Set selected items as Subcontracting (Alt Yüklenici)')
+    def set_type_subcontracting(self, request, queryset):
+        updated = queryset.update(item_type='subcontracting')
+        self.message_user(request, f'{updated} items updated to Subcontracting type.')

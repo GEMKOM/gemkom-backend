@@ -1,0 +1,79 @@
+{% extends "admin/base_site.html" %}
+{% load i18n admin_urls static l10n %}
+
+{% block extrahead %}
+    {{ block.super }}
+    {{ media }}
+{% endblock %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+    <a href="{% url 'admin:index' %}">{% trans 'Home' %}</a>
+    &rsaquo; <a href="{% url 'admin:planning_planningrequest_changelist' %}">{% trans 'Planning requests' %}</a>
+    &rsaquo; {% trans 'Delete multiple objects' %}
+</div>
+{% endblock %}
+
+{% block content %}
+<h1>{% trans "Are you sure?" %}</h1>
+
+<p>{% blocktrans count counter=queryset|length %}Are you sure you want to delete the selected planning request? This action cannot be undone.{% plural %}Are you sure you want to delete the selected {{ counter }} planning requests? This action cannot be undone.{% endblocktrans %}</p>
+
+<form method="post">
+    {% csrf_token %}
+
+    <div style="margin: 20px 0;">
+        <h2>{% trans "Deletion Options" %}</h2>
+
+        <div style="margin: 10px 0;">
+            <label>
+                <input type="checkbox" name="delete_items" checked>
+                <strong>{% trans "Delete Planning Request Items" %}</strong>
+            </label>
+            <p style="margin-left: 25px; color: #666;">
+                {% trans "This will delete all items associated with the planning request(s). Inventory allocations will also be deleted and stock quantities will be restored." %}
+            </p>
+        </div>
+
+        <div style="margin: 10px 0;">
+            <label>
+                <input type="checkbox" name="delete_files" checked>
+                <strong>{% trans "Delete File Attachments and Files" %}</strong>
+            </label>
+            <p style="margin-left: 25px; color: #666;">
+                {% trans "This will delete all file attachment records and remove the actual files from storage. Orphaned file assets will also be deleted." %}
+            </p>
+        </div>
+
+        <div style="margin: 10px 0;">
+            <label>
+                <input type="checkbox" name="delete_department_requests">
+                <strong>{% trans "Delete Source Department Requests" %}</strong>
+            </label>
+            <p style="margin-left: 25px; color: #666;">
+                {% trans "This will also delete the original department request(s) that generated these planning requests. Use with caution as this removes the original request history." %}
+            </p>
+        </div>
+    </div>
+
+    <div style="margin: 20px 0;">
+        <h3>{% trans "Objects to be deleted:" %}</h3>
+        <ul>
+            {% for obj in queryset %}
+            <li>{{ obj }}</li>
+            {% endfor %}
+        </ul>
+    </div>
+
+    <div>
+        {% for obj in queryset %}
+        <input type="hidden" name="{{ action_checkbox_name }}" value="{{ obj.pk }}" />
+        {% endfor %}
+        <input type="hidden" name="action" value="delete_selected_with_options" />
+        <input type="hidden" name="post" value="yes" />
+        <input type="submit" value="{% trans 'Yes, I am sure' %}" class="default" />
+        <a href="{% url 'admin:planning_planningrequest_changelist' %}" class="button cancel-link">{% trans 'No, take me back' %}</a>
+    </div>
+</form>
+
+{% endblock %}

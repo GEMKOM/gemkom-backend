@@ -150,9 +150,22 @@ class Item(models.Model):
         ('paket', 'Paket'),
         ('kutu', 'Kutu'),
     ]
+
+    ITEM_TYPE_CHOICES = [
+        ('stock', 'Stok'),
+        ('expenditure', 'Masraf'),
+        ('subcontracting', 'Alt Yüklenici'),
+    ]
+
     code = models.CharField(max_length=255)
     name = models.CharField(max_length=255)
     unit = models.CharField(max_length=20, choices=UNIT_CHOICES)
+    item_type = models.CharField(
+        max_length=20,
+        choices=ITEM_TYPE_CHOICES,
+        default='stock',
+        help_text="Type of item: stock, expenditure, or subcontracting"
+    )
 
     # Inventory tracking (future-proof for stock management)
     stock_quantity = models.DecimalField(

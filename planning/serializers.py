@@ -213,6 +213,7 @@ class PlanningRequestItemSerializer(serializers.ModelSerializer):
     item_code = serializers.CharField(source='item.code', read_only=True)
     item_name = serializers.CharField(source='item.name', read_only=True)
     item_unit = serializers.CharField(source='item.unit', read_only=True)
+    item_type = serializers.CharField(source='item.item_type', read_only=True)
     item_stock_quantity = serializers.DecimalField(source='item.stock_quantity', read_only=True, max_digits=10, decimal_places=2)
     files = FileAttachmentSerializer(many=True, read_only=True)
     attachments = AttachmentUploadSerializer(many=True, write_only=True, required=False)
@@ -229,7 +230,7 @@ class PlanningRequestItemSerializer(serializers.ModelSerializer):
     class Meta:
         model = PlanningRequestItem
         fields = [
-            'id', 'item', 'item_id', 'item_code', 'item_name', 'item_unit', 'item_stock_quantity',
+            'id', 'item', 'item_id', 'item_code', 'item_name', 'item_unit', 'item_type', 'item_stock_quantity',
             'job_no', 'quantity', 'quantity_from_inventory', 'quantity_to_purchase',
             'priority', 'specifications',
             'source_item_index', 'order', 'files', 'attachments',

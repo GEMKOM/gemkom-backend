@@ -90,7 +90,7 @@ class DepartmentRequestViewSet(viewsets.ModelViewSet):
 
         # Filter based on user role
         # Superusers and planning team see all
-        if user.is_superuser or (hasattr(user, 'profile') and user.profile.team == 'planning'):
+        if user.is_superuser or (hasattr(user, 'profile') and (user.profile.team == 'planning' or user.profile.occupation == 'manager')):
             return qs
 
         # Regular users see only their own requests

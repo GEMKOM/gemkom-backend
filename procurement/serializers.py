@@ -71,7 +71,7 @@ class SupplierSerializer(serializers.ModelSerializer):
 class ItemSerializer(serializers.ModelSerializer):
     class Meta:
         model = Item
-        fields = ['id', 'code', 'name', 'unit']
+        fields = ['id', 'code', 'name', 'unit', 'item_type']
 
 class PurchaseRequestItemAllocationSerializer(serializers.ModelSerializer):
     class Meta:

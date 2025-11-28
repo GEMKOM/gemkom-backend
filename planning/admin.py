@@ -1,5 +1,8 @@
 from django.contrib import admin
 from django.contrib.contenttypes.admin import GenericTabularInline
+from django.contrib import messages
+from django.shortcuts import render
+from django.db import transaction
 from .models import (
     DepartmentRequest,
     PlanningRequest,
@@ -64,6 +67,7 @@ class PlanningRequestAdmin(admin.ModelAdmin):
     search_fields = ('request_number', 'title', 'description')
     readonly_fields = ('request_number', 'created_at', 'updated_at', 'ready_at', 'converted_at', 'completed_at', 'inventory_control_completed', 'fully_from_inventory', 'display_completion_stats', 'display_purchase_requests')
     inlines = [PlanningRequestItemInline, FileAttachmentInline]
+    actions = ['delete_selected_with_options']
 
     fieldsets = (
         ('Basic Information', {
@@ -107,6 +111,133 @@ class PlanningRequestAdmin(admin.ModelAdmin):
             return 'None yet'
         return '-'
     display_purchase_requests.short_description = 'Related Purchase Requests'
+
+    def delete_queryset(self, request, queryset):
+        """
+        Custom delete to handle cascading options when deleting multiple planning requests.
+        This is called when using the admin action dropdown.
+        """
+        # For bulk delete, use a confirmation page with options
+        if request.POST.get('post'):
+            delete_items = request.POST.get('delete_items') == 'on'
+            delete_files = request.POST.get('delete_files') == 'on'
+            delete_department_requests = request.POST.get('delete_department_requests') == 'on'
+
+            deleted_count = 0
+            with transaction.atomic():
+                for pr in queryset:
+                    self._delete_planning_request_with_options(
+                        pr, delete_items, delete_files, delete_department_requests
+                    )
+                    deleted_count += 1
+
+            self.message_user(
+                request,
+                f"Successfully deleted {deleted_count} planning request(s).",
+                messages.SUCCESS
+            )
+            return None  # Return None to redirect back to changelist
+
+        # Show confirmation page with options
+        context = {
+            'title': 'Delete Planning Requests',
+            'queryset': queryset,
+            'opts': self.model._meta,
+            'action_checkbox_name': admin.helpers.ACTION_CHECKBOX_NAME,
+        }
+        return render(request, 'admin/planning/delete_confirmation.html', context)
+
+    def delete_selected_with_options(self, request, queryset):
+        """
+        Admin action to delete selected planning requests with options.
+        This is the action method that gets called from the admin changelist.
+        """
+        return self.delete_queryset(request, queryset)
+    delete_selected_with_options.short_description = "Delete selected planning requests with options"
+
+    def delete_model(self, request, obj):
+        """
+        Override delete_model to add custom delete logic with default cascade behavior.
+        When deleting a single object from the detail page, we use safe defaults:
+        - Delete items: Yes
+        - Delete files: Yes (both attachments and file assets)
+        - Delete department request: No (keep it for reference)
+        """
+        self._delete_planning_request_with_options(
+            obj,
+            delete_items=True,
+            delete_files=True,
+            delete_department_requests=False
+        )
+
+    def _delete_planning_request_with_options(
+        self, planning_request, delete_items, delete_files, delete_department_requests
+    ):
+        """
+        Delete a planning request with configurable cascade options.
+
+        Args:
+            planning_request: The PlanningRequest instance to delete
+            delete_items: If True, delete all PlanningRequestItems
+            delete_files: If True, delete FileAttachments and orphaned FileAssets
+            delete_department_requests: If True, also delete the source DepartmentRequest
+        """
+        with transaction.atomic():
+            # Store references before deletion
+            items = list(planning_request.items.all()) if delete_items else []
+            file_attachments = list(planning_request.files.all()) if delete_files else []
+            department_request = planning_request.department_request if delete_department_requests else None
+
+            # Delete items (this will cascade to InventoryAllocations via Django CASCADE)
+            if delete_items:
+                for item in items:
+                    # Get item's file attachments
+                    item_files = list(item.files.all()) if delete_files else []
+
+                    # Delete the item (cascades to inventory allocations)
+                    item.delete()
+
+                    # Delete item's file attachments if requested
+                    if delete_files:
+                        for file_attachment in item_files:
+                            self._delete_file_attachment(file_attachment)
+
+            # Delete planning request's file attachments
+            if delete_files:
+                for file_attachment in file_attachments:
+                    self._delete_file_attachment(file_attachment)
+
+            # Delete the planning request itself
+            planning_request.delete()
+
+            # Delete department request if requested
+            if delete_department_requests and department_request:
+                # Also delete department request files if delete_files is True
+                if delete_files:
+                    for file_attachment in department_request.files.all():
+                        self._delete_file_attachment(file_attachment)
+                department_request.delete()
+
+    def _delete_file_attachment(self, file_attachment):
+        """
+        Delete a file attachment and its orphaned file asset.
+
+        Args:
+            file_attachment: FileAttachment instance to delete
+        """
+        asset = file_attachment.asset
+        file_attachment.delete()
+
+        # Check if asset has any remaining attachments
+        if asset and not asset.attachments.exists():
+            # Delete the actual file from storage
+            if asset.file:
+                try:
+                    asset.file.delete(save=False)
+                except Exception:
+                    pass  # File might already be deleted
+            # Delete the asset record
+            asset.delete()
 
 
 @admin.register(PlanningRequestItem)
