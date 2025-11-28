@@ -386,6 +386,23 @@ class PlanningRequestItem(models.Model):
     def __str__(self):
         return f"{self.item.code} - {self.job_no} - {self.quantity}"
 
+    def save(self, *args, **kwargs):
+        """
+        Auto-calculate quantity_to_purchase based on inventory control setting.
+        If check_inventory is False, all quantity needs to be purchased.
+        If check_inventory is True, quantity_to_purchase = quantity - quantity_from_inventory
+        """
+        if self.planning_request_id:
+            # Get planning request to check inventory control setting
+            if not self.planning_request.check_inventory:
+                # No inventory control - all quantity needs to be purchased
+                self.quantity_to_purchase = self.quantity
+            else:
+                # With inventory control - calculate remaining to purchase
+                self.quantity_to_purchase = self.quantity - self.quantity_from_inventory
+
+        super().save(*args, **kwargs)
+
     @property
     def is_converted(self):
         """Check if this planning request item has been converted to a purchase request"""
