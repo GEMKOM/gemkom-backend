@@ -359,6 +359,13 @@ class PlanningRequestItem(models.Model):
         help_text="Quantity that needs to be purchased"
     )
 
+    # Original item description from DepartmentRequest
+    item_description = models.CharField(
+        max_length=500,
+        blank=True,
+        help_text="Original item name/description from department request (e.g., 'Bearing X123 for Machine Y')"
+    )
+
     # Priority & specs (can override parent or be item-specific)
     priority = models.CharField(
         max_length=20,

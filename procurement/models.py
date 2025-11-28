@@ -282,6 +282,14 @@ class PurchaseRequestItem(models.Model):
     item = models.ForeignKey(Item, on_delete=models.CASCADE, related_name='requests')
     quantity = models.DecimalField(max_digits=10, decimal_places=2)  # ADDED: Frontend sends this
     priority = models.CharField(max_length=20, choices=PurchaseRequest.PRIORITY_CHOICES, default='normal')
+
+    # Original item description from PlanningRequestItem
+    item_description = models.CharField(
+        max_length=500,
+        blank=True,
+        help_text="Original item name/description from department request (e.g., 'Bearing X123 for Machine Y')"
+    )
+
     specifications = models.TextField(blank=True)
 
     # Ordering
@@ -418,6 +426,14 @@ class PurchaseOrderLine(models.Model):
     unit_price = models.DecimalField(max_digits=15, decimal_places=2)
     total_price = models.DecimalField(max_digits=16, decimal_places=2)
     delivery_days = models.PositiveIntegerField(null=True, blank=True)
+
+    # Original item description from PurchaseRequestItem
+    item_description = models.CharField(
+        max_length=500,
+        blank=True,
+        help_text="Original item name/description from department request (e.g., 'Bearing X123 for Machine Y')"
+    )
+
     notes = models.TextField(blank=True)
 
     class Meta:

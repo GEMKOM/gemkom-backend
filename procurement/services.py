@@ -91,6 +91,7 @@ def create_pos_from_recommended(pr):
                 unit_price=unit,
                 total_price=total,
                 delivery_days=io.delivery_days,
+                item_description=pri.item_description or '',
                 notes=io.notes or '',
             )
 

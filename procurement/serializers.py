@@ -85,7 +85,7 @@ class PurchaseRequestItemSerializer(serializers.ModelSerializer):
     class Meta:
         model = PurchaseRequestItem
         fields = [
-            'id', 'item', 'quantity', 'priority',
+            'id', 'item', 'quantity', 'item_description', 'priority',
             'specifications', 'order', 'allocations'
         ]
 
@@ -98,6 +98,7 @@ class PurchaseRequestItemInputSerializer(serializers.Serializer):
     name = serializers.CharField()
     unit = serializers.CharField()
     quantity = serializers.DecimalField(max_digits=10, decimal_places=2)
+    item_description = serializers.CharField(required=False, allow_blank=True)
     priority = serializers.ChoiceField(choices=PurchaseRequest.PRIORITY_CHOICES, required=False)
     specifications = serializers.CharField(required=False, allow_blank=True)
     # New (preferred): split merged line into multiple jobs
@@ -336,6 +337,7 @@ class PurchaseRequestCreateSerializer(serializers.ModelSerializer):
                 purchase_request=pr,
                 item=item,
                 quantity=item_data['quantity'],
+                item_description=item_data.get('item_description', ''),
                 priority=item_data.get('priority', 'normal'),
                 specifications=item_data.get('specifications', ''),
                 order=i
@@ -472,7 +474,7 @@ class PurchaseOrderLineSerializer(serializers.ModelSerializer):
     class Meta:
         model = PurchaseOrderLine
         fields = [
-            'id', 'purchase_request_item', 'item_code', 'item_name',
+            'id', 'purchase_request_item', 'item_code', 'item_name', 'item_description',
             'quantity', 'unit_price', 'total_price', 'delivery_days', 'notes',
             'allocations',
         ]

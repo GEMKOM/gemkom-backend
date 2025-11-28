@@ -232,7 +232,7 @@ class PlanningRequestItemSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'item', 'item_id', 'item_code', 'item_name', 'item_unit', 'item_type', 'item_stock_quantity',
             'job_no', 'quantity', 'quantity_from_inventory', 'quantity_to_purchase',
-            'priority', 'specifications',
+            'item_description', 'priority', 'specifications',
             'source_item_index', 'order', 'files', 'attachments',
             'is_converted', 'is_fully_from_inventory', 'is_partially_from_inventory',
             'is_available', 'purchase_request_info', 'planning_request', 'planning_request_number'
@@ -609,6 +609,7 @@ class PlanningRequestCreateSerializer(serializers.Serializer):
                 item=item,
                 job_no=item_data['job_no'],
                 quantity=quantity,
+                item_description=item_data.get('item_description', ''),
                 priority=item_data.get('priority', 'normal'),
                 specifications=item_data.get('specifications', ''),
                 source_item_index=item_data.get('source_item_index'),
@@ -764,6 +765,7 @@ class BulkPlanningRequestItemSerializer(serializers.Serializer):
                 item=item,
                 job_no=item_data['job_no'],
                 quantity=Decimal(str(item_data['quantity'])),
+                item_description=item_data.get('item_description', ''),
                 priority=item_data.get('priority', 'normal'),
                 specifications=item_data.get('specifications', ''),
                 source_item_index=item_data.get('source_item_index'),
