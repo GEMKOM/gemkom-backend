@@ -1,7 +1,7 @@
 from django.urls import path
 
 from machining.queue_views import DrainCostQueueView
-from .views import HoldTaskViewSet, InitTaskKeyCounterView, JobCostDetailView, JobCostListView, JobHoursReportView, MachineTimelineView, PlanningAggregateView, PlanningBulkSaveView, PlanningListView, ProductionPlanView, TaskBulkCreateView, TimerDetailView, TimerReportView, TimerStartView, TimerStopView, TimerManualEntryView, TimerListView, UnmarkTaskCompletedView, DailyUserReportView
+from .views import DailyEfficiencyReportView, HoldTaskViewSet, InitTaskKeyCounterView, JobCostDetailView, JobCostListView, JobHoursReportView, MachineTimelineView, PlanningAggregateView, PlanningBulkSaveView, PlanningListView, ProductionPlanView, TaskBulkCreateView, TimerDetailView, TimerReportView, TimerStartView, TimerStopView, TimerManualEntryView, TimerListView, UnmarkTaskCompletedView, DailyUserReportView
 from rest_framework.routers import DefaultRouter
 from .views import TaskViewSet, MarkTaskCompletedView
 
@@ -30,6 +30,7 @@ urlpatterns = [
     path("reports/job-costs/<str:job_no>/", JobCostDetailView.as_view()),
     path('reports/production-plan/', ProductionPlanView.as_view(), name='production-plan'),
     path('reports/daily-user-report/', DailyUserReportView.as_view(), name='daily-user-report'),
+    path('reports/daily-efficiency/', DailyEfficiencyReportView.as_view(), name='daily-efficiency-report'),
 
 ]
 

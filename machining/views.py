@@ -778,6 +778,220 @@ class JobCostDetailView(APIView):
         return Response({"count": len(results), "results": results}, status=200)
 
 
+class DailyEfficiencyReportView(APIView):
+    """
+    GET /machining/reports/daily-efficiency/?date=2024-01-15
+
+    Returns a daily efficiency report showing tasks each user worked on during the selected date.
+    For each task, displays:
+    - Duration worked on the selected date
+    - Total hours spent across all dates
+    - Estimated hours
+    - Efficiency (estimated_hours / total_hours_spent)
+
+    Only shows tasks that were worked on during the selected date, but uses all-time totals for efficiency calculation.
+    Only includes users with team='machining'.
+
+    Response shape:
+    {
+      "date": "2024-01-15",
+      "users": [
+        {
+          "user_id": 1,
+          "username": "john",
+          "first_name": "John",
+          "last_name": "Doe",
+          "tasks": [
+            {
+              "task_key": "TI-001",
+              "task_name": "Task 1",
+              "job_no": "J-100",
+              "machine_name": "Doosan DBC130L II",
+              "daily_duration_hours": 2.5,
+              "estimated_hours": 5.0,
+              "total_hours_spent": 6.0,
+              "efficiency": 0.83
+            }
+          ],
+          "total_daily_hours": 8.5
+        }
+      ]
+    }
+    """
+    permission_classes = [IsMachiningUserOrAdmin]
+
+    def get(self, request):
+        from datetime import datetime, date, time
+        from django.contrib.auth.models import User
+        from django.utils import timezone
+        from collections import defaultdict
+
+        # Parse date parameter (default to today)
+        date_str = request.query_params.get('date')
+        if date_str:
+            try:
+                report_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+            except ValueError:
+                return Response({"error": "Invalid date format. Use YYYY-MM-DD"}, status=400)
+        else:
+            report_date = timezone.now().date()
+
+        # Get timezone using existing utility
+        tz_business = _get_business_tz()
+
+        # Calculate day boundaries in UTC (epoch ms)
+        day_start_dt = datetime.combine(report_date, time(0, 0), tz_business)
+        day_end_dt = datetime.combine(report_date, time(23, 59, 59), tz_business)
+        day_start_ms = int(day_start_dt.timestamp() * 1000)
+        day_end_ms = int(day_end_dt.timestamp() * 1000)
+        now_ms = int(timezone.now().timestamp() * 1000)
+
+        # Get all timers for this day from users with team='machining'
+        timers = (
+            Timer.objects
+            .select_related('user', 'machine_fk', 'user__profile')
+            .prefetch_related('issue_key')
+            .filter(
+                start_time__gte=day_start_ms,
+                start_time__lt=day_end_ms + 86400000,
+                user__profile__team='machining'
+            )
+            .order_by('user_id', 'start_time')
+        )
+
+        # Group timers by user and task
+        user_task_timers = defaultdict(lambda: defaultdict(list))
+        task_keys_set = set()
+
+        for timer in timers:
+            # Only include timers that actually overlap with the report date
+            timer_end = timer.finish_time or now_ms
+            if timer_end < day_start_ms or timer.start_time > day_end_ms:
+                continue
+
+            # Only include finished timers for efficiency calculation
+            if timer.finish_time is None:
+                continue
+
+            # Clip timer to day boundaries
+            timer_start = max(timer.start_time, day_start_ms)
+            timer_end_clipped = min(timer_end, day_end_ms, now_ms)
+
+            if timer_end_clipped <= timer_start:
+                continue
+
+            task = timer.issue_key
+            if not task:
+                continue
+
+            task_key = getattr(task, 'key', None)
+            if not task_key:
+                continue
+
+            # Skip hold tasks
+            if getattr(task, 'is_hold_task', False):
+                continue
+
+            task_keys_set.add(task_key)
+
+            duration_ms = timer_end_clipped - timer_start
+
+            user_task_timers[timer.user_id][task_key].append({
+                "duration_ms": duration_ms,
+                "task_obj": task,
+                "machine_name": timer.machine_fk.name if timer.machine_fk else None,
+            })
+
+        # Pre-calculate total_hours_spent for all tasks (bulk query for performance)
+        task_totals = {}
+        if task_keys_set:
+            tasks_with_timers = Task.objects.filter(key__in=task_keys_set).prefetch_related('issue_key')
+            for task in tasks_with_timers:
+                # Calculate total hours spent across all timers for this task
+                task_timers = task.issue_key.exclude(finish_time__isnull=True)
+                total_ms = sum(
+                    (t.finish_time - t.start_time)
+                    for t in task_timers
+                    if t.start_time is not None and t.finish_time is not None and t.finish_time > t.start_time
+                )
+                total_hours = round(total_ms / 3600000.0, 2) if total_ms > 0 else 0.0
+                task_totals[task.key] = {
+                    "estimated_hours": float(task.estimated_hours) if task.estimated_hours else None,
+                    "total_hours_spent": total_hours,
+                    "name": task.name,
+                    "job_no": task.job_no,
+                }
+
+        # Build response for each user
+        users_data = []
+        user_ids = list(user_task_timers.keys())
+        users = User.objects.filter(
+            id__in=user_ids,
+            profile__team='machining'
+        ).select_related('profile')
+        users_by_id = {u.id: u for u in users}
+
+        for user_id, tasks_dict in user_task_timers.items():
+            user = users_by_id.get(user_id)
+            if not user:
+                continue
+
+            tasks_list = []
+            total_daily_ms = 0
+
+            for task_key, timer_list in tasks_dict.items():
+                task_info = task_totals.get(task_key, {})
+
+                # Sum up duration for this task on the selected date
+                daily_duration_ms = sum(t["duration_ms"] for t in timer_list)
+                daily_duration_hours = round(daily_duration_ms / 3600000.0, 2)
+                total_daily_ms += daily_duration_ms
+
+                # Get machine name (use first timer's machine)
+                machine_name = timer_list[0]["machine_name"] if timer_list else None
+
+                # Calculate efficiency
+                estimated_hours = task_info.get("estimated_hours")
+                total_hours_spent = task_info.get("total_hours_spent", 0.0)
+
+                efficiency = None
+                if estimated_hours and total_hours_spent and total_hours_spent > 0:
+                    efficiency = round(estimated_hours / total_hours_spent, 2) * 100
+
+                tasks_list.append({
+                    "task_key": task_key,
+                    "task_name": task_info.get("name"),
+                    "job_no": task_info.get("job_no"),
+                    "machine_name": machine_name,
+                    "daily_duration_hours": daily_duration_hours,
+                    "estimated_hours": estimated_hours,
+                    "total_hours_spent": total_hours_spent,
+                    "efficiency": efficiency,
+                })
+
+            # Sort tasks by task_key
+            tasks_list.sort(key=lambda x: x["task_key"])
+
+            total_daily_hours = round(total_daily_ms / 3600000.0, 2)
+
+            users_data.append({
+                "user_id": user.id,
+                "username": user.username,
+                "first_name": user.first_name or "",
+                "last_name": user.last_name or "",
+                "tasks": tasks_list,
+                "total_daily_hours": total_daily_hours,
+            })
+
+        # Sort by username
+        users_data.sort(key=lambda x: x['username'])
+
+        return Response({
+            "date": report_date.isoformat(),
+            "users": users_data,
+        }, status=200)
+
+
 class DailyUserReportView(APIView):
     """
     GET /machining/reports/daily-user-report/?date=2024-01-15
