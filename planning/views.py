@@ -550,6 +550,44 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
             "planning_request": pr_serializer.data
         })
 
+    @action(detail=True, methods=['POST'], permission_classes=[permissions.IsAuthenticated])
+    def mark_ready_for_procurement(self, request, pk=None):
+        """
+        Mark planning request as ready for procurement after ERP entry.
+        Planning team calls this after entering items into ERP system.
+
+        Request body:
+        {
+            "erp_code": "ERP-2024-12345"
+        }
+        """
+        planning_request = self.get_object()
+        user = request.user
+
+        # Only planning team can mark as ready
+        if not (user.is_superuser or (hasattr(user, 'profile') and user.profile.team == 'planning')):
+            return Response({"detail": "Only planning team can mark requests as ready for procurement."}, status=403)
+
+        erp_code = request.data.get('erp_code', '').strip()
+        if not erp_code:
+            return Response({"detail": "ERP code is required."}, status=400)
+
+        try:
+            result = planning_request.mark_ready_for_procurement(erp_code)
+        except ValueError as e:
+            return Response({"detail": str(e)}, status=400)
+
+        # Refresh and serialize
+        planning_request.refresh_from_db()
+        pr_serializer = self.get_serializer(planning_request)
+
+        return Response({
+            "detail": result['message'],
+            "status": result['status'],
+            "erp_code": result['erp_code'],
+            "planning_request": pr_serializer.data
+        })
+
     @action(detail=True, methods=['POST'], permission_classes=[permissions.IsAuthenticated], url_path='attachments')
     def upload_attachment(self, request, pk=None):
         """Upload and attach a file to this planning request."""

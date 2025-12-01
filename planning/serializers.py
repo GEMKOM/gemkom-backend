@@ -281,7 +281,7 @@ class PlanningRequestSerializer(serializers.ModelSerializer):
     class Meta:
         model = PlanningRequest
         fields = [
-            'id', 'request_number', 'title', 'description', 'needed_date',
+            'id', 'request_number', 'title', 'description', 'needed_date', 'erp_code',
             'department_request', 'department_request_number',
             'created_by', 'created_by_username', 'created_by_full_name',
             'priority', 'status', 'status_label',
@@ -293,7 +293,7 @@ class PlanningRequestSerializer(serializers.ModelSerializer):
         read_only_fields = [
             'request_number', 'created_at', 'updated_at',
             'ready_at', 'converted_at', 'completed_at', 'created_by',
-            'inventory_control_completed', 'fully_from_inventory'
+            'inventory_control_completed', 'fully_from_inventory', 'erp_code'
         ]
 
     def get_created_by_full_name(self, obj):

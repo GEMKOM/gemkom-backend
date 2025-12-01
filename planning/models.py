@@ -118,13 +118,17 @@ class PlanningRequest(models.Model):
 
     Status flow:
     - pending_inventory: Waiting for inventory control (only when check_inventory=True)
-    - ready: Ready for procurement to select (items need purchasing OR inventory control completed with remaining items)
+    - pending_erp_entry: Inventory control completed, waiting for planning to enter items into ERP
+    - ready: Ready for procurement to select
+      * Initial status if check_inventory=False (planning handles ERP externally)
+      * From pending_erp_entry after ERP entry completed
     - converted: Converted to purchase request and sent for approval
     - completed: All items fulfilled from inventory (no procurement needed)
     - cancelled: Cancelled
     """
     STATUS_CHOICES = [
         ('pending_inventory', 'Stok Kontrolü Bekliyor'),
+        ('pending_erp_entry', 'ERP Girişi Bekliyor'),
         ('ready', 'Satın Almaya Hazır'),
         ('converted', 'Onaya Gönderildi'),
         ('completed', 'Tamamlandı'),
@@ -142,6 +146,11 @@ class PlanningRequest(models.Model):
     title = models.CharField(max_length=200)
     description = models.TextField(blank=True)
     needed_date = models.DateField(default=timezone.now)
+    erp_code = models.CharField(
+        max_length=100,
+        blank=True,
+        help_text="ERP system code entered by planning team before marking ready for procurement"
+    )
 
     # Source tracking
     department_request = models.ForeignKey(
@@ -217,6 +226,7 @@ class PlanningRequest(models.Model):
             if self.check_inventory:
                 self.status = 'pending_inventory'
             else:
+                # No inventory control - planning handles ERP entry externally, go directly to ready
                 self.status = 'ready'
                 self.ready_at = timezone.now()
 
@@ -271,7 +281,7 @@ class PlanningRequest(models.Model):
 
         Logic:
         - If ALL items fulfilled from inventory → status='completed', fully_from_inventory=True
-        - If SOME/NO items from inventory → status='ready' (available for procurement)
+        - If SOME/NO items from inventory → status='pending_erp_entry' (waiting for ERP entry)
 
         Returns dict with status info.
         """
@@ -303,17 +313,43 @@ class PlanningRequest(models.Model):
                 'fully_from_inventory': True
             }
         else:
-            # Some items need purchasing - mark as ready for procurement
-            self.status = 'ready'
-            self.ready_at = timezone.now()
+            # Some items need purchasing - mark as pending ERP entry
+            self.status = 'pending_erp_entry'
             self.fully_from_inventory = False
-            self.save(update_fields=['status', 'ready_at', 'fully_from_inventory', 'inventory_control_completed'])
+            self.save(update_fields=['status', 'fully_from_inventory', 'inventory_control_completed'])
 
             return {
-                'status': 'ready',
-                'message': 'Inventory control completed. Planning request ready for procurement.',
+                'status': 'pending_erp_entry',
+                'message': 'Inventory control completed. Planning request waiting for ERP entry.',
                 'fully_from_inventory': False
             }
+
+    def mark_ready_for_procurement(self, erp_code):
+        """
+        Mark planning request as ready for procurement after ERP entry.
+        Called by planning team after entering items into ERP system.
+
+        Args:
+            erp_code: The ERP system code/reference for this request
+
+        Returns dict with status info.
+        """
+        if self.status not in ['pending_erp_entry']:
+            raise ValueError(f"Cannot mark as ready. Planning request status is '{self.status}'. Must be 'pending_erp_entry'.")
+
+        if not erp_code or not erp_code.strip():
+            raise ValueError("ERP code is required to mark request as ready for procurement.")
+
+        self.erp_code = erp_code.strip()
+        self.status = 'ready'
+        self.ready_at = timezone.now()
+        self.save(update_fields=['erp_code', 'status', 'ready_at'])
+
+        return {
+            'status': 'ready',
+            'message': 'Planning request marked as ready for procurement.',
+            'erp_code': self.erp_code
+        }
 
 
 class PlanningRequestItem(models.Model):
