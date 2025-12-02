@@ -64,6 +64,8 @@ class DepartmentRequestSerializer(serializers.ModelSerializer):
     needed_date = SafeDateField()
     files = FileAttachmentSerializer(many=True, read_only=True)
     attachments = AttachmentUploadSerializer(many=True, write_only=True, required=False)
+    planning_request_keys = serializers.SerializerMethodField()
+    purchase_request_keys = serializers.SerializerMethodField()
     request_number = serializers.CharField(
         required=False,
         allow_blank=True,
@@ -78,7 +80,7 @@ class DepartmentRequestSerializer(serializers.ModelSerializer):
             'priority', 'status', 'status_label',
             'approved_by', 'approved_by_username', 'approved_at', 'rejection_reason',
             'created_at', 'submitted_at', 'approval',
-            'files', 'attachments'
+            'files', 'attachments', 'planning_request_keys', 'purchase_request_keys'
         ]
         read_only_fields = [
             'created_at', 'submitted_at',
@@ -107,6 +109,27 @@ class DepartmentRequestSerializer(serializers.ModelSerializer):
         if not wf:
             return None
         return WorkflowSerializer(wf, context=self.context).data
+
+    def get_planning_request_keys(self, obj):
+        # Get all planning request numbers if they exist
+        planning_requests = obj.planning_requests.all()
+        request_numbers = [pr.request_number for pr in planning_requests]
+        return sorted(request_numbers) if request_numbers else []
+
+    def get_purchase_request_keys(self, obj):
+        # Get all unique active purchase request numbers from planning requests (excludes rejected/cancelled)
+        from django.db.models import Q
+
+        purchase_request_numbers = set()
+        for planning_request in obj.planning_requests.all():
+            for item in planning_request.items.all():
+                # Only include active purchase requests
+                active_prs = item.purchase_requests.exclude(
+                    Q(status='rejected') | Q(status='cancelled')
+                )
+                for purchase_request in active_prs:
+                    purchase_request_numbers.add(purchase_request.request_number)
+        return sorted(list(purchase_request_numbers)) if purchase_request_numbers else []
 
     def validate_request_number(self, value):
         """Validate request_number if provided manually."""
@@ -254,9 +277,15 @@ class PlanningRequestItemSerializer(serializers.ModelSerializer):
         return not active_prs.exists()
 
     def get_purchase_request_info(self, obj):
-        """Get info about purchase requests this item was converted to"""
+        """Get info about active purchase requests this item was converted to (excludes rejected/cancelled)"""
+        from django.db.models import Q
+
         purchase_requests = []
-        for pr in obj.purchase_requests.all():
+        # Only show active purchase requests (exclude rejected and cancelled)
+        active_prs = obj.purchase_requests.exclude(
+            Q(status='rejected') | Q(status='cancelled')
+        )
+        for pr in active_prs:
             purchase_requests.append({
                 'id': pr.id,
                 'request_number': pr.request_number,
@@ -309,12 +338,18 @@ class PlanningRequestSerializer(serializers.ModelSerializer):
         return obj.get_completion_stats()
 
     def get_purchase_request_info(self, obj):
-        """Get info about all unique purchase requests created from this planning request's items"""
+        """Get info about all unique active purchase requests created from this planning request's items (excludes rejected/cancelled)"""
+        from django.db.models import Q
+
         purchase_requests = {}
 
         # Iterate through all items to find associated purchase requests
         for item in obj.items.all():
-            for pr in item.purchase_requests.all():
+            # Only include active purchase requests (exclude rejected and cancelled)
+            active_prs = item.purchase_requests.exclude(
+                Q(status='rejected') | Q(status='cancelled')
+            )
+            for pr in active_prs:
                 if pr.id not in purchase_requests:
                     purchase_requests[pr.id] = {
                         'id': pr.id,

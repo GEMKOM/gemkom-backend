@@ -286,23 +286,16 @@ class PurchaseRequestCreateSerializer(serializers.ModelSerializer):
             # Attach items to purchase request
             pr.planning_request_items.set(planning_request_items)
 
-            # Get unique planning requests and check their completion status
+            # Get unique planning requests and mark them as 'converted'
+            # Note: They will only be marked as 'completed' when the purchase request is approved
             planning_requests = set(item.planning_request for item in planning_request_items)
             for planning_request in planning_requests:
                 # Check completion stats
                 stats = planning_request.get_completion_stats()
 
-                # Mark as 'converted' if all items are now in at least one purchase request
-                if stats['completion_percentage'] == 100:
-                    if planning_request.status == 'ready':
-                        planning_request.status = 'converted'
-                        planning_request.converted_at = timezone.now()
-                    # Also mark as completed since all items are converted
-                    planning_request.status = 'completed'
-                    planning_request.completed_at = timezone.now()
-                    planning_request.save(update_fields=['status', 'converted_at', 'completed_at'])
-                elif stats['converted_items'] > 0 and planning_request.status == 'ready':
-                    # Some items are converted but not all - mark as 'converted'
+                # Mark as 'converted' if any items are now in at least one purchase request
+                # Do NOT mark as 'completed' here - that happens when PR is approved
+                if stats['converted_items'] > 0 and planning_request.status == 'ready':
                     planning_request.status = 'converted'
                     planning_request.converted_at = timezone.now()
                     planning_request.save(update_fields=['status', 'converted_at'])

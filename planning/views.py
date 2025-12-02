@@ -624,8 +624,8 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend, OrderingFilter]
     filterset_class = PlanningRequestItemFilter
-    ordering_fields = ['order', 'id']
-    ordering = ['order']
+    ordering_fields = ['order', 'id',]
+    ordering = ['id']
 
     def get_queryset(self):
         qs = PlanningRequestItem.objects.select_related('planning_request', 'item').prefetch_related(

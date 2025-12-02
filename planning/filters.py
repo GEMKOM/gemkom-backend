@@ -45,6 +45,13 @@ class PlanningRequestItemFilter(django_filters.FilterSet):
         label='Planning Request Status'
     )
 
+    # Filter by planning request number
+    planning_request_number = django_filters.CharFilter(
+        field_name='planning_request__request_number',
+        lookup_expr='icontains',
+        label='Planning Request Number'
+    )
+
     # Filter items available for procurement (ready status + needs purchase + not in active PR)
     available_for_procurement = django_filters.BooleanFilter(
         method='filter_available_for_procurement',
@@ -114,9 +121,12 @@ class PlanningRequestItemFilter(django_filters.FilterSet):
         Filter items available for procurement to select.
 
         An item is available for procurement if:
-        1. Planning request status is 'ready'
+        1. Planning request status is 'ready' or 'converted'
         2. Item has quantity_to_purchase > 0
-        3. Item is not already in an active purchase request
+        3. Item is NOT already in an active purchase request (submitted or approved)
+
+        Note: 'converted' status is included so that when a PR is rejected, items become available again.
+        The key protection is in step 3 - items already in active PRs are excluded to prevent duplicate orders.
 
         This is the main filter procurement should use!
         """
@@ -127,7 +137,8 @@ class PlanningRequestItemFilter(django_filters.FilterSet):
         from decimal import Decimal
         from procurement.models import PurchaseRequest
 
-        # Subquery to check if item is in any active purchase request
+        # Subquery to check if item is in any active purchase request (submitted or approved, not rejected/cancelled)
+        # This is the key filter that prevents duplicate orders
         active_pr_exists = PurchaseRequest.objects.filter(
             planning_request_items=OuterRef('pk')
         ).exclude(
@@ -135,10 +146,10 @@ class PlanningRequestItemFilter(django_filters.FilterSet):
         )
 
         return queryset.filter(
-            planning_request__status='ready',  # Planning request must be ready
+            Q(planning_request__status='ready') | Q(planning_request__status='converted'),  # Ready or converted
             quantity_to_purchase__gt=Decimal('0')  # Must need purchasing
         ).exclude(
-            Exists(active_pr_exists)  # Not already in active purchase request
+            Exists(active_pr_exists)  # NOT in active purchase request - prevents duplicate orders
         )
 
 
@@ -189,13 +200,13 @@ class PlanningRequestFilter(django_filters.FilterSet):
         Filter planning requests available for procurement.
 
         A planning request is available if:
-        1. Status is 'ready'
+        1. Status is 'ready' or 'converted' (converted means some items are in PRs but not all approved yet)
         2. Has at least one item with quantity_to_purchase > 0
         """
         if not value:
             return queryset
 
-        from django.db.models import Exists, OuterRef
+        from django.db.models import Q, Exists, OuterRef
         from decimal import Decimal
 
         # Subquery to check if planning request has items that need purchasing
@@ -205,7 +216,7 @@ class PlanningRequestFilter(django_filters.FilterSet):
         )
 
         return queryset.filter(
-            status='ready'
+            Q(status='ready') | Q(status='converted')  # Ready or converted status
         ).filter(
             Exists(has_items_to_purchase)
         )
