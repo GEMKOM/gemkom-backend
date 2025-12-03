@@ -360,22 +360,25 @@ class PurchaseRequestCreateSerializer(serializers.ModelSerializer):
 
             # Create file attachments for this purchase request item
             file_asset_ids = item_data.get('file_asset_ids', [])
+            print(f"Processing item {i}: file_asset_ids = {file_asset_ids}")
             if file_asset_ids:
                 user = self.context['request'].user
                 ct_item = ContentType.objects.get_for_model(PurchaseRequestItem)
 
                 # Get file assets
                 file_assets = FileAsset.objects.filter(id__in=file_asset_ids)
+                print(f"Found {file_assets.count()} file assets for IDs {file_asset_ids}")
 
                 # Create FileAttachment for each asset
                 for asset in file_assets:
-                    FileAttachment.objects.create(
+                    attachment = FileAttachment.objects.create(
                         asset=asset,
                         uploaded_by=user,
                         description='',
                         content_type=ct_item,
                         object_id=pri.id,
                     )
+                    print(f"Created FileAttachment {attachment.id} for PurchaseRequestItem {pri.id} with asset {asset.id}")
 
         # Create SupplierOffers + ItemOffers
         for supplier_data in suppliers_data:

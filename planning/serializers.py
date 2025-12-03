@@ -175,11 +175,13 @@ class DepartmentRequestSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"items": "Cannot create request without items."})
 
         # Get uploaded files directly from request.FILES
-        uploaded_files = request.FILES.getlist('files') if request else []
+        uploaded_files = []
+        if request and hasattr(request, 'FILES'):
+            uploaded_files = request.FILES.getlist('files')
 
         # Get file-to-item mapping from request data (e.g., {"0": [0, 1], "1": [2]} means file 0 -> items 0,1 and file 1 -> item 2)
         file_item_mapping = {}
-        if 'file_item_mapping' in request.data:
+        if request and 'file_item_mapping' in request.data:
             try:
                 mapping_str = request.data.get('file_item_mapping')
                 if isinstance(mapping_str, str):
@@ -199,21 +201,29 @@ class DepartmentRequestSerializer(serializers.ModelSerializer):
             if uploaded_files:
                 ct = ContentType.objects.get_for_model(dr)
                 for file_idx, file in enumerate(uploaded_files):
-                    asset = FileAsset.objects.create(
-                        file=file,
-                        uploaded_by=request.user,
-                        description=''
-                    )
-                    file_asset_map[file_idx] = asset.id
+                    try:
+                        asset = FileAsset.objects.create(
+                            file=file,
+                            uploaded_by=request.user,
+                            description=''
+                        )
+                        file_asset_map[file_idx] = asset.id
 
-                    # Also create FileAttachment for the department request
-                    FileAttachment.objects.create(
-                        asset=asset,
-                        uploaded_by=request.user,
-                        description='',
-                        content_type=ct,
-                        object_id=dr.id,
-                    )
+                        # Also create FileAttachment for the department request
+                        FileAttachment.objects.create(
+                            asset=asset,
+                            uploaded_by=request.user,
+                            description='',
+                            content_type=ct,
+                            object_id=dr.id,
+                        )
+                    except Exception as e:
+                        # Log the error but continue - don't fail the entire request
+                        import logging
+                        logger = logging.getLogger(__name__)
+                        logger.error(f"Failed to create FileAsset for file {file.name}: {str(e)}")
+                        # Re-raise to maintain current behavior
+                        raise
 
             # Update items with file_asset_ids based on mapping
             if file_item_mapping and file_asset_map:
