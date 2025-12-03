@@ -370,6 +370,13 @@ class PurchaseRequestItem(models.Model):
     # Ordering
     order = models.PositiveIntegerField(default=0)
 
+    # Generic relation for file attachments
+    files = GenericRelation(
+        'planning.FileAttachment',
+        content_type_field='content_type',
+        object_id_field='object_id'
+    )
+
     class Meta:
         ordering = ['order']
 

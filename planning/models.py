@@ -16,13 +16,37 @@ def attachment_upload_path(instance, filename):
     """
     Centralized upload path for shared file assets.
     Spreads files by date to avoid huge flat folders.
+    Sanitizes filename to avoid S3 compatibility issues.
     """
+    import re
+    from urllib.parse import quote
+
+    # Sanitize filename: remove/replace problematic characters
+    # Remove leading @ or special chars that can cause S3 issues
+    name, ext = os.path.splitext(filename)
+
+    # Remove leading special characters
+    name = re.sub(r'^[@#$%^&*]+', '', name)
+
+    # Replace problematic characters with underscores
+    # Keep: letters, numbers, spaces, dash, underscore, dot
+    name = re.sub(r'[^\w\s\-.]', '_', name)
+
+    # Replace multiple spaces/underscores with single underscore
+    name = re.sub(r'[\s_]+', '_', name)
+
+    # Remove leading/trailing underscores
+    name = name.strip('_')
+
+    # Reconstruct filename
+    sanitized_filename = f"{name}{ext}"
+
     today = timezone.now().date()
     return os.path.join(
         'attachments',
         str(today.year),
         f"{today.month:02d}",
-        f"{uuid.uuid4()}_{filename}",
+        f"{uuid.uuid4()}_{sanitized_filename}",
     )
 
 

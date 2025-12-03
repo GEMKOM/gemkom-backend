@@ -14,6 +14,7 @@ from django.db import models
 from django.contrib.contenttypes.models import ContentType
 
 from approvals.models import ApprovalWorkflow
+from planning.serializers import FileAttachmentSerializer
 
 class PaymentTermsSerializer(serializers.ModelSerializer):
     class Meta:
@@ -81,12 +82,13 @@ class PurchaseRequestItemAllocationSerializer(serializers.ModelSerializer):
 class PurchaseRequestItemSerializer(serializers.ModelSerializer):
     item = ItemSerializer(read_only=True)
     allocations = PurchaseRequestItemAllocationSerializer(many=True, read_only=True)
+    files = FileAttachmentSerializer(many=True, read_only=True)
 
     class Meta:
         model = PurchaseRequestItem
         fields = [
             'id', 'item', 'quantity', 'item_description', 'priority',
-            'specifications', 'order', 'allocations'
+            'specifications', 'order', 'allocations', 'files'
         ]
 
 class PurchaseRequestItemAllocationCreateSerializer(serializers.Serializer):
@@ -103,6 +105,13 @@ class PurchaseRequestItemInputSerializer(serializers.Serializer):
     specifications = serializers.CharField(required=False, allow_blank=True)
     # New (preferred): split merged line into multiple jobs
     allocations = PurchaseRequestItemAllocationCreateSerializer(many=True, required=False)
+    # FileAsset IDs to attach to this item
+    file_asset_ids = serializers.ListField(
+        child=serializers.IntegerField(),
+        required=False,
+        allow_empty=True,
+        help_text="List of FileAsset IDs to attach to this purchase request item"
+    )
 
 class ItemOfferSerializer(serializers.ModelSerializer):
     purchase_request_item = serializers.PrimaryKeyRelatedField(read_only=True)
@@ -260,7 +269,7 @@ class PurchaseRequestCreateSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         from decimal import Decimal
-        from planning.models import PlanningRequestItem
+        from planning.models import PlanningRequestItem, FileAsset, FileAttachment
 
         items_data = validated_data.pop('items')
         suppliers_data = validated_data.pop('suppliers')
@@ -348,6 +357,25 @@ class PurchaseRequestCreateSerializer(serializers.ModelSerializer):
                     for a in allocs
                 ]
                 PurchaseRequestItemAllocation.objects.bulk_create(to_create)
+
+            # Create file attachments for this purchase request item
+            file_asset_ids = item_data.get('file_asset_ids', [])
+            if file_asset_ids:
+                user = self.context['request'].user
+                ct_item = ContentType.objects.get_for_model(PurchaseRequestItem)
+
+                # Get file assets
+                file_assets = FileAsset.objects.filter(id__in=file_asset_ids)
+
+                # Create FileAttachment for each asset
+                for asset in file_assets:
+                    FileAttachment.objects.create(
+                        asset=asset,
+                        uploaded_by=user,
+                        description='',
+                        content_type=ct_item,
+                        object_id=pri.id,
+                    )
 
         # Create SupplierOffers + ItemOffers
         for supplier_data in suppliers_data:

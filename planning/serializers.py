@@ -147,6 +147,7 @@ class DepartmentRequestSerializer(serializers.ModelSerializer):
         """
         Create a new department request and automatically submit it for approval.
         """
+        from django.db import transaction
         from planning.services import submit_department_request
 
         # Ensure requestor is set to current user
@@ -173,38 +174,71 @@ class DepartmentRequestSerializer(serializers.ModelSerializer):
         if not items:
             raise serializers.ValidationError({"items": "Cannot create request without items."})
 
-        # Get uploaded files directly from request.FILES (same pattern as CncTaskDetailSerializer)
+        # Get uploaded files directly from request.FILES
         uploaded_files = request.FILES.getlist('files') if request else []
 
-        # Create the request object (initially as draft)
-        dr = DepartmentRequest.objects.create(**validated_data)
+        # Get file-to-item mapping from request data (e.g., {"0": [0, 1], "1": [2]} means file 0 -> items 0,1 and file 1 -> item 2)
+        file_item_mapping = {}
+        if 'file_item_mapping' in request.data:
+            try:
+                mapping_str = request.data.get('file_item_mapping')
+                if isinstance(mapping_str, str):
+                    file_item_mapping = json.loads(mapping_str)
+                else:
+                    file_item_mapping = mapping_str
+            except Exception:
+                pass
 
-        # Create file attachments for each uploaded file
-        if uploaded_files:
-            ct = ContentType.objects.get_for_model(dr)
-            for file in uploaded_files:
-                asset = FileAsset.objects.create(
-                    file=file,
-                    uploaded_by=request.user,
-                    description=''
-                )
-                FileAttachment.objects.create(
-                    asset=asset,
-                    uploaded_by=request.user,
-                    description='',
-                    content_type=ct,
-                    object_id=dr.id,
-                )
+        # Use transaction to ensure atomicity - if anything fails, nothing is created
+        with transaction.atomic():
+            # Create the request object (initially as draft)
+            dr = DepartmentRequest.objects.create(**validated_data)
 
-        # Automatically submit for approval
-        try:
+            # Create file assets and build a mapping of file index -> asset ID
+            file_asset_map = {}  # {file_index: asset_id}
+            if uploaded_files:
+                ct = ContentType.objects.get_for_model(dr)
+                for file_idx, file in enumerate(uploaded_files):
+                    asset = FileAsset.objects.create(
+                        file=file,
+                        uploaded_by=request.user,
+                        description=''
+                    )
+                    file_asset_map[file_idx] = asset.id
+
+                    # Also create FileAttachment for the department request
+                    FileAttachment.objects.create(
+                        asset=asset,
+                        uploaded_by=request.user,
+                        description='',
+                        content_type=ct,
+                        object_id=dr.id,
+                    )
+
+            # Update items with file_asset_ids based on mapping
+            if file_item_mapping and file_asset_map:
+                updated_items = []
+                for item_idx, item in enumerate(items):
+                    # Find which files are attached to this item
+                    item_file_asset_ids = []
+                    for file_idx_str, item_indices in file_item_mapping.items():
+                        file_idx = int(file_idx_str)
+                        if item_idx in item_indices and file_idx in file_asset_map:
+                            item_file_asset_ids.append(file_asset_map[file_idx])
+
+                    # Add file_asset_ids to item if any files are attached
+                    if item_file_asset_ids:
+                        item['file_asset_ids'] = item_file_asset_ids
+                    updated_items.append(item)
+
+                # Update the department request with the modified items
+                dr.items = updated_items
+                dr.save(update_fields=['items'])
+
+            # Automatically submit for approval
             submit_department_request(dr, dr.requestor)
-        except Exception as e:
-            # If submission fails, delete the created request and raise error
-            dr.delete()
-            raise serializers.ValidationError({"detail": f"Failed to submit request: {str(e)}"})
 
-        return dr
+            return dr
 
     def _create_attachments(self, obj, attachments_data, user):
         ct = ContentType.objects.get_for_model(obj)
