@@ -289,7 +289,7 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
         )
 
         # Planning team and superusers see all
-        if user.is_superuser or (hasattr(user, 'profile') and user.profile.team == 'planning'):
+        if user.is_superuser or (hasattr(user, 'profile') and (user.profile.team == 'planning' or user.profile.team == 'warehouse')):
             return qs
 
         # Procurement team sees only 'ready' requests
