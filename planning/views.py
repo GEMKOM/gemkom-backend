@@ -25,6 +25,7 @@ from .serializers import (
     FileAttachmentSerializer,
     InventoryAllocationSerializer,
     AllocateInventorySerializer,
+    UpdateInventoryQuantitiesSerializer,
 )
 from .filters import PlanningRequestItemFilter, PlanningRequestFilter
 from approvals.models import ApprovalWorkflow, ApprovalStageInstance, ApprovalDecision
@@ -598,6 +599,56 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
 
         attachment = _create_attachment_for_target(planning_request, upload_serializer.validated_data, request.user)
         return Response(FileAttachmentSerializer(attachment, context={'request': request}).data, status=201)
+
+    @action(detail=True, methods=['POST'], permission_classes=[permissions.IsAuthenticated])
+    def update_inventory_quantities(self, request, pk=None):
+        """
+        Simple endpoint to update inventory found quantities.
+        Updates quantity_from_inventory and quantity_to_purchase for each item.
+
+        Request body:
+        {
+            "items": [
+                {
+                    "planning_request_item_id": 1,
+                    "quantity_found": "10.00"
+                },
+                {
+                    "planning_request_item_id": 2,
+                    "quantity_found": "0.00"
+                }
+            ]
+        }
+        """
+        planning_request = self.get_object()
+        user = request.user
+
+        # Only warehouse team and superusers can update inventory quantities
+        if not (user.is_superuser or (hasattr(user, 'profile') and user.profile.team == 'warehouse')):
+            return Response(
+                {"detail": "Only warehouse team can update inventory quantities."},
+                status=403
+            )
+
+        serializer = UpdateInventoryQuantitiesSerializer(
+            data=request.data,
+            context={'planning_request_id': planning_request.id, 'request': request}
+        )
+
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=400)
+
+        result = serializer.update_quantities()
+
+        # Refresh and serialize
+        planning_request.refresh_from_db()
+        pr_serializer = self.get_serializer(planning_request)
+
+        return Response({
+            "detail": f"Successfully updated inventory quantities for {result['count']} items.",
+            "updated_count": result['count'],
+            "planning_request": pr_serializer.data
+        })
 
     @action(detail=False, methods=['GET'], permission_classes=[permissions.IsAuthenticated])
     def my_requests(self, request):

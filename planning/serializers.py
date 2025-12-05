@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from django.db import models as django_models
 from django.contrib.contenttypes.models import ContentType
+from django.utils import timezone
 from decimal import Decimal
 from datetime import datetime
 import json
@@ -1003,4 +1004,134 @@ class AllocateInventorySerializer(serializers.Serializer):
             'planning_request': planning_request,
             'allocations': created_allocations,
             'count': len(created_allocations)
+        }
+
+
+class UpdateInventoryQuantitiesSerializer(serializers.Serializer):
+    """
+    Simple serializer for updating inventory found quantities.
+    Updates quantity_from_inventory and quantity_to_purchase for each item.
+    """
+    items = serializers.ListField(
+        child=serializers.DictField(),
+        help_text="List of items with: planning_request_item_id, quantity_found"
+    )
+
+    def validate_items(self, value):
+        """Validate each item in the list."""
+        if not value:
+            raise serializers.ValidationError("Items list cannot be empty.")
+
+        for idx, item_data in enumerate(value):
+            # Required fields
+            if 'planning_request_item_id' not in item_data:
+                raise serializers.ValidationError(
+                    f"Item #{idx}: 'planning_request_item_id' is required."
+                )
+            if 'quantity_found' not in item_data:
+                raise serializers.ValidationError(
+                    f"Item #{idx}: 'quantity_found' is required."
+                )
+
+            # Validate quantity is non-negative
+            try:
+                qty = Decimal(str(item_data['quantity_found']))
+                if qty < 0:
+                    raise serializers.ValidationError(
+                        f"Item #{idx}: Quantity cannot be negative."
+                    )
+            except (ValueError, TypeError):
+                raise serializers.ValidationError(
+                    f"Item #{idx}: Invalid quantity value."
+                )
+
+        return value
+
+    def validate(self, attrs):
+        """Validate planning request items exist and belong to the same planning request"""
+        items = attrs['items']
+        planning_request_id = self.context.get('planning_request_id')
+
+        if not planning_request_id:
+            raise serializers.ValidationError("Planning request ID is required in context.")
+
+        # Verify planning request exists
+        try:
+            planning_request = PlanningRequest.objects.get(id=planning_request_id)
+        except PlanningRequest.DoesNotExist:
+            raise serializers.ValidationError("Planning request not found.")
+
+        # Validate each item
+        for idx, item_data in enumerate(items):
+            pri_id = item_data['planning_request_item_id']
+            quantity_found = Decimal(str(item_data['quantity_found']))
+
+            # Verify item belongs to planning request
+            try:
+                pri = PlanningRequestItem.objects.get(id=pri_id, planning_request=planning_request)
+            except PlanningRequestItem.DoesNotExist:
+                raise serializers.ValidationError({
+                    "items": f"Item #{idx}: Planning request item {pri_id} not found in planning request {planning_request_id}."
+                })
+
+            # Check quantity_found doesn't exceed required quantity
+            if quantity_found > pri.quantity:
+                raise serializers.ValidationError({
+                    "items": f"Item #{idx}: Found quantity ({quantity_found}) cannot exceed required quantity ({pri.quantity})."
+                })
+
+        return attrs
+
+    def update_quantities(self):
+        """Update the inventory quantities for all items"""
+        from django.db import transaction
+
+        items_data = self.validated_data['items']
+        planning_request_id = self.context['planning_request_id']
+        planning_request = PlanningRequest.objects.get(id=planning_request_id)
+
+        updated_items = []
+
+        with transaction.atomic():
+            for item_data in items_data:
+                pri_id = item_data['planning_request_item_id']
+                quantity_found = Decimal(str(item_data['quantity_found']))
+
+                pri = PlanningRequestItem.objects.select_for_update().get(id=pri_id)
+
+                # Update quantities
+                pri.quantity_from_inventory = quantity_found
+                pri.quantity_to_purchase = pri.quantity - quantity_found
+                pri.save(update_fields=['quantity_from_inventory', 'quantity_to_purchase'])
+
+                updated_items.append(pri)
+
+            # Check if all items are fully from inventory
+            all_from_inventory = all(
+                item.quantity_from_inventory >= item.quantity
+                for item in planning_request.items.all()
+            )
+
+            # Update planning request status if needed
+            if planning_request.check_inventory:
+                planning_request.inventory_control_completed = True
+
+                if all_from_inventory:
+                    planning_request.status = 'completed'
+                    planning_request.fully_from_inventory = True
+                    planning_request.completed_at = timezone.now()
+                    planning_request.save(update_fields=[
+                        'status', 'fully_from_inventory', 'completed_at', 'inventory_control_completed'
+                    ])
+                else:
+                    planning_request.status = 'pending_erp_entry'
+                    planning_request.fully_from_inventory = False
+                    planning_request.save(update_fields=[
+                        'status', 'fully_from_inventory', 'inventory_control_completed'
+                    ])
+
+        return {
+            'planning_request': planning_request,
+            'updated_items': updated_items,
+            'count': len(updated_items)
         }
