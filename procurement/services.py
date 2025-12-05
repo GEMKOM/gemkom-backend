@@ -15,6 +15,49 @@ from .models import PurchaseOrder, PurchaseOrderLine, ItemOffer, PaymentTerms, P
 Q2 = lambda x: (Decimal(x)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
 
+def restore_planning_request_status(pr):
+    """
+    Restore planning request status when a purchase request is rejected or cancelled.
+
+    This function checks all planning request items linked to the given purchase request
+    and reverts their planning request status from 'converted' or 'completed' back to 'ready'
+    if they are no longer in any active (non-rejected/non-cancelled) purchase requests.
+    """
+    from planning.models import PlanningRequest
+
+    # Get all unique planning requests from this PR's items
+    planning_requests = set()
+    for item in pr.planning_request_items.all():
+        if item.planning_request:
+            planning_requests.add(item.planning_request)
+
+    # Check each planning request and restore status if needed
+    for planning_request in planning_requests:
+        # Only process if status is 'converted' or 'completed'
+        if planning_request.status not in ['converted', 'completed']:
+            continue
+
+        # Check if any item from this planning request is still in an active PR
+        has_active_pr = False
+        for pr_item in planning_request.items.all():
+            # Only check items that need to be purchased
+            if pr_item.quantity_to_purchase > 0:
+                # Check if this item is in any active purchase request (not rejected or cancelled)
+                active_prs = pr_item.purchase_requests.exclude(
+                    status__in=['rejected', 'cancelled']
+                )
+                if active_prs.exists():
+                    has_active_pr = True
+                    break
+
+        # If no items are in active PRs, restore status to 'ready'
+        if not has_active_pr:
+            planning_request.status = 'ready'
+            planning_request.converted_at = None
+            planning_request.completed_at = None
+            planning_request.save(update_fields=['status', 'converted_at', 'completed_at'])
+
+
 @transaction.atomic
 def create_pos_from_recommended(pr):
     if pr.purchase_orders.exists():
@@ -193,6 +236,9 @@ def cancel_purchase_request(pr, by_user, reason:str=''):
     pr.cancelled_by = by_user
     pr.cancellation_reason = (reason or '').strip()
     pr.save(update_fields=['status','cancelled_at','cancelled_by','cancellation_reason'])
+
+    # 4) Restore planning request status if applicable
+    restore_planning_request_status(pr)
 
     return pr
 

@@ -293,39 +293,13 @@ class PurchaseRequest(models.Model):
                         planning_request.save(update_fields=['status', 'completed_at'])
 
         elif event == "rejected":
-            # Purchase request was rejected - update status and potentially revert planning requests
+            # Purchase request was rejected - update status and restore planning request status
             self.status = 'rejected'
             self.save(update_fields=['status'])
 
-            # Get all unique planning requests from this PR's items
-            planning_requests = set()
-            for item in self.planning_request_items.all():
-                if item.planning_request:
-                    planning_requests.add(item.planning_request)
-
-            # Check if planning requests should be reverted to 'ready' or 'converted'
-            for planning_request in planning_requests:
-                # If planning request was marked as completed, check if it should be reverted
-                if planning_request.status == 'completed':
-                    # Check if there are items that are not in any approved purchase request
-                    has_unapproved_items = False
-                    for pr_item in planning_request.items.all():
-                        if pr_item.quantity_to_purchase > 0:
-                            # Check if this item is only in rejected/cancelled PRs or no PRs
-                            active_approved_prs = pr_item.purchase_requests.filter(status='approved')
-                            if not active_approved_prs.exists():
-                                has_unapproved_items = True
-                                break
-
-                    if has_unapproved_items:
-                        # Revert to 'converted' or 'ready' based on whether items are still in other PRs
-                        stats = planning_request.get_completion_stats()
-                        if stats['converted_items'] > 0:
-                            planning_request.status = 'converted'
-                        else:
-                            planning_request.status = 'ready'
-                        planning_request.completed_at = None
-                        planning_request.save(update_fields=['status', 'completed_at'])
+            # Restore planning request status if items are no longer in any active PRs
+            from procurement.services import restore_planning_request_status
+            restore_planning_request_status(self)
 
 class PurchaseRequestDraft(models.Model):
     title = models.CharField(max_length=200)

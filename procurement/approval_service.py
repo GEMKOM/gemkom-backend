@@ -171,26 +171,8 @@ def submit_purchase_request(pr: PurchaseRequest, by_user):
 
     wf = create_workflow(pr, policy, snapshot=snapshot, approver_user_ids_builder=_builder)
 
-    # -------- NEW: auto-skip first stage for external_workshops --------
-    requester_team = getattr(getattr(pr, "requestor", None), "profile", None)
-    requester_team = getattr(requester_team, "team", None)
-
-    moved = False     # track if current stage changed at any point
-    finished = False  # track if workflow ended
-
-    if requester_team == "external_workshops":
-        if (getattr(wf, "current_stage_order", 0) or 0) == 1:
-            skipped, done = _skip_current_stage(wf, reason="Auto-skip for external_workshops")
-            moved |= bool(skipped)
-            finished |= bool(done)
-            if finished:
-                pr.status = "approved"
-                pr.save(update_fields=["status"])
-                created_pos = create_pos_from_recommended(pr)
-                _email_requestor_on_final(pr, status_str="Onaylandı", comment="(Dış atölye: 1. aşama atlandı)")
-                _email_finance_pos_created(pr, created_pos)
-                return wf
-
+    moved = False
+    finished = False
     # Auto-bypass if the requester is the sole approver for current stage(s)
     while True:
         changed, done = auto_bypass_self_approver(wf, pr.requestor_id)

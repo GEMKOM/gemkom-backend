@@ -217,7 +217,9 @@ class PurchaseRequestCreateSerializer(serializers.ModelSerializer):
         from django.db.models import Q
 
         # Get the items
-        items = PlanningRequestItem.objects.filter(id__in=value).prefetch_related('purchase_requests')
+        items = PlanningRequestItem.objects.filter(id__in=value).select_related(
+            'item', 'planning_request'
+        )
 
         # Check each item for existing active purchase requests
         unavailable_items = []
@@ -246,13 +248,12 @@ class PurchaseRequestCreateSerializer(serializers.ModelSerializer):
                     f"is already in purchase request(s): {item['existing_purchase_requests']}"
                 )
 
-            raise serializers.ValidationError({
-                'planning_request_item_ids': [
-                    "Some planning request items are already in active purchase requests:",
-                    *error_details,
-                    "Note: Items can only be reused if their purchase request is rejected or cancelled."
-                ]
-            })
+            error_message = [
+                "Some planning request items are already in active purchase requests:",
+                *error_details,
+                "Note: Items can only be reused if their purchase request is rejected or cancelled."
+            ]
+            raise serializers.ValidationError(error_message)
 
         return value
 
@@ -287,9 +288,11 @@ class PurchaseRequestCreateSerializer(serializers.ModelSerializer):
 
         # Attach planning request items if provided
         if planning_request_item_ids:
+            from django.db.models import Q
+
             planning_request_items = PlanningRequestItem.objects.filter(
-                id__in=planning_request_item_ids,
-                planning_request__status='ready'
+                Q(planning_request__status='ready') | Q(planning_request__status='converted'),
+                id__in=planning_request_item_ids
             ).select_related('planning_request')
 
             # Attach items to purchase request

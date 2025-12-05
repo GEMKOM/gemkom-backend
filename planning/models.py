@@ -241,9 +241,9 @@ class PlanningRequest(models.Model):
             last_request = PlanningRequest.objects.order_by('-id').first()
             if last_request:
                 last_number = int(last_request.request_number.split('-')[-1])
-                self.request_number = f"PLR-{timezone.now().year}-{last_number + 1:04d}"
+                self.request_number = f"GR-{timezone.now().year}-{last_number + 1:04d}"
             else:
-                self.request_number = f"PLR-{timezone.now().year}-0001"
+                self.request_number = f"GR-{timezone.now().year}-0001"
 
         # Set initial status based on check_inventory
         if is_new:
