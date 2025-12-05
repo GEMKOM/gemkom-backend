@@ -451,7 +451,24 @@ class PlanningRequestItem(models.Model):
         ordering = ['planning_request', 'order']
 
     def __str__(self):
-        return f"{self.item.code} - {self.job_no} - {self.quantity}"
+        parts = [self.item.code, self.job_no, str(self.quantity)]
+
+        # Add item name/description if available
+        if hasattr(self.item, 'name') and self.item.name:
+            parts.append(self.item.name)
+
+        # Add specifications if available
+        if self.specifications:
+            # Truncate specs if too long (max 50 chars)
+            specs = self.specifications[:50] + '...' if len(self.specifications) > 50 else self.specifications
+            parts.append(f"[{specs}]")
+
+        if self.item_description:
+            # Truncate specs if too long (max 50 chars)
+            specs = self.item_description[:50] + '...' if len(self.item_description) > 50 else self.item_description
+            parts.append(f"[{specs}]")
+
+        return " - ".join(parts)
 
     def save(self, *args, **kwargs):
         """
