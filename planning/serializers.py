@@ -625,16 +625,24 @@ class PlanningRequestCreateSerializer(serializers.Serializer):
                 planning_request.request_number = manual_request_number
                 planning_request.save(update_fields=['request_number'])
 
+            # Build a set of source_attachment_ids that are explicitly mapped in files_data
+            explicitly_mapped_attachments = set()
+            for file_data in files_data:
+                if 'source_attachment_id' in file_data:
+                    explicitly_mapped_attachments.add(file_data['source_attachment_id'])
+
             # Auto-attach department request files to planning request
+            # ONLY if they are not explicitly mapped in the files parameter
             for att in dr.files.all():
-                FileAttachment.objects.create(
-                    asset=att.asset,
-                    uploaded_by=user,
-                    description=att.description,
-                    source_attachment=att,
-                    content_type=ct_pr,
-                    object_id=planning_request.id,
-                )
+                if att.id not in explicitly_mapped_attachments:
+                    FileAttachment.objects.create(
+                        asset=att.asset,
+                        uploaded_by=user,
+                        description=att.description,
+                        source_attachment=att,
+                        content_type=ct_pr,
+                        object_id=planning_request.id,
+                    )
         else:
             # Create standalone planning request
             planning_request = create_standalone_planning_request(
