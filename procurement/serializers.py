@@ -70,9 +70,12 @@ class SupplierSerializer(serializers.ModelSerializer):
         ]
 
 class ItemSerializer(serializers.ModelSerializer):
+    unit_label = serializers.CharField(source='get_unit_display', read_only=True)
+    item_type_label = serializers.CharField(source='get_item_type_display', read_only=True)
+
     class Meta:
         model = Item
-        fields = ['id', 'code', 'name', 'unit', 'item_type']
+        fields = ['id', 'code', 'name', 'unit', 'unit_label', 'item_type', 'item_type_label', 'stock_quantity']
 
 class PurchaseRequestItemAllocationSerializer(serializers.ModelSerializer):
     class Meta:

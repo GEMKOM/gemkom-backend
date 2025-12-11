@@ -4,7 +4,7 @@ from rest_framework.response import Response
 from django.utils import timezone
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import OrderingFilter, SearchFilter
-from procurement.filters import PurchaseRequestFilter
+from procurement.filters import PurchaseRequestFilter, ItemFilter
 from rest_framework.views import APIView
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -113,26 +113,97 @@ class ItemViewSet(viewsets.ModelViewSet):
     permission_classes = [IsFinanceAuthorized]
 
     filter_backends = [DjangoFilterBackend, OrderingFilter, SearchFilter]
-    filterset_fields = {
-        "code": ["exact", "icontains"],
-        "name": ["icontains"],
-        "item_type": ["exact"],
-    }
-    ordering_fields = ["code", "name"]  # (plus any report fields you expose via ?ordering=…)
+    filterset_class = ItemFilter
+    ordering_fields = ["code", "name"]
     search_fields = ["code", "name"]
 
-    def get_queryset(self):
-        queryset = Item.objects.all()
-        code = self.request.query_params.get('code', None)
-        name = self.request.query_params.get('name', None)
-        item_type = self.request.query_params.get('item_type', None)
-        if code:
-            queryset = queryset.filter(code__icontains=code)
-        if name:
-            queryset = queryset.filter(name__icontains=name)
-        if item_type:
-            queryset = queryset.filter(item_type=item_type)
-        return queryset
+    @action(detail=True, methods=['get'], url_path='purchase-requests')
+    def purchase_requests(self, request, pk=None):
+        """
+        Get all purchase requests that include this item.
+        Returns purchase request details with the specific item details.
+        """
+        item = self.get_object()
+
+        # Get all purchase request items for this item
+        pr_items = PurchaseRequestItem.objects.filter(
+            item=item
+        ).select_related(
+            'purchase_request',
+            'purchase_request__requestor'
+        ).prefetch_related(
+            'purchase_request__request_items__item',
+            'purchase_request__offers__supplier'
+        ).order_by('-purchase_request__created_at')
+
+        # Build response with PR details and item-specific info
+        results = []
+        for pr_item in pr_items:
+            pr = pr_item.purchase_request
+            results.append({
+                'purchase_request_id': pr.id,
+                'request_number': pr.request_number,
+                'title': pr.title,
+                'status': pr.status,
+                'status_label': pr.get_status_display(),
+                'priority': pr.priority,
+                'requestor': pr.requestor.username if pr.requestor else None,
+                'created_at': pr.created_at,
+                'submitted_at': pr.submitted_at,
+                'total_amount_eur': pr.total_amount_eur,
+                'item_details': {
+                    'quantity': pr_item.quantity,
+                    'item_description': pr_item.item_description,
+                    'specifications': pr_item.specifications,
+                    'priority': pr_item.priority,
+                }
+            })
+
+        return Response(results)
+
+    @action(detail=True, methods=['get'], url_path='planning-requests')
+    def planning_requests(self, request, pk=None):
+        """
+        Get all planning requests that include this item.
+        Returns planning request details with the specific item details.
+        """
+        from planning.models import PlanningRequestItem
+
+        item = self.get_object()
+
+        # Get all planning request items for this item
+        planning_items = PlanningRequestItem.objects.filter(
+            item=item
+        ).select_related(
+            'planning_request',
+            'planning_request__created_by'
+        ).prefetch_related(
+            'planning_request__items__item'
+        ).order_by('-planning_request__created_at')
+
+        # Build response with planning request details and item-specific info
+        results = []
+        for planning_item in planning_items:
+            pl = planning_item.planning_request
+            results.append({
+                'planning_request_id': pl.id,
+                'request_number': pl.request_number,
+                'title': pl.title,
+                'status': pl.status,
+                'status_label': pl.get_status_display(),
+                'priority': pl.priority,
+                'created_by': pl.created_by.username if pl.created_by else None,
+                'created_at': pl.created_at,
+                'needed_date': pl.needed_date,
+                'item_details': {
+                    'job_no': planning_item.job_no,
+                    'quantity': planning_item.quantity,
+                    'item_description': planning_item.item_description,
+                    'specifications': planning_item.specifications,
+                }
+            })
+
+        return Response(results)
 
 class PurchaseRequestViewSet(viewsets.ModelViewSet):
     queryset = PurchaseRequest.objects.all()

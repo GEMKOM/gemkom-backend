@@ -157,7 +157,7 @@ class Item(models.Model):
         ('subcontracting', 'Alt Yüklenici'),
     ]
 
-    code = models.CharField(max_length=255)
+    code = models.CharField(max_length=255, unique=True)
     name = models.CharField(max_length=255)
     unit = models.CharField(max_length=20, choices=UNIT_CHOICES)
     item_type = models.CharField(
