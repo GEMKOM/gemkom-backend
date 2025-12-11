@@ -150,6 +150,8 @@ class Item(models.Model):
         ('paket', 'Paket'),
         ('kutu', 'Kutu'),
         ('set', 'Takım'),
+        ('m2', 'Metrekare'),
+        ('varil', 'Varil')
     ]
 
     ITEM_TYPE_CHOICES = [
