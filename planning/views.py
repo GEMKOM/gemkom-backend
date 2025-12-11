@@ -19,6 +19,7 @@ from .serializers import (
     DepartmentRequestSerializer,
     PlanningRequestSerializer,
     PlanningRequestCreateSerializer,
+    PlanningRequestUpdateSerializer,
     PlanningRequestItemSerializer,
     BulkPlanningRequestItemSerializer,
     AttachmentUploadSerializer,
@@ -303,6 +304,8 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
     def get_serializer_class(self):
         if self.action == 'create':
             return PlanningRequestCreateSerializer
+        elif self.action in ['update', 'partial_update']:
+            return PlanningRequestUpdateSerializer
         return PlanningRequestSerializer
 
     def create(self, request, *args, **kwargs):
@@ -315,6 +318,40 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
         read_serializer = PlanningRequestSerializer(instance, context={'request': request})
         headers = self.get_success_headers(read_serializer.data)
         return Response(read_serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+
+    def update(self, request, *args, **kwargs):
+        """
+        Update a planning request.
+        Only planning team can update.
+        Cannot update requests that are converted, completed, or cancelled.
+        """
+        partial = kwargs.pop('partial', False)
+        instance = self.get_object()
+        user = request.user
+
+        # Only planning team can update
+        if not (user.is_superuser or (hasattr(user, 'profile') and user.profile.team == 'planning')):
+            return Response(
+                {"detail": "Only planning team can update planning requests."},
+                status=403
+            )
+
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+
+        # Use the read serializer for the response
+        read_serializer = PlanningRequestSerializer(instance, context={'request': request})
+        return Response(read_serializer.data)
+
+    def partial_update(self, request, *args, **kwargs):
+        """
+        Partially update a planning request.
+        Only planning team can update.
+        Cannot update requests that are converted, completed, or cancelled.
+        """
+        kwargs['partial'] = True
+        return self.update(request, *args, **kwargs)
 
     @action(detail=False, methods=['GET'], permission_classes=[permissions.IsAuthenticated])
     def ready_for_procurement(self, request):
@@ -663,6 +700,50 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
 
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
+
+    @action(detail=True, methods=['POST'], permission_classes=[permissions.IsAuthenticated])
+    def cancel(self, request, pk=None):  # noqa: ARG002
+        """
+        Cancel a planning request.
+
+        Only planning team can cancel requests.
+        Cannot cancel requests that are already converted or completed.
+
+        Request body:
+        {
+            "cancellation_reason": "Reason for cancellation"
+        }
+        """
+        planning_request = self.get_object()
+        user = request.user
+
+        # Only planning team can cancel
+        if not (user.is_superuser or (hasattr(user, 'profile') and user.profile.team == 'planning')):
+            return Response(
+                {"detail": "Only planning team can cancel planning requests."},
+                status=403
+            )
+
+        # Cannot cancel if already converted or completed
+        if planning_request.status in ['converted', 'completed', 'cancelled']:
+            return Response(
+                {"detail": f"Cannot cancel planning request with status '{planning_request.status}'."},
+                status=400
+            )
+
+        # Update status to cancelled
+        old_status = planning_request.status
+        planning_request.status = 'cancelled'
+        planning_request.save(update_fields=['status'])
+
+        # Refresh and serialize
+        planning_request.refresh_from_db()
+        pr_serializer = self.get_serializer(planning_request)
+
+        return Response({
+            "detail": f"Planning request cancelled. Previous status: {old_status}",
+            "planning_request": pr_serializer.data
+        })
 
 
 class PlanningRequestItemViewSet(viewsets.ModelViewSet):

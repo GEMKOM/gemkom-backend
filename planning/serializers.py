@@ -406,6 +406,7 @@ class PlanningRequestSerializer(serializers.ModelSerializer):
         return list(purchase_requests.values())
 
 
+
 class FlexibleAttachmentSerializer(serializers.Serializer):
     """
     Serializer for flexible file attachments that can be attached to multiple targets.
@@ -450,6 +451,261 @@ class FlexibleAttachmentSerializer(serializers.Serializer):
             if isinstance(target, int) and target < 0:
                 raise serializers.ValidationError(f"Item index {target} cannot be negative.")
         return value
+
+class PlanningRequestUpdateSerializer(serializers.Serializer):
+    """
+    Serializer for updating planning requests.
+    Only allows editing if status is not 'converted', 'completed', or 'cancelled'.
+    Functions like create - can update fields, replace items, and attach files.
+    """
+    title = serializers.CharField(max_length=255, required=False)
+    description = serializers.CharField(required=False, allow_blank=True)
+    needed_date = serializers.DateField(required=False, allow_null=True)
+    priority = serializers.ChoiceField(choices=['low', 'normal', 'high', 'urgent'], required=False)
+    check_inventory = serializers.BooleanField(required=False)
+
+    # Items payload - if provided, replaces all existing items
+    items = serializers.ListField(child=serializers.DictField(), required=False)
+
+    # Flexible file attachments
+    files = FlexibleAttachmentSerializer(many=True, required=False)
+
+    def to_internal_value(self, data):
+        """
+        Parse JSON strings for complex fields when sent via multipart/form-data.
+        """
+        import re
+        from django.http import QueryDict
+
+        # Get the request object to access FILES
+        request = self.context.get('request')
+
+        # Convert QueryDict to regular dict for easier manipulation
+        if isinstance(data, QueryDict):
+            parsed_data = {}
+            for key in data.keys():
+                parsed_data[key] = data.get(key)
+        else:
+            parsed_data = dict(data) if not isinstance(data, dict) else data.copy()
+
+        # Parse 'items' if it's a JSON string
+        if 'items' in parsed_data and isinstance(parsed_data['items'], str):
+            try:
+                parsed_data['items'] = json.loads(parsed_data['items'])
+            except json.JSONDecodeError:
+                raise serializers.ValidationError({"items": "Invalid JSON format for items field."})
+
+        # Parse nested files structure from multipart format
+        files_dict = {}
+        keys_to_remove = []
+
+        for key in list(parsed_data.keys()):
+            if key.startswith('files['):
+                keys_to_remove.append(key)
+                match = re.match(r'files\[(\d+)\]\.(\w+)', key)
+                if match:
+                    index = int(match.group(1))
+                    field_name = match.group(2)
+
+                    if index not in files_dict:
+                        files_dict[index] = {}
+
+                    value = parsed_data[key]
+                    if field_name == 'attach_to' and isinstance(value, str):
+                        try:
+                            value = json.loads(value)
+                        except json.JSONDecodeError:
+                            raise serializers.ValidationError({
+                                "files": f"Invalid JSON format for files[{index}].attach_to"
+                            })
+
+                    files_dict[index][field_name] = value
+
+        # Process file uploads from request.FILES
+        if request and hasattr(request, 'FILES'):
+            for key in request.FILES.keys():
+                if key.startswith('files['):
+                    match = re.match(r'files\[(\d+)\]\.file', key)
+                    if match:
+                        index = int(match.group(1))
+                        if index not in files_dict:
+                            files_dict[index] = {}
+                        files_dict[index]['file'] = request.FILES[key]
+
+        # Remove the flattened keys from parsed_data
+        for key in keys_to_remove:
+            parsed_data.pop(key, None)
+
+        # Convert files_dict to list if we found any files
+        if files_dict:
+            parsed_data['files'] = [files_dict[i] for i in sorted(files_dict.keys())]
+
+        return super().to_internal_value(parsed_data)
+
+    def validate(self, attrs):
+        """Ensure the planning request can be edited."""
+        instance = self.instance
+
+        if instance and instance.status in ['converted', 'completed', 'cancelled']:
+            raise serializers.ValidationError(
+                f"Cannot edit planning request with status '{instance.status}'."
+            )
+
+        # Validate that file attachment targets reference valid item indices
+        files_data = attrs.get('files', [])
+        items_data = attrs.get('items', [])
+        num_items = len(items_data)
+
+        for file_idx, file_data in enumerate(files_data):
+            for target in file_data.get('attach_to', []):
+                if isinstance(target, int) and target >= num_items:
+                    raise serializers.ValidationError({
+                        "files": f"File at index {file_idx} references item index {target}, but only {num_items} items provided."
+                    })
+
+        return attrs
+
+    def validate_items(self, value):
+        """Validate items list."""
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise serializers.ValidationError("Items must be a list.")
+        for idx, item_data in enumerate(value):
+            if 'job_no' not in item_data:
+                raise serializers.ValidationError({"items": f"Item at index {idx} missing job_no"})
+            if 'quantity' not in item_data:
+                raise serializers.ValidationError({"items": f"Item at index {idx} missing quantity"})
+            if 'item_id' not in item_data and 'item_code' not in item_data:
+                raise serializers.ValidationError({"items": f"Item at index {idx} requires item_id or item_code"})
+        return value
+
+    def update(self, instance, validated_data):
+        """Update the planning request and optionally replace items and add files."""
+        from django.db import transaction
+
+        user = self.context['request'].user
+        files_data = validated_data.get('files', [])
+        items_data = validated_data.get('items', None)
+
+        ct_pr = ContentType.objects.get_for_model(PlanningRequest)
+        ct_item = ContentType.objects.get_for_model(PlanningRequestItem)
+
+        with transaction.atomic():
+            # Update basic fields
+            if 'title' in validated_data:
+                instance.title = validated_data['title']
+            if 'description' in validated_data:
+                instance.description = validated_data['description']
+            if 'needed_date' in validated_data:
+                instance.needed_date = validated_data['needed_date']
+            if 'priority' in validated_data:
+                instance.priority = validated_data['priority']
+            if 'check_inventory' in validated_data:
+                instance.check_inventory = validated_data['check_inventory']
+
+            instance.save()
+
+            # If items provided, replace all existing items
+            if items_data is not None:
+                # Delete all existing items
+                instance.items.all().delete()
+
+                # Create new items
+                created_items = []
+                for idx, item_data in enumerate(items_data):
+                    item_id = item_data.get('item_id')
+                    item_code = item_data.get('item_code')
+                    item = None
+
+                    if item_id:
+                        try:
+                            item = Item.objects.get(id=item_id)
+                        except Item.DoesNotExist:
+                            raise serializers.ValidationError({"items": f"Item at index {idx} with id {item_id} not found"})
+                    elif item_code:
+                        try:
+                            item = Item.objects.get(code=item_code)
+                        except Item.DoesNotExist:
+                            # Create the item if it doesn't exist
+                            item_name = item_data.get('item_name', item_code)
+                            item_unit = item_data.get('item_unit', 'adet')
+                            item = Item.objects.create(
+                                code=item_code,
+                                name=item_name,
+                                unit=item_unit
+                            )
+
+                    try:
+                        quantity = Decimal(str(item_data['quantity']))
+                    except Exception:
+                        raise serializers.ValidationError({"items": f"Item at index {idx} has invalid quantity"})
+
+                    planning_item = PlanningRequestItem.objects.create(
+                        planning_request=instance,
+                        item=item,
+                        job_no=item_data['job_no'],
+                        quantity=quantity,
+                        item_description=item_data.get('item_description', ''),
+                        priority=item_data.get('priority', 'normal'),
+                        specifications=item_data.get('specifications', ''),
+                        source_item_index=item_data.get('source_item_index'),
+                        order=idx + 1,
+                    )
+                    created_items.append(planning_item)
+            else:
+                # If items not provided, use existing items for file attachments
+                created_items = list(instance.items.all().order_by('order'))
+
+            # Process flexible file attachments
+            for file_data in files_data:
+                # Determine the asset to use
+                if 'file' in file_data:
+                    # New file upload - create the asset
+                    asset = FileAsset.objects.create(
+                        file=file_data['file'],
+                        uploaded_by=user,
+                        description=file_data.get('description', '')
+                    )
+                    source_attachment = None
+                else:
+                    # Reference to existing attachment
+                    source_attachment_id = file_data['source_attachment_id']
+                    try:
+                        source_attachment = FileAttachment.objects.select_related('asset').get(id=source_attachment_id)
+                        asset = source_attachment.asset
+                    except FileAttachment.DoesNotExist:
+                        raise serializers.ValidationError({
+                            "files": f"FileAttachment with id {source_attachment_id} not found"
+                        })
+
+                # Attach to each target
+                for target in file_data['attach_to']:
+                    if target == "request":
+                        # Attach to the planning request
+                        FileAttachment.objects.create(
+                            asset=asset,
+                            uploaded_by=user,
+                            description=file_data.get('description', ''),
+                            source_attachment=source_attachment if 'source_attachment_id' in file_data else None,
+                            content_type=ct_pr,
+                            object_id=instance.id,
+                        )
+                    elif isinstance(target, int):
+                        # Attach to the item at this index
+                        if target < len(created_items):
+                            FileAttachment.objects.create(
+                                asset=asset,
+                                uploaded_by=user,
+                                description=file_data.get('description', ''),
+                                source_attachment=source_attachment if 'source_attachment_id' in file_data else None,
+                                content_type=ct_item,
+                                object_id=created_items[target].id,
+                            )
+
+        return instance
+
+
 
 
 class PlanningRequestCreateSerializer(serializers.Serializer):
