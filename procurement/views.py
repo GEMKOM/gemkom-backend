@@ -10,7 +10,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework import status, permissions
 
-from procurement.permissions import IsFinanceAuthorized
+from procurement.permissions import IsFinanceAuthorized, IsFinanceOrPlanningAuthorized
 from .models import (
     PaymentSchedule, PaymentTerms, PurchaseOrder, PurchaseOrderLine, PurchaseRequestDraft,
     Supplier, Item, PurchaseRequest, PurchaseRequestItem, SupplierOffer, ItemOffer
@@ -110,7 +110,7 @@ class SupplierViewSet(viewsets.ModelViewSet):
 class ItemViewSet(viewsets.ModelViewSet):
     queryset = Item.objects.all()
     serializer_class = ItemSerializer
-    permission_classes = [IsFinanceAuthorized]
+    permission_classes = [IsFinanceOrPlanningAuthorized]
 
     filter_backends = [DjangoFilterBackend, OrderingFilter, SearchFilter]
     filterset_class = ItemFilter
