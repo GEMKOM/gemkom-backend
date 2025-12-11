@@ -149,6 +149,7 @@ class Item(models.Model):
         ('litre', 'Litre'),
         ('paket', 'Paket'),
         ('kutu', 'Kutu'),
+        ('set', 'Takım'),
     ]
 
     ITEM_TYPE_CHOICES = [
