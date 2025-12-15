@@ -19,18 +19,23 @@ def attachment_upload_path(instance, filename):
     Sanitizes filename to avoid S3 compatibility issues.
     """
     import re
-    from urllib.parse import quote
+    import unicodedata
 
     # Sanitize filename: remove/replace problematic characters
     # Remove leading @ or special chars that can cause S3 issues
     name, ext = os.path.splitext(filename)
 
+    # Transliterate Turkish and other Unicode characters to ASCII
+    # This handles: Ç->C, İ->I, Ş->S, Ğ->G, Ü->U, Ö->O, etc.
+    name = unicodedata.normalize('NFKD', name)
+    name = name.encode('ascii', 'ignore').decode('ascii')
+
     # Remove leading special characters
     name = re.sub(r'^[@#$%^&*]+', '', name)
 
     # Replace problematic characters with underscores
-    # Keep: letters, numbers, spaces, dash, underscore, dot
-    name = re.sub(r'[^\w\s\-.]', '_', name)
+    # Keep only: ASCII letters, numbers, spaces, dash, underscore, dot
+    name = re.sub(r'[^a-zA-Z0-9\s\-._]', '_', name)
 
     # Replace multiple spaces/underscores with single underscore
     name = re.sub(r'[\s_]+', '_', name)
