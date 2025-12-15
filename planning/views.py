@@ -17,6 +17,7 @@ from .models import (
 from procurement.models import Item
 from .serializers import (
     DepartmentRequestSerializer,
+    DepartmentRequestListSerializer,
     PlanningRequestSerializer,
     PlanningRequestListSerializer,
     PlanningRequestCreateSerializer,
@@ -76,21 +77,29 @@ class DepartmentRequestViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        qs = DepartmentRequest.objects.select_related('requestor', 'approved_by').prefetch_related(
-            Prefetch('files', queryset=FileAttachment.objects.select_related('asset', 'uploaded_by', 'source_attachment')),
-        )
 
-        # Prefetch approval workflows
-        wf_qs = (
-            ApprovalWorkflow.objects
-            .select_related("policy")
-            .prefetch_related(
-                "stage_instances",
-                "stage_instances__decisions__approver",
+        # For list views and list-like actions, use minimal prefetching
+        if self.action in ['list', 'my_requests', 'pending_approval', 'approved_requests', 'completed_requests']:
+            qs = DepartmentRequest.objects.select_related(
+                'requestor', 'approved_by'
+            ).prefetch_related('planning_requests')
+        else:
+            # For detail views, prefetch all related data
+            qs = DepartmentRequest.objects.select_related('requestor', 'approved_by').prefetch_related(
+                Prefetch('files', queryset=FileAttachment.objects.select_related('asset', 'uploaded_by', 'source_attachment')),
             )
-            .order_by("-created_at")
-        )
-        qs = qs.prefetch_related(Prefetch("approvals", queryset=wf_qs))
+
+            # Prefetch approval workflows for detail views
+            wf_qs = (
+                ApprovalWorkflow.objects
+                .select_related("policy")
+                .prefetch_related(
+                    "stage_instances",
+                    "stage_instances__decisions__approver",
+                )
+                .order_by("-created_at")
+            )
+            qs = qs.prefetch_related(Prefetch("approvals", queryset=wf_qs))
 
         # Filter based on user role
         # Superusers and planning team see all
@@ -99,6 +108,11 @@ class DepartmentRequestViewSet(viewsets.ModelViewSet):
 
         # Regular users see only their own requests
         return qs.filter(requestor=user)
+
+    def get_serializer_class(self):
+        if self.action in ['list', 'my_requests', 'pending_approval', 'approved_requests', 'completed_requests']:
+            return DepartmentRequestListSerializer
+        return DepartmentRequestSerializer
 
     @action(detail=True, methods=['POST'], permission_classes=[permissions.IsAuthenticated])
     def approve(self, request, pk=None):

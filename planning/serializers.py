@@ -56,7 +56,53 @@ class FileAttachmentSerializer(serializers.ModelSerializer):
 
 
 # Department Request Serializers
+class DepartmentRequestListSerializer(serializers.ModelSerializer):
+    """Lightweight serializer for list views - includes planning request keys only"""
+    requestor_username = serializers.ReadOnlyField(source='requestor.username')
+    requestor_full_name = serializers.SerializerMethodField()
+    approved_by_username = serializers.ReadOnlyField(source='approved_by.username')
+    status_label = serializers.SerializerMethodField()
+    needed_date = SafeDateField()
+    items_count = serializers.SerializerMethodField()
+    planning_request_keys = serializers.SerializerMethodField()
+
+    class Meta:
+        model = DepartmentRequest
+        fields = [
+            'id', 'request_number', 'title', 'description', 'department',
+            'needed_date', 'items_count', 'requestor', 'requestor_username', 'requestor_full_name',
+            'priority', 'status', 'status_label',
+            'approved_by', 'approved_by_username', 'approved_at', 'rejection_reason',
+            'created_at', 'submitted_at', 'planning_request_keys'
+        ]
+        read_only_fields = [
+            'created_at', 'submitted_at',
+            'approved_by', 'approved_at',
+            'department', 'requestor'
+        ]
+
+    def get_requestor_full_name(self, obj):
+        if obj.requestor:
+            return f"{obj.requestor.first_name} {obj.requestor.last_name}".strip() or obj.requestor.username
+        return ""
+
+    def get_status_label(self, obj):
+        return obj.get_status_display()
+
+    def get_items_count(self, obj):
+        """Get count of items in the items JSONField"""
+        items = obj.items or []
+        return len(items) if isinstance(items, list) else 0
+
+    def get_planning_request_keys(self, obj):
+        """Get all planning request numbers (cheap with prefetch_related)"""
+        planning_requests = obj.planning_requests.all()
+        request_numbers = [pr.request_number for pr in planning_requests]
+        return sorted(request_numbers) if request_numbers else []
+
+
 class DepartmentRequestSerializer(serializers.ModelSerializer):
+    """Full serializer for detail views - includes files, approval workflow, and related request keys"""
     requestor_username = serializers.ReadOnlyField(source='requestor.username')
     requestor_full_name = serializers.SerializerMethodField()
     approved_by_username = serializers.ReadOnlyField(source='approved_by.username')
