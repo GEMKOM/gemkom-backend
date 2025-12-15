@@ -18,6 +18,7 @@ from procurement.models import Item
 from .serializers import (
     DepartmentRequestSerializer,
     PlanningRequestSerializer,
+    PlanningRequestListSerializer,
     PlanningRequestCreateSerializer,
     PlanningRequestUpdateSerializer,
     PlanningRequestItemSerializer,
@@ -279,16 +280,26 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
     ordering = ['-created_at']
 
     def get_queryset(self):
+        from django.db.models import Count
         user = self.request.user
-        qs = PlanningRequest.objects.select_related(
-            'created_by', 'department_request'
-        ).prefetch_related(
-            'items__item',
-            'items__purchase_requests',
-            Prefetch('files', queryset=FileAttachment.objects.select_related('asset', 'uploaded_by', 'source_attachment')),
-            Prefetch('department_request__files', queryset=FileAttachment.objects.select_related('asset', 'uploaded_by', 'source_attachment')),
-            Prefetch('items__files', queryset=FileAttachment.objects.select_related('asset', 'uploaded_by', 'source_attachment')),
-        )
+
+        # For list views and list-like actions, use minimal prefetching
+        if self.action in ['list', 'ready_for_procurement', 'my_requests']:
+            qs = PlanningRequest.objects.select_related(
+                'created_by', 'department_request'
+            ).annotate(
+                items_count=Count('items')
+            )
+        else:
+            # For detail views, prefetch all related data
+            qs = PlanningRequest.objects.select_related(
+                'created_by', 'department_request'
+            ).prefetch_related(
+                'items__item',
+                'items__purchase_requests',
+                Prefetch('files', queryset=FileAttachment.objects.select_related('asset', 'uploaded_by', 'source_attachment')),
+                Prefetch('items__files', queryset=FileAttachment.objects.select_related('asset', 'uploaded_by', 'source_attachment')),
+            )
 
         # Planning team and superusers see all
         if user.is_superuser or (hasattr(user, 'profile') and (user.profile.team == 'planning' or user.profile.team == 'warehouse')):
@@ -306,6 +317,8 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
             return PlanningRequestCreateSerializer
         elif self.action in ['update', 'partial_update']:
             return PlanningRequestUpdateSerializer
+        elif self.action in ['list', 'ready_for_procurement', 'my_requests']:
+            return PlanningRequestListSerializer
         return PlanningRequestSerializer
 
     def create(self, request, *args, **kwargs):

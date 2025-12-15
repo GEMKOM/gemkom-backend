@@ -157,6 +157,13 @@ class PlanningRequestFilter(django_filters.FilterSet):
     """
     Filter for PlanningRequest with focus on procurement needs.
     """
+    # Filter by request number (case-insensitive partial match)
+    request_number = django_filters.CharFilter(
+        field_name='request_number',
+        lookup_expr='icontains',
+        label='Request Number'
+    )
+
     # Filter by status
     status = django_filters.CharFilter(
         field_name='status',

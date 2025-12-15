@@ -341,7 +341,42 @@ class PlanningRequestItemSerializer(serializers.ModelSerializer):
     
 
 
+class PlanningRequestListSerializer(serializers.ModelSerializer):
+    """Lightweight serializer for list views - excludes nested items and files"""
+    created_by_username = serializers.ReadOnlyField(source='created_by.username')
+    created_by_full_name = serializers.SerializerMethodField()
+    status_label = serializers.SerializerMethodField()
+    department_request_number = serializers.CharField(source='department_request.request_number', read_only=True)
+    items_count = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = PlanningRequest
+        fields = [
+            'id', 'request_number', 'title', 'description', 'needed_date', 'erp_code',
+            'department_request', 'department_request_number',
+            'created_by', 'created_by_username', 'created_by_full_name',
+            'priority', 'status', 'status_label',
+            'check_inventory', 'inventory_control_completed', 'fully_from_inventory',
+            'created_at', 'updated_at', 'ready_at', 'converted_at', 'completed_at',
+            'items_count'
+        ]
+        read_only_fields = [
+            'request_number', 'created_at', 'updated_at',
+            'ready_at', 'converted_at', 'completed_at', 'created_by',
+            'inventory_control_completed', 'fully_from_inventory', 'erp_code'
+        ]
+
+    def get_created_by_full_name(self, obj):
+        if obj.created_by:
+            return f"{obj.created_by.first_name} {obj.created_by.last_name}".strip() or obj.created_by.username
+        return ""
+
+    def get_status_label(self, obj):
+        return obj.get_status_display()
+
+
 class PlanningRequestSerializer(serializers.ModelSerializer):
+    """Full serializer for detail views - includes nested items and files"""
     items = PlanningRequestItemSerializer(many=True, read_only=True)
     created_by_username = serializers.ReadOnlyField(source='created_by.username')
     created_by_full_name = serializers.SerializerMethodField()
@@ -350,7 +385,6 @@ class PlanningRequestSerializer(serializers.ModelSerializer):
     completion_stats = serializers.SerializerMethodField()
     purchase_request_info = serializers.SerializerMethodField()
     files = FileAttachmentSerializer(many=True, read_only=True)
-    department_files = FileAttachmentSerializer(many=True, read_only=True, source='department_request.files')
 
     class Meta:
         model = PlanningRequest
@@ -362,7 +396,7 @@ class PlanningRequestSerializer(serializers.ModelSerializer):
             'check_inventory', 'inventory_control_completed', 'fully_from_inventory',
             'created_at', 'updated_at', 'ready_at', 'converted_at', 'completed_at',
             'completion_stats', 'purchase_request_info',
-            'items', 'files', 'department_files'
+            'items', 'files'
         ]
         read_only_fields = [
             'request_number', 'created_at', 'updated_at',
