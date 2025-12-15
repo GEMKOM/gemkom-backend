@@ -22,6 +22,7 @@ from .serializers import (
     PlanningRequestCreateSerializer,
     PlanningRequestUpdateSerializer,
     PlanningRequestItemSerializer,
+    PlanningRequestItemListSerializer,
     BulkPlanningRequestItemSerializer,
     AttachmentUploadSerializer,
     FileAttachmentSerializer,
@@ -773,9 +774,22 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
     ordering = ['id']
 
     def get_queryset(self):
-        qs = PlanningRequestItem.objects.select_related('planning_request', 'item').prefetch_related(
-            Prefetch('files', queryset=FileAttachment.objects.select_related('asset', 'uploaded_by', 'source_attachment'))
-        )
+        from django.db.models import Count
+
+        # For list views, use minimal prefetching
+        if self.action == 'list':
+            qs = PlanningRequestItem.objects.select_related(
+                'planning_request', 'item'
+            ).annotate(
+                files_count=Count('files')
+            )
+        else:
+            # For detail views, prefetch all related data
+            qs = PlanningRequestItem.objects.select_related(
+                'planning_request', 'item'
+            ).prefetch_related(
+                Prefetch('files', queryset=FileAttachment.objects.select_related('asset', 'uploaded_by', 'source_attachment'))
+            )
 
         # Filter by planning_request param if provided
         pr_id = self.request.query_params.get('planning_request')
@@ -785,6 +799,11 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
         # All authenticated users can view (GET requests)
         # Restrictions for write operations are handled in get_permissions()
         return qs
+
+    def get_serializer_class(self):
+        if self.action == 'list':
+            return PlanningRequestItemListSerializer
+        return PlanningRequestItemSerializer
 
     def get_permissions(self):
         """
@@ -981,6 +1000,67 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
             "available_items": available_items,
             "unavailable_items": unavailable_items,
             "availability_percentage": availability_percentage
+        })
+
+    @action(detail=False, methods=['POST'], permission_classes=[permissions.IsAuthenticated])
+    def bulk_files(self, request):
+        """
+        Get all files for multiple planning request items at once.
+
+        Request body:
+        {
+            "item_ids": [203, 208, 307]
+        }
+
+        Returns:
+        {
+            "files": [
+                {
+                    "item_id": 203,
+                    "item_code": "PIPE-2IN",
+                    "files": [...]
+                },
+                ...
+            ],
+            "total_files": 15
+        }
+        """
+        item_ids = request.data.get('item_ids', [])
+
+        if not item_ids:
+            return Response({"detail": "item_ids is required and must be a non-empty list."}, status=400)
+
+        if not isinstance(item_ids, list):
+            return Response({"detail": "item_ids must be a list."}, status=400)
+
+        # Get items with their files
+        items = PlanningRequestItem.objects.filter(
+            id__in=item_ids
+        ).select_related('item').prefetch_related(
+            Prefetch('files', queryset=FileAttachment.objects.select_related('asset', 'uploaded_by', 'source_attachment'))
+        )
+
+        # Build response
+        result = []
+        total_files = 0
+
+        for item in items:
+            files_data = FileAttachmentSerializer(item.files.all(), many=True, context={'request': request}).data
+            total_files += len(files_data)
+
+            result.append({
+                'item_id': item.id,
+                'item_code': item.item.code if item.item else None,
+                'item_name': item.item.name if item.item else None,
+                'job_no': item.job_no,
+                'files': files_data
+            })
+
+        return Response({
+            'items': result,
+            'total_files': total_files,
+            'requested_count': len(item_ids),
+            'found_count': len(result)
         })
 
 

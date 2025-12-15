@@ -276,8 +276,35 @@ class DepartmentRequestSerializer(serializers.ModelSerializer):
             )
 
 
-# Planning Request Serializers
+# Planning Request Item Serializers
+class PlanningRequestItemListSerializer(serializers.ModelSerializer):
+    """Lightweight serializer for list views - excludes files and purchase request info"""
+    item_code = serializers.CharField(source='item.code', read_only=True)
+    item_name = serializers.CharField(source='item.name', read_only=True)
+    item_unit = serializers.CharField(source='item.unit', read_only=True)
+    item_type = serializers.CharField(source='item.item_type', read_only=True)
+    item_stock_quantity = serializers.DecimalField(source='item.stock_quantity', read_only=True, max_digits=10, decimal_places=2)
+    files_count = serializers.IntegerField(read_only=True)
+    is_converted = serializers.ReadOnlyField()
+    is_fully_from_inventory = serializers.ReadOnlyField()
+    is_partially_from_inventory = serializers.ReadOnlyField()
+    planning_request_number = serializers.CharField(source='planning_request.request_number', read_only=True)
+
+    class Meta:
+        model = PlanningRequestItem
+        fields = [
+            'id', 'item', 'item_code', 'item_name', 'item_unit', 'item_type', 'item_stock_quantity',
+            'job_no', 'quantity', 'quantity_from_inventory', 'quantity_to_purchase',
+            'item_description', 'priority', 'specifications',
+            'source_item_index', 'order', 'files_count',
+            'is_converted', 'is_fully_from_inventory', 'is_partially_from_inventory',
+            'planning_request', 'planning_request_number'
+        ]
+        read_only_fields = ['id', 'quantity_from_inventory', 'quantity_to_purchase']
+
+
 class PlanningRequestItemSerializer(serializers.ModelSerializer):
+    """Full serializer for detail views - includes files and purchase request info"""
     item_code = serializers.CharField(source='item.code', read_only=True)
     item_name = serializers.CharField(source='item.name', read_only=True)
     item_unit = serializers.CharField(source='item.unit', read_only=True)
