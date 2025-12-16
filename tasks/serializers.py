@@ -42,20 +42,49 @@ class BaseTimerSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'user', 'issue_key']
 
     def create(self, validated_data):
+        from django.db import IntegrityError
+
         validated_data['user'] = self.context['request'].user
-        
+
         task_type_name = validated_data.pop('task_type')
         # This logic determines which model to link to based on the task_type
         app_label = 'machining' if task_type_name == 'machining' else 'cnc_cutting'
         model_name = 'task' if task_type_name == 'machining' else 'cnctask'
-        
+
         try:
             content_type = ContentType.objects.get(app_label=app_label, model=model_name)
             validated_data['content_type'] = content_type
         except ContentType.DoesNotExist:
             raise serializers.ValidationError(f"Invalid task_type: {task_type_name}")
 
-        return super().create(validated_data)
+        # Check for existing active timer before creating
+        user = validated_data['user']
+        machine_fk = validated_data.get('machine_fk')
+        object_id = validated_data.get('object_id')
+
+        existing_timer = Timer.objects.filter(
+            user=user,
+            machine_fk=machine_fk,
+            content_type=content_type,
+            object_id=object_id,
+            finish_time__isnull=True
+        ).first()
+
+        if existing_timer:
+            raise serializers.ValidationError({
+                'detail': 'An active timer already exists for this user, machine, and task combination.',
+                'existing_timer_id': existing_timer.id
+            })
+
+        try:
+            return super().create(validated_data)
+        except IntegrityError as e:
+            # Catch database constraint violation for additional safety
+            if 'unique_active_timer_per_user_machine_task' in str(e):
+                raise serializers.ValidationError({
+                    'detail': 'An active timer already exists for this user, machine, and task combination.'
+                })
+            raise
 
     def to_representation(self, instance):
         # When reading a timer, we want the 'issue_key' field to contain the

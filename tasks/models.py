@@ -79,6 +79,13 @@ class Timer(models.Model):
         indexes = [
             models.Index(fields=["content_type", "object_id"]),
         ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['user', 'machine_fk', 'content_type', 'object_id'],
+                condition=models.Q(finish_time__isnull=True),
+                name='unique_active_timer_per_user_machine_task'
+            ),
+        ]
 
 
 class TaskFile(models.Model):
