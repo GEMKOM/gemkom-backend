@@ -19,6 +19,24 @@ class CncPartSerializer(serializers.ModelSerializer):
         fields = ['id', 'cnc_task', 'job_no', 'image_no', 'position_no', 'weight_kg', 'quantity']
 
 
+class CncPartSearchResultSerializer(serializers.ModelSerializer):
+    """
+    Serializer for CNC part search results.
+    Returns part information along with its parent CNC task details.
+    """
+    nesting_id = serializers.CharField(source='cnc_task.nesting_id', read_only=True)
+    planned_start_ms = serializers.IntegerField(source='cnc_task.planned_start_ms', read_only=True)
+    planned_end_ms = serializers.IntegerField(source='cnc_task.planned_end_ms', read_only=True)
+    completion_date = serializers.IntegerField(source='cnc_task.completion_date', read_only=True)
+
+    class Meta:
+        model = CncPart
+        fields = [
+            'id', 'job_no', 'image_no', 'position_no', 'weight_kg', 'quantity',
+            'nesting_id', 'planned_start_ms', 'planned_end_ms', 'completion_date'
+        ]
+
+
 class CncTimerSerializer(BaseTimerSerializer):
     """
     Extends the BaseTimerSerializer to include fields specific to a CncTask.

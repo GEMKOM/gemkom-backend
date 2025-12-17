@@ -1,5 +1,4 @@
 import time
-from rest_framework.views import APIView
 from rest_framework.viewsets import ModelViewSet
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.parsers import MultiPartParser, FormParser
@@ -7,6 +6,8 @@ from django.db.models import Count
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import OrderingFilter
 from rest_framework import viewsets, mixins
+from rest_framework.generics import ListAPIView
+from rest_framework.pagination import PageNumberPagination
 from users.permissions import IsCuttingUserOrAdmin, IsOfficeUserOrAdmin
 from django.utils import timezone
 from rest_framework.response import Response
@@ -32,6 +33,7 @@ from .serializers import (
     CncTaskListSerializer,
     CncTaskDetailSerializer,
     CncPartSerializer,
+    CncPartSearchResultSerializer,
     CncTimerSerializer,
     RemnantPlateSerializer,
     CncPlanningListItemSerializer,
@@ -266,3 +268,51 @@ class RemnantPlateViewSet(ModelViewSet):
         instances = serializer.save()
         response_serializer = self.get_serializer(instances, many=True)
         return Response(response_serializer.data, status=status.HTTP_201_CREATED)
+
+
+class CncPartSearchPagination(PageNumberPagination):
+    """Custom pagination for CNC part search results."""
+    page_size = 50
+    page_size_query_param = 'page_size'
+    max_page_size = 200
+
+
+class CncPartSearchView(ListAPIView):
+    """
+    API view for searching CNC parts by job_no, image_no, and position_no.
+    Supports partial matching on all fields and returns the associated CNC task details.
+    Returns all parts if no filters are provided (paginated).
+
+    GET /api/cnc_cutting/parts/search/?job_no=...&image_no=...&position_no=...
+    """
+    permission_classes = [IsAuthenticated]
+    serializer_class = CncPartSearchResultSerializer
+    pagination_class = CncPartSearchPagination
+
+    def get_queryset(self):
+        """
+        Search for CNC parts with optional partial filters.
+        Query parameters:
+        - job_no: Partial match on job number
+        - image_no: Partial match on image number
+        - position_no: Partial match on position number
+
+        If no filters are provided, returns all parts (paginated).
+        """
+        queryset = CncPart.objects.select_related('cnc_task').all().order_by('-id')
+
+        # Apply filters if provided
+        job_no = self.request.query_params.get('job_no', None)
+        image_no = self.request.query_params.get('image_no', None)
+        position_no = self.request.query_params.get('position_no', None)
+
+        if job_no:
+            queryset = queryset.filter(job_no__icontains=job_no)
+
+        if image_no:
+            queryset = queryset.filter(image_no__icontains=image_no)
+
+        if position_no:
+            queryset = queryset.filter(position_no__icontains=position_no)
+
+        return queryset

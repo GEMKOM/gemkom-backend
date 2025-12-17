@@ -18,6 +18,7 @@ from .views import (
     ProductionPlanView,
     PlanningBulkSaveView,
     RemnantPlateViewSet,
+    CncPartSearchView,
 
 )
 
@@ -41,12 +42,15 @@ urlpatterns = [ # Custom task actions first
     path("timers/", TimerListView.as_view(), name="timer-list"),
     path("timer-report/", TimerReportView.as_view(), name="timer-report"),
     path('timers/<int:pk>/', TimerDetailView.as_view(), name='timer-detail'),
-    
+
 
     # Planning URLs
     path('planning/list/', PlanningListView.as_view(), name='planning-list'),
     path('planning/production-plan/', ProductionPlanView.as_view(), name='production-plan'),
     path('planning/bulk-save/', PlanningBulkSaveView.as_view(), name='planning-bulk-save'),
+
+    # CNC Part Search URL
+    path('parts/search/', CncPartSearchView.as_view(), name='parts-search'),
 ]
 
 urlpatterns += router.urls # Router URLs last
