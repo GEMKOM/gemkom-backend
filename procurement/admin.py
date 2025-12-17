@@ -42,9 +42,9 @@ class PurchaseRequestAdmin(admin.ModelAdmin):
     def display_planning_request_items(self, obj):
         """Display linked planning request items"""
         if obj.pk:
-            items = obj.planning_request_items.all()
-            if items.exists():
-                return f'{items.count()} items from planning requests'
+            count = obj.planning_request_items.count()
+            if count > 0:
+                return f'{count} items from planning requests'
             return 'None'
         return '-'
     display_planning_request_items.short_description = 'Planning Items Count'
@@ -52,7 +52,7 @@ class PurchaseRequestAdmin(admin.ModelAdmin):
     def display_planning_requests(self, obj):
         """Display unique planning requests"""
         if obj.pk:
-            items = obj.planning_request_items.select_related('planning_request').all()
+            items = list(obj.planning_request_items.select_related('planning_request'))
             planning_requests = set(item.planning_request for item in items)
             if planning_requests:
                 return ', '.join([f'{pr.request_number}' for pr in sorted(planning_requests, key=lambda x: x.request_number)])

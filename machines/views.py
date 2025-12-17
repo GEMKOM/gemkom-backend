@@ -58,16 +58,21 @@ class MachineListCreateView(generics.ListCreateAPIView):
         from django.db.models.functions import Coalesce
         from django.db.models import Count, Sum
 
-        dec_field = DecimalField(max_digits=12, decimal_places=2)        
-        not_completed = Q(machining_task_related__completion_date__isnull=True)
+        dec_field = DecimalField(max_digits=12, decimal_places=2)
+        machining_not_completed = Q(machining_task_related__completion_date__isnull=True)
+        cnc_not_completed = Q(cnc_tasks__completion_date__isnull=True)
 
         qs = Machine.objects.all()
         return (
             qs.annotate(
-                tasks_count=Count('machining_task_related', filter=not_completed),
+                tasks_count=Count('machining_task_related', filter=machining_not_completed) + Count('cnc_tasks', filter=cnc_not_completed),
                 total_estimated_hours=Sum(
                     Coalesce('machining_task_related__estimated_hours', Value(0, output_field=dec_field)),
-                    filter=not_completed,
+                    filter=machining_not_completed,
+                    output_field=dec_field,
+                ) + Sum(
+                    Coalesce('cnc_tasks__estimated_hours', Value(0, output_field=dec_field)),
+                    filter=cnc_not_completed,
                     output_field=dec_field,
                 ),
             )

@@ -137,7 +137,45 @@ class SupplierOfferSerializer(serializers.ModelSerializer):
             'id', 'supplier', 'notes', 'item_offers', 'created_at', 'updated_at', 'currency', 'payment_terms', 'payment_terms_name', 'tax_rate'
         ]
 
+class PurchaseRequestListSerializer(serializers.ModelSerializer):
+    """Lightweight serializer for list views - excludes nested items, offers, approval workflow"""
+    requestor_username = serializers.ReadOnlyField(source='requestor.username')
+    status_label = serializers.SerializerMethodField()
+    items_count = serializers.IntegerField(read_only=True)
+    planning_request_keys = serializers.SerializerMethodField()
+    purchase_orders = serializers.PrimaryKeyRelatedField(many=True, read_only=True)
+
+    class Meta:
+        model = PurchaseRequest
+        fields = [
+            'id', 'request_number', 'title', 'description',
+            'requestor', 'requestor_username', 'priority', 'status', 'status_label',
+            'total_amount_eur', 'currency_rates_snapshot',
+            'created_at', 'updated_at', 'submitted_at',
+            'items_count', 'cancelled_at', 'cancelled_by', 'cancellation_reason', 'needed_date',
+            'planning_request_keys', 'purchase_orders'
+        ]
+        read_only_fields = ['request_number', 'created_at', 'updated_at', 'submitted_at', 'cancelled_at', 'cancelled_by']
+
+    def get_status_label(self, obj):
+        return obj.get_status_display()
+
+    def get_planning_request_keys(self, obj):
+        """Get unique planning request numbers (cheap with prefetch_related)"""
+        planning_request_items = obj.planning_request_items.all()
+
+        # Get unique planning requests
+        planning_requests = {}
+        for pri_item in planning_request_items:
+            pr = pri_item.planning_request
+            if pr.id not in planning_requests:
+                planning_requests[pr.id] = pr.request_number
+
+        return sorted(list(planning_requests.values()))
+
+
 class PurchaseRequestSerializer(serializers.ModelSerializer):
+    """Full serializer for detail views - includes nested items, offers, approval workflow"""
     request_items = PurchaseRequestItemSerializer(many=True, read_only=True)
     offers = SupplierOfferSerializer(many=True, read_only=True)
     requestor_username = serializers.ReadOnlyField(source='requestor.username')

@@ -171,8 +171,8 @@ class CncPlanningListItemSerializer(serializers.ModelSerializer):
     """
     Serializer for listing CNC tasks in a planning view. Includes calculated fields.
     """
-    total_hours_spent = serializers.FloatField(read_only=True)
-    remaining_hours = serializers.FloatField(read_only=True)
+    total_hours_spent = serializers.SerializerMethodField()
+    remaining_hours = serializers.SerializerMethodField()
 
     class Meta:
         model = CncTask
@@ -182,6 +182,28 @@ class CncPlanningListItemSerializer(serializers.ModelSerializer):
             'planned_start_ms', 'planned_end_ms', 'estimated_hours',
             'total_hours_spent', 'remaining_hours', 'machine_fk'
         ]
+
+    # Sum finished timers (epoch-ms → hours)
+    def _sum_timer_hours(self, obj: CncTask) -> float:
+        # Use the reverse generic relation
+        qs = obj.issue_key.exclude(finish_time__isnull=True).only('start_time', 'finish_time')
+        total_ms = 0
+        for t in qs:
+            if t.start_time is None:
+                continue
+            end = t.finish_time
+            if end is None or end <= t.start_time:
+                continue
+            total_ms += (end - t.start_time)
+        return round(total_ms / 3_600_000.0, 2)
+
+    def get_total_hours_spent(self, obj):
+        return self._sum_timer_hours(obj)
+
+    def get_remaining_hours(self, obj):
+        est = float(obj.estimated_hours or 0)
+        spent = self._sum_timer_hours(obj)
+        return round(max(0.0, est - spent), 2)
 
 
 class CncProductionPlanSerializer(serializers.ModelSerializer):

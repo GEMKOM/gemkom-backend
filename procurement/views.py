@@ -17,8 +17,8 @@ from .models import (
 )
 from .serializers import (
     PaymentTermsSerializer, PurchaseRequestDraftDetailSerializer, PurchaseRequestDraftListSerializer,
-    SupplierSerializer, ItemSerializer, PurchaseRequestSerializer, PurchaseRequestCreateSerializer,
-    PurchaseRequestItemSerializer, SupplierOfferSerializer, ItemOfferSerializer
+    SupplierSerializer, ItemSerializer, PurchaseRequestSerializer, PurchaseRequestListSerializer,
+    PurchaseRequestCreateSerializer, PurchaseRequestItemSerializer, SupplierOfferSerializer, ItemOfferSerializer
 )
 from django.db.models import Exists, OuterRef, F, Q
 from rest_framework.decorators import action
@@ -215,30 +215,57 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
     ordering = ['-id']  # Default ordering
     
     def get_queryset(self):
-        wf_qs = (
-            ApprovalWorkflow.objects
-            .select_related("policy")
-            .prefetch_related(
-                "stage_instances",
-                "stage_instances__decisions__approver",
+        # For list views and list-like actions, use minimal prefetching
+        if self.action in ['list', 'my_requests']:
+            # Lightweight approval workflow prefetch (just enough for approval_status)
+            wf_qs = (
+                ApprovalWorkflow.objects
+                .prefetch_related(
+                    "stage_instances__decisions__approver"
+                )
+                .order_by("-created_at")
             )
-            .order_by("-created_at")
-        )
-        return (
-            PurchaseRequest.objects
-            .select_related("requestor")
-            .prefetch_related(
-                "request_items__item",
-                "offers__supplier",
-                "purchase_orders",
-                "planning_request_items",
-                Prefetch("approvals", queryset=wf_qs),  # ← use the generic relation
+            return (
+                PurchaseRequest.objects
+                .select_related("requestor", "cancelled_by")
+                .prefetch_related(
+                    'planning_request_items__planning_request',
+                    'purchase_orders',
+                    Prefetch("approvals", queryset=wf_qs)
+                )
+                .annotate(items_count=Count('request_items'))
             )
-        )
-    
+        else:
+            # For detail views, prefetch all related data
+            wf_qs = (
+                ApprovalWorkflow.objects
+                .select_related("policy")
+                .prefetch_related(
+                    "stage_instances",
+                    "stage_instances__decisions__approver",
+                )
+                .order_by("-created_at")
+            )
+            return (
+                PurchaseRequest.objects
+                .select_related("requestor", "cancelled_by")
+                .prefetch_related(
+                    "request_items__item",
+                    "request_items__allocations",
+                    "request_items__files",
+                    "offers__supplier",
+                    "offers__item_offers",
+                    "purchase_orders",
+                    'planning_request_items__planning_request',
+                    Prefetch("approvals", queryset=wf_qs),
+                )
+            )
+
     def get_serializer_class(self):
         if self.action == 'create':
             return PurchaseRequestCreateSerializer
+        elif self.action in ['list', 'my_requests']:
+            return PurchaseRequestListSerializer
         return PurchaseRequestSerializer
     
     @action(detail=True, methods=["POST"], permission_classes=[IsFinanceAuthorized])
