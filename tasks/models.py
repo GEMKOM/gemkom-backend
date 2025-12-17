@@ -31,6 +31,7 @@ class BaseTask(models.Model):
     """
     key = models.CharField(max_length=255, primary_key=True)
     name = models.CharField(max_length=255)
+    description = models.TextField(null=True, blank=True)
     quantity = models.IntegerField(null=True, blank=True)
     completed_by = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL)
     completion_date = models.BigIntegerField(null=True, blank=True)

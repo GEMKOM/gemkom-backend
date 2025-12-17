@@ -32,7 +32,7 @@ class TaskSerializer(serializers.ModelSerializer):
     class Meta:
         model = Task
         fields = [
-            'key', 'name', 'job_no', 'image_no', 'position_no', 'quantity',
+            'key', 'name', 'description', 'job_no', 'image_no', 'position_no', 'quantity',
             'completion_date', 'completed_by', 'completed_by_username', 'estimated_hours', 'total_hours_spent', 'machine_fk', 'finish_time', 'machine_name',
             'in_plan', 'planned_start_ms', 'planned_end_ms', 'plan_order'
         ]
@@ -102,13 +102,13 @@ class PlanningListItemSerializer(serializers.ModelSerializer):
         model = Task
         fields = [
             # identity
-            'key', 'name', 'job_no', 'image_no', 'position_no', 'quantity',
+            'key', 'name', 'description', 'job_no', 'image_no', 'position_no', 'quantity',
             # machine
             'machine_fk', 'machine_name',
             # plan state
             'in_plan', 'planned_start_ms', 'planned_end_ms', 'plan_order', 'plan_locked',
             # hours
-            'estimated_hours', 'total_hours_spent', 'remaining_hours', 
+            'estimated_hours', 'total_hours_spent', 'remaining_hours',
             # useful for initial auto-sort
             'completion_date'
         ]
