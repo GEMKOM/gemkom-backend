@@ -6,10 +6,14 @@ def forwards_func(apps, schema_editor):
     Copies data from the old machining.Timer and machining.TaskKeyCounter
     to the new generic tasks.Timer and tasks.TaskKeyCounter models.
     """
-    # Get historical models to ensure this migration is always runnable
-    OldTimer = apps.get_model('machining', 'Timer')
-    OldTaskKeyCounter = apps.get_model('machining', 'TaskKeyCounter')
-    MachiningTask = apps.get_model('machining', 'Task')
+    # Skip this migration if the old models don't exist (e.g., in test databases)
+    try:
+        OldTimer = apps.get_model('machining', 'Timer')
+        OldTaskKeyCounter = apps.get_model('machining', 'TaskKeyCounter')
+        MachiningTask = apps.get_model('machining', 'Task')
+    except LookupError:
+        # Old models don't exist, skip this data migration
+        return
 
     NewTimer = apps.get_model('tasks', 'Timer')
     NewTaskKeyCounter = apps.get_model('tasks', 'TaskKeyCounter')

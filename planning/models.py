@@ -289,13 +289,37 @@ class PlanningRequest(models.Model):
 
     def check_and_update_completion_status(self):
         """
-        Check if all items have been converted and update status to 'completed' if needed.
+        Check if all items are fulfilled and update status to 'completed' if needed.
+
+        An item is considered fulfilled if either:
+        1. quantity_to_purchase = 0 (fully from inventory), OR
+        2. Has at least one approved purchase request
+
         Returns True if status was updated to completed.
         """
-        stats = self.get_completion_stats()
+        if self.status == 'completed':
+            return False
 
-        # If all items are converted and status is not already completed
-        if stats['completion_percentage'] == 100 and self.status != 'completed':
+        items = self.items.all()
+        if not items.exists():
+            return False
+
+        # Check if all items are fulfilled
+        all_fulfilled = True
+        for item in items:
+            # Item is fulfilled if quantity_to_purchase is 0 (from inventory)
+            if item.quantity_to_purchase == Decimal('0.00'):
+                continue
+
+            # Or if it has at least one approved purchase request
+            if item.purchase_requests.filter(status='approved').exists():
+                continue
+
+            # If neither condition is met, item is not fulfilled
+            all_fulfilled = False
+            break
+
+        if all_fulfilled:
             self.status = 'completed'
             self.completed_at = timezone.now()
             self.save(update_fields=['status', 'completed_at'])

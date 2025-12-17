@@ -277,23 +277,8 @@ class PurchaseRequest(models.Model):
 
             # Check each planning request's completion status
             for planning_request in planning_requests:
-                stats = planning_request.get_completion_stats()
-
-                # If all items are now in approved purchase requests, mark as completed
-                if stats['completion_percentage'] == 100:
-                    # Verify all items are in approved (not just submitted) purchase requests
-                    all_approved = True
-                    for pr_item in planning_request.items.all():
-                        # Check if item has at least one approved purchase request
-                        approved_prs = pr_item.purchase_requests.filter(status='approved')
-                        if pr_item.quantity_to_purchase > 0 and not approved_prs.exists():
-                            all_approved = False
-                            break
-
-                    if all_approved:
-                        planning_request.status = 'completed'
-                        planning_request.completed_at = timezone.now()
-                        planning_request.save(update_fields=['status', 'completed_at'])
+                # Use the planning request's own completion check method
+                planning_request.check_and_update_completion_status()
 
         elif event == "rejected":
             # Purchase request was rejected - update status and restore planning request status
