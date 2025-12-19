@@ -785,11 +785,12 @@ class DailyEfficiencyReportView(APIView):
     Returns a daily efficiency report showing tasks each user worked on during the selected date.
     For each task, displays:
     - Duration worked on the selected date
-    - Total hours spent across all dates
+    - Total hours spent up to and including the selected date
     - Estimated hours
     - Efficiency (estimated_hours / total_hours_spent)
 
-    Only shows tasks that were worked on during the selected date, but uses all-time totals for efficiency calculation.
+    Only shows tasks that were worked on during the selected date.
+    Total hours spent and efficiency are calculated based on timers up to and including the selected date.
     Only includes users with team='machining'.
 
     Response shape:
@@ -902,13 +903,14 @@ class DailyEfficiencyReportView(APIView):
                 "machine_name": timer.machine_fk.name if timer.machine_fk else None,
             })
 
-        # Pre-calculate total_hours_spent for all tasks (bulk query for performance)
+        # Pre-calculate total_hours_spent for all tasks up to and including the chosen date (bulk query for performance)
         task_totals = {}
         if task_keys_set:
             tasks_with_timers = Task.objects.filter(key__in=task_keys_set).prefetch_related('issue_key')
             for task in tasks_with_timers:
-                # Calculate total hours spent across all timers for this task
-                task_timers = task.issue_key.exclude(finish_time__isnull=True)
+                # Calculate total hours spent across all timers for this task up to and including the chosen date
+                # Filter timers that finished on or before the end of the chosen date
+                task_timers = task.issue_key.exclude(finish_time__isnull=True).filter(finish_time__lte=day_end_ms)
                 total_ms = sum(
                     (t.finish_time - t.start_time)
                     for t in task_timers
