@@ -94,7 +94,7 @@ class TaskViewSet(TaskFileMixin, ModelViewSet):
     def get_queryset(self):
         # 'issue_key' is the GenericRelation from tasks.Timer back to this Task
         # prefetch_related works seamlessly with it for great performance.
-        return Task.objects.filter(is_hold_task=False).select_related('machine_fk').prefetch_related('issue_key').annotate(
+        return Task.objects.filter(is_hold_task=False).select_related('machine_fk', 'created_by', 'completed_by').prefetch_related('issue_key').annotate(
             total_hours_spent=Coalesce(
                 ExpressionWrapper(
                     Sum('issue_key__finish_time', filter=Q(issue_key__finish_time__isnull=False)) -
@@ -109,6 +109,7 @@ class TaskBulkCreateView(APIView):
     permission_classes = [IsAdmin]
 
     def post(self, request):
+        import time
         tasks_data = request.data
         if not isinstance(tasks_data, list):
             return Response({'error': 'Expected a list of tasks'}, status=400)
@@ -123,12 +124,16 @@ class TaskBulkCreateView(APIView):
             counter.save()
 
             i = 0
+            current_timestamp = int(time.time() * 1000)
             for task in tasks_data:
                 if not task.get('key'):
                     task['key'] = f"TI-{start + i:03d}"
                     i += 1
+                # Set created_at for bulk creation
+                if 'created_at' not in task:
+                    task['created_at'] = current_timestamp
 
-        serializer = TaskSerializer(data=tasks_data, many=True)
+        serializer = TaskSerializer(data=tasks_data, many=True, context={'request': request})
         serializer.is_valid(raise_exception=True)
         serializer.save()
 

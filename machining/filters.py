@@ -8,7 +8,9 @@ class TaskFilter(django_filters.FilterSet):
     job_no = django_filters.CharFilter(lookup_expr='icontains')
     position_no = django_filters.CharFilter(lookup_expr='icontains')
     image_no = django_filters.CharFilter(lookup_expr='icontains')
+    created_by_username = django_filters.CharFilter(field_name='created_by__username', lookup_expr='icontains')
 
+    machine_fk__isnull = django_filters.BooleanFilter(field_name='machine_fk', lookup_expr='isnull')
     completion_date__isnull = django_filters.BooleanFilter(field_name='completion_date', lookup_expr='isnull')
 
     completion_date = django_filters.DateFilter(field_name='completion_date')
@@ -42,6 +44,8 @@ class TaskFilter(django_filters.FilterSet):
             'job_no',
             'position_no',
             'image_no',
+            'created_by',
+            'created_by_username',
             'completed_by',
             'completion_date',
             'completion_date__gte',
@@ -50,6 +54,7 @@ class TaskFilter(django_filters.FilterSet):
             'finish_time__gte',
             'finish_time__lte',
             'machine_fk',
+            'machine_fk__isnull',
             'has_timer',
             'in_plan',
             'exceeded_estimated_hours',

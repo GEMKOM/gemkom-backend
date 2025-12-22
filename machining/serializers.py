@@ -24,19 +24,21 @@ class TimerSerializer(BaseTimerSerializer):
 
 class TaskSerializer(serializers.ModelSerializer):
     key = serializers.CharField(required=False)
-    completed_by_username = serializers.CharField(source='completed_by.username', read_only=True)
+    created_by_username = serializers.CharField(source='created_by.username', read_only=True, allow_null=True)
+    completed_by_username = serializers.CharField(source='completed_by.username', read_only=True, allow_null=True)
     total_hours_spent = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True, coerce_to_string=False)
-    machine_name = serializers.CharField(source='machine_fk.name', read_only=True)  # ✅ add this line
-    
+    machine_name = serializers.CharField(source='machine_fk.name', read_only=True, allow_null=True)
+
 
     class Meta:
         model = Task
         fields = [
             'key', 'name', 'description', 'job_no', 'image_no', 'position_no', 'quantity',
+            'created_by', 'created_by_username', 'created_at',
             'completion_date', 'completed_by', 'completed_by_username', 'estimated_hours', 'total_hours_spent', 'machine_fk', 'finish_time', 'machine_name',
             'in_plan', 'planned_start_ms', 'planned_end_ms', 'plan_order'
         ]
-        read_only_fields = ['completed_by', 'completion_date']
+        read_only_fields = ['created_by', 'created_at', 'completed_by', 'completion_date']
         validators = []
 
 
@@ -79,6 +81,15 @@ class TaskSerializer(serializers.ModelSerializer):
                 counter.current = next_key_number
                 counter.save()
                 validated_data['key'] = f"TI-{next_key_number:03d}"
+
+        # Automatically set created_by and created_at
+        request = self.context.get('request')
+        if request and hasattr(request, 'user'):
+            validated_data['created_by'] = request.user
+
+        # Set created_at to current timestamp in milliseconds
+        import time
+        validated_data['created_at'] = int(time.time() * 1000)
 
         return super().create(validated_data)
 
