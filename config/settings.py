@@ -83,6 +83,7 @@ INSTALLED_APPS = [
     'tasks',
     'cnc_cutting',
     'planning',
+    'welding',
 ]
 
 MIDDLEWARE = [
