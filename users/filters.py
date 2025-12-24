@@ -20,9 +20,11 @@ class UserFilter(filters.FilterSet):
         field_name='profile__reset_password_request'  # or 'reset_password_request' if on User
     )
 
+    is_active = filters.BooleanFilter(field_name='is_active')
+
     class Meta:
         model = User
-        fields = ['username', 'team', 'work_location', 'occupation', 'reset_password_request']
+        fields = ['username', 'team', 'work_location', 'occupation', 'reset_password_request', 'is_active']
 
 
 class WageOrderingFilter(OrderingFilter):

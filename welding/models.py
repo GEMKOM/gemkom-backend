@@ -92,3 +92,84 @@ class WeldingTimeEntry(models.Model):
             'holiday': 2.0,
         }
         return multipliers.get(self.overtime_type, 1.0)
+
+
+class WeldingJobCostAgg(models.Model):
+    """
+    Pre-calculated job cost aggregations for welding.
+    One row per job_no with hours and costs breakdown by overtime type.
+    Updated via background job when WeldingTimeEntry changes.
+    """
+    job_no = models.CharField(max_length=100, primary_key=True, db_index=True)
+    currency = models.CharField(max_length=3, default="EUR")
+
+    # Hours by overtime type
+    hours_regular = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    hours_after_hours = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    hours_holiday = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+
+    # Costs by overtime type
+    cost_regular = models.DecimalField(max_digits=16, decimal_places=2, default=0)
+    cost_after_hours = models.DecimalField(max_digits=16, decimal_places=2, default=0)
+    cost_holiday = models.DecimalField(max_digits=16, decimal_places=2, default=0)
+
+    total_cost = models.DecimalField(max_digits=16, decimal_places=2, default=0)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'welding_job_cost_agg'
+        verbose_name = 'Welding Job Cost Aggregate'
+        verbose_name_plural = 'Welding Job Cost Aggregates'
+
+    def __str__(self):
+        return f"{self.job_no} - {self.total_cost} {self.currency}"
+
+
+class WeldingJobCostAggUser(models.Model):
+    """
+    Pre-calculated per-user job cost aggregations for welding.
+    One row per (job_no, user) with hours and costs breakdown by overtime type.
+    Updated via background job when WeldingTimeEntry changes.
+    """
+    job_no = models.CharField(max_length=100, db_index=True)
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    currency = models.CharField(max_length=3, default="EUR")
+
+    # Hours by overtime type
+    hours_regular = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    hours_after_hours = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    hours_holiday = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+
+    # Costs by overtime type
+    cost_regular = models.DecimalField(max_digits=16, decimal_places=2, default=0)
+    cost_after_hours = models.DecimalField(max_digits=16, decimal_places=2, default=0)
+    cost_holiday = models.DecimalField(max_digits=16, decimal_places=2, default=0)
+
+    total_cost = models.DecimalField(max_digits=16, decimal_places=2, default=0)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'welding_job_cost_agg_user'
+        unique_together = ('job_no', 'user')
+        verbose_name = 'Welding Job Cost Aggregate (User)'
+        verbose_name_plural = 'Welding Job Cost Aggregates (User)'
+
+    def __str__(self):
+        return f"{self.job_no} - {self.user.username} - {self.total_cost} {self.currency}"
+
+
+class WeldingJobCostRecalcQueue(models.Model):
+    """
+    Queue for welding jobs that need cost recalculation.
+    Entries are processed by a background job and then deleted.
+    """
+    job_no = models.CharField(max_length=100, primary_key=True)
+    enqueued_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'welding_job_cost_recalc_queue'
+        verbose_name = 'Welding Job Cost Recalc Queue'
+        verbose_name_plural = 'Welding Job Cost Recalc Queue'
+
+    def __str__(self):
+        return f"Recalc queue: {self.job_no}"

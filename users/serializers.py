@@ -46,7 +46,8 @@ class UserListSerializer(serializers.ModelSerializer):
         model = User
         fields = [
             'id', 'username', 'first_name', 'last_name', 'email', 'is_superuser',
-            'team', 'team_label', 'occupation', 'occupation_label', 'work_location', 'work_location_label', 'must_reset_password'
+            'team', 'team_label', 'occupation', 'occupation_label', 'work_location', 'work_location_label', 'must_reset_password',
+            'is_active'
         ]
 
     def get_work_location_label(self, obj):

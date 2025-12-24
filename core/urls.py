@@ -1,5 +1,5 @@
 from django.urls import path
-from .views import CustomTokenObtainPairView, DBTestView, JiraIssueCreatedWebhook, JiraProxyView, LatestCurrencyRatesView, TimerNowView
+from .views import CustomTokenObtainPairView, DBTestView, JiraIssueCreatedWebhook, JiraProxyView, LatestCurrencyRatesView, TimerNowView, CombinedJobCostListView
 from rest_framework_simplejwt.views import TokenRefreshView
 
 urlpatterns = [
@@ -10,4 +10,5 @@ urlpatterns = [
     path("jira/proxy/", JiraProxyView.as_view(), name="jira-proxy"),
     path('jira/issue-created/', JiraIssueCreatedWebhook.as_view(), name='jira-issue-created'),
     path('currency-rates/', LatestCurrencyRatesView.as_view(), name="currency-rates"),
+    path('reports/combined-job-costs/', CombinedJobCostListView.as_view(), name="combined-job-costs"),
 ]
