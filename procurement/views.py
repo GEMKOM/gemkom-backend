@@ -421,6 +421,108 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
         except Exception as e:
             return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
         return Response({"detail": "Purchase request cancelled."}, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["POST"], permission_classes=[IsFinanceAuthorized])
+    def attach_planning_items(self, request, pk=None):
+        """
+        Attach planning request items to an existing purchase request.
+        Expected payload: {"planning_request_item_ids": [1, 2, 3, ...]}
+        """
+        from planning.models import PlanningRequestItem
+
+        pr = self.get_object()
+
+        # Only allow attaching to non-cancelled purchase requests
+        if pr.status == 'cancelled':
+            return Response(
+                {"detail": "Cannot attach items to a cancelled purchase request."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        planning_request_item_ids = request.data.get("planning_request_item_ids", [])
+
+        if not planning_request_item_ids:
+            return Response(
+                {"detail": "planning_request_item_ids is required and cannot be empty."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Validate that planning request items are available (not already in active purchase requests)
+        # Reuse the same validation logic from PurchaseRequestCreateSerializer
+        items = PlanningRequestItem.objects.filter(id__in=planning_request_item_ids).select_related(
+            'item', 'planning_request'
+        )
+
+        # Check each item for existing active purchase requests
+        unavailable_items = []
+        for item in items:
+            # Check if item is already in any active purchase request (not rejected or cancelled)
+            # Exclude the current PR since we're adding to it
+            active_prs = item.purchase_requests.exclude(
+                Q(status='rejected') | Q(status='cancelled') | Q(id=pr.id)
+            )
+
+            if active_prs.exists():
+                pr_numbers = ', '.join([pr_item.request_number for pr_item in active_prs[:3]])
+                unavailable_items.append({
+                    'item_id': item.id,
+                    'item_code': item.item.code,
+                    'item_name': item.item.name,
+                    'job_no': item.job_no,
+                    'planning_request': item.planning_request.request_number,
+                    'existing_purchase_requests': pr_numbers
+                })
+
+        if unavailable_items:
+            error_details = []
+            for item in unavailable_items:
+                error_details.append(
+                    f"Item '{item['item_code']} - {item['item_name']}' (Job: {item['job_no']}) from {item['planning_request']} "
+                    f"is already in purchase request(s): {item['existing_purchase_requests']}"
+                )
+
+            error_message = {
+                "detail": "Some planning request items are already in active purchase requests.",
+                "errors": error_details,
+                "note": "Items can only be reused if their purchase request is rejected or cancelled."
+            }
+            return Response(error_message, status=status.HTTP_400_BAD_REQUEST)
+
+        # Get planning request items that are ready or already converted
+        planning_request_items = PlanningRequestItem.objects.filter(
+            Q(planning_request__status='ready') | Q(planning_request__status='converted'),
+            id__in=planning_request_item_ids
+        ).select_related('planning_request')
+
+        if not planning_request_items.exists():
+            return Response(
+                {"detail": "No valid planning request items found. Items must be from planning requests with 'ready' or 'converted' status."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Attach items to purchase request (adds to existing items, doesn't replace)
+        pr.planning_request_items.add(*planning_request_items)
+
+        # Get unique planning requests and mark them as 'converted'
+        # Note: They will only be marked as 'completed' when the purchase request is approved
+        planning_requests = set(item.planning_request for item in planning_request_items)
+        for planning_request in planning_requests:
+            # Check completion stats
+            stats = planning_request.get_completion_stats()
+
+            # Mark as 'converted' if any items are now in at least one purchase request
+            # Do NOT mark as 'completed' here - that happens when PR is approved
+            if stats['converted_items'] > 0 and planning_request.status == 'ready':
+                planning_request.status = 'converted'
+                planning_request.converted_at = timezone.now()
+                planning_request.save(update_fields=['status', 'converted_at'])
+
+        # Return success response with updated PR data
+        serializer = PurchaseRequestSerializer(pr, context={'request': request})
+        return Response({
+            "detail": f"Successfully attached {len(planning_request_items)} planning request item(s).",
+            "purchase_request": serializer.data
+        }, status=status.HTTP_200_OK)
     
 class PurchaseRequestDraftViewSet(viewsets.ModelViewSet):
     queryset = PurchaseRequestDraft.objects.all()
