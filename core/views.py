@@ -234,14 +234,19 @@ class LatestCurrencyRatesView(APIView):
 
 class CombinedJobCostListView(APIView):
     """
-    GET /reports/combined-job-costs/?job_no=283
+    GET /reports/combined-job-costs/?job_no=283&ordering=-combined_total_cost
 
-    Returns combined job costs from both machining (timers) and welding (time entries).
-    Aggregates by job_no showing hours from both departments.
+    Returns combined job costs from both machining and welding departments.
+    Aggregates hours and costs per job_no from pre-calculated tables.
+
+    Query Parameters:
+    - job_no: Filter by job number (partial match)
+    - ordering: Sort by job_no, -job_no, combined_total_cost, -combined_total_cost,
+                combined_total_hours, -combined_total_hours (default: -combined_total_cost)
 
     Response:
     {
-      "count": 2,
+      "count": 1,
       "results": [
         {
           "job_no": "001-23",
@@ -251,7 +256,12 @@ class CombinedJobCostListView(APIView):
               "after_hours": 20.0,
               "sunday": 5.0
             },
-            "total_hours": 125.0
+            "costs": {
+              "weekday_work": 4500.0,
+              "after_hours": 900.0,
+              "sunday": 450.0
+            },
+            "total_cost": 5850.0
           },
           "welding": {
             "hours": {
@@ -259,9 +269,16 @@ class CombinedJobCostListView(APIView):
               "after_hours": 15.0,
               "holiday": 3.0
             },
-            "total_hours": 98.0
+            "costs": {
+              "regular": 3600.0,
+              "after_hours": 1350.0,
+              "holiday": 600.0
+            },
+            "total_cost": 5550.0
           },
+          "combined_total_cost": 11400.0,
           "combined_total_hours": 223.0,
+          "currency": "EUR",
           "updated_at": "2024-01-15T12:00:00Z"
         }
       ]
