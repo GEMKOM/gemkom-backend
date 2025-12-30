@@ -6,6 +6,7 @@ from machines.models import Machine
 
 class RemnantPlate(models.Model):
     thickness_mm = models.DecimalField(max_digits=7, decimal_places=2, null=True, blank=True)
+    thickness_mm_2 = models.DecimalField(max_digits=7, decimal_places=2, null=True, blank=True)
     dimensions = models.CharField(max_length=100, null=True, blank=True)
     quantity = models.IntegerField(null=True, blank=True)
     material = models.CharField(max_length=100, null=True, blank=True)

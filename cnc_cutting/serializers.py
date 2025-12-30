@@ -180,7 +180,7 @@ class RemnantPlateSerializer(serializers.ModelSerializer):
     """
     class Meta:
         model = RemnantPlate
-        fields = ['id', 'thickness_mm', 'dimensions', 'quantity', 'material']
+        fields = ['id', 'thickness_mm', 'thickness_mm_2', 'dimensions', 'quantity', 'material']
 
 
 # --- Planning Serializers ---
