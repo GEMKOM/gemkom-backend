@@ -28,4 +28,5 @@ urlpatterns = [
     path('cnc_cutting/', include('cnc_cutting.urls')),
     path('planning/', include('planning.urls')),
     path('welding/', include('welding.urls')),
+    path('tasks/', include('tasks.urls')),
 ]

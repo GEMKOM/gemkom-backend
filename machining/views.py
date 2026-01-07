@@ -32,13 +32,13 @@ from collections import defaultdict
 
 class TimerStartView(GenericTimerStartView):
     """
-    Starts a timer for a 'machining' task.
+    Starts a timer for an 'operation' (migrated from machining tasks).
     Inherits all logic from the generic view and passes the task_type.
     """
     permission_classes = [IsMachiningUserOrAdmin]
 
     def post(self, request, *args, **kwargs):
-        return super().post(request, task_type='machining')
+        return super().post(request, task_type='operation')
 
 # API View for maintenance to be able to stop maintenance timers.
 class TimerStopView(GenericTimerStopView):
@@ -49,21 +49,21 @@ class TimerStopView(GenericTimerStopView):
 
 class TimerManualEntryView(GenericTimerManualEntryView):
     """
-    Creates a manual timer for a 'machining' task.
+    Creates a manual timer for an 'operation' (migrated from machining tasks).
     """
     permission_classes = [IsMachiningUserOrAdmin]
 
     def post(self, request, *args, **kwargs):
-        return super().post(request, task_type='machining')
+        return super().post(request, task_type='operation')
 
 class TimerListView(GenericTimerListView):
     """
-    Lists timers for 'machining' tasks.
+    Lists timers for 'operation' (migrated from machining tasks).
     """
     permission_classes = [IsMachiningUserOrAdmin]
 
     def get(self, request, *args, **kwargs):
-        return super().get(request, task_type='machining')
+        return super().get(request, task_type='operation')
 
 class TimerDetailView(GenericTimerDetailView):
     """
@@ -73,12 +73,12 @@ class TimerDetailView(GenericTimerDetailView):
 
 class TimerReportView(GenericTimerReportView):
     """
-    Generates aggregate reports for 'machining' timers.
+    Generates aggregate reports for 'operation' timers (migrated from machining tasks).
     """
     permission_classes = [IsAdmin]
 
     def get(self, request, *args, **kwargs):
-        return super().get(request, task_type='machining')
+        return super().get(request, task_type='operation')
 
 
 class TaskViewSet(TaskFileMixin, ModelViewSet):
@@ -155,13 +155,13 @@ class MarkTaskCompletedView(GenericMarkTaskCompletedView):
     permission_classes = [IsMachiningUserOrAdmin]
 
     def post(self, request):
-        return super().post(request, task_type='machining')
+        return super().post(request, task_type='operation')
 
 class UnmarkTaskCompletedView(GenericUnmarkTaskCompletedView):
     permission_classes = [IsAdmin]
 
     def post(self, request):
-        return super().post(request, task_type='machining')
+        return super().post(request, task_type='operation')
         
 class InitTaskKeyCounterView(APIView):
     permission_classes = [IsAdmin]  # 🔒 restrict who can call this

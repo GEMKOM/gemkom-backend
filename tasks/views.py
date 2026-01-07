@@ -3,15 +3,25 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated, IsAdminUser
 from rest_framework.generics import RetrieveUpdateDestroyAPIView
-from django.db.models import Q, F, ExpressionWrapper, FloatField, Sum, Avg, Count, OuterRef, Subquery
+from rest_framework.viewsets import ModelViewSet
+from rest_framework.decorators import action
+from rest_framework.filters import OrderingFilter
+from django_filters.rest_framework import DjangoFilterBackend
+from django.db.models import Q, F, ExpressionWrapper, FloatField, Sum, Avg, Count, OuterRef, Subquery, Value
+from django.db.models.functions import Coalesce
 from django.contrib.contenttypes.models import ContentType
 from collections import defaultdict
 from django.db import transaction
 import time
 
 # Create your views here.
-from .models import Timer
-from .serializers import BaseTimerSerializer
+from .models import Timer, Part, Operation, Tool
+from .serializers import (
+    BaseTimerSerializer, PartSerializer, PartWithOperationsSerializer,
+    OperationSerializer, OperationDetailSerializer, OperationOperatorSerializer,
+    ToolSerializer, OperationPlanUpdateItemSerializer
+)
+from .filters import OperationFilter
 from config.pagination import CustomPageNumberPagination
 
 
@@ -19,10 +29,12 @@ def _get_task_model_from_type(task_type):
     if task_type == 'machining':
         from machining.models import Task
         return Task
-    # Add other task types here
     elif task_type == 'cnc_cutting':
         from cnc_cutting.models import CncTask
         return CncTask
+    elif task_type == 'operation':
+        from tasks.models import Operation
+        return Operation
     return None
 
 def _parse_ms(val):
@@ -56,6 +68,42 @@ class GenericTimerStartView(APIView):
 
         data['task_type'] = task_type  # Set from the URL parameter
         data['manual_entry'] = False
+
+        # If task_type is 'operation', validate tool availability and order
+        if task_type == 'operation':
+            operation_key = data.get('task_key')
+            if operation_key:
+                try:
+                    operation = Operation.objects.select_related('part').prefetch_related('operation_tools__tool').get(key=operation_key)
+
+                    # Validate operation order - non-interchangeable operations must wait for ALL previous operations
+                    if not operation.interchangeable:
+                        previous_incomplete = Operation.objects.filter(
+                            part=operation.part,
+                            order__lt=operation.order,
+                            completion_date__isnull=True
+                        )
+                        if previous_incomplete.exists():
+                            incomplete_orders = list(previous_incomplete.values_list('order', flat=True))
+                            return Response({
+                                'error': f"Cannot start timer on operation {operation.order}. All previous operations must be completed first.",
+                                'incomplete_operations': incomplete_orders
+                            }, status=400)
+
+                    # Validate tool availability
+                    for op_tool in operation.operation_tools.all():
+                        tool = op_tool.tool
+                        if not tool.is_available(op_tool.quantity):
+                            available = tool.get_available_quantity()
+                            return Response({
+                                'error': f"Tool {tool.code} ({tool.name}) not available",
+                                'tool_code': tool.code,
+                                'required': op_tool.quantity,
+                                'available': available
+                            }, status=400)
+
+                except Operation.DoesNotExist:
+                    return Response({'error': 'Operation not found'}, status=404)
 
         SerializerClass = get_timer_serializer_class(task_type)
         serializer = SerializerClass(data=data, context={'request': request})
@@ -158,8 +206,20 @@ class GenericTimerListView(APIView):
     def get(self, request, task_type):
         ordering = request.GET.get("ordering", "-finish_time")
 
+        # Map task_type to (app_label, model)
+        task_type_map = {
+            'machining': ('machining', 'task'),
+            'cnc_cutting': ('cnc_cutting', 'cnctask'),
+            'operation': ('tasks', 'operation'),
+        }
+
+        if task_type not in task_type_map:
+            return Response({"error": f"Invalid task_type '{task_type}'"}, status=status.HTTP_400_BAD_REQUEST)
+
+        app_label, model_name = task_type_map[task_type]
+
         try:
-            ct = ContentType.objects.get(app_label=task_type, model='task' if task_type == 'machining' else 'cnctask')
+            ct = ContentType.objects.get(app_label=app_label, model=model_name)
         except ContentType.DoesNotExist:
             return Response({"error": f"Invalid task_type '{task_type}'"}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -282,8 +342,20 @@ class GenericTimerReportView(APIView):
         if not group_field_name:
             return Response({'error': 'Invalid group_by value'}, status=status.HTTP_400_BAD_REQUEST)
 
+        # Map task_type to (app_label, model)
+        task_type_map = {
+            'machining': ('machining', 'task'),
+            'cnc_cutting': ('cnc_cutting', 'cnctask'),
+            'operation': ('tasks', 'operation'),
+        }
+
+        if task_type not in task_type_map:
+            return Response({"error": f"Invalid task_type '{task_type}'"}, status=status.HTTP_400_BAD_REQUEST)
+
+        app_label, model_name = task_type_map[task_type]
+
         try:
-            ct = ContentType.objects.get(app_label=task_type, model='task' if task_type == 'machining' else 'cnctask')
+            ct = ContentType.objects.get(app_label=app_label, model=model_name)
         except ContentType.DoesNotExist:
             return Response({"error": f"Invalid task_type '{task_type}'"}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -566,3 +638,457 @@ class GenericPlanningBulkSaveView(APIView):
         updated_objs = bulk_updater.update(instances_in_order, rows)
 
         return Response({"updated": self.response_serializer_class(updated_objs, many=True).data}, status=200)
+
+
+# ==================== Part-Operation System Views ====================
+
+
+class PartViewSet(ModelViewSet):
+    """ViewSet for Part model"""
+    queryset = Part.objects.all()
+    serializer_class = PartSerializer
+    permission_classes = [IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, OrderingFilter]
+    filterset_fields = ['job_no', 'completion_date']
+    ordering_fields = ['created_at', 'finish_time']
+    ordering = ['-created_at']
+
+    def get_queryset(self):
+        return Part.objects.select_related('created_by', 'completed_by').prefetch_related('operations')
+
+    def get_serializer_class(self):
+        if self.action == 'create':
+            return PartWithOperationsSerializer
+        return PartSerializer
+
+    @action(detail=True, methods=['post'])
+    def update_operations(self, request):
+        """
+        Bulk update operations for a part.
+
+        Expected payload:
+        {
+            "operations": [
+                {
+                    "key": "PT-001-OP-1",  // existing operation to update
+                    "name": "Updated name",
+                    "machine_fk": 5,
+                    "order": 1,
+                    "interchangeable": false,
+                    "estimated_hours": "2.50",
+                    "tools": [
+                        1,  // Simple format: just tool ID (quantity defaults to 1)
+                        2,
+                        {"tool": 3, "quantity": 2, "notes": "Need 2 clamps"}  // Full format with quantity
+                    ]
+                },
+                {
+                    // no key = new operation
+                    "name": "New operation",
+                    "machine_fk": 3,
+                    "order": 2,
+                    "interchangeable": false,
+                    "estimated_hours": "1.50",
+                    "tools": [
+                        {"tool": 4, "quantity": 3}  // Need 3 of tool #4
+                    ]
+                }
+            ],
+            "delete_operations": ["PT-001-OP-3"]  // keys of operations to delete
+        }
+        """
+        from .models import Operation, OperationTool
+        from .serializers import OperationCreateSerializer
+
+        part = self.get_object()
+        operations_data = request.data.get('operations', [])
+        delete_keys = request.data.get('delete_operations', [])
+
+        with transaction.atomic():
+            # 1. Delete operations
+            if delete_keys:
+                operations_to_delete = Operation.objects.filter(
+                    part=part,
+                    key__in=delete_keys
+                )
+
+                # Validate: don't delete operations with timers
+                for op in operations_to_delete:
+                    if op.timers.exists():
+                        return Response({
+                            'error': f'Cannot delete operation {op.key} - it has associated timers'
+                        }, status=400)
+
+                operations_to_delete.delete()
+
+            # 2. Update or create operations
+            for op_data in operations_data:
+                tools_data = op_data.pop('tools', [])
+                op_key = op_data.pop('key', None)
+
+                if op_key:
+                    # Update existing operation
+                    try:
+                        operation = Operation.objects.get(key=op_key, part=part)
+
+                        # Update fields
+                        for field, value in op_data.items():
+                            setattr(operation, field, value)
+                        operation.save()
+
+                        # Update tools
+                        OperationTool.objects.filter(operation=operation).delete()
+                        for idx, tool_data in enumerate(tools_data, start=1):
+                            # Support both formats: integer (tool ID) or dict (tool ID + quantity)
+                            if isinstance(tool_data, dict):
+                                tool_id = tool_data.get('tool') or tool_data.get('id')
+                                quantity = tool_data.get('quantity', 1)
+                                notes = tool_data.get('notes', '')
+                            else:
+                                tool_id = tool_data
+                                quantity = 1
+                                notes = ''
+
+                            OperationTool.objects.create(
+                                operation=operation,
+                                tool_id=tool_id,
+                                quantity=quantity,
+                                notes=notes,
+                                display_order=idx
+                            )
+                    except Operation.DoesNotExist:
+                        return Response({
+                            'error': f'Operation {op_key} not found'
+                        }, status=404)
+                else:
+                    # Create new operation
+                    serializer = OperationCreateSerializer(data=op_data)
+                    if not serializer.is_valid():
+                        return Response(serializer.errors, status=400)
+
+                    operation = Operation.objects.create(
+                        part=part,
+                        created_by=request.user,
+                        created_at=int(time.time() * 1000),
+                        **serializer.validated_data
+                    )
+
+                    # Attach tools
+                    for idx, tool_data in enumerate(tools_data, start=1):
+                        # Support both formats: integer (tool ID) or dict (tool ID + quantity)
+                        if isinstance(tool_data, dict):
+                            tool_id = tool_data.get('tool') or tool_data.get('id')
+                            quantity = tool_data.get('quantity', 1)
+                            notes = tool_data.get('notes', '')
+                        else:
+                            tool_id = tool_data
+                            quantity = 1
+                            notes = ''
+
+                        OperationTool.objects.create(
+                            operation=operation,
+                            tool_id=tool_id,
+                            quantity=quantity,
+                            notes=notes,
+                            display_order=idx
+                        )
+
+        # Return updated part with operations
+        part.refresh_from_db()
+        return Response(self.get_serializer(part).data)
+
+
+class OperationViewSet(ModelViewSet):
+    """
+    ViewSet for Operation model with role-based serializers.
+
+    Query parameter 'view' controls serializer:
+    - view=operator: Minimal data for operators (OperationOperatorSerializer)
+    - view=detail or default: Full data for engineers (OperationDetailSerializer)
+
+    Examples:
+    - GET /api/operations/?view=operator  (for operator page)
+    - GET /api/operations/?view=detail    (for engineer page)
+    - GET /api/operations/PT-001-OP-1/?view=operator
+    """
+    queryset = Operation.objects.all()
+    serializer_class = OperationDetailSerializer  # Default for engineers
+    permission_classes = [IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, OrderingFilter]
+    filterset_class = OperationFilter
+    ordering_fields = ['part', 'order', 'created_at', 'plan_order']
+    ordering = ['part', 'order']
+
+    def get_serializer_class(self):
+        """
+        Return different serializers based on 'view' query parameter.
+        """
+        view_type = self.request.query_params.get('view', 'detail')
+
+        if view_type == 'operator':
+            return OperationOperatorSerializer
+
+        # For planning bulk save, use the planning serializer
+        if self.action == 'bulk_save_planning':
+            return OperationPlanUpdateItemSerializer
+
+        # Default: detailed view for engineers
+        return OperationDetailSerializer
+
+    def get_queryset(self):
+        queryset = Operation.objects.select_related(
+            'part', 'machine_fk', 'created_by', 'completed_by'
+        ).prefetch_related(
+            'operation_tools__tool',
+            'timers'  # Prefetch timers for has_active_timer check
+        )
+
+        # Filter by part
+        part_key = self.request.query_params.get('part_key')
+        if part_key:
+            queryset = queryset.filter(part__key=part_key)
+
+        # Filter by machine
+        machine_id = self.request.query_params.get('machine_id')
+        if machine_id:
+            queryset = queryset.filter(machine_fk_id=machine_id)
+
+        # For operator view in list mode: exclude operations with active timers
+        view_type = self.request.query_params.get('view', 'detail')
+        if view_type == 'operator' and self.action == 'list':
+            # Exclude operations that have active timers (finish_time = NULL)
+            # Use Count to check if there are active timers
+            queryset = queryset.annotate(
+                active_timer_count=Count('timers', filter=Q(timers__finish_time__isnull=True))
+            ).filter(active_timer_count=0)
+
+        # Annotate hours spent
+        queryset = queryset.annotate(
+            total_hours_spent=Coalesce(
+                ExpressionWrapper(
+                    Sum('timers__finish_time', filter=Q(timers__finish_time__isnull=False)) -
+                    Sum('timers__start_time', filter=Q(timers__finish_time__isnull=False)),
+                    output_field=FloatField()
+                ) / 3600000.0,
+                Value(0.0)
+            )
+        )
+
+        return queryset
+
+    @action(detail=True, methods=['post'])
+    def mark_completed(self, request, pk=None):
+        """Mark operation as completed"""
+        operation = self.get_object()
+
+        if operation.completion_date:
+            return Response({'error': 'Already completed'}, status=400)
+
+        # Validate order - non-interchangeable operations must wait for ALL previous operations
+        if not operation.interchangeable:
+            previous_incomplete = Operation.objects.filter(
+                part=operation.part,
+                order__lt=operation.order,
+                completion_date__isnull=True
+            )
+            if previous_incomplete.exists():
+                incomplete_orders = list(previous_incomplete.values_list('order', flat=True))
+                return Response({
+                    'error': f'Cannot complete operation {operation.order}. All previous operations must be completed first.',
+                    'incomplete_operations': incomplete_orders
+                }, status=400)
+
+        import time
+        operation.completion_date = int(time.time() * 1000)
+        operation.completed_by = request.user
+        operation.save()
+
+        return Response(self.get_serializer(operation).data)
+
+    @action(detail=True, methods=['post'])
+    def unmark_completed(self, request, pk=None):
+        """Unmark operation completion (admin only)"""
+        if not request.user.is_staff:
+            return Response({'error': 'Admin only'}, status=403)
+
+        operation = self.get_object()
+        operation.completion_date = None
+        operation.completed_by = None
+        operation.save()
+
+        return Response(self.get_serializer(operation).data)
+
+    @action(detail=True, methods=['post'], url_path='start-timer')
+    def start_timer(self, request, pk=None):
+        """Start a timer on this operation"""
+        operation = self.get_object()
+
+        # Check if already completed
+        if operation.completion_date:
+            return Response({'error': 'Operation already completed'}, status=400)
+
+        # Check if there's already an active timer
+        active_timer = Timer.objects.filter(
+            content_type=ContentType.objects.get_for_model(Operation),
+            object_id=operation.key,
+            finish_time__isnull=True
+        ).first()
+
+        if active_timer:
+            return Response({'error': 'Timer already running on this operation'}, status=400)
+
+        # Validate operation order - non-interchangeable operations must wait
+        if not operation.interchangeable:
+            previous_incomplete = Operation.objects.filter(
+                part=operation.part,
+                order__lt=operation.order,
+                completion_date__isnull=True
+            )
+            if previous_incomplete.exists():
+                incomplete_orders = list(previous_incomplete.values_list('order', flat=True))
+                return Response({
+                    'error': f"Cannot start timer on operation {operation.order}. All previous operations must be completed first.",
+                    'incomplete_operations': incomplete_orders
+                }, status=400)
+
+        # Validate tool availability
+        for op_tool in operation.operation_tools.all():
+            tool = op_tool.tool
+            if not tool.is_available(op_tool.quantity):
+                available = tool.get_available_quantity()
+                return Response({
+                    'error': f"Tool {tool.code} ({tool.name}) not available",
+                    'tool_code': tool.code,
+                    'required': op_tool.quantity,
+                    'available': available
+                }, status=400)
+
+        # Create timer
+        timer = Timer.objects.create(
+            user=request.user,
+            start_time=int(time.time() * 1000),
+            content_type=ContentType.objects.get_for_model(Operation),
+            object_id=operation.key,
+            machine_fk=operation.machine_fk
+        )
+
+        return Response({'timer_id': timer.id}, status=201)
+
+    @action(detail=True, methods=['post'], url_path='stop-timer')
+    def stop_timer(self, request, pk=None):
+        """Stop the active timer on this operation"""
+        operation = self.get_object()
+
+        # Find active timer
+        active_timer = Timer.objects.filter(
+            content_type=ContentType.objects.get_for_model(Operation),
+            object_id=operation.key,
+            finish_time__isnull=True,
+            user=request.user
+        ).first()
+
+        if not active_timer:
+            return Response({'error': 'No active timer found for this operation'}, status=404)
+
+        # Stop timer
+        active_timer.finish_time = int(time.time() * 1000)
+        active_timer.stopped_by = request.user
+        active_timer.save()
+
+        return Response({'timer_id': active_timer.id}, status=200)
+
+    @action(detail=False, methods=['put'], url_path='planning/bulk-save')
+    def bulk_save_planning(self, request):
+        """
+        Bulk update operation planning.
+
+        Expected payload:
+        [
+            {
+                "key": "PT-001-OP-1",
+                "name": "Operation name (optional)",
+                "machine_fk": 1,
+                "planned_start_ms": 1704067200000,
+                "planned_end_ms": 1704153600000,
+                "plan_order": 1,
+                "plan_locked": false,
+                "in_plan": true
+            },
+            ...
+        ]
+
+        Returns: Updated operations
+        """
+        if not isinstance(request.data, list):
+            return Response(
+                {"error": "Expected a list of operations"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Extract keys and fetch instances
+        keys = [item.get('key') for item in request.data if item.get('key')]
+        if not keys:
+            return Response(
+                {"error": "No operation keys provided"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Fetch all operations by key
+        operations = list(Operation.objects.filter(key__in=keys))
+        found_keys = {op.key for op in operations}
+        missing_keys = set(keys) - found_keys
+
+        if missing_keys:
+            return Response(
+                {"error": f"Operations not found: {', '.join(missing_keys)}"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # Build existing machine map for validation
+        existing_machine_map = {op.key: op.machine_fk_id for op in operations}
+
+        # Use the bulk serializer
+        serializer = OperationPlanUpdateItemSerializer(
+            operations,
+            data=request.data,
+            many=True,
+            partial=True,
+            context={'existing_machine_map': existing_machine_map}
+        )
+
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_200_OK)
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class ToolViewSet(ModelViewSet):
+    """ViewSet for Tool model"""
+    queryset = Tool.objects.filter(is_active=True)
+    serializer_class = ToolSerializer
+    permission_classes = [IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, OrderingFilter]
+    filterset_fields = ['category', 'is_active']
+    ordering_fields = ['code', 'name', 'category']
+    ordering = ['code']
+
+    def get_permissions(self):
+        # Read-only for all authenticated, write for admins
+        if self.action in ['list', 'retrieve']:
+            return [IsAuthenticated()]
+        return [IsAdminUser()]
+
+    @action(detail=False, methods=['get'])
+    def available(self, request):
+        """Get only tools that have available quantity > 0"""
+        tools = self.filter_queryset(self.get_queryset())
+
+        # Filter for available tools
+        available_tools = []
+        for tool in tools:
+            if tool.get_available_quantity() > 0:
+                available_tools.append(tool)
+
+        serializer = self.get_serializer(available_tools, many=True)
+        return Response(serializer.data)

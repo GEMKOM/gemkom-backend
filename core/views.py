@@ -12,8 +12,6 @@ from rest_framework.decorators import permission_classes
 from rest_framework.permissions import IsAuthenticated
 import logging
 
-from core.permissions import IsJiraAutomation
-from machining.models import Task
 from django.contrib.auth.models import User
 
 from rest_framework_simplejwt.views import TokenObtainPairView
@@ -70,119 +68,6 @@ CORS_HEADERS = {
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization",
 }
-
-class JiraProxyView(APIView):
-
-    permission_classes = [IsAuthenticated]
-    def dispatch(self, request, *args, **kwargs):
-        # Allow preflight OPTIONS requests
-        if request.method == "OPTIONS":
-            return Response(status=204, headers=CORS_HEADERS)
-        return super().dispatch(request, *args, **kwargs)
-
-    def get(self, request):
-        return self.proxy(request)
-
-    def post(self, request):
-        return self.proxy(request)
-
-    def proxy(self, request):
-        proxy_url = request.query_params.get("url")
-        if not proxy_url:
-            return HttpResponse(
-                content='{"error": "Missing ?url="}',
-                status=400,
-                content_type="application/json",
-                headers=CORS_HEADERS
-            )
-
-        user = request.user
-        profile = getattr(user, 'profile', None)
-
-        jira_email = getattr(user, 'email', None)
-        jira_token = getattr(profile, 'jira_api_token', None)
-        
-        if (not jira_email or not jira_token) and not user.is_admin:
-            jira_email = settings.JIRA_EMAIL
-            jira_token = settings.JIRA_API_TOKEN
-
-        auth_str = f"{jira_email}:{jira_token}"
-        encoded_auth = base64.b64encode(auth_str.encode()).decode()
-
-        try:
-            body = request.body if request.method != "GET" else None
-            headers = {
-                "Authorization": f"Basic {encoded_auth}",
-                "Content-Type": "application/json"
-            }
-
-            response = requests.request(
-                method=request.method,
-                url=proxy_url,
-                headers=headers,
-                data=body
-            )
-
-            content_type = response.headers.get("content-type", "application/json")
-
-            # Prepare headers
-            response_headers = dict(CORS_HEADERS)
-            response_headers["Content-Type"] = content_type
-
-            # Handle 204 No Content explicitly
-            if response.status_code == 204:
-                return HttpResponse(
-                    status=204,
-                    headers=response_headers
-                )
-
-            return HttpResponse(
-                content=response.content,
-                status=response.status_code,
-                headers=response_headers
-            )
-
-        except Exception as e:
-            return HttpResponse(
-                content=f'{{"error": "{str(e)}"}}',
-                status=500,
-                content_type="application/json",
-                headers=CORS_HEADERS
-            )
-
-class JiraIssueCreatedWebhook(APIView):
-    authentication_classes = []
-    permission_classes = [IsJiraAutomation]
-
-    def post(self, request):
-        issue = request.data.get("issue", {})
-        fields = issue.get("fields", {})
-        key = issue.get("key")
-        summary = fields.get("summary", "")
-
-        # Optional: parse job_no, image_no, etc. from description or custom fields
-        description = fields.get("description", "")
-        job_no = fields.get("customfield_10117")  # Example custom field ID
-        image_no = fields.get("customfield_10184")
-        position_no = fields.get("customfield_10185")
-        quantity = fields.get("customfield_10187")
-
-        if not key:
-            return Response({"error": "Missing issue key"}, status=400)
-
-        Task.objects.update_or_create(
-            key=key,
-            defaults={
-                "name": summary,
-                "job_no": job_no,
-                "image_no": image_no,
-                "position_no": position_no,
-                "quantity": quantity,
-            }
-        )
-
-        return Response({"status": "Task created/updated"}, status=201)
-
 
 class LatestCurrencyRatesView(APIView):
     authentication_classes = []   # adjust if you need auth
@@ -288,14 +173,14 @@ class CombinedJobCostListView(APIView):
 
     def get(self, request):
         from django.db.models import Sum, Max
-        from machining.models import JobCostAgg
+        from tasks.models import PartCostAgg
         from welding.models import WeldingJobCostAgg
 
         job_no = (request.query_params.get("job_no") or "").strip()
         ordering = (request.query_params.get("ordering") or "-combined_total_cost").strip()
 
         # --- Get machining costs per job_no from pre-calculated aggregations ---
-        machining_qs = JobCostAgg.objects.all()
+        machining_qs = PartCostAgg.objects.all()
         if job_no:
             machining_qs = machining_qs.filter(job_no_cached__icontains=job_no)
 
