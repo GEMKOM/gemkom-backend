@@ -1,5 +1,68 @@
 import django_filters
-from .models import Operation
+from .models import Operation, Part
+
+
+class PartFilter(django_filters.FilterSet):
+    """
+    Filter for Part model.
+    Supports all the same filters as the old machining TaskFilter.
+    """
+    # Text search filters
+    key = django_filters.CharFilter(lookup_expr='exact')
+    task_key = django_filters.CharFilter(lookup_expr='exact')
+    name = django_filters.CharFilter(lookup_expr='icontains')
+    job_no = django_filters.CharFilter(lookup_expr='icontains')
+    position_no = django_filters.CharFilter(lookup_expr='icontains')
+    image_no = django_filters.CharFilter(lookup_expr='icontains')
+    created_by_username = django_filters.CharFilter(field_name='created_by__username', lookup_expr='icontains')
+
+    # Boolean filters
+    completion_date__isnull = django_filters.BooleanFilter(field_name='completion_date', lookup_expr='isnull')
+    has_operations = django_filters.BooleanFilter(method='filter_has_operations')
+
+    # Date filters
+    completion_date = django_filters.DateFilter(field_name='completion_date')
+    completion_date__gte = django_filters.NumberFilter(field_name='completion_date', lookup_expr='gte')
+    completion_date__lte = django_filters.NumberFilter(field_name='completion_date', lookup_expr='lte')
+
+    finish_time = django_filters.DateFilter(field_name='finish_time')
+    finish_time__gte = django_filters.DateFilter(field_name='finish_time', lookup_expr='gte')
+    finish_time__lte = django_filters.DateFilter(field_name='finish_time', lookup_expr='lte')
+
+    class Meta:
+        model = Part
+        fields = [
+            'key',
+            'task_key',
+            'name',
+            'job_no',
+            'position_no',
+            'image_no',
+            'created_by',
+            'created_by_username',
+            'completed_by',
+            'completion_date',
+            'completion_date__gte',
+            'completion_date__lte',
+            'completion_date__isnull',
+            'finish_time',
+            'finish_time__gte',
+            'finish_time__lte',
+            'has_operations',
+        ]
+
+    def filter_has_operations(self, queryset, name, value):
+        """
+        Filter parts based on whether they have operations.
+        - value=True: parts with at least one operation
+        - value=False: parts with no operations
+        """
+        if value:
+            # Has operations
+            return queryset.filter(operations__isnull=False).distinct()
+        else:
+            # No operations
+            return queryset.filter(operations__isnull=True)
 
 
 class OperationFilter(django_filters.FilterSet):

@@ -108,6 +108,29 @@ class BaseTimerSerializer(serializers.ModelSerializer):
         return ret
 
 
+class OperationTimerSerializer(BaseTimerSerializer):
+    """
+    Timer serializer for Operations (migrated from machining tasks).
+    Gets job info from operation.part instead of directly from the operation.
+    """
+    # For backward compatibility, include the same fields as machining TimerSerializer
+    issue_is_hold_task = serializers.SerializerMethodField()
+    job_no = serializers.CharField(source='issue_key.part.job_no', read_only=True)
+    image_no = serializers.CharField(source='issue_key.part.image_no', read_only=True)
+    position_no = serializers.CharField(source='issue_key.part.position_no', read_only=True)
+    quantity = serializers.IntegerField(source='issue_key.part.quantity', read_only=True)
+    estimated_hours = serializers.DecimalField(source='issue_key.estimated_hours', read_only=True, max_digits=10, decimal_places=2)
+
+    def get_issue_is_hold_task(self, obj):  # noqa: ARG002
+        # Operations don't have is_hold_task, always return False
+        return False
+
+    class Meta(BaseTimerSerializer.Meta):
+        fields = BaseTimerSerializer.Meta.fields + [
+            'issue_is_hold_task', 'job_no', 'image_no', 'position_no', 'quantity', 'estimated_hours'
+        ]
+
+
 # ==================== Part-Operation System Serializers ====================
 
 

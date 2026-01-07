@@ -21,7 +21,7 @@ from .serializers import (
     OperationSerializer, OperationDetailSerializer, OperationOperatorSerializer,
     ToolSerializer, OperationPlanUpdateItemSerializer
 )
-from .filters import OperationFilter
+from .filters import OperationFilter, PartFilter
 from config.pagination import CustomPageNumberPagination
 
 
@@ -51,6 +51,9 @@ def get_timer_serializer_class(task_type):
     elif task_type == 'cnc_cutting':
         from cnc_cutting.serializers import CncTimerSerializer
         return CncTimerSerializer
+    elif task_type == 'operation':
+        from tasks.serializers import OperationTimerSerializer
+        return OperationTimerSerializer
     return BaseTimerSerializer
 
 class GenericTimerStartView(APIView):
@@ -649,7 +652,7 @@ class PartViewSet(ModelViewSet):
     serializer_class = PartSerializer
     permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, OrderingFilter]
-    filterset_fields = ['job_no', 'completion_date']
+    filterset_class = PartFilter
     ordering_fields = ['created_at', 'finish_time']
     ordering = ['-created_at']
 
@@ -657,9 +660,99 @@ class PartViewSet(ModelViewSet):
         return Part.objects.select_related('created_by', 'completed_by').prefetch_related('operations')
 
     def get_serializer_class(self):
-        if self.action == 'create':
+        if self.action == 'create' or self.action == 'bulk_create':
             return PartWithOperationsSerializer
         return PartSerializer
+
+    @action(detail=False, methods=['post'], url_path='bulk-create')
+    def bulk_create(self, request):
+        """
+        Bulk create multiple parts with their operations.
+
+        Expected payload:
+        [
+            {
+                "task_key": "TI-001",  // optional, original task key
+                "name": "Part name",
+                "description": "Part description",
+                "job_no": "JOB-123",
+                "image_no": "IMG-001",
+                "position_no": "POS-001",
+                "quantity": 10,
+                "material": "Steel",
+                "dimensions": "100x50x20",
+                "weight_kg": "5.5",
+                "operations": [
+                    {
+                        "name": "Operation 1",
+                        "description": "Op description",
+                        "order": 1,
+                        "machine_fk": 1,
+                        "estimated_hours": "2.50",
+                        "interchangeable": false,
+                        "tools": [1, 2, {"tool": 3, "quantity": 2}]
+                    }
+                ]
+            },
+            // ... more parts
+        ]
+
+        Returns:
+        {
+            "created": 5,
+            "parts": [created part objects with operations]
+        }
+        """
+        if not isinstance(request.data, list):
+            return Response(
+                {"error": "Expected a list of parts"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        created_parts = []
+        errors = []
+
+        with transaction.atomic():
+            for idx, part_data in enumerate(request.data):
+                serializer = self.get_serializer(data=part_data, context={'request': request})
+                if serializer.is_valid():
+                    try:
+                        part = serializer.save()
+                        created_parts.append(part)
+                    except Exception as e:
+                        errors.append({
+                            "index": idx,
+                            "error": str(e),
+                            "data": part_data
+                        })
+                else:
+                    errors.append({
+                        "index": idx,
+                        "errors": serializer.errors,
+                        "data": part_data
+                    })
+
+            if errors:
+                # Rollback transaction if any errors
+                transaction.set_rollback(True)
+                return Response(
+                    {
+                        "error": "Bulk creation failed",
+                        "failures": errors
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+        # Serialize created parts for response
+        response_serializer = PartSerializer(created_parts, many=True)
+
+        return Response(
+            {
+                "created": len(created_parts),
+                "parts": response_serializer.data
+            },
+            status=status.HTTP_201_CREATED
+        )
 
     @action(detail=True, methods=['post'])
     def update_operations(self, request):
