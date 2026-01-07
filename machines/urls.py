@@ -3,11 +3,16 @@ from django.urls import path
 
 from machines.reports.machine_faults_report import MachineFaultsSummaryReportView
 from machines.reports.user_resolution_report import UserResolutionReportView
-from machines.views import MachineCalendarView, MachineDetailView, MachineFaultDetailView, MachineFaultListCreateView, MachineListCreateView, MachineTypeChoicesView, UsedInChoicesView
+from machines.views import (
+    MachineCalendarView, MachineDetailView, MachineDropdownView,
+    MachineFaultDetailView, MachineFaultListCreateView, MachineListCreateView,
+    MachineTypeChoicesView, UsedInChoicesView
+)
 
 
 urlpatterns = [
     path("", MachineListCreateView.as_view(), name="machine-list"),
+    path('dropdown/', MachineDropdownView.as_view(), name='machine-dropdown'),
     path('<int:pk>/', MachineDetailView.as_view(), name='machine-detail'),
     path('types/', MachineTypeChoicesView.as_view(), name='machine-types'),
     path('used_in/', UsedInChoicesView.as_view(), name='used-in-choices'),

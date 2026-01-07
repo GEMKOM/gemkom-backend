@@ -129,7 +129,33 @@ class UsedInChoicesView(APIView):
         return Response([
             {"value": k, "label": v} for k, v in Machine.USED_IN_CHOICES
         ])
-    
+
+
+class MachineDropdownView(APIView):
+    """
+    Ultra-lightweight endpoint for machine dropdowns.
+    Returns only id, name, and used_in for all active machines.
+    Optionally filter by used_in query parameter.
+
+    GET /machines/dropdown/
+    GET /machines/dropdown/?used_in=machining
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from machines.serializers import MachineDropdownSerializer
+
+        queryset = Machine.objects.filter(is_active=True).only('id', 'name', 'used_in').order_by('name')
+
+        # Optional filter by used_in
+        used_in = request.query_params.get('used_in')
+        if used_in:
+            queryset = queryset.filter(used_in=used_in)
+
+        serializer = MachineDropdownSerializer(queryset, many=True)
+        return Response(serializer.data)
+
+
 class MachineFaultListCreateView(generics.ListCreateAPIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = MachineFaultSerializer

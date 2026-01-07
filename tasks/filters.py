@@ -19,6 +19,8 @@ class PartFilter(django_filters.FilterSet):
     # Boolean filters
     completion_date__isnull = django_filters.BooleanFilter(field_name='completion_date', lookup_expr='isnull')
     has_operations = django_filters.BooleanFilter(method='filter_has_operations')
+    has_unassigned_operations = django_filters.BooleanFilter(method='filter_has_unassigned_operations')
+    has_unplanned_operations = django_filters.BooleanFilter(method='filter_has_unplanned_operations')
 
     # Date filters
     completion_date = django_filters.DateFilter(field_name='completion_date')
@@ -49,6 +51,8 @@ class PartFilter(django_filters.FilterSet):
             'finish_time__gte',
             'finish_time__lte',
             'has_operations',
+            'has_unassigned_operations',
+            'has_unplanned_operations',
         ]
 
     def filter_has_operations(self, queryset, name, value):
@@ -63,6 +67,51 @@ class PartFilter(django_filters.FilterSet):
         else:
             # No operations
             return queryset.filter(operations__isnull=True)
+
+    def filter_has_unassigned_operations(self, queryset, name, value):
+        """
+        Filter parts based on whether they have incomplete operations without a machine.
+        - value=True: parts with at least one incomplete operation missing machine assignment
+        - value=False: parts where all incomplete operations have machines assigned
+        """
+        from django.db.models import Q
+
+        if value:
+            # Has incomplete operations without machine
+            return queryset.filter(
+                Q(operations__completion_date__isnull=True) &
+                Q(operations__machine_fk__isnull=True)
+            ).distinct()
+        else:
+            # All incomplete operations have machines (or no incomplete operations)
+            # Exclude parts that have any incomplete operation without machine
+            parts_with_unassigned = queryset.filter(
+                Q(operations__completion_date__isnull=True) &
+                Q(operations__machine_fk__isnull=True)
+            ).values_list('key', flat=True)
+            return queryset.exclude(key__in=parts_with_unassigned)
+
+    def filter_has_unplanned_operations(self, queryset, name, value):
+        """
+        Filter parts based on whether they have incomplete operations not in plan.
+        - value=True: parts with at least one incomplete operation not in plan
+        - value=False: parts where all incomplete operations are in plan
+        """
+        from django.db.models import Q
+
+        if value:
+            # Has incomplete operations not in plan
+            return queryset.filter(
+                Q(operations__completion_date__isnull=True) &
+                (Q(operations__in_plan=False) | Q(operations__in_plan__isnull=True))
+            ).distinct()
+        else:
+            # All incomplete operations are in plan (or no incomplete operations)
+            parts_with_unplanned = queryset.filter(
+                Q(operations__completion_date__isnull=True) &
+                (Q(operations__in_plan=False) | Q(operations__in_plan__isnull=True))
+            ).values_list('key', flat=True)
+            return queryset.exclude(key__in=parts_with_unplanned)
 
 
 class OperationFilter(django_filters.FilterSet):

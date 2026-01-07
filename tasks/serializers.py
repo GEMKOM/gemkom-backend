@@ -349,8 +349,32 @@ class OperationCreateSerializer(serializers.Serializer):
         return operation
 
 
+class PartListSerializer(serializers.ModelSerializer):
+    """
+    Lightweight serializer for listing parts.
+    Only includes operation count instead of full operation details for performance.
+    """
+    created_by_username = serializers.CharField(source='created_by.username', read_only=True, allow_null=True)
+    completed_by_username = serializers.CharField(source='completed_by.username', read_only=True, allow_null=True)
+    operation_count = serializers.IntegerField(read_only=True)
+    incomplete_operation_count = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = Part
+        fields = [
+            'key', 'name', 'description',
+            'job_no', 'image_no', 'position_no',
+            'quantity', 'material', 'dimensions', 'weight_kg',
+            'finish_time',
+            'created_by', 'created_by_username', 'created_at',
+            'completed_by', 'completed_by_username', 'completion_date',
+            'operation_count', 'incomplete_operation_count'
+        ]
+        read_only_fields = ['key', 'created_by', 'created_at', 'completed_by', 'completion_date']
+
+
 class PartSerializer(serializers.ModelSerializer):
-    """Serializer for Part model"""
+    """Serializer for Part model with full operation details"""
     operations = OperationSerializer(many=True, read_only=True)
     created_by_username = serializers.CharField(source='created_by.username', read_only=True, allow_null=True)
     completed_by_username = serializers.CharField(source='completed_by.username', read_only=True, allow_null=True)

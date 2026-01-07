@@ -17,7 +17,7 @@ import time
 # Create your views here.
 from .models import Timer, Part, Operation, Tool
 from .serializers import (
-    BaseTimerSerializer, PartSerializer, PartWithOperationsSerializer,
+    BaseTimerSerializer, PartSerializer, PartListSerializer, PartWithOperationsSerializer,
     OperationSerializer, OperationDetailSerializer, OperationOperatorSerializer,
     ToolSerializer, OperationPlanUpdateItemSerializer
 )
@@ -657,11 +657,23 @@ class PartViewSet(ModelViewSet):
     ordering = ['-created_at']
 
     def get_queryset(self):
+        from django.db.models import Count, Q
+
+        # For list view, use lightweight query with counts
+        if self.action == 'list':
+            return Part.objects.select_related('created_by', 'completed_by').annotate(
+                operation_count=Count('operations'),
+                incomplete_operation_count=Count('operations', filter=Q(operations__completion_date__isnull=True))
+            )
+
+        # For detail/retrieve, load full operations
         return Part.objects.select_related('created_by', 'completed_by').prefetch_related('operations')
 
     def get_serializer_class(self):
         if self.action == 'create' or self.action == 'bulk_create':
             return PartWithOperationsSerializer
+        elif self.action == 'list':
+            return PartListSerializer
         return PartSerializer
 
     @action(detail=False, methods=['post'], url_path='bulk-create')
@@ -889,6 +901,69 @@ class PartViewSet(ModelViewSet):
         # Return updated part with operations
         part.refresh_from_db()
         return Response(self.get_serializer(part).data)
+
+
+class PartStatsView(APIView):
+    """
+    GET /tasks/parts/stats/
+
+    Returns aggregate statistics for incomplete parts and operations.
+    Only counts incomplete operations (completion_date is NULL) for actionable metrics.
+    Ultra-efficient single-query endpoint using database-level aggregations.
+
+    Response:
+    {
+        "parts_with_unassigned_operations": 15,      // Parts with incomplete ops missing machine
+        "parts_with_unplanned_operations": 42,        // Parts with incomplete ops not in plan
+        "parts_without_operations": 8,                // Parts with no operations at all
+        "incomplete_parts": 65,                       // Parts with at least one incomplete operation
+        "total_parts": 150,                           // All parts
+        "total_operations": 387,                      // All operations
+        "incomplete_operations": 123                  // Incomplete operations
+    }
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from django.db.models import Count, Q
+
+        # Base filter for incomplete operations
+        incomplete_op = Q(operations__completion_date__isnull=True)
+
+        # Single query with conditional aggregations
+        stats = Part.objects.aggregate(
+            # Parts that have at least one INCOMPLETE operation without a machine
+            parts_with_unassigned_operations=Count(
+                'key',
+                filter=incomplete_op & Q(operations__machine_fk__isnull=True),
+                distinct=True
+            ),
+            # Parts that have at least one INCOMPLETE operation not in plan
+            parts_with_unplanned_operations=Count(
+                'key',
+                filter=incomplete_op & (Q(operations__in_plan=False) | Q(operations__in_plan__isnull=True)),
+                distinct=True
+            ),
+            # Parts without any operations
+            parts_without_operations=Count(
+                'key',
+                filter=Q(operations__isnull=True)
+            ),
+            # Parts with at least one incomplete operation
+            incomplete_parts=Count(
+                'key',
+                filter=incomplete_op,
+                distinct=True
+            ),
+            # Total counts
+            total_parts=Count('key', distinct=True)
+        )
+
+        # Get operation counts (separate simple queries)
+        stats['total_operations'] = Operation.objects.count()
+        stats['incomplete_operations'] = Operation.objects.filter(completion_date__isnull=True).count()
+
+        return Response(stats)
 
 
 class OperationViewSet(ModelViewSet):

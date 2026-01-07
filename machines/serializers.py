@@ -13,6 +13,16 @@ class MachineSerializer(serializers.ModelSerializer):
         model = Machine
         fields = '__all__'  # Includes all fields, including JSON and label
 
+class MachineDropdownSerializer(serializers.ModelSerializer):
+    """
+    Ultra-lightweight serializer for dropdowns.
+    Only returns id, name, and used_in.
+    """
+    class Meta:
+        model = Machine
+        fields = ["id", "name", "used_in"]
+
+
 class MachineMinimalSerializer(serializers.ModelSerializer):
     assigned_users = SimpleUserSerializer(many=True, read_only=True)
     machine_type_label = serializers.SerializerMethodField()
