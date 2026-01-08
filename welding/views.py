@@ -352,120 +352,86 @@ class WeldingJobCostListView(APIView):
         return Response({"count": len(results), "results": results}, status=200)
 
 
-class WeldingJobCostDetailView(APIView):
+class WeldingJobEntriesReportView(APIView):
     """
-    GET /welding/reports/job-costs/<job_no>/
-    GET /welding/reports/job-costs/?job_no=283
+    GET /welding/reports/job-entries/?job_no=283
 
-    Returns per-user rows for a specific job with hours + cost breakdown by overtime_type.
+    Lightweight report endpoint for welding time entries for a specific job.
+    Returns all entries with minimal fields and summary totals.
+
+    Query params:
+    - job_no: Required. Exact job number match (not partial)
 
     Response:
     {
-      "count": 3,
-      "results": [
-        {
-          "user_id": 1,
-          "user": "john.doe",
-          "hours": {
-            "regular": 40.0,
-            "after_hours": 10.0,
-            "holiday": 0.0
-          },
-          "costs": {
-            "regular": 1800.0,
-            "after_hours": 675.0,
-            "holiday": 0.0
-          },
-          "total_cost": 2475.0,
-          "currency": "EUR",
-          "updated_at": "2024-01-15T12:00:00Z"
-        }
-      ]
+        "job_no": "283",
+        "summary": {
+            "total_hours": 45.5,
+            "total_entries": 12,
+            "breakdown_by_type": {
+                "regular": 32.0,
+                "after_hours": 10.5,
+                "holiday": 3.0
+            }
+        },
+        "entries": [
+            {
+                "id": 1,
+                "employee_id": 5,
+                "employee_username": "john.doe",
+                "employee_full_name": "John Doe",
+                "date": "2025-12-20",
+                "hours": 8.0,
+                "overtime_type": "regular"
+            },
+            ...
+        ]
     }
     """
     permission_classes = [IsAuthenticated]
 
-    def get(self, request, job_no: str | None = None):
-        from django.db.models import Sum, Max
-        from welding.models import WeldingJobCostAggUser
-        from welding.permissions import can_view_all_money, can_view_all_users_hours, can_view_header_totals_only
-
-        # ----- access control -----
-        if not can_view_all_users_hours(request.user):
-            return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
-
-        # Query params
-        job_like = (request.query_params.get("job_no") or "").strip()
-        ordering = (request.query_params.get("ordering") or "-total_cost").strip()
-
-        # Filters (exact job or partial)
-        if job_like:
-            filter_kwargs = {"job_no__icontains": job_like}
-        elif job_no:
-            filter_kwargs = {"job_no": job_no}
-        else:
-            return Response({"detail": "Provide job_no path param or ?job_no=..."}, status=400)
-
-        # Per-user aggregation
-        users_qs = (
-            WeldingJobCostAggUser.objects
-            .filter(**filter_kwargs)
-            .select_related("user")
-            .values("user_id", "user__username", "currency")
-            .annotate(
-                hours_regular=Sum("hours_regular"),
-                hours_after_hours=Sum("hours_after_hours"),
-                hours_holiday=Sum("hours_holiday"),
-                cost_regular=Sum("cost_regular"),
-                cost_after_hours=Sum("cost_after_hours"),
-                cost_holiday=Sum("cost_holiday"),
-                total_cost=Sum("total_cost"),
-                updated_at=Max("updated_at"),
+    def get(self, request):
+        job_no = request.query_params.get('job_no')
+        if not job_no:
+            return Response(
+                {'error': 'job_no query parameter is required'},
+                status=status.HTTP_400_BAD_REQUEST
             )
-        )
 
-        # Safe ordering options
-        allowed_ordering = {
-            "user": "user__username", "-user": "-user__username",
-            "total_cost": "total_cost", "-total_cost": "-total_cost",
-            "updated_at": "updated_at", "-updated_at": "-updated_at",
-        }
-        users_qs = users_qs.order_by(allowed_ordering.get(ordering, "-total_cost"))
+        # Exact match on job_no (not partial/icontains)
+        entries = WeldingTimeEntry.objects.filter(
+            job_no=job_no
+        ).select_related('employee').order_by('date', 'employee__username')
 
-        # ----- mask money by role -----
-        show_full = can_view_all_money(request.user)
-        show_hours_only = can_view_header_totals_only(request.user)
+        # Calculate summary totals
+        total_hours = 0
+        breakdown_by_type = defaultdict(float)
 
-        # Assemble payload
-        results = []
-        for u in users_qs:
-            item = {
-                "user_id": u["user_id"],
-                "user": u["user__username"],
-                "hours": {
-                    "regular": float(u["hours_regular"] or 0),
-                    "after_hours": float(u["hours_after_hours"] or 0),
-                    "holiday": float(u["hours_holiday"] or 0),
-                },
-                "updated_at": u["updated_at"],
-            }
+        # Format entries with minimal fields
+        formatted_entries = []
+        for entry in entries:
+            total_hours += float(entry.hours)
+            breakdown_by_type[entry.overtime_type] += float(entry.hours)
 
-            if show_full:
-                item["currency"] = u["currency"] or "EUR"
-                item["costs"] = {
-                    "regular": float(u["cost_regular"] or 0),
-                    "after_hours": float(u["cost_after_hours"] or 0),
-                    "holiday": float(u["cost_holiday"] or 0),
-                }
-                item["total_cost"] = float(u["total_cost"] or 0)
-            elif show_hours_only:
-                item["currency"] = None
-                item["costs"] = {"regular": None, "after_hours": None, "holiday": None}
-                item["total_cost"] = None
+            formatted_entries.append({
+                'id': entry.id,
+                'employee_id': entry.employee.id,
+                'employee_username': entry.employee.username,
+                'employee_full_name': f"{entry.employee.first_name} {entry.employee.last_name}".strip() or entry.employee.username,
+                'date': entry.date.isoformat(),
+                'hours': float(entry.hours),
+                'overtime_type': entry.overtime_type,
+            })
 
-            results.append(item)
-
-        return Response({"count": len(results), "results": results}, status=200)
+        return Response({
+            'job_no': job_no,
+            'summary': {
+                'total_hours': total_hours,
+                'total_entries': len(formatted_entries),
+                'breakdown_by_type': dict(breakdown_by_type)
+            },
+            'entries': formatted_entries
+        })
 
 
 class UserWorkHoursReportView(APIView):
