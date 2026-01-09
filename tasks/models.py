@@ -7,6 +7,45 @@ import os
 from machines.models import Machine
 from core.storages import PrivateMediaStorage
 
+
+class DowntimeReason(models.Model):
+    """
+    Predefined reasons for stopping productive work.
+    Used to track why operators stop timers and what non-productive time is spent on.
+    """
+    CATEGORY_CHOICES = [
+        ('break', 'Break/Lunch'),
+        ('downtime', 'Downtime/Waiting'),
+        ('complete', 'Work Complete'),
+    ]
+
+    code = models.CharField(max_length=50, unique=True, db_index=True)
+    name = models.CharField(max_length=100)
+    category = models.CharField(max_length=20, choices=CATEGORY_CHOICES)
+
+    # Whether this reason should start a new timer automatically
+    creates_timer = models.BooleanField(
+        default=True,
+        help_text="If True, selecting this reason automatically starts a new timer with this reason"
+    )
+
+    # Whether this reason requires a reference to a MachineFault
+    requires_fault_reference = models.BooleanField(default=False)
+
+    # Display order in UI
+    display_order = models.PositiveIntegerField(default=100)
+
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ['display_order', 'name']
+        indexes = [
+            models.Index(fields=['category', 'is_active']),
+        ]
+
+    def __str__(self):
+        return f"{self.name} ({self.get_category_display()})"
+
 def task_attachment_upload_path(instance, filename):
     """Generic upload path for any task attachment."""
     # file will be uploaded to MEDIA_ROOT/task_attachments/<app_label>/<task_key>/<filename>
@@ -71,6 +110,16 @@ class BaseTask(models.Model):
 
 
 class Timer(models.Model):
+    """
+    Tracks time spent on operations.
+    Can be productive work time or non-productive time (breaks, downtime, etc.)
+    """
+    TIMER_TYPE_CHOICES = [
+        ('productive', 'Productive Work'),
+        ('break', 'Break/Lunch'),
+        ('downtime', 'Downtime'),
+    ]
+
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='new_started_timers')
     stopped_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='new_stopped_timers')
     start_time = models.BigIntegerField()
@@ -83,6 +132,42 @@ class Timer(models.Model):
     content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE)
     object_id = models.CharField(max_length=255) # Use CharField to match Task's primary key
     issue_key = GenericForeignKey('content_type', 'object_id')
+
+    # New fields for downtime tracking
+    timer_type = models.CharField(
+        max_length=20,
+        choices=TIMER_TYPE_CHOICES,
+        default='productive',
+        db_index=True,
+        help_text="Type of time being tracked"
+    )
+
+    downtime_reason = models.ForeignKey(
+        DowntimeReason,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name='timers',
+        help_text="Reason for non-productive time"
+    )
+
+    # Optional reference to machine fault if downtime is fault-related
+    related_fault = models.ForeignKey(
+        'machines.MachineFault',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='downtime_timers',
+        help_text="Machine fault that caused this downtime"
+    )
+
+    @property
+    def can_be_stopped_by_user(self) -> bool:
+        """
+        Determines if user can manually stop this timer.
+        Fault-related timers can only be stopped when the fault is resolved.
+        """
+        return self.related_fault_id is None
 
     class Meta:
         ordering = ['-start_time']

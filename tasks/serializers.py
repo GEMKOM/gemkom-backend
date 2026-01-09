@@ -4,8 +4,21 @@ from django.db import transaction
 from django.db.models import Sum, Q, ExpressionWrapper, FloatField, Value
 from django.db.models.functions import Coalesce
 
-from .models import Timer, TaskFile, Part, Tool, Operation, OperationTool, TaskKeyCounter
-from machines.models import Machine
+from .models import Timer, TaskFile, Part, Tool, Operation, OperationTool, TaskKeyCounter, DowntimeReason
+from machines.models import Machine, MachineFault
+
+
+class DowntimeReasonSerializer(serializers.ModelSerializer):
+    """
+    Serializer for DowntimeReason model.
+    Used to display available reasons for stopping timers.
+    """
+    category_display = serializers.CharField(source='get_category_display', read_only=True)
+
+    class Meta:
+        model = DowntimeReason
+        fields = ['id', 'code', 'name', 'category', 'category_display', 'creates_timer', 'requires_fault_reference', 'display_order', 'is_active']
+        read_only_fields = ['id', 'code', 'category_display']
 
 
 class TaskFileSerializer(serializers.ModelSerializer):
@@ -31,6 +44,12 @@ class BaseTimerSerializer(serializers.ModelSerializer):
     duration = serializers.FloatField(read_only=True)
     task_total_hours = serializers.FloatField(read_only=True)
 
+    # New downtime tracking fields
+    downtime_reason_code = serializers.CharField(source='downtime_reason.code', read_only=True, allow_null=True)
+    downtime_reason_name = serializers.CharField(source='downtime_reason.name', read_only=True, allow_null=True)
+    related_fault_id = serializers.IntegerField(source='related_fault.id', read_only=True, allow_null=True)
+    can_be_stopped_by_user = serializers.BooleanField(read_only=True)
+
     # --- Fields for creating/updating a Timer with a Generic Foreign Key ---
     task_key = serializers.CharField(write_only=True, source='object_id')
     task_type = serializers.ChoiceField(write_only=True, choices=['machining', 'cnc_cutting', 'operation'])
@@ -42,6 +61,9 @@ class BaseTimerSerializer(serializers.ModelSerializer):
             'start_time', 'finish_time', 'comment', 'machine_fk', 'machine_name', 'issue_name',
             'manual_entry', 'stopped_by', 'stopped_by_first_name', 'stopped_by_last_name', 'duration',
             'task_total_hours',
+            # New fields
+            'timer_type', 'downtime_reason', 'downtime_reason_code', 'downtime_reason_name',
+            'related_fault', 'related_fault_id',
         ]
         read_only_fields = ['id', 'user', 'issue_key']
 

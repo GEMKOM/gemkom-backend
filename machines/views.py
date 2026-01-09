@@ -113,7 +113,7 @@ class MachineDetailView(APIView):
         machine = self.get_object(pk)
         machine.delete()
         return Response({"detail": "Machine deleted successfully."}, status=200)
-    
+
 class MachineTypeChoicesView(APIView):
     permission_classes = [IsAuthenticated, IsAdmin]  # Optional
 
@@ -136,9 +136,12 @@ class MachineDropdownView(APIView):
     Ultra-lightweight endpoint for machine dropdowns.
     Returns only id, name, and used_in for all active machines.
     Optionally filter by used_in query parameter.
+    Optionally include availability flags with include_availability=true.
 
     GET /machines/dropdown/
     GET /machines/dropdown/?used_in=machining
+    GET /machines/dropdown/?include_availability=true
+    GET /machines/dropdown/?used_in=machining&include_availability=true
     """
     permission_classes = [IsAuthenticated]
 
@@ -152,8 +155,39 @@ class MachineDropdownView(APIView):
         if used_in:
             queryset = queryset.filter(used_in=used_in)
 
-        serializer = MachineDropdownSerializer(queryset, many=True)
-        return Response(serializer.data)
+        # Check if availability flags are requested
+        include_availability = request.query_params.get('include_availability', '').lower() == 'true'
+
+        if include_availability:
+            # Build enriched response with availability flags
+            results = []
+            for machine in queryset:
+                # Check for active timers
+                has_active_timer = Timer.objects.filter(
+                    machine_fk=machine,
+                    finish_time__isnull=True
+                ).exists()
+
+                # Check for unresolved breaking faults
+                is_under_maintenance = MachineFault.objects.filter(
+                    machine=machine,
+                    resolved_at__isnull=True,
+                    is_breaking=True
+                ).exists()
+
+                results.append({
+                    'id': machine.id,
+                    'name': machine.name,
+                    'used_in': machine.used_in,
+                    'is_available': not (has_active_timer or is_under_maintenance),
+                    'has_active_timer': has_active_timer,
+                    'is_under_maintenance': is_under_maintenance
+                })
+            return Response(results)
+        else:
+            # Standard lightweight response
+            serializer = MachineDropdownSerializer(queryset, many=True)
+            return Response(serializer.data)
 
 
 class MachineFaultListCreateView(generics.ListCreateAPIView):
@@ -193,8 +227,91 @@ class MachineFaultListCreateView(generics.ListCreateAPIView):
         )
 
     def perform_create(self, serializer):
-        fault = serializer.save(reported_by=self.request.user)
+        now_ms = int(timezone.now().timestamp() * 1000)
+
+        # Set downtime start if this is a breaking fault
+        if serializer.validated_data.get('is_breaking'):
+            fault = serializer.save(
+                reported_by=self.request.user,
+                downtime_start_ms=now_ms
+            )
+        else:
+            fault = serializer.save(reported_by=self.request.user)
+
+        # Auto-create downtime timers if this is a breaking fault
+        if fault.is_breaking and fault.machine:
+            self._create_downtime_timers_for_fault(fault)
+
         self.send_telegram_notification(fault, self.request.user)
+
+    def _create_downtime_timers_for_fault(self, fault):
+        """
+        When a breaking fault is reported, automatically:
+        1. Stop all active productive timers on this machine
+        2. Start downtime timers linked to the fault
+        """
+        from tasks.models import Timer, DowntimeReason
+
+        now_ms = int(timezone.now().timestamp() * 1000)
+
+        # Get or create the "Machine Issue" downtime reason
+        machine_issue_reason, _ = DowntimeReason.objects.get_or_create(
+            code='MACHINE_FAULT',
+            defaults={
+                'name': 'Machine Issue',
+                'category': 'downtime',
+                'creates_timer': True,
+                'requires_fault_reference': True,
+                'display_order': 10
+            }
+        )
+
+        # Find all active productive timers on this machine
+        active_timers = Timer.objects.filter(
+            machine_fk=fault.machine,
+            finish_time__isnull=True,
+            timer_type='productive'
+        ).select_related('user', 'content_type')
+
+        for timer in active_timers:
+            # Stop the productive timer
+            timer.finish_time = now_ms
+            timer.stopped_by = self.request.user
+            timer.save(update_fields=['finish_time', 'stopped_by'])
+
+            # Start a downtime timer for the same operation/task
+            Timer.objects.create(
+                user=timer.user,
+                start_time=now_ms,
+                machine_fk=fault.machine,
+                content_type=timer.content_type,
+                object_id=timer.object_id,
+                timer_type='downtime',
+                downtime_reason=machine_issue_reason,
+                related_fault=fault,
+                comment=f'Auto-created due to machine fault: {fault.description[:100]}'
+            )
+
+    def _stop_downtime_timers_for_fault(self, fault, user):
+        """
+        When a fault is resolved, stop all downtime timers linked to this fault.
+        Operators can then manually start new productive timers when ready to resume work.
+        """
+        from tasks.models import Timer
+
+        now_ms = int(timezone.now().timestamp() * 1000)
+
+        # Find all active downtime timers related to this fault
+        downtime_timers = Timer.objects.filter(
+            related_fault=fault,
+            finish_time__isnull=True,
+            timer_type='downtime'
+        )
+
+        for timer in downtime_timers:
+            timer.finish_time = now_ms
+            timer.stopped_by = user
+            timer.save(update_fields=['finish_time', 'stopped_by'])
 
     # --- Notifications ---
     def send_telegram_notification(self, fault: MachineFault, user):
@@ -250,22 +367,25 @@ class MachineFaultDetailView(APIView):
             return Response(serializer.errors, status=400)
 
         if not fault.resolved_at:
-            updated_fault = serializer.save(
-                resolved_by=request.user,
-                resolved_at=timezone.now()
-            )
+            now_ms = int(timezone.now().timestamp() * 1000)
 
-            # Stop active timers if it's a breaking fault and a concrete machine exists
-            if updated_fault.is_breaking and updated_fault.machine:
-                active_timers = Timer.objects.filter(
-                    machine_fk=updated_fault.machine,
-                    finish_time__isnull=True
+            # Set downtime end if this is a breaking fault
+            if fault.is_breaking:
+                updated_fault = serializer.save(
+                    resolved_by=request.user,
+                    resolved_at=timezone.now(),
+                    downtime_end_ms=now_ms
                 )
-                now_ms = int(timezone.now().timestamp() * 1000)
-                for t in active_timers:
-                    t.finish_time = now_ms
-                    t.stopped_by = request.user
-                    t.save(update_fields=["finish_time", "stopped_by"])
+            else:
+                updated_fault = serializer.save(
+                    resolved_by=request.user,
+                    resolved_at=timezone.now()
+                )
+
+            # Stop downtime timers linked to this fault
+            if updated_fault.is_breaking and updated_fault.machine:
+                self._stop_downtime_timers_for_fault(updated_fault, request.user)
+
             self.send_resolution_notification(updated_fault, request.user)
         else:
             serializer.save()

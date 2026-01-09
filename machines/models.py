@@ -95,6 +95,11 @@ class MachineFault(models.Model):
 
     resolution_description = models.TextField(blank=True, default="")
 
+    # Machine downtime tracking (milliseconds)
+    # These are set when the fault is resolved to track total machine downtime
+    downtime_start_ms = models.BigIntegerField(null=True, blank=True, help_text="When machine became unavailable (ms)")
+    downtime_end_ms = models.BigIntegerField(null=True, blank=True, help_text="When machine became available again (ms)")
+
     class Meta:
         ordering = ['-reported_at']
         indexes = [
@@ -107,6 +112,13 @@ class MachineFault(models.Model):
     @property
     def is_resolved(self) -> bool:
         return bool(self.resolved_at)
+
+    @property
+    def downtime_hours(self) -> float:
+        """Calculate machine downtime in hours"""
+        if self.downtime_start_ms and self.downtime_end_ms:
+            return (self.downtime_end_ms - self.downtime_start_ms) / 3600000.0
+        return 0.0
 
     def clean(self):
         # Require at least *something* that identifies the asset when machine is empty

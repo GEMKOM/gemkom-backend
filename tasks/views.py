@@ -127,6 +127,13 @@ class GenericTimerStopView(APIView):
         timer_id = request.data.get("timer_id")
         try:
             timer = Timer.objects.select_related('user__profile').get(id=timer_id)
+
+            # Check if this is a fault-related timer that cannot be manually stopped
+            if not timer.can_be_stopped_by_user:
+                return Response({
+                    "detail": "Cannot manually stop fault-related timer. It will be stopped automatically when the fault is resolved."
+                }, status=status.HTTP_403_FORBIDDEN)
+
             request_user = request.user
             request_profile = request_user.profile
             timer_user = timer.user
@@ -1260,3 +1267,322 @@ class ToolViewSet(ModelViewSet):
 
         serializer = self.get_serializer(available_tools, many=True)
         return Response(serializer.data)
+
+
+# ==================== Downtime Tracking Views ====================
+
+
+class DowntimeReasonListView(APIView):
+    """
+    GET /tasks/downtime-reasons/
+
+    Returns list of all active downtime reasons for operators to select from when stopping timers.
+    Ordered by display_order for optimal UI presentation.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from .models import DowntimeReason
+        from .serializers import DowntimeReasonSerializer
+
+        reasons = DowntimeReason.objects.filter(is_active=True).order_by('display_order', 'name')
+        serializer = DowntimeReasonSerializer(reasons, many=True)
+        return Response(serializer.data)
+
+
+class LogReasonView(APIView):
+    """
+    POST /tasks/log-reason/
+
+    Unified endpoint for logging downtime/break reasons.
+    Handles both scenarios:
+    1. User has active timer and wants to stop it with a reason
+    2. User has no active timer but wants to log a reason (e.g., machine fault when not working)
+
+    Workflow:
+    - If current_timer_id provided and user can stop it: stop that timer
+    - MACHINE_FAULT: creates fault ticket, sends notification, creates fault-linked downtime timer (cannot be manually stopped)
+    - WORK_COMPLETE: marks operation as complete, does not create new timer
+    - If reason.creates_timer: start new timer (break/downtime) and return full timer object
+    - Fault-related timers (related_fault_id != None) cannot be manually stopped
+
+    Request body:
+    {
+        "current_timer_id": 123,           # Optional - timer to stop
+        "reason_id": 4,                    # Required - DowntimeReason ID
+        "comment": "Waiting for steel",    # Optional - description
+        "machine_id": 5,                   # Required for logging reason without timer
+        "operation_key": "PT-001-OP-1"     # Required for logging reason without timer
+    }
+
+    Response:
+    {
+        "stopped_timer_id": 123,           # ID of stopped timer (if applicable)
+        "new_timer_id": 124,               # ID of new timer (if created)
+        "timer": {...},                    # Full timer object (if created)
+        "fault_id": 45,                    # ID of created fault (if applicable)
+        "operation_completed": true,       # If operation marked complete
+        "message": "Timer stopped and downtime timer started"
+    }
+    """
+    permission_classes = [IsAuthenticated]
+
+    @transaction.atomic
+    def post(self, request):
+        from .models import DowntimeReason, Timer
+        from machines.models import Machine, MachineFault
+        from django.utils import timezone
+        from django.contrib.contenttypes.models import ContentType
+
+        # Parse request data
+        current_timer_id = request.data.get('current_timer_id')
+        reason_id = request.data.get('reason_id')
+        comment = request.data.get('comment', '').strip()
+        machine_id = request.data.get('machine_id')
+        operation_key = request.data.get('operation_key')
+
+        # Validate required fields
+        if not reason_id:
+            return Response({'error': 'reason_id is required'}, status=400)
+
+        # Get the reason
+        try:
+            reason = DowntimeReason.objects.get(id=reason_id, is_active=True)
+        except DowntimeReason.DoesNotExist:
+            return Response({'error': 'Invalid or inactive downtime reason'}, status=400)
+
+        now_ms = int(timezone.now().timestamp() * 1000)
+        response_data = {
+            'stopped_timer_id': None,
+            'new_timer_id': None,
+            'fault_id': None,
+            'message': ''
+        }
+
+        current_timer = None
+        machine = None
+        content_type = None
+        object_id = None
+
+        # Step 1: Handle stopping current timer if provided
+        if current_timer_id:
+            try:
+                current_timer = Timer.objects.select_related('machine_fk', 'user').get(id=current_timer_id)
+
+                # Check if user can stop this timer
+                if not current_timer.can_be_stopped_by_user:
+                    return Response({
+                        'error': 'Cannot manually stop fault-related timer. It will be stopped automatically when the fault is resolved.'
+                    }, status=403)
+
+                # Check permissions (same logic as GenericTimerStopView)
+                request_user = request.user
+                request_profile = request_user.profile
+                timer_user = current_timer.user
+                timer_profile = timer_user.profile
+                same_team = request_profile.team == timer_profile.team
+
+                allowed = False
+                if request_user.is_admin or timer_user == request_user:
+                    allowed = True
+                elif request_profile.work_location == "office" and (same_team or (timer_profile.team == "machining" and request_profile.team == "manufacturing")):
+                    allowed = True
+                elif getattr(request_profile, "is_lead", False) and same_team:
+                    allowed = True
+
+                if not allowed:
+                    return Response({'error': 'Permission denied to stop this timer'}, status=403)
+
+                # Stop the timer
+                current_timer.finish_time = now_ms
+                current_timer.stopped_by = request_user
+                if comment:
+                    current_timer.comment = comment
+                current_timer.save(update_fields=['finish_time', 'stopped_by', 'comment'])
+
+                response_data['stopped_timer_id'] = current_timer.id
+                machine = current_timer.machine_fk
+                content_type = current_timer.content_type
+                object_id = current_timer.object_id
+
+            except Timer.DoesNotExist:
+                return Response({'error': 'Timer not found'}, status=404)
+
+        # Step 2: If no current timer, validate machine and operation are provided
+        if not current_timer:
+            # Machine is always required for any timer operation
+            if not machine_id:
+                return Response({'error': 'machine_id is required when no current_timer_id is provided'}, status=400)
+            if not operation_key:
+                return Response({'error': 'operation_key is required when no current_timer_id is provided'}, status=400)
+
+            try:
+                machine = Machine.objects.get(id=machine_id)
+            except Machine.DoesNotExist:
+                return Response({'error': 'Machine not found'}, status=404)
+
+            # Get operation
+            try:
+                operation = Operation.objects.get(key=operation_key)
+                content_type = ContentType.objects.get_for_model(Operation)
+                object_id = operation.id
+            except Operation.DoesNotExist:
+                return Response({'error': 'Operation not found'}, status=404)
+
+        # If we don't have a machine at this point, something is wrong
+        if not machine:
+            return Response({'error': 'Machine is required for all timer operations'}, status=400)
+
+        # Step 3: Handle MACHINE_FAULT reason - create fault and auto-stop productive timers
+        fault = None
+        if reason.code == 'MACHINE_FAULT':
+            if not machine:
+                return Response({'error': 'Machine is required for machine fault reasons'}, status=400)
+
+            fault_description = comment or 'Arıza bildirildi'
+            fault = MachineFault.objects.create(
+                machine=machine,
+                reported_by=request.user,
+                description=fault_description,
+                is_breaking=True,
+                downtime_start_ms=now_ms
+            )
+            response_data['fault_id'] = fault.id
+
+            # Send Telegram notification
+            self._send_telegram_notification(fault, request.user)
+
+            # If there was an active productive timer that we stopped, link it to the fault
+            # and create a downtime timer linked to the fault
+            if current_timer and current_timer.timer_type == 'productive':
+                # We already stopped the productive timer in Step 1
+                # Now create downtime timer linked to the fault
+                new_timer = Timer.objects.create(
+                    user=request.user,
+                    start_time=now_ms,
+                    machine_fk=machine,
+                    content_type=content_type,
+                    object_id=object_id,
+                    timer_type='downtime',
+                    downtime_reason=reason,
+                    related_fault=fault,
+                    comment=comment or f'Arıza nedeniyle duruş: {fault_description}'
+                )
+                response_data['new_timer_id'] = new_timer.id
+                response_data['timer'] = self._serialize_timer(new_timer)
+                return Response(response_data, status=200)
+
+            # If no active timer, still create downtime timer for the machine
+            # This handles the case where user reports fault when not actively working
+            elif not current_timer:
+                new_timer = Timer.objects.create(
+                    user=request.user,
+                    start_time=now_ms,
+                    machine_fk=machine,
+                    content_type=content_type,
+                    object_id=object_id,
+                    timer_type='downtime',
+                    downtime_reason=reason,
+                    related_fault=fault,
+                    comment=comment or f'Arıza bildirildi: {fault_description}'
+                )
+                response_data['new_timer_id'] = new_timer.id
+                response_data['timer'] = self._serialize_timer(new_timer)
+                response_data['message'] = f"Machine fault reported and downtime timer started"
+                return Response(response_data, status=200)
+
+        # Step 4: Handle WORK_COMPLETE reason - mark operation as complete
+        if reason.code == 'WORK_COMPLETE':
+            # Get the operation and mark it complete
+            try:
+                # Determine which operation key to use
+                op_key = None
+                if current_timer:
+                    # Check if the timer's content_type is Operation
+                    operation_ct = ContentType.objects.get_for_model(Operation)
+                    if current_timer.content_type == operation_ct:
+                        op_key = current_timer.object_id
+                else:
+                    op_key = operation_key
+
+                if op_key:
+                    operation = Operation.objects.get(key=op_key)
+                    operation.completion_date = now_ms
+                    operation.completed_by = request.user
+                    operation.save(update_fields=['completion_date', 'completed_by'])
+                    response_data['operation_completed'] = True
+                    response_data['message'] = f"Timer stopped and operation marked complete"
+                else:
+                    response_data['message'] = f"Timer stopped: {reason.name}"
+            except Operation.DoesNotExist:
+                # If not an operation, just stop the timer
+                response_data['message'] = f"Timer stopped: {reason.name}"
+
+            return Response(response_data, status=200)
+
+        # Step 5: Create new timer if reason requires it (and not already handled above)
+        if reason.creates_timer:
+            # Determine timer type based on reason category
+            timer_type = 'break' if reason.category == 'break' else 'downtime'
+
+            new_timer = Timer.objects.create(
+                user=request.user,
+                start_time=now_ms,
+                machine_fk=machine,
+                content_type=content_type,
+                object_id=object_id,
+                timer_type=timer_type,
+                downtime_reason=reason,
+                related_fault=fault,
+                comment=comment or None
+            )
+            response_data['new_timer_id'] = new_timer.id
+            response_data['timer'] = self._serialize_timer(new_timer)
+
+        # Step 6: Build response message
+        if current_timer and response_data['new_timer_id']:
+            response_data['message'] = f"Timer stopped and {reason.name} timer started"
+        elif current_timer:
+            response_data['message'] = f"Timer stopped: {reason.name}"
+        elif response_data['new_timer_id']:
+            response_data['message'] = f"{reason.name} timer started"
+        elif response_data['fault_id']:
+            response_data['message'] = f"Machine fault reported: {reason.name}"
+        else:
+            response_data['message'] = f"Reason logged: {reason.name}"
+
+        return Response(response_data, status=200)
+
+    def _serialize_timer(self, timer):
+        """Serialize a timer object to return in API response"""
+        from .serializers import BaseTimerSerializer
+        serializer = BaseTimerSerializer(timer)
+        return serializer.data
+
+    def _send_telegram_notification(self, fault, user):
+        """Send Telegram notification when a machine fault is reported"""
+        from config.settings import TELEGRAM_MAINTENANCE_BOT_TOKEN
+        import requests
+
+        if not TELEGRAM_MAINTENANCE_BOT_TOKEN:
+            return  # quietly skip if token not configured
+
+        CHAT_ID = "-4944950975"  # your group/chat
+
+        machine_name = fault.machine.name if fault.machine else (fault.asset_name or "Bilinmiyor")
+        description = fault.description or "Yok"
+        talep_eden = user.get_full_name() or user.username
+
+        message = (
+            "🛠 *Yeni Bakım Talebi*\n"
+            f"👤 *Talep Eden:* {talep_eden}\n"
+            f"🖥 *Makine:* {machine_name}\n"
+            f"📄 *Açıklama:* {description}\n"
+        )
+
+        url = f"https://api.telegram.org/bot{TELEGRAM_MAINTENANCE_BOT_TOKEN}/sendMessage"
+        payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"}
+        try:
+            requests.post(url, data=payload, timeout=5)
+        except requests.RequestException as e:
+            print("Telegram bildirim hatası:", e)

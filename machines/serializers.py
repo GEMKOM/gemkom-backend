@@ -119,6 +119,7 @@ class MachineFaultSerializer(serializers.ModelSerializer):
     resolved_by_username = serializers.CharField(source='resolved_by.username', read_only=True)
     assigned_to_username = serializers.CharField(source='assigned_to.username', read_only=True)
     is_resolved = serializers.SerializerMethodField()
+    downtime_hours = serializers.FloatField(read_only=True)
 
     def get_is_resolved(self, obj):
         return bool(obj.resolved_at)
@@ -142,8 +143,11 @@ class MachineFaultSerializer(serializers.ModelSerializer):
             'resolution_description',
 
             'is_resolved',
+
+            # Machine downtime tracking
+            'downtime_start_ms', 'downtime_end_ms', 'downtime_hours',
         ]
-        read_only_fields = ['id', 'reported_by', 'reported_at', 'is_resolved']
+        read_only_fields = ['id', 'reported_by', 'reported_at', 'is_resolved', 'downtime_start_ms', 'downtime_end_ms', 'downtime_hours']
 
     def validate(self, attrs):
         # If no machine, require at least an asset_name to avoid totally anonymous faults
