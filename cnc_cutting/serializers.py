@@ -187,6 +187,14 @@ class CncTaskDetailSerializer(serializers.ModelSerializer):
         if selected_plate_id:
             try:
                 remnant_plate = RemnantPlate.objects.get(id=selected_plate_id)
+
+                # Validate quantity available
+                available = remnant_plate.available_quantity()
+                if quantity_used > available:
+                    raise serializers.ValidationError({
+                        "quantity_used": f"Cannot use {quantity_used} plates. Only {available} available (Total: {remnant_plate.quantity}, Already used: {remnant_plate.quantity - available})."
+                    })
+
                 RemnantPlateUsage.objects.create(
                     cnc_task=cnc_task,
                     remnant_plate=remnant_plate,
@@ -217,6 +225,21 @@ class CncTaskDetailSerializer(serializers.ModelSerializer):
                 # Update or create plate usage
                 try:
                     remnant_plate = RemnantPlate.objects.get(id=selected_plate_id)
+
+                    # Get current usage by this task (will be deleted and re-created)
+                    current_usage = instance.plate_usage_records.filter(
+                        remnant_plate=remnant_plate
+                    ).first()
+                    current_quantity_used = current_usage.quantity_used if current_usage else 0
+
+                    # Calculate available quantity (add back what this task is currently using)
+                    available = remnant_plate.available_quantity() + current_quantity_used
+
+                    # Validate new quantity
+                    if quantity_used > available:
+                        raise serializers.ValidationError({
+                            "quantity_used": f"Cannot use {quantity_used} plates. Only {available} available (Total: {remnant_plate.quantity}, Already used by others: {remnant_plate.quantity - available})."
+                        })
 
                     # Remove existing usage records and create new one
                     instance.plate_usage_records.all().delete()
