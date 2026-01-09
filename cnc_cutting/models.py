@@ -12,9 +12,43 @@ class RemnantPlate(models.Model):
     material = models.CharField(max_length=100, null=True, blank=True)
     heat_number = models.CharField(max_length=100, null=True, blank=True)
 
-    # Add any other fields you need for CNC tasks.
     def __str__(self):
         return f"Remnant Plate {self.id} - {self.material} {self.thickness_mm}mm ({self.dimensions})"
+
+    def available_quantity(self):
+        """Calculate the number of plates still available (not used by tasks)."""
+        used = self.usage_records.aggregate(
+            total_used=models.Sum('quantity_used')
+        )['total_used'] or 0
+        return (self.quantity or 0) - used
+
+
+class RemnantPlateUsage(models.Model):
+    """
+    Through model to track which CNC tasks use which remnant plates
+    and how many plates were consumed.
+    """
+    cnc_task = models.ForeignKey(
+        'CncTask',
+        on_delete=models.CASCADE,
+        related_name='plate_usage_records'
+    )
+    remnant_plate = models.ForeignKey(
+        RemnantPlate,
+        on_delete=models.CASCADE,
+        related_name='usage_records'
+    )
+    quantity_used = models.IntegerField(
+        default=1,
+        help_text="Number of plates used from the remnant plate"
+    )
+    assigned_date = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = [['cnc_task', 'remnant_plate']]
+
+    def __str__(self):
+        return f"{self.cnc_task.key} uses {self.quantity_used} of Plate {self.remnant_plate.id}"
 
 
 class CncTask(BaseTask):
@@ -38,14 +72,14 @@ class CncTask(BaseTask):
     processed_by_warehouse = models.BooleanField(default=False)
     processed_warehouse_date = models.DateField(null=True, blank=True)
     heat_number = models.CharField(max_length=100, null=True, blank=True)
-    selected_plate = models.ForeignKey(
-        RemnantPlate,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='cnc_tasks'
-    )
 
+    # Many-to-many relationship with RemnantPlate through RemnantPlateUsage
+    remnant_plates = models.ManyToManyField(
+        RemnantPlate,
+        through='RemnantPlateUsage',
+        related_name='cnc_tasks',
+        blank=True
+    )
 
     # This creates the reverse relationship from a CncTask back to all its Timers.
     # It allows `prefetch_related('issue_key')` to work on CncTask querysets.

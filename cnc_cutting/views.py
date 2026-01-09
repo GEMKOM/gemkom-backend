@@ -143,7 +143,7 @@ class CncTaskViewSet(TaskFileMixin, ModelViewSet):
     Handles multipart/form-data for file uploads.
     """
     # Combine querysets for both list and detail views for efficiency
-    queryset = CncTask.objects.select_related('machine_fk').prefetch_related('issue_key', 'parts', 'files').annotate(parts_count=Count('parts')).order_by('-key')
+    queryset = CncTask.objects.select_related('machine_fk').prefetch_related('issue_key', 'parts', 'files', 'plate_usage_records__remnant_plate').annotate(parts_count=Count('parts')).order_by('-key')
     filter_backends = [DjangoFilterBackend, OrderingFilter]
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser] # Important for file uploads
@@ -245,15 +245,22 @@ class RemnantPlateViewSet(ModelViewSet):
 
     def get_queryset(self):
         """
-        By default, for 'list' actions, only show remnant plates that are not assigned to a task
-        (i.e., no CncTask has selected them). This can be changed by using the `unassigned` filter.
+        By default, for 'list' actions, only show remnant plates that have available quantity
+        (i.e., not fully consumed by tasks). This can be changed by using the `unassigned` filter.
         For other actions (retrieve, update, delete), allow access to any remnant plate.
         """
         qs = super().get_queryset()
         if self.action == 'list':
-            # Default to showing only unassigned plates if no specific filter for assignment is given.
+            # Default to showing only plates with available quantity if no specific filter is given.
             if 'unassigned' not in self.request.query_params:
-                return qs.filter(cnc_tasks__isnull=True)
+                # Only show plates where the available quantity is greater than 0
+                # This requires annotating with usage count and comparing to total quantity
+                from django.db.models import Sum, F, Q
+                qs = qs.annotate(
+                    total_used=Sum('usage_records__quantity_used')
+                ).filter(
+                    Q(total_used__isnull=True) | Q(total_used__lt=F('quantity'))
+                )
         return qs
 
     @action(detail=False, methods=['post'], url_path='bulk-create')

@@ -1,33 +1,24 @@
-from rest_framework.response import Response
-
-from django.db.models import Sum, Max, F, OuterRef, Exists, Q, Case, When, Value, CharField, ExpressionWrapper, FloatField
-from django.db.models import F
-from django.db.models.functions import Coalesce
-from django.db.models.functions import Coalesce 
-from machines.models import Machine
-from machining.filters import TaskFilter
-from machining.permissions import can_view_all_money, can_view_all_users_hours, can_view_header_totals_only
-from .models import Task
-from tasks.models import Timer, TaskKeyCounter
-from tasks.view_mixins import TaskFileMixin
-from machining.services.timers import categorize_timer_segments, _get_business_tz, W_START, W_END 
-from users.permissions import IsAdmin, IsMachiningUserOrAdmin 
-from .models import JobCostAgg, JobCostAggUser, Task
-from tasks.views import GenericMarkTaskCompletedView, GenericTimerDetailView, GenericTimerListView, GenericTimerManualEntryView, GenericTimerReportView, GenericTimerStartView, GenericTimerStopView, GenericUnmarkTaskCompletedView
-from .serializers import HoldTaskSerializer, PlanningListItemSerializer, ProductionPlanSerializer, TaskPlanBulkListSerializer, TaskPlanUpdateItemSerializer, TaskSerializer
-from django.db.models import Q, Count
-from rest_framework.views import APIView
-from rest_framework.viewsets import GenericViewSet, ModelViewSet
-from django_filters.rest_framework import DjangoFilterBackend
-from rest_framework.permissions import IsAuthenticated
-from config.pagination import CustomPageNumberPagination  # ✅ Use your custom paginator
-from rest_framework.filters import OrderingFilter
-from django.db import transaction
-from rest_framework import permissions, status
-from .services.timeline import _build_bulk_machine_timelines, _ensure_valid_range  # _parse_ms is small; OK to re-use
-from rest_framework import status
-from tasks.views import GenericPlanningBulkSaveView, GenericPlanningListView, GenericProductionPlanView
 from collections import defaultdict
+from django.db.models import Sum, Max, F, Count, Value, DecimalField
+from django.db.models.functions import Coalesce
+from rest_framework import status
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+from machines.models import Machine
+from machining.services.timers import categorize_timer_segments, _get_business_tz, W_START, W_END
+from .services.timeline import _build_bulk_machine_timelines, _ensure_valid_range
+from tasks.models import Timer
+from tasks.views import (
+    GenericTimerDetailView,
+    GenericTimerListView,
+    GenericTimerManualEntryView,
+    GenericTimerReportView,
+    GenericTimerStartView,
+    GenericTimerStopView,
+)
+from users.permissions import IsAdmin, IsMachiningUserOrAdmin
 
 
 class TimerStartView(GenericTimerStartView):
@@ -81,147 +72,8 @@ class TimerReportView(GenericTimerReportView):
         return super().get(request, task_type='operation')
 
 
-class TaskViewSet(TaskFileMixin, ModelViewSet):
-    queryset = Task.objects.all()
-    serializer_class = TaskSerializer
-    filter_backends = [DjangoFilterBackend, OrderingFilter]
-    permission_classes = [IsMachiningUserOrAdmin]
-    filterset_class = TaskFilter
-    pagination_class = CustomPageNumberPagination
-    ordering_fields = ['key', 'job_no', 'image_no', 'position_no', 'completion_date', 'created_at', 'total_hours_spent', 'estimated_hours', 'finish_time', 'plan_order']  # Add any fields you want to allow
-    ordering = ['-completion_date']  # Default ordering
-
-    def get_queryset(self):
-        # 'issue_key' is the GenericRelation from tasks.Timer back to this Task
-        # prefetch_related works seamlessly with it for great performance.
-        return Task.objects.filter(is_hold_task=False).select_related('machine_fk', 'created_by', 'completed_by').prefetch_related('issue_key').annotate(
-            total_hours_spent=Coalesce(
-                ExpressionWrapper(
-                    Sum('issue_key__finish_time', filter=Q(issue_key__finish_time__isnull=False)) -
-                    Sum('issue_key__start_time', filter=Q(issue_key__finish_time__isnull=False)),
-                    output_field=FloatField()
-                ) / 3600000.0,
-                Value(0.0)
-            )
-        )
-    
-class TaskBulkCreateView(APIView):
-    permission_classes = [IsAdmin]
-
-    def post(self, request):
-        import time
-        tasks_data = request.data
-        if not isinstance(tasks_data, list):
-            return Response({'error': 'Expected a list of tasks'}, status=400)
-
-        tasks_to_create = [task for task in tasks_data if not task.get('key')]
-
-        with transaction.atomic():
-            # Use the generic TaskKeyCounter from the 'tasks' app
-            counter = TaskKeyCounter.objects.select_for_update().get(prefix="TI")
-            start = counter.current + 1
-            counter.current += len(tasks_to_create)
-            counter.save()
-
-            i = 0
-            current_timestamp = int(time.time() * 1000)
-            for task in tasks_data:
-                if not task.get('key'):
-                    task['key'] = f"TI-{start + i:03d}"
-                    i += 1
-                # Set created_at for bulk creation
-                if 'created_at' not in task:
-                    task['created_at'] = current_timestamp
-
-        serializer = TaskSerializer(data=tasks_data, many=True, context={'request': request})
-        serializer.is_valid(raise_exception=True)
-        serializer.save()
-
-        return Response(serializer.data, status=201)
-    
-
-class HoldTaskViewSet(ModelViewSet):
-    queryset = Task.objects.all()
-    serializer_class = HoldTaskSerializer
-    filter_backends = [DjangoFilterBackend]
-    permission_classes = [IsAuthenticated]
-    filterset_class = TaskFilter
-
-    def get_queryset(self):
-        return Task.objects.filter(is_hold_task=True)
-
-
-class MarkTaskCompletedView(GenericMarkTaskCompletedView):
-    permission_classes = [IsMachiningUserOrAdmin]
-
-    def post(self, request):
-        return super().post(request, task_type='operation')
-
-class UnmarkTaskCompletedView(GenericUnmarkTaskCompletedView):
-    permission_classes = [IsAdmin]
-
-    def post(self, request):
-        return super().post(request, task_type='operation')
-        
-class InitTaskKeyCounterView(APIView):
-    permission_classes = [IsAdmin]  # 🔒 restrict who can call this
-
-    def post(self, request):
-        # Use the generic TaskKeyCounter from the 'tasks' app
-        counter, created = TaskKeyCounter.objects.get_or_create(prefix="TI", defaults={"current": 0})
-        return Response({
-            "status": "created" if created else "already_exists",
-            "prefix": counter.prefix,
-            "current": counter.current
-        })
-
-def _parse_ms(val):
-    if val is None: return None
-    ts = int(val)
-    return ts * 1000 if ts < 1_000_000_000_000 else ts
-
-class PlanningListView(GenericPlanningListView):
-    """
-    GET /machining/planning/list/?machine_fk=5&only_in_plan=false&start_after=<ms|sec>&start_before=<ms|sec>
-    Inherits from the generic planning list view, providing machining-specifics.
-    """
-    permission_classes = [IsMachiningUserOrAdmin]
-    task_model = Task
-    serializer_class = PlanningListItemSerializer
-    resource_fk_field = 'machine_fk'
-
-
-class ProductionPlanView(GenericProductionPlanView):
-    """
-    Inherits from the generic production plan view, providing machining-specifics.
-    """
-    permission_classes = [IsMachiningUserOrAdmin]
-    task_model = Task
-    serializer_class = ProductionPlanSerializer
-    resource_fk_field = 'machine_fk'
-
-class PlanningBulkSaveView(GenericPlanningBulkSaveView):
-    """
-    Inherits from the generic bulk save view, providing machining-specifics.
-    """
-    permission_classes = [IsMachiningUserOrAdmin]
-    task_model = Task
-    item_serializer_class = TaskPlanUpdateItemSerializer
-    bulk_list_serializer_class = TaskPlanBulkListSerializer
-    response_serializer_class = PlanningListItemSerializer
-    resource_fk_field = 'machine_fk'
-    
-
-# views.py
-from django.db.models import Q, F, Sum, Max, Count, Value, DecimalField
-from django.db.models.functions import Coalesce
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status
-
-from users.permissions import IsMachiningUserOrAdmin
-from machines.models import Machine
-from .models import Task
+# Task-specific views have been removed. Use /tasks/operations/ endpoints instead.
+# Legacy views (TaskViewSet, HoldTaskViewSet, etc.) migrated to Operation/Part system.
 
 
 class PlanningAggregateView(APIView):
@@ -288,11 +140,12 @@ class PlanningAggregateView(APIView):
 
         machines_by_id = {m.id: m for m in machines}
 
-        # --- Base queryset: active, in-plan, non-hold tasks, not completed
-        agg_base = Task.objects.filter(
+        # --- Base queryset: active, in-plan operations, not completed
+        # Note: is_hold_task removed - deprecated Task concept
+        from tasks.models import Operation
+        agg_base = Operation.objects.filter(
             machine_fk_id__in=machine_ids,
             in_plan=True,
-            is_hold_task=False,
             completion_date__isnull=True,
             completed_by__isnull=True,
         )
@@ -311,10 +164,12 @@ class PlanningAggregateView(APIView):
         )
         per_machine_map = {row["machine_fk_id"]: row for row in per_machine}
 
-        # --- Per-machine, grouped-by-job_no totals
+        # --- Per-machine, grouped-by-part__job_no totals
+        # Note: job_no is now on Part, accessed via operation.part.job_no
         per_machine_jobs = (
             agg_base
-            .values("machine_fk_id", "job_no")
+            .select_related('part')
+            .values("machine_fk_id", "part__job_no")
             .annotate(
                 total_estimated_hours=Coalesce(
                     Sum("estimated_hours"), Value(0, output_field=DecimalField(max_digits=12, decimal_places=2))
@@ -322,7 +177,7 @@ class PlanningAggregateView(APIView):
                 latest_planned_end_ms=Max("planned_end_ms"),
                 task_count=Count("key", distinct=True),
             )
-            .order_by("machine_fk_id", "job_no")
+            .order_by("machine_fk_id", "part__job_no")
         )
 
         # Build {machine_id: [job rows...]}
@@ -330,7 +185,7 @@ class PlanningAggregateView(APIView):
         for row in per_machine_jobs:
             mid = row["machine_fk_id"]
             jobs_map.setdefault(mid, []).append({
-                "job_no": row["job_no"],  # can be None
+                "job_no": row["part__job_no"],  # can be None - accessed via part
                 "total_estimated_hours": float(row["total_estimated_hours"] or 0),
                 "latest_planned_end_ms": row["latest_planned_end_ms"],
                 "task_count": int(row["task_count"] or 0),
@@ -500,6 +355,9 @@ class JobHoursReportView(APIView):
             return None
 
     def get(self, request):
+        from tasks.models import Part, Operation
+        from django.contrib.contenttypes.models import ContentType
+
         q = (request.query_params.get("q") or "").strip()
         if not q:
             return Response({"error": "q (partial job_no) is required"}, status=400)
@@ -507,9 +365,9 @@ class JobHoursReportView(APIView):
         start_after_ms = self._parse_ms(request.query_params.get("start_after"))
         start_before_ms = self._parse_ms(request.query_params.get("start_before"))
 
-        # Find all matching job_nos (non-null, non-empty), keep stable ordering
+        # Find all matching job_nos from Part model (non-null, non-empty), keep stable ordering
         matched_job_nos_qs = (
-            Task.objects
+            Part.objects
             .filter(job_no__isnull=False)
             .filter(job_no__icontains=q)
             .order_by("job_no")
@@ -521,23 +379,33 @@ class JobHoursReportView(APIView):
         if not job_nos:
             return Response({"query": q, "job_nos": [], "results": []}, status=200)
 
-        # Fetch relevant timers once; we slice by job_no in Python per bucket calc
+        # Fetch relevant timers for Operations linked to these Parts
+        operation_ct = ContentType.objects.get_for_model(Operation)
         timers = (
             Timer.objects
-            .select_related("user").prefetch_related("issue_key")
-            .filter(issue_key__job_no__in=job_nos, finish_time__isnull=False)
+            .select_related("user")
+            .filter(content_type=operation_ct, finish_time__isnull=False)
         )
+
+        # Get operation keys for parts with matching job_nos
+        operation_keys = Operation.objects.filter(part__job_no__in=job_nos).values_list('key', flat=True)
+        timers = timers.filter(object_id__in=operation_keys)
+
         if start_after_ms is not None:
             timers = timers.filter(start_time__gte=start_after_ms)
         if start_before_ms is not None:
             timers = timers.filter(start_time__lte=start_before_ms)
+
+        # Prefetch operations to get job_no
+        timers = timers.prefetch_related('issue_key__part')
 
         # Aggregate per (job_no -> user -> buckets)
         per_job_user = defaultdict(lambda: defaultdict(lambda: {"weekday_work": 0.0, "after_hours": 0.0, "sunday": 0.0}))
 
         for t in timers:
             buckets = categorize_timer_segments(t.start_time, t.finish_time)
-            j = t.issue_key.job_no or ""
+            # Access job_no through operation.part.job_no
+            j = getattr(getattr(t.issue_key, 'part', None), 'job_no', '') or ""
             u = t.user.username
             d = per_job_user[j][u]
             d["weekday_work"] += buckets["weekday_work"] / 3600.0
@@ -576,211 +444,6 @@ class JobHoursReportView(APIView):
         return Response({"query": q, "job_nos": job_nos, "results": results}, status=200)
     
     
-class JobCostListView(APIView):
-    """
-    GET /costs/jobs/totals/?job_like=283&startswith=true&min_total=0&ordering=-total_cost
-    Returns 1 row per job_no with hours + cost breakdown (+ masking by role).
-    """
-    permission_classes = [permissions.IsAuthenticated]
-
-    def get(self, request):
-        job_no   = (request.query_params.get("job_no") or "").strip()
-        ordering   = (request.query_params.get("ordering") or "-total_cost").strip()
-
-        qs = JobCostAgg.objects.all()
-        if job_no:
-            field = "job_no_cached__icontains"
-            qs = qs.filter(**{field: job_no})
-
-        agg = (
-            qs.values("job_no_cached")
-              .annotate(
-                  hours_ww=Sum("hours_ww"),
-                  hours_ah=Sum("hours_ah"),
-                  hours_su=Sum("hours_su"),
-                  cost_ww=Sum("cost_ww"),
-                  cost_ah=Sum("cost_ah"),
-                  cost_su=Sum("cost_su"),
-                  total_cost=Sum("total_cost"),
-                  updated_at=Max("updated_at"),
-              )
-        )
-
-        allowed = {
-            "job_no": "job_no_cached", "-job_no": "-job_no_cached",
-            "total_cost": "total_cost", "-total_cost": "-total_cost",
-            "updated_at": "updated_at", "-updated_at": "-updated_at",
-        }
-        agg = agg.order_by(allowed.get(ordering, "-total_cost"))
-
-        results = []
-        for row in agg:
-            item = {
-                "job_no": row["job_no_cached"],
-                "hours": {
-                    "weekday_work": float(row["hours_ww"] or 0),
-                    "after_hours":  float(row["hours_ah"] or 0),
-                    "sunday":       float(row["hours_su"] or 0),
-                },
-                "updated_at": row["updated_at"],
-            }
-
-            item["costs"] = {
-                "weekday_work": float(row["cost_ww"] or 0),
-                "after_hours":  float(row["cost_ah"] or 0),
-                "sunday":       float(row["cost_su"] or 0),
-            }
-            item["total_cost"] = float(row["total_cost"] or 0)
-            item["currency"] = "EUR"
-
-
-            results.append(item)
-
-        return Response({"count": len(results), "results": results}, status=200)
-    
-class JobCostDetailView(APIView):
-    """
-    GET /costs/jobs/users/<job_no>/
-    GET /costs/jobs/users/?job_like=283
-
-    Returns ONLY per-user rows (aggregated across matched jobs) + per-user issue list with status.
-    - management/superusers/staff: hours + full costs per user + issues[{key,status}]
-    - manufacturing/planning: hours only + issues[{key,status}] (no money)
-    - others: 403
-    """
-    permission_classes = [permissions.IsAuthenticated]
-
-    def get(self, request, job_no: str | None = None):
-        # ----- access control -----
-        if not can_view_all_users_hours(request.user):
-            return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
-
-        # ----- query params -----
-        job_like = (request.query_params.get("job_like") or "").strip()
-        ordering = (request.query_params.get("ordering") or "-total_cost").strip()
-
-        # ----- filters (exact job or partial) -----
-        agg_filter = {}
-        if job_like:
-            agg_filter["job_no_cached__icontains"] = job_like  # switch to __istartswith if preferred
-        elif job_no:
-            agg_filter["job_no_cached"] = job_no
-        else:
-            return Response({"detail": "Provide job_no path param or ?job_like=..."}, status=400)
-
-        # ----- base per-user aggregation across matched jobs -----
-        users_qs = (
-            JobCostAggUser.objects
-            .filter(**agg_filter)
-            .select_related("user")
-            .values("user_id", "user__username", "currency")
-            .annotate(
-                hours_ww=Sum("hours_ww"),
-                hours_ah=Sum("hours_ah"),
-                hours_su=Sum("hours_su"),
-                cost_ww=Sum("cost_ww"),
-                cost_ah=Sum("cost_ah"),
-                cost_su=Sum("cost_su"),
-                total_cost=Sum("total_cost"),
-                updated_at=Max("updated_at"),
-            )
-        )
-
-        # Safe ordering options
-        allowed_ordering = {
-            "user": "user__username", "-user": "-user__username",
-            "total_cost": "total_cost", "-total_cost": "-total_cost",
-            "hours": "hours_ww", "-hours": "-hours_ww",  # proxy by weekday_work hours
-            "updated_at": "updated_at", "-updated_at": "-updated_at",
-        }
-        users_qs = users_qs.order_by(allowed_ordering.get(ordering, "-total_cost"))
-
-        # ----- collect distinct (user_id -> {task_ids}) for issues shown in report -----
-        user_task_ids = defaultdict(set)
-        for uid, tid in (
-            JobCostAggUser.objects
-            .filter(**agg_filter)
-            .values_list("user_id", "task_id")
-            .distinct()
-        ):
-            if tid:
-                user_task_ids[uid].add(tid)
-
-        # Flatten all task ids into one set (single fetch)
-        all_task_ids = set()
-        for s in user_task_ids.values():
-            all_task_ids.update(s)
-
-        # If no tasks, we can short-circuit building issue lists
-        tasks_map = {}
-        if all_task_ids:
-            # ----- annotate tasks with "has_open_timer" and derive status -----
-            from django.contrib.contenttypes.models import ContentType
-            task_content_type = ContentType.objects.get_for_model(Task)
-            open_timer_qs = Timer.objects.filter(content_type=task_content_type, object_id=OuterRef("pk"), finish_time__isnull=True)
-            tasks_with_status = (
-                Task.objects
-                .filter(pk__in=all_task_ids)
-                .annotate(
-                    has_open_timer=Exists(open_timer_qs),
-                    status=Case(
-                        When(completion_date__isnull=False, then=Value("completed")),
-                        When(has_open_timer=True, then=Value("in_progress")),
-                        default=Value("waiting"),
-                        output_field=CharField(),
-                    ),
-                )
-                .values("key", "status")
-            )
-            # Build a quick lookup: task_id -> {key, status}
-            tasks_map = {t["key"]: {"key": t["key"], "status": t["status"]} for t in tasks_with_status}
-
-        # ----- mask money by role -----
-        show_full = can_view_all_money(request.user)
-        show_hours_only = can_view_header_totals_only(request.user)
-
-        # ----- assemble payload -----
-        results = []
-        for u in users_qs:
-            uid = u["user_id"]
-
-            # Build issues list for this user (sorted by key)
-            issues_for_user = []
-            for tid in sorted(user_task_ids.get(uid, set())):
-                meta = tasks_map.get(tid)
-                if not meta or not meta["key"]:
-                    continue
-                issues_for_user.append({"key": meta["key"], "status": meta["status"]})
-
-            item = {
-                "user_id": uid,
-                "user": u["user__username"],
-                "issues": issues_for_user,                 # <-- [{"key": "TI-00123", "status": "in_progress"}, ...]
-                "issue_count": len(issues_for_user),
-                "hours": {
-                    "weekday_work": float(u["hours_ww"] or 0),
-                    "after_hours":  float(u["hours_ah"] or 0),
-                    "sunday":       float(u["hours_su"] or 0),
-                },
-                "updated_at": u["updated_at"],
-            }
-
-            if show_full:
-                item["currency"] = u["currency"]
-                item["costs"] = {
-                    "weekday_work": float(u["cost_ww"] or 0),
-                    "after_hours":  float(u["cost_ah"] or 0),
-                    "sunday":       float(u["cost_su"] or 0),
-                }
-                item["total_cost"] = float(u["total_cost"] or 0)
-            elif show_hours_only:
-                item["currency"] = None
-                item["costs"] = {"weekday_work": None, "after_hours": None, "sunday": None}
-                item["total_cost"] = None
-
-            results.append(item)
-
-        return Response({"count": len(results), "results": results}, status=200)
 
 
 class DailyEfficiencyReportView(APIView):
@@ -894,9 +557,8 @@ class DailyEfficiencyReportView(APIView):
             if not task_key:
                 continue
 
-            # Skip hold tasks
-            if getattr(task, 'is_hold_task', False):
-                continue
+            # Note: is_hold_task is deprecated (legacy Task model concept)
+            # Operations don't have this field, so we treat all work as productive
 
             task_keys_set.add(task_key)
 
@@ -908,25 +570,26 @@ class DailyEfficiencyReportView(APIView):
                 "machine_name": timer.machine_fk.name if timer.machine_fk else None,
             })
 
-        # Pre-calculate total_hours_spent for all tasks up to and including the chosen date (bulk query for performance)
+        # Pre-calculate total_hours_spent for all operations up to and including the chosen date (bulk query for performance)
+        from tasks.models import Operation
         task_totals = {}
         if task_keys_set:
-            tasks_with_timers = Task.objects.filter(key__in=task_keys_set).prefetch_related('issue_key')
-            for task in tasks_with_timers:
-                # Calculate total hours spent across all timers for this task up to and including the chosen date
+            operations_with_timers = Operation.objects.filter(key__in=task_keys_set).prefetch_related('issue_key').select_related('part')
+            for operation in operations_with_timers:
+                # Calculate total hours spent across all timers for this operation up to and including the chosen date
                 # Filter timers that finished on or before the end of the chosen date
-                task_timers = task.issue_key.exclude(finish_time__isnull=True).filter(finish_time__lte=day_end_ms)
+                operation_timers = operation.issue_key.exclude(finish_time__isnull=True).filter(finish_time__lte=day_end_ms)
                 total_ms = sum(
                     (t.finish_time - t.start_time)
-                    for t in task_timers
+                    for t in operation_timers
                     if t.start_time is not None and t.finish_time is not None and t.finish_time > t.start_time
                 )
                 total_hours = round(total_ms / 3600000.0, 2) if total_ms > 0 else 0.0
-                task_totals[task.key] = {
-                    "estimated_hours": float(task.estimated_hours) if task.estimated_hours else None,
+                task_totals[operation.key] = {
+                    "estimated_hours": float(operation.estimated_hours) if operation.estimated_hours else None,
                     "total_hours_spent": total_hours,
-                    "name": task.name,
-                    "job_no": task.job_no,
+                    "name": operation.name,
+                    "job_no": operation.part.job_no if operation.part else None,
                 }
 
         # Build response for each user
@@ -1202,9 +865,10 @@ class DailyUserReportView(APIView):
             task_key = getattr(task, 'key', None) if task else None
             if task_key:
                 task_keys_set.add(task_key)
-            
+
             task_name = getattr(task, 'name', None) if task else None
-            job_no = getattr(task, 'job_no', None) if task else None
+            # For Operation, job_no is accessed through operation.part.job_no
+            job_no = getattr(getattr(task, 'part', None), 'job_no', None) if task else None
             
             duration_ms = timer_end_clipped - timer_start
             duration_minutes = round(duration_ms / 60000.0, 0)
@@ -1229,21 +893,22 @@ class DailyUserReportView(APIView):
                 "_task_obj": task,  # Store task object for later use
             })
         
-        # Pre-calculate total_hours_spent for all tasks (bulk query for performance)
+        # Pre-calculate total_hours_spent for all operations (bulk query for performance)
+        from tasks.models import Operation
         task_totals = {}
         if task_keys_set:
-            tasks_with_timers = Task.objects.filter(key__in=task_keys_set).prefetch_related('issue_key')
-            for task in tasks_with_timers:
-                # Calculate total hours spent across all timers for this task
-                task_timers = task.issue_key.exclude(finish_time__isnull=True)
+            operations_with_timers = Operation.objects.filter(key__in=task_keys_set).prefetch_related('issue_key')
+            for operation in operations_with_timers:
+                # Calculate total hours spent across all timers for this operation
+                operation_timers = operation.issue_key.exclude(finish_time__isnull=True)
                 total_ms = sum(
-                    (t.finish_time - t.start_time) 
-                    for t in task_timers 
+                    (t.finish_time - t.start_time)
+                    for t in operation_timers
                     if t.start_time is not None and t.finish_time is not None and t.finish_time > t.start_time
                 )
                 total_hours = round(total_ms / 3600000.0, 2) if total_ms > 0 else 0.0
-                task_totals[task.key] = {
-                    "estimated_hours": float(task.estimated_hours) if task.estimated_hours else None,
+                task_totals[operation.key] = {
+                    "estimated_hours": float(operation.estimated_hours) if operation.estimated_hours else None,
                     "total_hours_spent": total_hours,
                 }
         
@@ -1257,12 +922,13 @@ class DailyUserReportView(APIView):
         ).select_related('profile')
         users_by_id = {u.id: u for u in users}
         
-        # Pre-calculate total tasks completed on this day for all machining users
+        # Pre-calculate total operations completed on this day for all machining users
         completed_task_counts = {}
         if users_by_id:
             from django.db.models import Count
+            from tasks.models import Operation
             completed_counts = (
-                Task.objects
+                Operation.objects
                 .filter(
                     completed_by_id__in=users_by_id.keys(),
                     completion_date__gte=day_start_ms,

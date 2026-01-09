@@ -205,14 +205,15 @@ def _build_bulk_machine_timelines(machine_ids, start_after_ms, start_before_ms):
         e = min((t.finish_time or now_ms), start_before_ms, now_ms)
         if e <= s:
             continue
-        is_hold = bool(getattr(t.issue_key, 'is_hold_task', False))
+        # Note: is_hold_task is deprecated (legacy Task model concept)
+        # Operations don't have this field, so we treat all work as productive
         grouped[mid].append({
             "start_ms": s,
             "end_ms": e,
             "task_key": getattr(t.issue_key, 'pk', None),
             "task_name": getattr(t.issue_key, 'name', None),
-            "is_hold": is_hold,
-            "category": "hold" if is_hold else "work",
+            "is_hold": False,
+            "category": "work",
             "timer_id": t.id,
         })
 

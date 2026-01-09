@@ -55,41 +55,4 @@ class Task(BaseTask):
             except Task.DoesNotExist:
                 pass
 
-        super().save(*args, **kwargs)    
-
-# machining/models.py (add at bottom)
-from django.db import models
-
-class JobCostAgg(models.Model):
-    task = models.OneToOneField("machining.Task", on_delete=models.CASCADE, primary_key=True)
-    job_no_cached = models.CharField(max_length=100, db_index=True)  # display/filter
-    currency = models.CharField(max_length=3, default="EUR")
-    hours_ww = models.DecimalField(max_digits=12, decimal_places=2, default=0)
-    hours_ah = models.DecimalField(max_digits=12, decimal_places=2, default=0)
-    hours_su = models.DecimalField(max_digits=12, decimal_places=2, default=0)
-    cost_ww  = models.DecimalField(max_digits=16, decimal_places=2, default=0)
-    cost_ah  = models.DecimalField(max_digits=16, decimal_places=2, default=0)
-    cost_su  = models.DecimalField(max_digits=16, decimal_places=2, default=0)
-    total_cost = models.DecimalField(max_digits=16, decimal_places=2, default=0)
-    updated_at = models.DateTimeField(auto_now=True)
-
-class JobCostAggUser(models.Model):
-    task = models.ForeignKey("machining.Task", on_delete=models.CASCADE)
-    user = models.ForeignKey("auth.User", on_delete=models.CASCADE)
-    job_no_cached = models.CharField(max_length=100, db_index=True)
-    currency = models.CharField(max_length=3, default="EUR")
-    hours_ww = models.DecimalField(max_digits=12, decimal_places=2, default=0)
-    hours_ah = models.DecimalField(max_digits=12, decimal_places=2, default=0)
-    hours_su = models.DecimalField(max_digits=12, decimal_places=2, default=0)
-    cost_ww  = models.DecimalField(max_digits=16, decimal_places=2, default=0)
-    cost_ah  = models.DecimalField(max_digits=16, decimal_places=2, default=0)
-    cost_su  = models.DecimalField(max_digits=16, decimal_places=2, default=0)
-    total_cost = models.DecimalField(max_digits=16, decimal_places=2, default=0)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        unique_together = ("task", "user")
-
-class JobCostRecalcQueue(models.Model):
-    task = models.OneToOneField("machining.Task", on_delete=models.CASCADE, primary_key=True)
-    enqueued_at = models.DateTimeField(auto_now=True)
+        super().save(*args, **kwargs)

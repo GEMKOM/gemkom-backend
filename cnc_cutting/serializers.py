@@ -3,7 +3,7 @@ from core.serializers import NullablePKRelatedField
 from rest_framework import serializers
 
 from machines.models import Machine
-from .models import CncTask, CncPart, RemnantPlate
+from .models import CncTask, CncPart, RemnantPlate, RemnantPlateUsage
 from tasks.models import TaskKeyCounter, TaskFile
 from tasks.serializers import BaseTimerSerializer, TaskFileSerializer
 from django.db import transaction
@@ -51,6 +51,34 @@ class CncTimerSerializer(BaseTimerSerializer):
         ]
 
 
+class RemnantPlateSerializer(serializers.ModelSerializer):
+    """
+    Serializer for the RemnantPlate model.
+    """
+    available_quantity = serializers.SerializerMethodField()
+
+    class Meta:
+        model = RemnantPlate
+        fields = ['id', 'thickness_mm', 'thickness_mm_2', 'dimensions', 'quantity', 'material', 'available_quantity']
+
+    def get_available_quantity(self, obj):
+        """Calculate the available quantity for this remnant plate."""
+        return obj.available_quantity()
+
+
+class RemnantPlateUsageSerializer(serializers.ModelSerializer):
+    """
+    Serializer for RemnantPlateUsage through model.
+    Includes nested plate details for reading, and supports creating/updating usage records.
+    """
+    remnant_plate_details = RemnantPlateSerializer(source='remnant_plate', read_only=True)
+
+    class Meta:
+        model = RemnantPlateUsage
+        fields = ['id', 'remnant_plate', 'remnant_plate_details', 'quantity_used', 'assigned_date']
+        read_only_fields = ['assigned_date']
+
+
 class CncTaskListSerializer(serializers.ModelSerializer):
     """
     A lightweight serializer for listing CncTask instances.
@@ -88,16 +116,22 @@ class CncTaskDetailSerializer(serializers.ModelSerializer):
     parts = CncPartSerializer(many=True, read_only=True)
     files = TaskFileSerializer(many=True, read_only=True)
     machine_name = serializers.CharField(source='machine_fk.name', read_only=True, allow_null=True)
-    selected_plate = NullablePKRelatedField(
-        queryset=RemnantPlate.objects.all(),
-        required=False, allow_null=True
-    )
+
+    # Remnant plate usage records (read-only for GET requests)
+    plate_usage_records = RemnantPlateUsageSerializer(many=True, read_only=True)
+
+    # For setting a single remnant plate (backward compatibility and convenience)
+    # This will create/update a RemnantPlateUsage record with quantity_used=1
+    selected_plate_id = serializers.IntegerField(write_only=True, required=False, allow_null=True)
+    quantity_used = serializers.IntegerField(write_only=True, required=False, default=1)
 
     class Meta:
         model = CncTask
         fields = [
-            'key', 'name', 'nesting_id', 'material', 'dimensions', 'selected_plate',
-            'thickness_mm', 'parts', 'files', 'machine_fk', 'machine_name', 'estimated_hours', 'quantity'
+            'key', 'name', 'nesting_id', 'material', 'dimensions',
+            'thickness_mm', 'parts', 'files', 'machine_fk', 'machine_name',
+            'estimated_hours', 'quantity', 'plate_usage_records',
+            'selected_plate_id', 'quantity_used'
         ]
         read_only_fields = ['key']
         extra_kwargs = {
@@ -105,6 +139,10 @@ class CncTaskDetailSerializer(serializers.ModelSerializer):
         }
 
     def create(self, validated_data):
+        # Extract remnant plate data
+        selected_plate_id = validated_data.pop('selected_plate_id', None)
+        quantity_used = validated_data.pop('quantity_used', 1)
+
         # Manually get 'parts_data' from the initial request data.
         # This bypasses the serializer field validation, which is the source of the issue.
         parts_data_str = self.initial_data.get('parts_data')
@@ -145,20 +183,51 @@ class CncTaskDetailSerializer(serializers.ModelSerializer):
         if task_files_to_create:
             TaskFile.objects.bulk_create(task_files_to_create)
 
+        # Create remnant plate usage if specified
+        if selected_plate_id:
+            try:
+                remnant_plate = RemnantPlate.objects.get(id=selected_plate_id)
+                RemnantPlateUsage.objects.create(
+                    cnc_task=cnc_task,
+                    remnant_plate=remnant_plate,
+                    quantity_used=quantity_used
+                )
+            except RemnantPlate.DoesNotExist:
+                raise serializers.ValidationError({"selected_plate_id": "Remnant plate not found."})
+
         return cnc_task
     
     def update(self, instance, validated_data):
-        # Pull selected_plate explicitly so we can clear it if provided as None/empty
-        selected_plate = validated_data.pop('selected_plate', serializers.empty)
+        # Extract remnant plate data
+        selected_plate_id = validated_data.pop('selected_plate_id', None)
+        quantity_used = validated_data.pop('quantity_used', 1)
 
+        # Update regular fields
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
 
-        if selected_plate is not serializers.empty:
-            # Can be an instance or None (to remove)
-            instance.selected_plate = selected_plate
-
         instance.save()
+
+        # Handle remnant plate assignment
+        if 'selected_plate_id' in self.initial_data:
+            if selected_plate_id is None:
+                # Remove all plate assignments
+                instance.plate_usage_records.all().delete()
+            else:
+                # Update or create plate usage
+                try:
+                    remnant_plate = RemnantPlate.objects.get(id=selected_plate_id)
+
+                    # Remove existing usage records and create new one
+                    instance.plate_usage_records.all().delete()
+                    RemnantPlateUsage.objects.create(
+                        cnc_task=instance,
+                        remnant_plate=remnant_plate,
+                        quantity_used=quantity_used
+                    )
+                except RemnantPlate.DoesNotExist:
+                    raise serializers.ValidationError({"selected_plate_id": "Remnant plate not found."})
+
         return instance
 
 
@@ -172,15 +241,6 @@ class CncHoldTaskSerializer(serializers.ModelSerializer):
             'key', 'name', 'nesting_id'
         ]
         read_only_fields = ['key', 'name', 'nesting_id']
-
-
-class RemnantPlateSerializer(serializers.ModelSerializer):
-    """
-    Serializer for the RemnantPlate model.
-    """
-    class Meta:
-        model = RemnantPlate
-        fields = ['id', 'thickness_mm', 'thickness_mm_2', 'dimensions', 'quantity', 'material']
 
 
 # --- Planning Serializers ---

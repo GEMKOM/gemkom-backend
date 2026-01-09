@@ -44,8 +44,8 @@ class RemnantPlateFilter(django_filters.FilterSet):
     dimensions = django_filters.CharFilter(lookup_expr='icontains')
     material = django_filters.CharFilter(lookup_expr='icontains')
     heat_number = django_filters.CharFilter(lookup_expr='icontains')
-    # Filter for remnant plates that are not assigned to any task
-    unassigned = django_filters.BooleanFilter(field_name='cnc_tasks', lookup_expr='isnull')
+    # Filter for remnant plates that are not used by any task
+    unassigned = django_filters.BooleanFilter(field_name='usage_records', lookup_expr='isnull')
 
     class Meta:
         model = RemnantPlate
