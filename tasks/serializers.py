@@ -362,7 +362,7 @@ class PartListSerializer(serializers.ModelSerializer):
     class Meta:
         model = Part
         fields = [
-            'key', 'name', 'description',
+            'key', 'task_key', 'name', 'description',
             'job_no', 'image_no', 'position_no',
             'quantity', 'material', 'dimensions', 'weight_kg',
             'finish_time',

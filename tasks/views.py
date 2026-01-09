@@ -653,7 +653,7 @@ class PartViewSet(ModelViewSet):
     permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, OrderingFilter]
     filterset_class = PartFilter
-    ordering_fields = ['created_at', 'finish_time']
+    ordering_fields = ['created_at', 'finish_time', 'key', 'job_no', 'name']
     ordering = ['-created_at']
 
     def get_queryset(self):
