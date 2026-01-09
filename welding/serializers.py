@@ -90,6 +90,8 @@ class WeldingTimeEntryBulkCreateSerializer(serializers.Serializer):
 
     def create(self, validated_data):
         """Create multiple entries in a single transaction with batching for large datasets."""
+        from welding.models import WeldingJobCostRecalcQueue
+
         entries_data = validated_data['entries']
         request = self.context.get('request')
 
@@ -109,6 +111,15 @@ class WeldingTimeEntryBulkCreateSerializer(serializers.Serializer):
             batch = entries_to_create[i:i + BATCH_SIZE]
             created_batch = WeldingTimeEntry.objects.bulk_create(batch, batch_size=BATCH_SIZE)
             all_entries.extend(created_batch)
+
+        # IMPORTANT: bulk_create() does NOT trigger Django signals!
+        # Manually enqueue all affected jobs for cost recalculation
+        unique_jobs = {entry.job_no for entry in all_entries if entry.job_no}
+        for job_no in unique_jobs:
+            WeldingJobCostRecalcQueue.objects.update_or_create(
+                job_no=job_no,
+                defaults={}
+            )
 
         return {'entries': all_entries}
 
