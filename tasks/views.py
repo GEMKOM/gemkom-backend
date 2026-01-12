@@ -1107,14 +1107,19 @@ class OperationViewSet(ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def unmark_completed(self, request, pk=None):
-        """Unmark operation completion (admin only)"""
-        if not request.user.is_staff:
-            return Response({'error': 'Admin only'}, status=403)
-
+        """Unmark operation completion and uncomplete parent part if needed"""
         operation = self.get_object()
+
+        # Clear operation completion
         operation.completion_date = None
         operation.completed_by = None
         operation.save()
+
+        # Uncomplete parent part since it now has an incomplete operation
+        if operation.part.completion_date:
+            operation.part.completion_date = None
+            operation.part.completed_by = None
+            operation.part.save()
 
         return Response(self.get_serializer(operation).data)
 

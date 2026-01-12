@@ -364,11 +364,17 @@ class Operation(BaseTask):
             self.in_plan = False
             self.plan_order = None
 
+        # Track if this is a new incomplete operation being added to a completed part
+        is_new = self._state.adding
+
         super().save(*args, **kwargs)
 
         # Check if all operations are complete -> auto-complete parent part
         if self.completion_date:
             self._check_and_complete_part()
+        # If adding a new incomplete operation to a completed part -> uncomplete the part
+        elif is_new and self.part.completion_date:
+            self._uncomplete_part()
 
     def _check_and_complete_part(self):
         """Auto-complete parent part if all operations are completed."""
@@ -380,6 +386,13 @@ class Operation(BaseTask):
                 self.part.completion_date = int(time.time() * 1000)
                 self.part.completed_by = self.completed_by
                 self.part.save()
+
+    def _uncomplete_part(self):
+        """Uncomplete parent part when this operation becomes incomplete."""
+        if self.part.completion_date:
+            self.part.completion_date = None
+            self.part.completed_by = None
+            self.part.save()
 
 
 class OperationTool(models.Model):
