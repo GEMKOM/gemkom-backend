@@ -574,11 +574,11 @@ class DailyEfficiencyReportView(APIView):
         from tasks.models import Operation
         task_totals = {}
         if task_keys_set:
-            operations_with_timers = Operation.objects.filter(key__in=task_keys_set).prefetch_related('issue_key').select_related('part')
+            operations_with_timers = Operation.objects.filter(key__in=task_keys_set).prefetch_related('timers').select_related('part')
             for operation in operations_with_timers:
                 # Calculate total hours spent across all timers for this operation up to and including the chosen date
                 # Filter timers that finished on or before the end of the chosen date
-                operation_timers = operation.issue_key.exclude(finish_time__isnull=True).filter(finish_time__lte=day_end_ms)
+                operation_timers = operation.timers.exclude(finish_time__isnull=True).filter(finish_time__lte=day_end_ms)
                 total_ms = sum(
                     (t.finish_time - t.start_time)
                     for t in operation_timers

@@ -430,6 +430,19 @@ class GenericMarkTaskCompletedView(APIView):
             task = TaskModel.objects.get(key=task_key)
             task.completed_by = request.user
             task.completion_date = int(time.time() * 1000)  # current time in ms
+
+            # Clear planning fields when task is completed (if it has them)
+            if hasattr(task, 'in_plan'):
+                task.in_plan = False
+            if hasattr(task, 'plan_order'):
+                task.plan_order = None
+            if hasattr(task, 'planned_start_ms'):
+                task.planned_start_ms = None
+            if hasattr(task, 'planned_end_ms'):
+                task.planned_end_ms = None
+            if hasattr(task, 'plan_locked'):
+                task.plan_locked = False
+
             task.save()
             return Response({'status': 'Task marked as completed.'})
         except TaskModel.DoesNotExist:
@@ -774,7 +787,7 @@ class PartViewSet(ModelViewSet):
         )
 
     @action(detail=True, methods=['post'])
-    def update_operations(self, request):
+    def update_operations(self, request, pk=None):
         """
         Bulk update operations for a part.
 
@@ -845,7 +858,11 @@ class PartViewSet(ModelViewSet):
 
                         # Update fields
                         for field, value in op_data.items():
-                            setattr(operation, field, value)
+                            # Handle ForeignKey fields - use field_id for direct ID assignment
+                            if field == 'machine_fk' and value is not None:
+                                setattr(operation, 'machine_fk_id', value)
+                            else:
+                                setattr(operation, field, value)
                         operation.save()
 
                         # Update tools
@@ -1076,6 +1093,14 @@ class OperationViewSet(ModelViewSet):
         import time
         operation.completion_date = int(time.time() * 1000)
         operation.completed_by = request.user
+
+        # Clear planning fields when operation is completed
+        operation.in_plan = False
+        operation.plan_order = None
+        operation.planned_start_ms = None
+        operation.planned_end_ms = None
+        operation.plan_locked = False
+
         operation.save()
 
         return Response(self.get_serializer(operation).data)
@@ -1509,7 +1534,15 @@ class LogReasonView(APIView):
                     operation = Operation.objects.get(key=op_key)
                     operation.completion_date = now_ms
                     operation.completed_by = request.user
-                    operation.save(update_fields=['completion_date', 'completed_by'])
+
+                    # Clear planning fields when operation is completed
+                    operation.in_plan = False
+                    operation.plan_order = None
+                    operation.planned_start_ms = None
+                    operation.planned_end_ms = None
+                    operation.plan_locked = False
+
+                    operation.save(update_fields=['completion_date', 'completed_by', 'in_plan', 'plan_order', 'planned_start_ms', 'planned_end_ms', 'plan_locked'])
                     response_data['operation_completed'] = True
                     response_data['message'] = f"Timer stopped and operation marked complete"
                 else:
