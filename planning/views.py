@@ -299,7 +299,7 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
         user = self.request.user
 
         # For list views and list-like actions, use minimal prefetching
-        if self.action in ['list', 'ready_for_procurement', 'my_requests']:
+        if self.action in ['list', 'ready_for_procurement', 'my_requests', 'warehouse_requests']:
             qs = PlanningRequest.objects.select_related(
                 'created_by', 'department_request'
             ).annotate(
@@ -332,7 +332,7 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
             return PlanningRequestCreateSerializer
         elif self.action in ['update', 'partial_update']:
             return PlanningRequestUpdateSerializer
-        elif self.action in ['list', 'ready_for_procurement', 'my_requests']:
+        elif self.action in ['list', 'ready_for_procurement', 'my_requests', 'warehouse_requests']:
             return PlanningRequestListSerializer
         return PlanningRequestSerializer
 
@@ -720,6 +720,41 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
         """Get current user's planning requests."""
         user = request.user
         queryset = self.get_queryset().filter(created_by=user)
+
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['GET'], permission_classes=[permissions.IsAuthenticated])
+    def warehouse_requests(self, request):
+        """
+        Get planning requests for warehouse team.
+        Shows requests that need inventory checking or have been submitted.
+
+        Query parameters:
+        - status: Filter by specific status (pending_inventory, pending_erp_entry, completed)
+        - If no status provided, shows all requests with check_inventory=True
+        """
+        user = request.user
+
+        # Only warehouse team and superusers can access
+        if not (user.is_superuser or (hasattr(user, 'profile') and user.profile.team == 'warehouse')):
+            return Response({"detail": "Only warehouse team can access this endpoint."}, status=403)
+
+        # Base queryset: all requests with inventory control enabled
+        queryset = self.get_queryset().filter(check_inventory=True)
+
+        # Filter by status if provided
+        status_filter = request.query_params.get('status')
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+
+        # Order by priority and creation date
+        queryset = queryset.order_by('-priority', '-created_at')
 
         page = self.paginate_queryset(queryset)
         if page is not None:

@@ -1,4 +1,5 @@
 import time
+import logging
 from rest_framework.viewsets import ModelViewSet
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.parsers import MultiPartParser, FormParser
@@ -13,6 +14,8 @@ from django.utils import timezone
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.decorators import action
+
+logger = logging.getLogger(__name__)
 
 from .models import CncTask, CncPart, RemnantPlate
 from tasks.models import TaskFile
@@ -188,6 +191,32 @@ class CncPartViewSet(ModelViewSet):
     serializer_class = CncPartSerializer
     permission_classes = [IsAuthenticated]
 
+    def destroy(self, request, *args, **kwargs):
+        """
+        Delete a single CncPart instance.
+        Only office users can delete parts.
+        """
+        # Authorization: Only office users can delete parts
+        user = request.user
+        if not (user and hasattr(user, 'profile') and user.profile.work_location == 'office'):
+            return Response(
+                {"error": "Only office users can delete parts."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # Get the part to delete
+        part = self.get_object()
+
+        # Log the deletion
+        logger.info(
+            f"Deleting part: User={user.username}, PartID={part.id}, "
+            f"Task={part.cnc_task.key}, JobNo={part.job_no}, "
+            f"ImageNo={part.image_no}, PositionNo={part.position_no}"
+        )
+
+        # Perform deletion
+        return super().destroy(request, *args, **kwargs)
+
     @action(detail=False, methods=['post'], url_path='bulk-create')
     def bulk_create(self, request, *args, **kwargs):
         """
@@ -207,21 +236,109 @@ class CncPartViewSet(ModelViewSet):
     @action(detail=False, methods=['delete'], url_path='bulk-delete')
     def bulk_delete(self, request, *args, **kwargs):
         """
-        Handles bulk deletion of CncPart instances.
+        Handles bulk deletion of CncPart instances for a single CNC task.
         Expects a DELETE request to `/api/cnc_cutting/parts/bulk-delete/`
-        with a list of CncPart IDs in the request body.
-        e.g. {"ids": [1, 2, 3]}
-        """
-        part_ids = request.data.get('ids', [])
-        if not isinstance(part_ids, list) or not part_ids:
-            return Response({"error": "A list of part 'ids' is required in the request body."}, status=status.HTTP_400_BAD_REQUEST)
+        with a task key and list of CncPart IDs in the request body.
+        e.g. {"task_key": "CNC-001", "ids": [1, 2, 3]}
 
-        # Filter for parts that exist and perform deletion
-        queryset = self.get_queryset()
-        parts_to_delete = queryset.filter(id__in=part_ids)
+        Restrictions:
+        - Only office users can delete parts
+        - All parts must belong to the specified task
+        - Only deletes parts from a single task at a time
+        """
+        # Authorization: Only office users can bulk delete parts
+        user = request.user
+        if not (user and hasattr(user, 'profile') and user.profile.work_location == 'office'):
+            return Response(
+                {"error": "Only office users can bulk delete parts."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # Get and validate task_key
+        task_key = request.data.get('task_key')
+        if not task_key or not isinstance(task_key, str):
+            return Response(
+                {"error": "A valid 'task_key' string is required in the request body."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Get and validate part IDs
+        part_ids = request.data.get('ids')
+        if part_ids is None:
+            return Response(
+                {"error": "The 'ids' field is required in the request body."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if not isinstance(part_ids, list):
+            return Response(
+                {"error": "The 'ids' field must be a list of part IDs."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if not part_ids:
+            return Response(
+                {"error": "The 'ids' list cannot be empty."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Validate all IDs are integers
+        if not all(isinstance(id, int) for id in part_ids):
+            return Response(
+                {"error": "All part IDs must be integers."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Verify the task exists
+        try:
+            task = CncTask.objects.get(key=task_key)
+        except CncTask.DoesNotExist:
+            return Response(
+                {"error": f"CNC task '{task_key}' not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # Filter parts that belong to this specific task
+        parts_to_delete = CncPart.objects.filter(
+            id__in=part_ids,
+            cnc_task=task
+        )
+
+        # Check if all requested parts were found and belong to the task
+        found_count = parts_to_delete.count()
+        if found_count != len(part_ids):
+            missing_or_wrong_task = set(part_ids) - set(parts_to_delete.values_list('id', flat=True))
+            logger.warning(
+                f"Bulk delete failed - invalid part IDs: User={user.username}, "
+                f"Task={task_key}, RequestedIDs={part_ids}, InvalidIDs={list(missing_or_wrong_task)}"
+            )
+            return Response(
+                {
+                    "error": f"Some part IDs were not found or do not belong to task '{task_key}'.",
+                    "invalid_ids": list(missing_or_wrong_task)
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Log the deletion before performing it (for audit trail)
+        parts_info = list(parts_to_delete.values('id', 'job_no', 'image_no', 'position_no'))
+        logger.info(
+            f"Bulk deleting {found_count} parts: User={user.username}, "
+            f"Task={task_key}, PartIDs={part_ids}, Parts={parts_info}"
+        )
+
+        # Perform deletion
         count, _ = parts_to_delete.delete()
 
-        return Response({'status': f'{count} parts deleted successfully.'}, status=status.HTTP_204_NO_CONTENT)
+        logger.info(
+            f"Successfully bulk deleted {count} parts: User={user.username}, Task={task_key}"
+        )
+
+        return Response({
+            'status': f'{count} parts deleted successfully from task {task_key}.',
+            'deleted_count': count,
+            'task_key': task_key
+        }, status=status.HTTP_200_OK)
 
 class CncTaskFileViewSet(mixins.DestroyModelMixin, viewsets.GenericViewSet):
     """
