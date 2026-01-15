@@ -128,9 +128,9 @@ class Timer(models.Model):
     comment = models.TextField(null=True, blank=True)
     machine_fk = models.ForeignKey(Machine, on_delete=models.SET_NULL, null=True, blank=True, related_name='new_machine_timers')
 
-    # Generic Foreign Key to link to any Task type
-    content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE)
-    object_id = models.CharField(max_length=255) # Use CharField to match Task's primary key
+    # Generic Foreign Key to link to any Task type (optional for downtime/break timers)
+    content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE, null=True, blank=True)
+    object_id = models.CharField(max_length=255, null=True, blank=True)  # Use CharField to match Task's primary key
     issue_key = GenericForeignKey('content_type', 'object_id')
 
     # New fields for downtime tracking

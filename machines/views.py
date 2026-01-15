@@ -353,12 +353,32 @@ class MachineFaultDetailView(APIView):
         serializer = MachineFaultSerializer(fault)
         return Response(serializer.data)
 
+    def _stop_downtime_timers_for_fault(self, fault, user):
+        """
+        When a fault is resolved, stop all downtime timers linked to this fault.
+        """
+        from tasks.models import Timer
+
+        now_ms = int(timezone.now().timestamp() * 1000)
+
+        downtime_timers = Timer.objects.filter(
+            related_fault=fault,
+            finish_time__isnull=True,
+            timer_type='downtime'
+        )
+
+        for timer in downtime_timers:
+            timer.finish_time = now_ms
+            timer.stopped_by = user
+            timer.save(update_fields=['finish_time', 'stopped_by'])
+
     def put(self, request, pk):
         """
         Your current semantics:
         - If the fault is not resolved yet, a PUT marks it resolved (stamps resolved_by/at),
           then stops active timers on that machine if it's a breaking fault.
         - If already resolved, allow partial updates without touching resolution fields.
+        - Only maintenance team members or admins can resolve faults.
         """
         fault = self.get_object(pk)
         serializer = MachineFaultSerializer(fault, data=request.data, partial=True)
@@ -367,6 +387,17 @@ class MachineFaultDetailView(APIView):
             return Response(serializer.errors, status=400)
 
         if not fault.resolved_at:
+            # Only maintenance team or admins can resolve faults
+            user_profile = getattr(request.user, 'profile', None)
+            user_team = getattr(user_profile, 'team', None) if user_profile else None
+            is_maintenance = user_team == 'maintenance'
+            is_admin = request.user.is_superuser or getattr(request.user, 'is_admin', False)
+
+            if not is_maintenance and not is_admin:
+                return Response(
+                    {'error': 'Only maintenance team members can resolve machine faults.'},
+                    status=403
+                )
             now_ms = int(timezone.now().timestamp() * 1000)
 
             # Set downtime end if this is a breaking fault

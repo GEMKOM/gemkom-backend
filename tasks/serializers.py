@@ -63,7 +63,7 @@ class BaseTimerSerializer(serializers.ModelSerializer):
             'task_total_hours',
             # New fields
             'timer_type', 'downtime_reason', 'downtime_reason_code', 'downtime_reason_name',
-            'related_fault', 'related_fault_id',
+            'related_fault', 'related_fault_id', 'can_be_stopped_by_user',
         ]
         read_only_fields = ['id', 'user', 'issue_key']
 

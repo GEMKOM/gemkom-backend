@@ -111,6 +111,20 @@ class GenericTimerStartView(APIView):
         SerializerClass = get_timer_serializer_class(task_type)
         serializer = SerializerClass(data=data, context={'request': request})
         if serializer.is_valid():
+            # Check for existing active timer on the same machine
+            machine_id = serializer.validated_data.get('machine_fk')
+            if machine_id:
+                existing_active_timer = Timer.objects.filter(
+                    machine_fk=machine_id,
+                    finish_time__isnull=True
+                ).first()
+                if existing_active_timer:
+                    return Response({
+                        'error': 'There is already an active timer on this machine. Stop it first before starting a new one.',
+                        'existing_timer_id': existing_active_timer.id,
+                        'existing_timer_user': existing_active_timer.user.username
+                    }, status=status.HTTP_409_CONFLICT)
+
             timer = serializer.save()
             return Response({"id": timer.id}, status=status.HTTP_200_OK)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -233,7 +247,8 @@ class GenericTimerListView(APIView):
         except ContentType.DoesNotExist:
             return Response({"error": f"Invalid task_type '{task_type}'"}, status=status.HTTP_400_BAD_REQUEST)
 
-        query = Q(content_type=ct)
+        # Include both task-linked timers AND machine-level timers (downtime/break with no operation)
+        query = Q(content_type=ct) | Q(content_type__isnull=True)
 
         if request.GET.get("is_active") == "true":
             query &= Q(finish_time__isnull=True)
@@ -1341,9 +1356,11 @@ class LogReasonView(APIView):
         "current_timer_id": 123,           # Optional - timer to stop
         "reason_id": 4,                    # Required - DowntimeReason ID
         "comment": "Waiting for steel",    # Optional - description
-        "machine_id": 5,                   # Required for logging reason without timer
-        "operation_key": "PT-001-OP-1"     # Required for logging reason without timer
+        "machine_id": 5                    # Required for logging reason without timer
     }
+
+    Note: Downtime/break timers are tracked at the machine level only (not operation-specific).
+    This allows tracking general usage of reasons by machine and by user.
 
     Response:
     {
@@ -1362,14 +1379,12 @@ class LogReasonView(APIView):
         from .models import DowntimeReason, Timer
         from machines.models import Machine, MachineFault
         from django.utils import timezone
-        from django.contrib.contenttypes.models import ContentType
 
         # Parse request data
         current_timer_id = request.data.get('current_timer_id')
         reason_id = request.data.get('reason_id')
         comment = request.data.get('comment', '').strip()
         machine_id = request.data.get('machine_id')
-        operation_key = request.data.get('operation_key')
 
         # Validate required fields
         if not reason_id:
@@ -1391,8 +1406,6 @@ class LogReasonView(APIView):
 
         current_timer = None
         machine = None
-        content_type = None
-        object_id = None
 
         # Step 1: Handle stopping current timer if provided
         if current_timer_id:
@@ -1432,36 +1445,38 @@ class LogReasonView(APIView):
 
                 response_data['stopped_timer_id'] = current_timer.id
                 machine = current_timer.machine_fk
-                content_type = current_timer.content_type
-                object_id = current_timer.object_id
 
             except Timer.DoesNotExist:
                 return Response({'error': 'Timer not found'}, status=404)
 
-        # Step 2: If no current timer, validate machine and operation are provided
+        # Step 2: If no current timer, validate machine is provided
+        # Note: Downtime/break timers are machine-level only, not operation-specific
         if not current_timer:
-            # Machine is always required for any timer operation
             if not machine_id:
                 return Response({'error': 'machine_id is required when no current_timer_id is provided'}, status=400)
-            if not operation_key:
-                return Response({'error': 'operation_key is required when no current_timer_id is provided'}, status=400)
 
             try:
                 machine = Machine.objects.get(id=machine_id)
             except Machine.DoesNotExist:
                 return Response({'error': 'Machine not found'}, status=404)
 
-            # Get operation
-            try:
-                operation = Operation.objects.get(key=operation_key)
-                content_type = ContentType.objects.get_for_model(Operation)
-                object_id = operation.id
-            except Operation.DoesNotExist:
-                return Response({'error': 'Operation not found'}, status=404)
-
         # If we don't have a machine at this point, something is wrong
         if not machine:
             return Response({'error': 'Machine is required for all timer operations'}, status=400)
+
+        # Check for existing active timer on this machine (only if we're going to create a new timer)
+        # Skip this check if we just stopped a timer (current_timer was provided and stopped)
+        if reason.creates_timer and not current_timer:
+            existing_active_timer = Timer.objects.filter(
+                machine_fk=machine,
+                finish_time__isnull=True
+            ).first()
+            if existing_active_timer:
+                return Response({
+                    'error': 'There is already an active timer on this machine. Stop it first before starting a new one.',
+                    'existing_timer_id': existing_active_timer.id,
+                    'existing_timer_user': existing_active_timer.user.username
+                }, status=409)
 
         # Step 3: Handle MACHINE_FAULT reason - create fault and auto-stop productive timers
         fault = None
@@ -1486,13 +1501,11 @@ class LogReasonView(APIView):
             # and create a downtime timer linked to the fault
             if current_timer and current_timer.timer_type == 'productive':
                 # We already stopped the productive timer in Step 1
-                # Now create downtime timer linked to the fault
+                # Now create downtime timer linked to the fault (machine-level only)
                 new_timer = Timer.objects.create(
                     user=request.user,
                     start_time=now_ms,
                     machine_fk=machine,
-                    content_type=content_type,
-                    object_id=object_id,
                     timer_type='downtime',
                     downtime_reason=reason,
                     related_fault=fault,
@@ -1509,8 +1522,6 @@ class LogReasonView(APIView):
                     user=request.user,
                     start_time=now_ms,
                     machine_fk=machine,
-                    content_type=content_type,
-                    object_id=object_id,
                     timer_type='downtime',
                     downtime_reason=reason,
                     related_fault=fault,
@@ -1521,44 +1532,8 @@ class LogReasonView(APIView):
                 response_data['message'] = f"Machine fault reported and downtime timer started"
                 return Response(response_data, status=200)
 
-        # Step 4: Handle WORK_COMPLETE reason - mark operation as complete
-        if reason.code == 'WORK_COMPLETE':
-            # Get the operation and mark it complete
-            try:
-                # Determine which operation key to use
-                op_key = None
-                if current_timer:
-                    # Check if the timer's content_type is Operation
-                    operation_ct = ContentType.objects.get_for_model(Operation)
-                    if current_timer.content_type == operation_ct:
-                        op_key = current_timer.object_id
-                else:
-                    op_key = operation_key
-
-                if op_key:
-                    operation = Operation.objects.get(key=op_key)
-                    operation.completion_date = now_ms
-                    operation.completed_by = request.user
-
-                    # Clear planning fields when operation is completed
-                    operation.in_plan = False
-                    operation.plan_order = None
-                    operation.planned_start_ms = None
-                    operation.planned_end_ms = None
-                    operation.plan_locked = False
-
-                    operation.save(update_fields=['completion_date', 'completed_by', 'in_plan', 'plan_order', 'planned_start_ms', 'planned_end_ms', 'plan_locked'])
-                    response_data['operation_completed'] = True
-                    response_data['message'] = f"Timer stopped and operation marked complete"
-                else:
-                    response_data['message'] = f"Timer stopped: {reason.name}"
-            except Operation.DoesNotExist:
-                # If not an operation, just stop the timer
-                response_data['message'] = f"Timer stopped: {reason.name}"
-
-            return Response(response_data, status=200)
-
-        # Step 5: Create new timer if reason requires it (and not already handled above)
+        # Step 4: Create new timer if reason requires it (and not already handled above)
+        # Note: Downtime/break timers are machine-level only, not operation-specific
         if reason.creates_timer:
             # Determine timer type based on reason category
             timer_type = 'break' if reason.category == 'break' else 'downtime'
@@ -1567,8 +1542,6 @@ class LogReasonView(APIView):
                 user=request.user,
                 start_time=now_ms,
                 machine_fk=machine,
-                content_type=content_type,
-                object_id=object_id,
                 timer_type=timer_type,
                 downtime_reason=reason,
                 related_fault=fault,
