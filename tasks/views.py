@@ -63,14 +63,14 @@ class GenericTimerStartView(APIView):
     """
     permission_classes = [IsAuthenticated] # You can create more specific permissions later
 
-    def post(self, request, task_type):
+    def post(self, request, task_type, manual_entry=False):
         data = request.data.copy()
         # For backward compatibility with frontends that might send 'issue_key'
         if 'issue_key' in data:
             data['task_key'] = data.pop('issue_key')
 
         data['task_type'] = task_type  # Set from the URL parameter
-        data['manual_entry'] = False
+        data['manual_entry'] = manual_entry
 
         # If task_type is 'operation', validate tool availability and order
         if task_type == 'operation':
@@ -218,7 +218,7 @@ class GenericTimerManualEntryView(GenericTimerStartView):
             except (ValueError, TypeError):
                 return Response({"error": "Invalid timestamp format for start_time or finish_time."}, status=status.HTTP_400_BAD_REQUEST)
 
-        return super().post(request, task_type)
+        return super().post(request, task_type, manual_entry=True)
 
 
 class GenericTimerListView(APIView):
