@@ -248,7 +248,15 @@ class GenericTimerListView(APIView):
             return Response({"error": f"Invalid task_type '{task_type}'"}, status=status.HTTP_400_BAD_REQUEST)
 
         # Include both task-linked timers AND machine-level timers (downtime/break with no operation)
-        query = Q(content_type=ct) | Q(content_type__isnull=True)
+        # For null content_type timers, filter by user's team to avoid showing them in wrong task_type views
+        # cnc_cutting -> users with team='cutting', operation/machining -> users with team='machining'
+        if task_type == 'cnc_cutting':
+            null_content_type_filter = Q(content_type__isnull=True, user__profile__team='cutting')
+        else:
+            # For 'operation' and 'machining', show timers from machining team users
+            null_content_type_filter = Q(content_type__isnull=True, user__profile__team='machining')
+
+        query = Q(content_type=ct) | null_content_type_filter
 
         if request.GET.get("is_active") == "true":
             query &= Q(finish_time__isnull=True)
