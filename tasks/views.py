@@ -879,6 +879,13 @@ class PartViewSet(ModelViewSet):
                     try:
                         operation = Operation.objects.get(key=op_key, part=part)
 
+                        # Check if machine is being changed - if so, reset plan_order to avoid unique constraint violation
+                        new_machine_id = op_data.get('machine_fk')
+                        if new_machine_id is not None and operation.machine_fk_id != new_machine_id:
+                            # Machine changed - reset planning fields since operation needs to be re-planned on new machine
+                            operation.plan_order = None
+                            operation.in_plan = False
+
                         # Update fields
                         for field, value in op_data.items():
                             # Handle ForeignKey fields - use field_id for direct ID assignment
