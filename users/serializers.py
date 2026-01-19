@@ -142,7 +142,7 @@ class AdminUserUpdateSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ['first_name', 'last_name', 'email', 'jira_api_token', 'team', 'must_reset_password', 'occupation', 'work_location']
+        fields = ['first_name', 'last_name', 'email', 'jira_api_token', 'team', 'must_reset_password', 'occupation', 'work_location', 'is_active']
 
     def update(self, instance, validated_data):
         profile_data = validated_data.pop('profile', {})
