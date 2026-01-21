@@ -1,5 +1,9 @@
 from django.contrib import admin
-from .models import Customer, JobOrder
+from .models import (
+    Customer, JobOrder,
+    DepartmentTaskTemplate, DepartmentTaskTemplateItem,
+    JobOrderDepartmentTask
+)
 
 
 @admin.register(Customer)
@@ -77,6 +81,116 @@ class JobOrderAdmin(admin.ModelAdmin):
         }),
         ('İlerleme', {
             'fields': ('completion_percentage',)
+        }),
+        ('Sistem Bilgileri', {
+            'fields': ('created_at', 'created_by', 'updated_at', 'completed_by'),
+            'classes': ('collapse',)
+        }),
+    )
+
+    def save_model(self, request, obj, form, change):
+        if not change:
+            obj.created_by = request.user
+        super().save_model(request, obj, form, change)
+
+
+# =============================================================================
+# Department Task Template Admin
+# =============================================================================
+
+class DepartmentTaskTemplateItemInline(admin.TabularInline):
+    model = DepartmentTaskTemplateItem
+    extra = 1
+    fields = ['department', 'title', 'sequence']
+    ordering = ['sequence']
+
+
+@admin.register(DepartmentTaskTemplate)
+class DepartmentTaskTemplateAdmin(admin.ModelAdmin):
+    list_display = ['name', 'is_active', 'is_default', 'items_count', 'created_at']
+    list_filter = ['is_active', 'is_default']
+    search_fields = ['name', 'description']
+    ordering = ['name']
+    readonly_fields = ['created_at', 'created_by', 'updated_at']
+    inlines = [DepartmentTaskTemplateItemInline]
+
+    fieldsets = (
+        (None, {
+            'fields': ('name', 'description', 'is_active', 'is_default')
+        }),
+        ('Sistem Bilgileri', {
+            'fields': ('created_at', 'created_by', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+
+    def items_count(self, obj):
+        return obj.items.count()
+    items_count.short_description = 'Öğe Sayısı'
+
+    def save_model(self, request, obj, form, change):
+        if not change:
+            obj.created_by = request.user
+        super().save_model(request, obj, form, change)
+
+
+# =============================================================================
+# Job Order Department Task Admin
+# =============================================================================
+
+class DepartmentTaskSubtaskInline(admin.TabularInline):
+    model = JobOrderDepartmentTask
+    fk_name = 'parent'
+    extra = 0
+    fields = ['title', 'status', 'assigned_to', 'target_completion_date']
+    readonly_fields = ['status']
+    verbose_name = 'Alt Görev'
+    verbose_name_plural = 'Alt Görevler'
+
+
+@admin.register(JobOrderDepartmentTask)
+class JobOrderDepartmentTaskAdmin(admin.ModelAdmin):
+    list_display = [
+        'title', 'job_order', 'department', 'status', 'assigned_to',
+        'is_blocked', 'sequence', 'created_at'
+    ]
+    list_filter = ['status', 'department', 'is_blocked', 'job_order']
+    search_fields = ['title', 'description', 'job_order__job_no', 'job_order__title']
+    ordering = ['job_order', 'sequence']
+    readonly_fields = [
+        'started_at', 'completed_at',
+        'created_at', 'created_by', 'updated_at', 'completed_by'
+    ]
+    autocomplete_fields = ['job_order', 'assigned_to', 'parent']
+    raw_id_fields = ['created_by', 'completed_by']
+    filter_horizontal = ['depends_on']
+    inlines = [DepartmentTaskSubtaskInline]
+
+    fieldsets = (
+        (None, {
+            'fields': ('job_order', 'department', 'title', 'description', 'sequence')
+        }),
+        ('Hiyerarşi', {
+            'fields': ('parent',),
+            'classes': ('collapse',)
+        }),
+        ('Durum', {
+            'fields': ('status', 'assigned_to')
+        }),
+        ('Zaman Çizelgesi', {
+            'fields': ('target_start_date', 'target_completion_date', 'started_at', 'completed_at')
+        }),
+        ('Engeller', {
+            'fields': ('is_blocked', 'blocker_reason'),
+            'classes': ('collapse',)
+        }),
+        ('Bağımlılıklar', {
+            'fields': ('depends_on',),
+            'classes': ('collapse',)
+        }),
+        ('Notlar', {
+            'fields': ('notes',),
+            'classes': ('collapse',)
         }),
         ('Sistem Bilgileri', {
             'fields': ('created_at', 'created_by', 'updated_at', 'completed_by'),

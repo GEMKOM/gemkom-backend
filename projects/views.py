@@ -4,7 +4,11 @@ from rest_framework.filters import SearchFilter, OrderingFilter
 from rest_framework.decorators import action
 from django_filters.rest_framework import DjangoFilterBackend
 
-from .models import Customer, JobOrder
+from .models import (
+    Customer, JobOrder,
+    DepartmentTaskTemplate, DepartmentTaskTemplateItem,
+    JobOrderDepartmentTask, DEPARTMENT_CHOICES
+)
 from .serializers import (
     CustomerListSerializer,
     CustomerDetailSerializer,
@@ -13,6 +17,15 @@ from .serializers import (
     JobOrderDetailSerializer,
     JobOrderCreateSerializer,
     JobOrderUpdateSerializer,
+    DepartmentTaskTemplateListSerializer,
+    DepartmentTaskTemplateDetailSerializer,
+    DepartmentTaskTemplateCreateUpdateSerializer,
+    DepartmentTaskTemplateItemSerializer,
+    DepartmentTaskListSerializer,
+    DepartmentTaskDetailSerializer,
+    DepartmentTaskCreateSerializer,
+    DepartmentTaskUpdateSerializer,
+    ApplyTemplateSerializer,
 )
 
 
@@ -283,4 +296,312 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         return Response([
             {'value': choice[0], 'label': choice[1]}
             for choice in JobOrder.PRIORITY_CHOICES
+        ])
+
+    @action(detail=True, methods=['post'])
+    def apply_template(self, request, job_no=None):
+        """Apply a department task template to this job order."""
+        job_order = self.get_object()
+
+        # Check if job order already has department tasks
+        if job_order.department_tasks.exists():
+            return Response(
+                {'status': 'error', 'message': 'Bu iş emri zaten departman görevlerine sahip.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        serializer = ApplyTemplateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        created_tasks = serializer.create_tasks_from_template(job_order, request.user)
+
+        return Response({
+            'status': 'success',
+            'message': f'{len(created_tasks)} departman görevi oluşturuldu.',
+            'tasks': DepartmentTaskListSerializer(created_tasks, many=True).data
+        }, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['get'])
+    def department_tasks(self, request, job_no=None):
+        """Get all department tasks for this job order."""
+        job_order = self.get_object()
+        # Only return main tasks (no parent), subtasks are nested
+        tasks = job_order.department_tasks.filter(parent__isnull=True).select_related(
+            'assigned_to', 'created_by', 'completed_by'
+        ).prefetch_related('subtasks', 'depends_on')
+
+        serializer = DepartmentTaskListSerializer(tasks, many=True)
+        return Response(serializer.data)
+
+
+# =============================================================================
+# Department Task Template ViewSet
+# =============================================================================
+
+class DepartmentTaskTemplateViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for DepartmentTaskTemplate CRUD operations.
+
+    Custom Actions:
+    - GET /task-templates/{id}/items/ - Get template items
+    - POST /task-templates/{id}/items/ - Add item to template
+    - DELETE /task-templates/{id}/items/{item_id}/ - Remove item from template
+    """
+    queryset = DepartmentTaskTemplate.objects.prefetch_related('items')
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    search_fields = ['name', 'description']
+    ordering_fields = ['name', 'created_at']
+    ordering = ['name']
+    filterset_fields = {
+        'is_active': ['exact'],
+        'is_default': ['exact'],
+    }
+
+    def get_serializer_class(self):
+        if self.action == 'list':
+            return DepartmentTaskTemplateListSerializer
+        elif self.action == 'retrieve':
+            return DepartmentTaskTemplateDetailSerializer
+        elif self.action in ['create', 'update', 'partial_update']:
+            return DepartmentTaskTemplateCreateUpdateSerializer
+        return DepartmentTaskTemplateDetailSerializer
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        detail_serializer = DepartmentTaskTemplateDetailSerializer(serializer.instance)
+        return Response(detail_serializer.data, status=status.HTTP_201_CREATED)
+
+    def update(self, request, *args, **kwargs):
+        partial = kwargs.pop('partial', False)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+        detail_serializer = DepartmentTaskTemplateDetailSerializer(serializer.instance)
+        return Response(detail_serializer.data)
+
+    @action(detail=True, methods=['get', 'post'])
+    def items(self, request, pk=None):
+        """Get or add template items."""
+        template = self.get_object()
+
+        if request.method == 'GET':
+            items = template.items.all()
+            serializer = DepartmentTaskTemplateItemSerializer(items, many=True)
+            return Response(serializer.data)
+
+        elif request.method == 'POST':
+            serializer = DepartmentTaskTemplateItemSerializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            serializer.save(template=template)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['delete'], url_path='items/(?P<item_id>[^/.]+)')
+    def remove_item(self, request, pk=None, item_id=None):
+        """Remove an item from template."""
+        template = self.get_object()
+        try:
+            item = template.items.get(id=item_id)
+            item.delete()
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        except DepartmentTaskTemplateItem.DoesNotExist:
+            return Response(
+                {'status': 'error', 'message': 'Şablon öğesi bulunamadı.'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+    @action(detail=False, methods=['get'])
+    def department_choices(self, request):
+        """Get available department choices."""
+        return Response([
+            {'value': choice[0], 'label': choice[1]}
+            for choice in DEPARTMENT_CHOICES
+        ])
+
+
+# =============================================================================
+# Job Order Department Task ViewSet
+# =============================================================================
+
+class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for JobOrderDepartmentTask CRUD operations with workflow actions.
+
+    Custom Actions:
+    - POST /department-tasks/{id}/start/ - Start the task
+    - POST /department-tasks/{id}/complete/ - Complete the task
+    - POST /department-tasks/{id}/block/ - Block the task
+    - POST /department-tasks/{id}/unblock/ - Unblock the task
+    - POST /department-tasks/{id}/skip/ - Skip the task
+    """
+    queryset = JobOrderDepartmentTask.objects.select_related(
+        'job_order', 'assigned_to', 'parent', 'created_by', 'completed_by'
+    ).prefetch_related('subtasks', 'depends_on')
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    search_fields = ['title', 'description', 'job_order__job_no', 'job_order__title']
+    ordering_fields = ['sequence', 'status', 'created_at', 'target_completion_date']
+    ordering = ['job_order', 'sequence']
+    filterset_fields = {
+        'job_order': ['exact'],
+        'department': ['exact', 'in'],
+        'status': ['exact', 'in'],
+        'assigned_to': ['exact', 'isnull'],
+        'parent': ['exact', 'isnull'],
+        'is_blocked': ['exact'],
+    }
+
+    def get_serializer_class(self):
+        if self.action == 'list':
+            return DepartmentTaskListSerializer
+        elif self.action == 'retrieve':
+            return DepartmentTaskDetailSerializer
+        elif self.action == 'create':
+            return DepartmentTaskCreateSerializer
+        elif self.action in ['update', 'partial_update']:
+            return DepartmentTaskUpdateSerializer
+        return DepartmentTaskDetailSerializer
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+
+        # Filter to main tasks only if requested
+        main_only = self.request.query_params.get('main_only', 'false').lower() == 'true'
+        if main_only:
+            queryset = queryset.filter(parent__isnull=True)
+
+        return queryset
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        detail_serializer = DepartmentTaskDetailSerializer(serializer.instance)
+        return Response(detail_serializer.data, status=status.HTTP_201_CREATED)
+
+    def update(self, request, *args, **kwargs):
+        partial = kwargs.pop('partial', False)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+        detail_serializer = DepartmentTaskDetailSerializer(serializer.instance)
+        return Response(detail_serializer.data)
+
+    # -------------------------------------------------------------------------
+    # Workflow Actions
+    # -------------------------------------------------------------------------
+
+    @action(detail=True, methods=['post'])
+    def start(self, request, pk=None):
+        """Start the department task."""
+        task = self.get_object()
+        try:
+            task.start(user=request.user)
+            return Response({
+                'status': 'success',
+                'message': 'Görev başlatıldı.',
+                'task': DepartmentTaskDetailSerializer(task).data
+            })
+        except ValueError as e:
+            return Response(
+                {'status': 'error', 'message': str(e)},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+    @action(detail=True, methods=['post'])
+    def complete(self, request, pk=None):
+        """Complete the department task."""
+        task = self.get_object()
+        try:
+            task.complete(user=request.user)
+            return Response({
+                'status': 'success',
+                'message': 'Görev tamamlandı.',
+                'task': DepartmentTaskDetailSerializer(task).data
+            })
+        except ValueError as e:
+            return Response(
+                {'status': 'error', 'message': str(e)},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+    @action(detail=True, methods=['post'])
+    def block(self, request, pk=None):
+        """Block the department task."""
+        task = self.get_object()
+        reason = request.data.get('reason', '')
+        if not reason:
+            return Response(
+                {'status': 'error', 'message': 'Engelleme nedeni gerekli.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        try:
+            task.block(reason=reason)
+            return Response({
+                'status': 'success',
+                'message': 'Görev engellendi.',
+                'task': DepartmentTaskDetailSerializer(task).data
+            })
+        except ValueError as e:
+            return Response(
+                {'status': 'error', 'message': str(e)},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+    @action(detail=True, methods=['post'])
+    def unblock(self, request, pk=None):
+        """Unblock the department task."""
+        task = self.get_object()
+        try:
+            task.unblock()
+            return Response({
+                'status': 'success',
+                'message': 'Görev engeli kaldırıldı.',
+                'task': DepartmentTaskDetailSerializer(task).data
+            })
+        except ValueError as e:
+            return Response(
+                {'status': 'error', 'message': str(e)},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+    @action(detail=True, methods=['post'])
+    def skip(self, request, pk=None):
+        """Skip the department task."""
+        task = self.get_object()
+        try:
+            task.skip(user=request.user)
+            return Response({
+                'status': 'success',
+                'message': 'Görev atlandı.',
+                'task': DepartmentTaskDetailSerializer(task).data
+            })
+        except ValueError as e:
+            return Response(
+                {'status': 'error', 'message': str(e)},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+    @action(detail=False, methods=['get'])
+    def status_choices(self, request):
+        """Get available status choices."""
+        return Response([
+            {'value': choice[0], 'label': choice[1]}
+            for choice in JobOrderDepartmentTask.STATUS_CHOICES
+        ])
+
+    @action(detail=False, methods=['get'])
+    def department_choices(self, request):
+        """Get available department choices."""
+        return Response([
+            {'value': choice[0], 'label': choice[1]}
+            for choice in DEPARTMENT_CHOICES
         ])

@@ -55,7 +55,7 @@ class Customer(models.Model):
     updated_at = models.DateTimeField(auto_now=True, null=True)
 
     class Meta:
-        ordering = ['name']
+        ordering = ['code']
         indexes = [
             models.Index(fields=['code']),
             models.Index(fields=['is_active']),
@@ -341,3 +341,322 @@ class JobOrder(models.Model):
         # Cascade to children (except completed ones)
         for child in self.children.exclude(status='completed'):
             child.cancel(user=user)
+
+
+# =============================================================================
+# Department Task Templates
+# =============================================================================
+
+DEPARTMENT_CHOICES = [
+    ('design', 'Tasarım'),
+    ('planning', 'Planlama'),
+    ('procurement', 'Satın Alma'),
+    ('manufacturing', 'Üretim'),
+    ('painting', 'Boya'),
+    ('logistics', 'Lojistik'),
+]
+
+
+class DepartmentTaskTemplate(models.Model):
+    """
+    Reusable template for creating department tasks on job orders.
+    Planning team can create/edit these templates.
+    """
+    name = models.CharField(max_length=200, unique=True)
+    description = models.TextField(blank=True, null=True)
+    is_active = models.BooleanField(default=True)
+    is_default = models.BooleanField(default=False)
+
+    # Audit
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='task_templates_created'
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['name']
+        verbose_name = 'Departman Görevi Şablonu'
+        verbose_name_plural = 'Departman Görevi Şablonları'
+
+    def __str__(self):
+        return self.name
+
+    def save(self, *args, **kwargs):
+        # Ensure only one default template
+        if self.is_default:
+            DepartmentTaskTemplate.objects.filter(is_default=True).exclude(pk=self.pk).update(is_default=False)
+        super().save(*args, **kwargs)
+
+
+class DepartmentTaskTemplateItem(models.Model):
+    """
+    Individual department task within a template.
+    Defines which departments in what order with dependencies.
+    """
+    template = models.ForeignKey(
+        DepartmentTaskTemplate,
+        on_delete=models.CASCADE,
+        related_name='items'
+    )
+    department = models.CharField(max_length=50, choices=DEPARTMENT_CHOICES)
+    title = models.CharField(max_length=255, blank=True)  # Auto-filled from department if empty
+    sequence = models.PositiveIntegerField(default=1)
+
+    # Dependencies - this task can start when these are done
+    depends_on = models.ManyToManyField(
+        'self',
+        symmetrical=False,
+        blank=True,
+        related_name='dependents'
+    )
+
+    class Meta:
+        ordering = ['template', 'sequence']
+        unique_together = [('template', 'department')]
+        verbose_name = 'Şablon Öğesi'
+        verbose_name_plural = 'Şablon Öğeleri'
+
+    def __str__(self):
+        return f"{self.template.name} - {self.get_department_display()}"
+
+    def save(self, *args, **kwargs):
+        # Auto-fill title from department display name if not provided
+        if not self.title:
+            self.title = self.get_department_display()
+        super().save(*args, **kwargs)
+
+
+# =============================================================================
+# Job Order Department Tasks
+# =============================================================================
+
+class JobOrderDepartmentTask(models.Model):
+    """
+    Department-specific task within a job order.
+    Can have subtasks for detailed tracking.
+    """
+    STATUS_CHOICES = [
+        ('pending', 'Bekliyor'),
+        ('in_progress', 'Devam Ediyor'),
+        ('blocked', 'Engellendi'),
+        ('completed', 'Tamamlandı'),
+        ('skipped', 'Atlandı'),
+    ]
+
+    job_order = models.ForeignKey(
+        JobOrder,
+        on_delete=models.CASCADE,
+        related_name='department_tasks'
+    )
+    department = models.CharField(
+        max_length=50,
+        choices=DEPARTMENT_CHOICES,
+        db_index=True
+    )
+
+    # Hierarchical - main tasks have no parent, subtasks have parent
+    parent = models.ForeignKey(
+        'self',
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='subtasks'
+    )
+
+    # Task details
+    title = models.CharField(max_length=255)
+    description = models.TextField(blank=True, null=True)
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default='pending',
+        db_index=True
+    )
+
+    # Assignment
+    assigned_to = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='assigned_department_tasks'
+    )
+
+    # Timeline
+    target_start_date = models.DateField(null=True, blank=True)
+    target_completion_date = models.DateField(null=True, blank=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    # Blockers
+    is_blocked = models.BooleanField(default=False)
+    blocker_reason = models.TextField(blank=True, null=True)
+
+    # Dependencies - task can start when these tasks are completed
+    depends_on = models.ManyToManyField(
+        'self',
+        symmetrical=False,
+        blank=True,
+        related_name='dependents'
+    )
+
+    # Order/sequence within job (for main tasks)
+    sequence = models.PositiveIntegerField(default=1)
+
+    # Notes
+    notes = models.TextField(blank=True, null=True)
+
+    # Audit
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='department_tasks_created'
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+    completed_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='department_tasks_completed'
+    )
+
+    class Meta:
+        ordering = ['job_order', 'sequence']
+        indexes = [
+            models.Index(fields=['department', 'status']),
+            models.Index(fields=['assigned_to', 'status']),
+            models.Index(fields=['job_order', 'parent']),
+        ]
+        verbose_name = 'Departman Görevi'
+        verbose_name_plural = 'Departman Görevleri'
+
+    def __str__(self):
+        if self.parent:
+            return f"{self.job_order.job_no} - {self.parent.title} - {self.title}"
+        return f"{self.job_order.job_no} - {self.title}"
+
+    def can_start(self):
+        """Check if all dependencies are completed."""
+        return not self.depends_on.exclude(status__in=['completed', 'skipped']).exists()
+
+    def start(self, user=None):
+        """Start working on this task."""
+        if self.status not in ['pending', 'blocked']:
+            raise ValueError("Sadece bekleyen veya engelli görevler başlatılabilir.")
+
+        if not self.can_start():
+            raise ValueError("Bağımlı görevler henüz tamamlanmadı.")
+
+        self.status = 'in_progress'
+        self.started_at = timezone.now()
+        self.is_blocked = False
+        self.blocker_reason = None
+        self.save(update_fields=['status', 'started_at', 'is_blocked', 'blocker_reason'])
+
+        # Update job order status to active if still draft
+        if self.job_order.status == 'draft':
+            self.job_order.start(user=user)
+
+    def complete(self, user=None):
+        """Mark task as completed."""
+        if self.status != 'in_progress':
+            raise ValueError("Sadece devam eden görevler tamamlanabilir.")
+
+        # For main tasks: check all subtasks are complete
+        if not self.parent:
+            incomplete_subtasks = self.subtasks.exclude(status__in=['completed', 'skipped']).count()
+            if incomplete_subtasks > 0:
+                raise ValueError(
+                    f"Alt görevler tamamlanmadan ana görev tamamlanamaz: {incomplete_subtasks} alt görev bekliyor."
+                )
+
+        self.status = 'completed'
+        self.completed_at = timezone.now()
+        self.completed_by = user
+        self.save(update_fields=['status', 'completed_at', 'completed_by'])
+
+        # If this is a subtask, check if parent can auto-complete
+        if self.parent:
+            self.parent._check_subtask_completion(user)
+
+        # Update job order completion percentage
+        self.job_order.update_completion_percentage()
+
+        # Check if all main tasks are complete -> auto-complete job order
+        self._check_job_order_completion(user)
+
+    def _check_subtask_completion(self, user):
+        """Check if all subtasks are done and auto-complete parent if so."""
+        if self.subtasks.exclude(status__in=['completed', 'skipped']).exists():
+            return
+
+        # All subtasks done - auto-complete parent
+        if self.status == 'in_progress':
+            self.complete(user)
+
+    def _check_job_order_completion(self, user):
+        """Check if all main department tasks are complete and auto-complete job order."""
+        # Only check for main tasks (no parent)
+        if self.parent:
+            return
+
+        # Check if all main tasks are complete
+        incomplete_main_tasks = self.job_order.department_tasks.filter(
+            parent__isnull=True
+        ).exclude(status__in=['completed', 'skipped']).count()
+
+        if incomplete_main_tasks == 0 and self.job_order.status == 'active':
+            try:
+                self.job_order.complete(user=user)
+            except ValueError:
+                # Job order might have other constraints (children, etc.)
+                pass
+
+    def block(self, reason):
+        """Mark task as blocked."""
+        if self.status not in ['pending', 'in_progress']:
+            raise ValueError("Sadece bekleyen veya devam eden görevler engellenebilir.")
+
+        self.status = 'blocked'
+        self.is_blocked = True
+        self.blocker_reason = reason
+        self.save(update_fields=['status', 'is_blocked', 'blocker_reason'])
+
+    def unblock(self):
+        """Unblock and return to previous state."""
+        if not self.is_blocked:
+            raise ValueError("Bu görev engelli değil.")
+
+        if self.started_at:
+            self.status = 'in_progress'
+        else:
+            self.status = 'pending'
+
+        self.is_blocked = False
+        self.blocker_reason = None
+        self.save(update_fields=['status', 'is_blocked', 'blocker_reason'])
+
+    def skip(self, user=None):
+        """Mark task as skipped (not applicable)."""
+        if self.status == 'completed':
+            raise ValueError("Tamamlanmış görevler atlanamaz.")
+
+        self.status = 'skipped'
+        self.completed_at = timezone.now()
+        self.completed_by = user
+        self.save(update_fields=['status', 'completed_at', 'completed_by'])
+
+        # Update job order completion percentage
+        self.job_order.update_completion_percentage()
+
+        # Check if all main tasks are complete -> auto-complete job order
+        self._check_job_order_completion(user)

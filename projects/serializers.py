@@ -1,5 +1,9 @@
 from rest_framework import serializers
-from .models import Customer, JobOrder
+from .models import (
+    Customer, JobOrder,
+    DepartmentTaskTemplate, DepartmentTaskTemplateItem,
+    JobOrderDepartmentTask, DEPARTMENT_CHOICES
+)
 
 
 class CustomerListSerializer(serializers.ModelSerializer):
@@ -211,3 +215,253 @@ class JobOrderUpdateSerializer(serializers.ModelSerializer):
                 "Tamamlanmış veya iptal edilmiş işler güncellenemez."
             )
         return attrs
+
+
+# ============================================================================
+# Department Task Template Serializers
+# ============================================================================
+
+class DepartmentTaskTemplateItemSerializer(serializers.ModelSerializer):
+    """Serializer for template items."""
+    department_display = serializers.CharField(source='get_department_display', read_only=True)
+    title = serializers.CharField(required=False, allow_blank=True, default='')
+
+    class Meta:
+        model = DepartmentTaskTemplateItem
+        fields = [
+            'id', 'department', 'department_display', 'title',
+            'sequence', 'depends_on'
+        ]
+
+
+class DepartmentTaskTemplateListSerializer(serializers.ModelSerializer):
+    """Lightweight serializer for template list."""
+    items_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = DepartmentTaskTemplate
+        fields = ['id', 'name', 'description', 'is_active', 'is_default', 'items_count', 'created_at']
+
+    def get_items_count(self, obj):
+        return obj.items.count()
+
+
+class DepartmentTaskTemplateDetailSerializer(serializers.ModelSerializer):
+    """Full serializer for template detail."""
+    items = DepartmentTaskTemplateItemSerializer(many=True, read_only=True)
+    created_by_name = serializers.CharField(
+        source='created_by.get_full_name',
+        read_only=True,
+        default=''
+    )
+
+    class Meta:
+        model = DepartmentTaskTemplate
+        fields = [
+            'id', 'name', 'description', 'is_active', 'is_default',
+            'items', 'created_at', 'created_by', 'created_by_name', 'updated_at'
+        ]
+        read_only_fields = ['created_at', 'created_by', 'updated_at']
+
+
+class DepartmentTaskTemplateCreateUpdateSerializer(serializers.ModelSerializer):
+    """Serializer for creating/updating templates."""
+    class Meta:
+        model = DepartmentTaskTemplate
+        fields = ['name', 'description', 'is_active', 'is_default']
+
+
+# ============================================================================
+# Job Order Department Task Serializers
+# ============================================================================
+
+class DepartmentTaskSubtaskSerializer(serializers.ModelSerializer):
+    """Lightweight serializer for subtasks."""
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    department_display = serializers.CharField(source='get_department_display', read_only=True)
+    assigned_to_name = serializers.CharField(
+        source='assigned_to.get_full_name',
+        read_only=True,
+        default=''
+    )
+
+    class Meta:
+        model = JobOrderDepartmentTask
+        fields = [
+            'id', 'title', 'department', 'department_display',
+            'status', 'status_display', 'assigned_to', 'assigned_to_name',
+            'target_completion_date', 'completed_at'
+        ]
+
+
+class DepartmentTaskListSerializer(serializers.ModelSerializer):
+    """Lightweight serializer for task list views."""
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    department_display = serializers.CharField(source='get_department_display', read_only=True)
+    job_order_title = serializers.CharField(source='job_order.title', read_only=True)
+    assigned_to_name = serializers.CharField(
+        source='assigned_to.get_full_name',
+        read_only=True,
+        default=''
+    )
+    subtasks_count = serializers.SerializerMethodField()
+    can_start = serializers.SerializerMethodField()
+
+    class Meta:
+        model = JobOrderDepartmentTask
+        fields = [
+            'id', 'job_order', 'job_order_title',
+            'department', 'department_display', 'title',
+            'status', 'status_display', 'sequence',
+            'assigned_to', 'assigned_to_name',
+            'is_blocked',
+            'target_start_date', 'target_completion_date',
+            'started_at', 'completed_at',
+            'parent', 'subtasks_count', 'can_start',
+            'created_at'
+        ]
+
+    def get_subtasks_count(self, obj):
+        return obj.subtasks.count()
+
+    def get_can_start(self, obj):
+        return obj.can_start()
+
+
+class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
+    """Full serializer for task detail views."""
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    department_display = serializers.CharField(source='get_department_display', read_only=True)
+    job_order_title = serializers.CharField(source='job_order.title', read_only=True)
+    assigned_to_name = serializers.CharField(
+        source='assigned_to.get_full_name',
+        read_only=True,
+        default=''
+    )
+    created_by_name = serializers.CharField(
+        source='created_by.get_full_name',
+        read_only=True,
+        default=''
+    )
+    completed_by_name = serializers.CharField(
+        source='completed_by.get_full_name',
+        read_only=True,
+        default=''
+    )
+    parent_title = serializers.CharField(source='parent.title', read_only=True, default=None)
+    subtasks = DepartmentTaskSubtaskSerializer(many=True, read_only=True)
+    subtasks_count = serializers.SerializerMethodField()
+    depends_on_tasks = DepartmentTaskSubtaskSerializer(source='depends_on', many=True, read_only=True)
+    can_start = serializers.SerializerMethodField()
+
+    class Meta:
+        model = JobOrderDepartmentTask
+        fields = [
+            'id', 'job_order', 'job_order_title',
+            'department', 'department_display', 'title', 'description',
+            'status', 'status_display', 'sequence',
+            'assigned_to', 'assigned_to_name',
+            'target_start_date', 'target_completion_date',
+            'started_at', 'completed_at',
+            'is_blocked', 'blocker_reason',
+            'depends_on', 'depends_on_tasks', 'can_start',
+            'parent', 'parent_title', 'subtasks', 'subtasks_count',
+            'notes',
+            'created_at', 'created_by', 'created_by_name',
+            'updated_at', 'completed_by', 'completed_by_name'
+        ]
+        read_only_fields = [
+            'started_at', 'completed_at',
+            'created_at', 'created_by', 'updated_at', 'completed_by'
+        ]
+
+    def get_subtasks_count(self, obj):
+        return obj.subtasks.count()
+
+    def get_can_start(self, obj):
+        return obj.can_start()
+
+
+class DepartmentTaskCreateSerializer(serializers.ModelSerializer):
+    """Serializer for creating department tasks."""
+    class Meta:
+        model = JobOrderDepartmentTask
+        fields = [
+            'job_order', 'department', 'title', 'description',
+            'assigned_to', 'target_start_date', 'target_completion_date',
+            'depends_on', 'sequence',
+            'parent', 'notes'
+        ]
+
+    def validate(self, attrs):
+        """Validate task creation."""
+        parent = attrs.get('parent')
+        job_order = attrs.get('job_order')
+
+        # If subtask, ensure parent belongs to same job order
+        if parent and parent.job_order != job_order:
+            raise serializers.ValidationError({
+                'parent': "Alt görev sadece aynı iş emrine ait bir göreve bağlanabilir."
+            })
+
+        # If subtask, inherit department from parent
+        if parent:
+            attrs['department'] = parent.department
+
+        return attrs
+
+
+class DepartmentTaskUpdateSerializer(serializers.ModelSerializer):
+    """Serializer for updating department tasks."""
+    class Meta:
+        model = JobOrderDepartmentTask
+        fields = [
+            'title', 'description', 'assigned_to',
+            'target_start_date', 'target_completion_date',
+            'depends_on', 'sequence', 'notes'
+        ]
+
+    def validate(self, attrs):
+        """Prevent updates on completed tasks."""
+        instance = self.instance
+        if instance and instance.status in ['completed', 'skipped']:
+            raise serializers.ValidationError(
+                "Tamamlanmış veya atlanan görevler güncellenemez."
+            )
+        return attrs
+
+
+class ApplyTemplateSerializer(serializers.Serializer):
+    """Serializer for applying a template to a job order."""
+    template_id = serializers.PrimaryKeyRelatedField(
+        queryset=DepartmentTaskTemplate.objects.filter(is_active=True),
+        required=True
+    )
+
+    def create_tasks_from_template(self, job_order, user):
+        """Create department tasks from template."""
+        template = self.validated_data['template_id']
+        created_tasks = []
+        task_mapping = {}  # template_item_id -> created_task
+
+        # First pass: create all tasks
+        for item in template.items.all().order_by('sequence'):
+            task = JobOrderDepartmentTask.objects.create(
+                job_order=job_order,
+                department=item.department,
+                title=job_order.title,
+                sequence=item.sequence,
+                created_by=user
+            )
+            created_tasks.append(task)
+            task_mapping[item.id] = task
+
+        # Second pass: set up dependencies
+        for item in template.items.all():
+            if item.depends_on.exists():
+                task = task_mapping[item.id]
+                for dep_item in item.depends_on.all():
+                    if dep_item.id in task_mapping:
+                        task.depends_on.add(task_mapping[dep_item.id])
+
+        return created_tasks

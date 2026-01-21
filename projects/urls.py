@@ -1,10 +1,15 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .views import CustomerViewSet, JobOrderViewSet
+from .views import (
+    CustomerViewSet, JobOrderViewSet,
+    DepartmentTaskTemplateViewSet, JobOrderDepartmentTaskViewSet
+)
 
 router = DefaultRouter()
 router.register(r'customers', CustomerViewSet)
 router.register(r'job-orders', JobOrderViewSet)
+router.register(r'task-templates', DepartmentTaskTemplateViewSet)
+router.register(r'department-tasks', JobOrderDepartmentTaskViewSet)
 
 urlpatterns = [
     path('', include(router.urls)),
