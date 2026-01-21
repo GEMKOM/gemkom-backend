@@ -1547,7 +1547,35 @@ class LogReasonView(APIView):
                 response_data['message'] = f"Machine fault reported and downtime timer started"
                 return Response(response_data, status=200)
 
-        # Step 4: Create new timer if reason requires it (and not already handled above)
+        # Step 4: Handle WORK_COMPLETE - mark operation as complete
+        if reason.code == 'WORK_COMPLETE':
+            if not current_timer:
+                return Response({'error': 'current_timer_id is required for WORK_COMPLETE'}, status=400)
+
+            # Check if the timer is linked to an operation
+            if current_timer.content_type and current_timer.object_id:
+                from .models import Operation
+                try:
+                    # Get the operation model from content_type
+                    model_class = current_timer.content_type.model_class()
+                    if model_class == Operation:
+                        operation = Operation.objects.get(key=current_timer.object_id)
+                        # Mark operation as complete
+                        operation.completion_date = now_ms
+                        operation.completed_by = request.user
+                        operation.save()
+                        response_data['operation_completed'] = True
+                        response_data['message'] = f"Timer stopped and operation {operation.key} marked as complete"
+                    else:
+                        response_data['message'] = f"Timer stopped: {reason.name}"
+                except Operation.DoesNotExist:
+                    response_data['message'] = f"Timer stopped but operation not found"
+            else:
+                response_data['message'] = f"Timer stopped: {reason.name} (no operation linked)"
+
+            return Response(response_data, status=200)
+
+        # Step 5: Create new timer if reason requires it (and not already handled above)
         # Note: Downtime/break timers are machine-level only, not operation-specific
         if reason.creates_timer:
             # Determine timer type based on reason category
@@ -1565,7 +1593,7 @@ class LogReasonView(APIView):
             response_data['new_timer_id'] = new_timer.id
             response_data['timer'] = self._serialize_timer(new_timer)
 
-        # Step 6: Build response message
+        # Step 7: Build response message
         if current_timer and response_data['new_timer_id']:
             response_data['message'] = f"Timer stopped and {reason.name} timer started"
         elif current_timer:
