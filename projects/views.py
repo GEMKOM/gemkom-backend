@@ -590,6 +590,68 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+    @action(detail=False, methods=['post'])
+    def bulk_create(self, request):
+        """
+        Create multiple department tasks at once.
+
+        Request body:
+        {
+            "job_order": 1,
+            "tasks": [
+                {"department": "design", "sequence": 1},
+                {"department": "planning", "sequence": 2},
+                {"department": "procurement", "sequence": 3}
+            ]
+        }
+        """
+        job_order_id = request.data.get('job_order')
+        tasks_data = request.data.get('tasks', [])
+
+        if not job_order_id:
+            return Response(
+                {'status': 'error', 'message': 'job_order alanı gerekli.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if not tasks_data or not isinstance(tasks_data, list):
+            return Response(
+                {'status': 'error', 'message': 'tasks alanı bir liste olmalıdır.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if not JobOrder.objects.filter(pk=job_order_id).exists():
+            return Response(
+                {'status': 'error', 'message': 'İş emri bulunamadı.'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        created_tasks = []
+        errors = []
+
+        for idx, task_data in enumerate(tasks_data):
+            task_data['job_order'] = job_order_id
+            serializer = DepartmentTaskCreateSerializer(data=task_data)
+            if serializer.is_valid():
+                task = serializer.save(created_by=request.user)
+                created_tasks.append(task)
+            else:
+                errors.append({'index': idx, 'errors': serializer.errors})
+
+        if errors:
+            return Response({
+                'status': 'partial' if created_tasks else 'error',
+                'message': f'{len(created_tasks)} görev oluşturuldu, {len(errors)} hata.',
+                'created': DepartmentTaskListSerializer(created_tasks, many=True).data,
+                'errors': errors
+            }, status=status.HTTP_400_BAD_REQUEST if not created_tasks else status.HTTP_207_MULTI_STATUS)
+
+        return Response({
+            'status': 'success',
+            'message': f'{len(created_tasks)} görev oluşturuldu.',
+            'tasks': DepartmentTaskListSerializer(created_tasks, many=True).data
+        }, status=status.HTTP_201_CREATED)
+
     @action(detail=False, methods=['get'])
     def status_choices(self, request):
         """Get available status choices."""

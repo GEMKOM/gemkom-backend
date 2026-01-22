@@ -158,7 +158,7 @@ class JobOrder(models.Model):
     cost_currency = models.CharField(
         max_length=3,
         choices=CURRENCY_CHOICES,
-        default='TRY'
+        default='EUR'
     )
     last_cost_calculation = models.DateTimeField(null=True, blank=True)
 
@@ -348,7 +348,7 @@ class JobOrder(models.Model):
 # =============================================================================
 
 DEPARTMENT_CHOICES = [
-    ('design', 'Tasarım'),
+    ('design', 'Dizayn'),
     ('planning', 'Planlama'),
     ('procurement', 'Satın Alma'),
     ('manufacturing', 'Üretim'),
@@ -469,7 +469,7 @@ class JobOrderDepartmentTask(models.Model):
     )
 
     # Task details
-    title = models.CharField(max_length=255)
+    title = models.CharField(max_length=255, blank=True)  # Auto-filled from job_order.title
     description = models.TextField(blank=True, null=True)
     status = models.CharField(
         max_length=20,
@@ -543,6 +543,12 @@ class JobOrderDepartmentTask(models.Model):
         if self.parent:
             return f"{self.job_order.job_no} - {self.parent.title} - {self.title}"
         return f"{self.job_order.job_no} - {self.title}"
+
+    def save(self, *args, **kwargs):
+        # Auto-fill title from job order if not provided
+        if not self.title and self.job_order_id:
+            self.title = self.job_order.title
+        super().save(*args, **kwargs)
 
     def can_start(self):
         """Check if all dependencies are completed."""

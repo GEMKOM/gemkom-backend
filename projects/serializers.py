@@ -98,6 +98,31 @@ class JobOrderListSerializer(serializers.ModelSerializer):
         return obj.get_hierarchy_level()
 
 
+class JobOrderDepartmentTaskNestedSerializer(serializers.ModelSerializer):
+    """Lightweight serializer for department tasks nested in job order detail."""
+    department_display = serializers.CharField(source='get_department_display', read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    assigned_to_name = serializers.CharField(
+        source='assigned_to.get_full_name',
+        read_only=True,
+        default=None
+    )
+    can_start = serializers.SerializerMethodField()
+
+    class Meta:
+        model = JobOrderDepartmentTask
+        fields = [
+            'id', 'department', 'department_display', 'title',
+            'status', 'status_display', 'sequence',
+            'assigned_to', 'assigned_to_name',
+            'is_blocked', 'can_start',
+            'target_completion_date', 'completed_at'
+        ]
+
+    def get_can_start(self, obj):
+        return obj.can_start()
+
+
 class JobOrderDetailSerializer(serializers.ModelSerializer):
     """Full serializer for detail views."""
     customer_name = serializers.CharField(source='customer.name', read_only=True)
@@ -118,6 +143,8 @@ class JobOrderDetailSerializer(serializers.ModelSerializer):
     children = JobOrderChildSerializer(many=True, read_only=True)
     children_count = serializers.SerializerMethodField()
     hierarchy_level = serializers.SerializerMethodField()
+    department_tasks = serializers.SerializerMethodField()
+    department_tasks_count = serializers.SerializerMethodField()
 
     class Meta:
         model = JobOrder
@@ -130,6 +157,7 @@ class JobOrderDetailSerializer(serializers.ModelSerializer):
             'subcontractor_cost', 'total_cost', 'cost_currency',
             'last_cost_calculation', 'completion_percentage',
             'parent', 'parent_title', 'children', 'children_count', 'hierarchy_level',
+            'department_tasks', 'department_tasks_count',
             'created_at', 'created_by', 'created_by_name',
             'updated_at', 'completed_by', 'completed_by_name'
         ]
@@ -145,6 +173,14 @@ class JobOrderDetailSerializer(serializers.ModelSerializer):
 
     def get_hierarchy_level(self, obj):
         return obj.get_hierarchy_level()
+
+    def get_department_tasks(self, obj):
+        # Only return main tasks (no parent), ordered by sequence
+        tasks = obj.department_tasks.filter(parent__isnull=True).order_by('sequence')
+        return JobOrderDepartmentTaskNestedSerializer(tasks, many=True).data
+
+    def get_department_tasks_count(self, obj):
+        return obj.department_tasks.filter(parent__isnull=True).count()
 
 
 class JobOrderCreateSerializer(serializers.ModelSerializer):
@@ -384,6 +420,8 @@ class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
 
 class DepartmentTaskCreateSerializer(serializers.ModelSerializer):
     """Serializer for creating department tasks."""
+    title = serializers.CharField(required=False, allow_blank=True, default='')
+
     class Meta:
         model = JobOrderDepartmentTask
         fields = [
@@ -444,12 +482,11 @@ class ApplyTemplateSerializer(serializers.Serializer):
         created_tasks = []
         task_mapping = {}  # template_item_id -> created_task
 
-        # First pass: create all tasks
+        # First pass: create all tasks (title auto-fills from job_order.title)
         for item in template.items.all().order_by('sequence'):
             task = JobOrderDepartmentTask.objects.create(
                 job_order=job_order,
                 department=item.department,
-                title=job_order.title,
                 sequence=item.sequence,
                 created_by=user
             )
