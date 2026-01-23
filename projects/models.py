@@ -1,8 +1,10 @@
+import os
 from django.db import models
 from django.contrib.auth.models import User
 from django.utils import timezone
 from django.core.validators import MinValueValidator, MaxValueValidator
 from decimal import Decimal
+from core.storages import PrivateMediaStorage
 
 
 CURRENCY_CHOICES = [
@@ -257,14 +259,11 @@ class JobOrder(models.Model):
             for child in self.children.all()
         )
         if all_completed and self.status == 'active':
-            self.status = 'completed'
-            self.completed_at = timezone.now()
-            self.completion_percentage = Decimal('100.00')
-            self.save(update_fields=['status', 'completed_at', 'completion_percentage'])
-
-            # Recursively check parent
-            if self.parent:
-                self.parent.update_status_from_children()
+            try:
+                self.complete(_auto=True)
+            except ValueError:
+                # May fail if there are incomplete department tasks
+                pass
 
     def start(self, user=None):
         """Transition from draft to active. Cascades to all children."""
@@ -278,26 +277,52 @@ class JobOrder(models.Model):
         for child in self.children.filter(status='draft'):
             child.start(user=user)
 
-    def complete(self, user=None):
-        """Mark job as completed."""
+    def complete(self, user=None, _auto=False):
+        """
+        Mark job as completed.
+
+        This method should only be called automatically when all department tasks
+        or all children are completed. Manual completion is not allowed.
+
+        Args:
+            user: The user completing the job (for auto-completion tracking)
+            _auto: Internal flag, must be True. Prevents manual completion.
+        """
+        if not _auto:
+            raise ValueError(
+                "İş emirleri manuel olarak tamamlanamaz. "
+                "Tüm departman görevleri veya alt işler tamamlandığında otomatik olarak tamamlanır."
+            )
+
         if self.status not in ['active', 'on_hold']:
             raise ValueError("Sadece aktif veya beklemedeki işler tamamlanabilir.")
 
-        # Check all department tasks are complete (if any exist)
-        incomplete_tasks = self.department_tasks.exclude(
-            status__in=['completed', 'skipped']
-        ).count()
-        if incomplete_tasks > 0:
+        has_tasks = self.department_tasks.exists()
+        has_children = self.children.exists()
+
+        # Must have either department tasks or children to be completable
+        if not has_tasks and not has_children:
             raise ValueError(
-                f"İş tamamlanamaz: {incomplete_tasks} departman görevi hala bekliyor."
+                "İş tamamlanamaz: Departman görevi veya alt iş eklenmeli."
             )
 
+        # Check all department tasks are complete (if any exist)
+        if has_tasks:
+            incomplete_tasks = self.department_tasks.exclude(
+                status__in=['completed', 'skipped']
+            ).count()
+            if incomplete_tasks > 0:
+                raise ValueError(
+                    f"İş tamamlanamaz: {incomplete_tasks} departman görevi hala bekliyor."
+                )
+
         # Check all children are complete (if any exist)
-        incomplete_children = self.children.exclude(status='completed').count()
-        if incomplete_children > 0:
-            raise ValueError(
-                f"İş tamamlanamaz: {incomplete_children} alt iş hala tamamlanmadı."
-            )
+        if has_children:
+            incomplete_children = self.children.exclude(status='completed').count()
+            if incomplete_children > 0:
+                raise ValueError(
+                    f"İş tamamlanamaz: {incomplete_children} alt iş hala tamamlanmadı."
+                )
 
         self.status = 'completed'
         self.completed_at = timezone.now()
@@ -341,6 +366,82 @@ class JobOrder(models.Model):
         # Cascade to children (except completed ones)
         for child in self.children.exclude(status='completed'):
             child.cancel(user=user)
+
+
+# =============================================================================
+# Job Order Files
+# =============================================================================
+
+def job_order_file_upload_path(instance, filename):
+    """Upload path for job order attachments."""
+    return os.path.join('job_order_files', instance.job_order.job_no, filename)
+
+
+class JobOrderFile(models.Model):
+    """
+    File attachment for a job order.
+    Can be drawings, specifications, contracts, etc.
+    """
+    FILE_TYPE_CHOICES = [
+        ('drawing', 'Çizim'),
+        ('specification', 'Şartname'),
+        ('contract', 'Sözleşme'),
+        ('correspondence', 'Yazışma'),
+        ('photo', 'Fotoğraf'),
+        ('other', 'Diğer'),
+    ]
+
+    job_order = models.ForeignKey(
+        JobOrder,
+        on_delete=models.CASCADE,
+        related_name='files'
+    )
+    file = models.FileField(
+        upload_to=job_order_file_upload_path,
+        storage=PrivateMediaStorage()
+    )
+    file_type = models.CharField(
+        max_length=20,
+        choices=FILE_TYPE_CHOICES,
+        default='other'
+    )
+    name = models.CharField(max_length=255, blank=True)  # Display name, auto-filled from filename
+    description = models.TextField(blank=True, null=True)
+
+    # Audit
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+    uploaded_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='uploaded_job_order_files'
+    )
+
+    class Meta:
+        ordering = ['-uploaded_at']
+        verbose_name = 'İş Emri Dosyası'
+        verbose_name_plural = 'İş Emri Dosyaları'
+
+    def __str__(self):
+        return f"{self.job_order.job_no} - {self.name or os.path.basename(self.file.name)}"
+
+    def save(self, *args, **kwargs):
+        # Auto-fill name from filename if not provided
+        if not self.name and self.file:
+            self.name = os.path.basename(self.file.name)
+        super().save(*args, **kwargs)
+
+    @property
+    def filename(self):
+        return os.path.basename(self.file.name)
+
+    @property
+    def file_size(self):
+        try:
+            return self.file.size
+        except:
+            return None
 
 
 # =============================================================================
@@ -443,7 +544,6 @@ class JobOrderDepartmentTask(models.Model):
     STATUS_CHOICES = [
         ('pending', 'Bekliyor'),
         ('in_progress', 'Devam Ediyor'),
-        ('blocked', 'Engellendi'),
         ('completed', 'Tamamlandı'),
         ('skipped', 'Atlandı'),
     ]
@@ -492,10 +592,6 @@ class JobOrderDepartmentTask(models.Model):
     target_completion_date = models.DateField(null=True, blank=True)
     started_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
-
-    # Blockers
-    is_blocked = models.BooleanField(default=False)
-    blocker_reason = models.TextField(blank=True, null=True)
 
     # Dependencies - task can start when these tasks are completed
     depends_on = models.ManyToManyField(
@@ -556,17 +652,15 @@ class JobOrderDepartmentTask(models.Model):
 
     def start(self, user=None):
         """Start working on this task."""
-        if self.status not in ['pending', 'blocked']:
-            raise ValueError("Sadece bekleyen veya engelli görevler başlatılabilir.")
+        if self.status != 'pending':
+            raise ValueError("Sadece bekleyen görevler başlatılabilir.")
 
         if not self.can_start():
             raise ValueError("Bağımlı görevler henüz tamamlanmadı.")
 
         self.status = 'in_progress'
         self.started_at = timezone.now()
-        self.is_blocked = False
-        self.blocker_reason = None
-        self.save(update_fields=['status', 'started_at', 'is_blocked', 'blocker_reason'])
+        self.save(update_fields=['status', 'started_at'])
 
         # Update job order status to active if still draft
         if self.job_order.status == 'draft':
@@ -622,34 +716,10 @@ class JobOrderDepartmentTask(models.Model):
 
         if incomplete_main_tasks == 0 and self.job_order.status == 'active':
             try:
-                self.job_order.complete(user=user)
+                self.job_order.complete(user=user, _auto=True)
             except ValueError:
                 # Job order might have other constraints (children, etc.)
                 pass
-
-    def block(self, reason):
-        """Mark task as blocked."""
-        if self.status not in ['pending', 'in_progress']:
-            raise ValueError("Sadece bekleyen veya devam eden görevler engellenebilir.")
-
-        self.status = 'blocked'
-        self.is_blocked = True
-        self.blocker_reason = reason
-        self.save(update_fields=['status', 'is_blocked', 'blocker_reason'])
-
-    def unblock(self):
-        """Unblock and return to previous state."""
-        if not self.is_blocked:
-            raise ValueError("Bu görev engelli değil.")
-
-        if self.started_at:
-            self.status = 'in_progress'
-        else:
-            self.status = 'pending'
-
-        self.is_blocked = False
-        self.blocker_reason = None
-        self.save(update_fields=['status', 'is_blocked', 'blocker_reason'])
 
     def skip(self, user=None):
         """Mark task as skipped (not applicable)."""
@@ -666,3 +736,27 @@ class JobOrderDepartmentTask(models.Model):
 
         # Check if all main tasks are complete -> auto-complete job order
         self._check_job_order_completion(user)
+
+    def uncomplete(self):
+        """Revert a completed task back to in_progress."""
+        if self.status != 'completed':
+            raise ValueError("Sadece tamamlanmış görevler geri alınabilir.")
+
+        # If this is a subtask and parent was auto-completed, revert parent first
+        if self.parent and self.parent.status == 'completed':
+            self.parent.uncomplete()
+
+        self.status = 'in_progress'
+        self.completed_at = None
+        self.completed_by = None
+        self.save(update_fields=['status', 'completed_at', 'completed_by'])
+
+        # Revert job order if it was auto-completed
+        if self.job_order.status == 'completed':
+            self.job_order.status = 'active'
+            self.job_order.completed_at = None
+            self.job_order.completed_by = None
+            self.job_order.save(update_fields=['status', 'completed_at', 'completed_by'])
+
+        # Update job order completion percentage
+        self.job_order.update_completion_percentage()

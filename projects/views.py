@@ -2,10 +2,11 @@ from rest_framework import viewsets, status
 from rest_framework.response import Response
 from rest_framework.filters import SearchFilter, OrderingFilter
 from rest_framework.decorators import action
+from rest_framework.parsers import MultiPartParser, FormParser
 from django_filters.rest_framework import DjangoFilterBackend
 
 from .models import (
-    Customer, JobOrder,
+    Customer, JobOrder, JobOrderFile,
     DepartmentTaskTemplate, DepartmentTaskTemplateItem,
     JobOrderDepartmentTask, DEPARTMENT_CHOICES
 )
@@ -17,6 +18,8 @@ from .serializers import (
     JobOrderDetailSerializer,
     JobOrderCreateSerializer,
     JobOrderUpdateSerializer,
+    JobOrderFileSerializer,
+    JobOrderFileUploadSerializer,
     DepartmentTaskTemplateListSerializer,
     DepartmentTaskTemplateDetailSerializer,
     DepartmentTaskTemplateCreateUpdateSerializer,
@@ -41,7 +44,7 @@ class CustomerViewSet(viewsets.ModelViewSet):
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     search_fields = ['code', 'name', 'short_name', 'contact_person', 'email']
     ordering_fields = ['code', 'name', 'created_at', 'updated_at']
-    ordering = ['name']
+    ordering = ['code']
     filterset_fields = {
         'is_active': ['exact'],
         'default_currency': ['exact'],
@@ -182,23 +185,6 @@ class JobOrderViewSet(viewsets.ModelViewSet):
             )
 
     @action(detail=True, methods=['post'])
-    def complete(self, request, job_no=None):
-        """Complete the job order."""
-        job_order = self.get_object()
-        try:
-            job_order.complete(user=request.user)
-            return Response({
-                'status': 'success',
-                'message': 'İş emri tamamlandı.',
-                'job_order': JobOrderDetailSerializer(job_order).data
-            })
-        except ValueError as e:
-            return Response(
-                {'status': 'error', 'message': str(e)},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-    @action(detail=True, methods=['post'])
     def hold(self, request, job_no=None):
         """Put the job order on hold."""
         job_order = self.get_object()
@@ -269,6 +255,23 @@ class JobOrderViewSet(viewsets.ModelViewSet):
             for child in job.children.all():
                 children_data.append(build_tree(child))
 
+            # Get department tasks (main tasks only)
+            dept_tasks = job.department_tasks.filter(parent__isnull=True).order_by('sequence')
+            dept_tasks_data = [
+                {
+                    'id': task.id,
+                    'department': task.department,
+                    'department_display': task.get_department_display(),
+                    'title': task.title,
+                    'status': task.status,
+                    'status_display': task.get_status_display(),
+                    'sequence': task.sequence,
+                    'can_start': task.can_start(),
+                    'assigned_to_name': task.assigned_to.get_full_name() if task.assigned_to else None,
+                }
+                for task in dept_tasks
+            ]
+
             return {
                 'job_no': job.job_no,
                 'title': job.title,
@@ -277,6 +280,7 @@ class JobOrderViewSet(viewsets.ModelViewSet):
                 'priority': job.priority,
                 'completion_percentage': job.completion_percentage,
                 'target_completion_date': job.target_completion_date,
+                'department_tasks': dept_tasks_data,
                 'children': children_data
             }
 
@@ -332,6 +336,72 @@ class JobOrderViewSet(viewsets.ModelViewSet):
 
         serializer = DepartmentTaskListSerializer(tasks, many=True)
         return Response(serializer.data)
+
+    # -------------------------------------------------------------------------
+    # File Actions
+    # -------------------------------------------------------------------------
+
+    @action(detail=True, methods=['get'])
+    def files(self, request, job_no=None):
+        """Get all files for this job order."""
+        job_order = self.get_object()
+        files = job_order.files.select_related('uploaded_by')
+
+        # Optional filter by file_type
+        file_type = request.query_params.get('file_type')
+        if file_type:
+            files = files.filter(file_type=file_type)
+
+        serializer = JobOrderFileSerializer(files, many=True, context={'request': request})
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['post'], parser_classes=[MultiPartParser, FormParser])
+    def upload_file(self, request, job_no=None):
+        """Upload a file to this job order."""
+        job_order = self.get_object()
+
+        serializer = JobOrderFileUploadSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        file_obj = serializer.save(
+            job_order=job_order,
+            uploaded_by=request.user
+        )
+
+        return Response({
+            'status': 'success',
+            'message': 'Dosya yüklendi.',
+            'file': JobOrderFileSerializer(file_obj, context={'request': request}).data
+        }, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['delete'], url_path='files/(?P<file_id>[^/.]+)')
+    def delete_file(self, request, job_no=None, file_id=None):
+        """Delete a file from this job order."""
+        job_order = self.get_object()
+
+        try:
+            file_obj = job_order.files.get(pk=file_id)
+        except JobOrderFile.DoesNotExist:
+            return Response(
+                {'status': 'error', 'message': 'Dosya bulunamadı.'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        file_obj.file.delete()  # Delete the actual file
+        file_obj.delete()  # Delete the database record
+
+        return Response({
+            'status': 'success',
+            'message': 'Dosya silindi.'
+        })
+
+    @action(detail=False, methods=['get'])
+    def file_type_choices(self, request):
+        """Get available file type choices."""
+        return Response([
+            {'value': choice[0], 'label': choice[1]}
+            for choice in JobOrderFile.FILE_TYPE_CHOICES
+        ])
 
 
 # =============================================================================
@@ -435,9 +505,8 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
     Custom Actions:
     - POST /department-tasks/{id}/start/ - Start the task
     - POST /department-tasks/{id}/complete/ - Complete the task
-    - POST /department-tasks/{id}/block/ - Block the task
-    - POST /department-tasks/{id}/unblock/ - Unblock the task
     - POST /department-tasks/{id}/skip/ - Skip the task
+    - POST /department-tasks/{id}/uncomplete/ - Revert completed task to in_progress
     """
     queryset = JobOrderDepartmentTask.objects.select_related(
         'job_order', 'assigned_to', 'parent', 'created_by', 'completed_by'
@@ -452,7 +521,6 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
         'status': ['exact', 'in'],
         'assigned_to': ['exact', 'isnull'],
         'parent': ['exact', 'isnull'],
-        'is_blocked': ['exact'],
     }
 
     def get_serializer_class(self):
@@ -534,46 +602,6 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
             )
 
     @action(detail=True, methods=['post'])
-    def block(self, request, pk=None):
-        """Block the department task."""
-        task = self.get_object()
-        reason = request.data.get('reason', '')
-        if not reason:
-            return Response(
-                {'status': 'error', 'message': 'Engelleme nedeni gerekli.'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        try:
-            task.block(reason=reason)
-            return Response({
-                'status': 'success',
-                'message': 'Görev engellendi.',
-                'task': DepartmentTaskDetailSerializer(task).data
-            })
-        except ValueError as e:
-            return Response(
-                {'status': 'error', 'message': str(e)},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-    @action(detail=True, methods=['post'])
-    def unblock(self, request, pk=None):
-        """Unblock the department task."""
-        task = self.get_object()
-        try:
-            task.unblock()
-            return Response({
-                'status': 'success',
-                'message': 'Görev engeli kaldırıldı.',
-                'task': DepartmentTaskDetailSerializer(task).data
-            })
-        except ValueError as e:
-            return Response(
-                {'status': 'error', 'message': str(e)},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-    @action(detail=True, methods=['post'])
     def skip(self, request, pk=None):
         """Skip the department task."""
         task = self.get_object()
@@ -582,6 +610,23 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
             return Response({
                 'status': 'success',
                 'message': 'Görev atlandı.',
+                'task': DepartmentTaskDetailSerializer(task).data
+            })
+        except ValueError as e:
+            return Response(
+                {'status': 'error', 'message': str(e)},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+    @action(detail=True, methods=['post'])
+    def uncomplete(self, request, pk=None):
+        """Revert a completed task back to in_progress."""
+        task = self.get_object()
+        try:
+            task.uncomplete()
+            return Response({
+                'status': 'success',
+                'message': 'Görev tamamlanma durumu geri alındı.',
                 'task': DepartmentTaskDetailSerializer(task).data
             })
         except ValueError as e:

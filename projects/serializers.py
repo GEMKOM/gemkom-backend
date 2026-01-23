@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from .models import (
-    Customer, JobOrder,
+    Customer, JobOrder, JobOrderFile,
     DepartmentTaskTemplate, DepartmentTaskTemplateItem,
     JobOrderDepartmentTask, DEPARTMENT_CHOICES
 )
@@ -63,13 +63,18 @@ class CustomerCreateUpdateSerializer(serializers.ModelSerializer):
 class JobOrderChildSerializer(serializers.ModelSerializer):
     """Lightweight serializer for nested children in hierarchy."""
     status_display = serializers.CharField(source='get_status_display', read_only=True)
+    children_count = serializers.SerializerMethodField()
 
     class Meta:
         model = JobOrder
         fields = [
             'job_no', 'title', 'status', 'status_display',
-            'completion_percentage', 'target_completion_date'
+            'completion_percentage', 'target_completion_date',
+            'children_count'
         ]
+
+    def get_children_count(self, obj):
+        return obj.children.count()
 
 
 class JobOrderListSerializer(serializers.ModelSerializer):
@@ -80,6 +85,7 @@ class JobOrderListSerializer(serializers.ModelSerializer):
     priority_display = serializers.CharField(source='get_priority_display', read_only=True)
     children_count = serializers.SerializerMethodField()
     hierarchy_level = serializers.SerializerMethodField()
+    department_tasks_count = serializers.SerializerMethodField()
 
     class Meta:
         model = JobOrder
@@ -88,6 +94,7 @@ class JobOrderListSerializer(serializers.ModelSerializer):
             'status', 'status_display', 'priority', 'priority_display',
             'target_completion_date', 'completion_percentage',
             'parent', 'children_count', 'hierarchy_level',
+            'department_tasks_count',
             'created_at'
         ]
 
@@ -96,6 +103,9 @@ class JobOrderListSerializer(serializers.ModelSerializer):
 
     def get_hierarchy_level(self, obj):
         return obj.get_hierarchy_level()
+
+    def get_department_tasks_count(self, obj):
+        return obj.department_tasks.filter(parent__isnull=True).count()
 
 
 class JobOrderDepartmentTaskNestedSerializer(serializers.ModelSerializer):
@@ -115,7 +125,7 @@ class JobOrderDepartmentTaskNestedSerializer(serializers.ModelSerializer):
             'id', 'department', 'department_display', 'title',
             'status', 'status_display', 'sequence',
             'assigned_to', 'assigned_to_name',
-            'is_blocked', 'can_start',
+            'can_start',
             'target_completion_date', 'completed_at'
         ]
 
@@ -140,11 +150,13 @@ class JobOrderDetailSerializer(serializers.ModelSerializer):
         default=''
     )
     parent_title = serializers.CharField(source='parent.title', read_only=True, default=None)
-    children = JobOrderChildSerializer(many=True, read_only=True)
+    children = serializers.SerializerMethodField()
     children_count = serializers.SerializerMethodField()
     hierarchy_level = serializers.SerializerMethodField()
     department_tasks = serializers.SerializerMethodField()
     department_tasks_count = serializers.SerializerMethodField()
+    files = serializers.SerializerMethodField()
+    files_count = serializers.SerializerMethodField()
 
     class Meta:
         model = JobOrder
@@ -158,6 +170,7 @@ class JobOrderDetailSerializer(serializers.ModelSerializer):
             'last_cost_calculation', 'completion_percentage',
             'parent', 'parent_title', 'children', 'children_count', 'hierarchy_level',
             'department_tasks', 'department_tasks_count',
+            'files', 'files_count',
             'created_at', 'created_by', 'created_by_name',
             'updated_at', 'completed_by', 'completed_by_name'
         ]
@@ -167,6 +180,10 @@ class JobOrderDetailSerializer(serializers.ModelSerializer):
             'completion_percentage', 'created_at', 'created_by', 'updated_at',
             'completed_by'
         ]
+
+    def get_children(self, obj):
+        children = obj.children.order_by('job_no')
+        return JobOrderChildSerializer(children, many=True).data
 
     def get_children_count(self, obj):
         return obj.children.count()
@@ -181,6 +198,13 @@ class JobOrderDetailSerializer(serializers.ModelSerializer):
 
     def get_department_tasks_count(self, obj):
         return obj.department_tasks.filter(parent__isnull=True).count()
+
+    def get_files(self, obj):
+        files = obj.files.all()
+        return JobOrderFileNestedSerializer(files, many=True, context=self.context).data
+
+    def get_files_count(self, obj):
+        return obj.files.count()
 
 
 class JobOrderCreateSerializer(serializers.ModelSerializer):
@@ -251,6 +275,75 @@ class JobOrderUpdateSerializer(serializers.ModelSerializer):
                 "Tamamlanmış veya iptal edilmiş işler güncellenemez."
             )
         return attrs
+
+
+# ============================================================================
+# Job Order File Serializers
+# ============================================================================
+
+class JobOrderFileNestedSerializer(serializers.ModelSerializer):
+    """Lightweight serializer for files nested in job order detail."""
+    file_type_display = serializers.CharField(source='get_file_type_display', read_only=True)
+    filename = serializers.CharField(read_only=True)
+    file_size = serializers.IntegerField(read_only=True)
+    file_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = JobOrderFile
+        fields = [
+            'id', 'file_url', 'filename', 'file_size',
+            'file_type', 'file_type_display',
+            'name', 'uploaded_at'
+        ]
+
+    def get_file_url(self, obj):
+        request = self.context.get('request')
+        if obj.file and request:
+            return request.build_absolute_uri(obj.file.url)
+        return None
+
+
+class JobOrderFileSerializer(serializers.ModelSerializer):
+    """Serializer for job order file attachments."""
+    file_type_display = serializers.CharField(source='get_file_type_display', read_only=True)
+    uploaded_by_name = serializers.CharField(
+        source='uploaded_by.get_full_name',
+        read_only=True,
+        default=''
+    )
+    filename = serializers.CharField(read_only=True)
+    file_size = serializers.IntegerField(read_only=True)
+    file_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = JobOrderFile
+        fields = [
+            'id', 'job_order', 'file', 'file_url', 'filename', 'file_size',
+            'file_type', 'file_type_display',
+            'name', 'description',
+            'uploaded_at', 'uploaded_by', 'uploaded_by_name'
+        ]
+        read_only_fields = ['uploaded_at', 'uploaded_by']
+
+    def get_file_url(self, obj):
+        request = self.context.get('request')
+        if obj.file and request:
+            return request.build_absolute_uri(obj.file.url)
+        return None
+
+
+class JobOrderFileUploadSerializer(serializers.ModelSerializer):
+    """Serializer for uploading files to a job order."""
+    class Meta:
+        model = JobOrderFile
+        fields = ['file', 'file_type', 'name', 'description']
+
+    def validate_file(self, value):
+        # Optional: Add file size/type validation
+        max_size = 50 * 1024 * 1024  # 50MB
+        if value.size > max_size:
+            raise serializers.ValidationError("Dosya boyutu 50MB'dan büyük olamaz.")
+        return value
 
 
 # ============================================================================
@@ -350,7 +443,6 @@ class DepartmentTaskListSerializer(serializers.ModelSerializer):
             'department', 'department_display', 'title',
             'status', 'status_display', 'sequence',
             'assigned_to', 'assigned_to_name',
-            'is_blocked',
             'target_start_date', 'target_completion_date',
             'started_at', 'completed_at',
             'parent', 'subtasks_count', 'can_start',
@@ -399,7 +491,6 @@ class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
             'assigned_to', 'assigned_to_name',
             'target_start_date', 'target_completion_date',
             'started_at', 'completed_at',
-            'is_blocked', 'blocker_reason',
             'depends_on', 'depends_on_tasks', 'can_start',
             'parent', 'parent_title', 'subtasks', 'subtasks_count',
             'notes',

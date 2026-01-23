@@ -1,6 +1,6 @@
 from django.contrib import admin
 from .models import (
-    Customer, JobOrder,
+    Customer, JobOrder, JobOrderFile,
     DepartmentTaskTemplate, DepartmentTaskTemplateItem,
     JobOrderDepartmentTask
 )
@@ -39,6 +39,13 @@ class CustomerAdmin(admin.ModelAdmin):
         super().save_model(request, obj, form, change)
 
 
+class JobOrderFileInline(admin.TabularInline):
+    model = JobOrderFile
+    extra = 0
+    fields = ['file', 'file_type', 'name', 'description', 'uploaded_at', 'uploaded_by']
+    readonly_fields = ['uploaded_at', 'uploaded_by']
+
+
 @admin.register(JobOrder)
 class JobOrderAdmin(admin.ModelAdmin):
     list_display = [
@@ -56,6 +63,7 @@ class JobOrderAdmin(admin.ModelAdmin):
     ]
     autocomplete_fields = ['customer', 'parent']
     raw_id_fields = ['created_by', 'completed_by']
+    inlines = [JobOrderFileInline]
 
     fieldsets = (
         (None, {
@@ -91,6 +99,21 @@ class JobOrderAdmin(admin.ModelAdmin):
     def save_model(self, request, obj, form, change):
         if not change:
             obj.created_by = request.user
+        super().save_model(request, obj, form, change)
+
+
+@admin.register(JobOrderFile)
+class JobOrderFileAdmin(admin.ModelAdmin):
+    list_display = ['name', 'job_order', 'file_type', 'uploaded_at', 'uploaded_by']
+    list_filter = ['file_type', 'uploaded_at']
+    search_fields = ['name', 'description', 'job_order__job_no', 'job_order__title']
+    ordering = ['-uploaded_at']
+    readonly_fields = ['uploaded_at', 'uploaded_by']
+    autocomplete_fields = ['job_order']
+
+    def save_model(self, request, obj, form, change):
+        if not change:
+            obj.uploaded_by = request.user
         super().save_model(request, obj, form, change)
 
 
@@ -152,9 +175,9 @@ class DepartmentTaskSubtaskInline(admin.TabularInline):
 class JobOrderDepartmentTaskAdmin(admin.ModelAdmin):
     list_display = [
         'title', 'job_order', 'department', 'status', 'assigned_to',
-        'is_blocked', 'sequence', 'created_at'
+        'sequence', 'created_at'
     ]
-    list_filter = ['status', 'department', 'is_blocked', 'job_order']
+    list_filter = ['status', 'department', 'job_order']
     search_fields = ['title', 'description', 'job_order__job_no', 'job_order__title']
     ordering = ['job_order', 'sequence']
     readonly_fields = [
@@ -179,10 +202,6 @@ class JobOrderDepartmentTaskAdmin(admin.ModelAdmin):
         }),
         ('Zaman Çizelgesi', {
             'fields': ('target_start_date', 'target_completion_date', 'started_at', 'completed_at')
-        }),
-        ('Engeller', {
-            'fields': ('is_blocked', 'blocker_reason'),
-            'classes': ('collapse',)
         }),
         ('Bağımlılıklar', {
             'fields': ('depends_on',),
