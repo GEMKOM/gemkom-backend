@@ -124,8 +124,39 @@ class JobOrderFileAdmin(admin.ModelAdmin):
 class DepartmentTaskTemplateItemInline(admin.TabularInline):
     model = DepartmentTaskTemplateItem
     extra = 1
-    fields = ['department', 'title', 'sequence']
+    fk_name = 'template'
+    fields = ['department', 'title', 'sequence', 'parent']
     ordering = ['sequence']
+
+    def get_queryset(self, request):
+        # Show all items, but they're grouped by parent in the inline
+        return super().get_queryset(request)
+
+
+@admin.register(DepartmentTaskTemplateItem)
+class DepartmentTaskTemplateItemAdmin(admin.ModelAdmin):
+    """Standalone admin for managing template items with hierarchy."""
+    list_display = ['title', 'template', 'department', 'sequence', 'parent']
+    list_filter = ['template', 'department']
+    search_fields = ['title', 'template__name']
+    ordering = ['template', 'sequence']
+    autocomplete_fields = ['template', 'parent']
+    filter_horizontal = ['depends_on']
+
+    fieldsets = (
+        (None, {
+            'fields': ('template', 'department', 'title', 'sequence')
+        }),
+        ('Hiyerarşi', {
+            'fields': ('parent',),
+            'description': 'Alt öğe oluşturmak için üst öğeyi seçin. Alt öğeler üst öğenin departmanını miras alır.'
+        }),
+        ('Bağımlılıklar', {
+            'fields': ('depends_on',),
+            'classes': ('collapse',),
+            'description': 'Bu görev ancak seçilen görevler tamamlandığında başlatılabilir.'
+        }),
+    )
 
 
 @admin.register(DepartmentTaskTemplate)

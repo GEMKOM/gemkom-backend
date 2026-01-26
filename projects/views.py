@@ -143,14 +143,18 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         return queryset
 
     def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user)
+        job_order = serializer.save(created_by=self.request.user)
+        # Auto-start the job order
+        job_order.start(user=self.request.user)
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         self.perform_create(serializer)
+        # Refresh to get updated status
+        serializer.instance.refresh_from_db()
         # Return detail serializer for the created object
-        detail_serializer = JobOrderDetailSerializer(serializer.instance)
+        detail_serializer = JobOrderDetailSerializer(serializer.instance, context={'request': request})
         return Response(detail_serializer.data, status=status.HTTP_201_CREATED)
 
     def update(self, request, *args, **kwargs):
@@ -319,9 +323,19 @@ class JobOrderViewSet(viewsets.ModelViewSet):
 
         created_tasks = serializer.create_tasks_from_template(job_order, request.user)
 
+        # Auto-start tasks that have no dependencies
+        started_count = 0
+        for task in created_tasks:
+            if task.can_start():
+                try:
+                    task.start(user=request.user)
+                    started_count += 1
+                except ValueError:
+                    pass
+
         return Response({
             'status': 'success',
-            'message': f'{len(created_tasks)} departman görevi oluşturuldu.',
+            'message': f'{len(created_tasks)} departman görevi oluşturuldu, {started_count} otomatik başlatıldı.',
             'tasks': DepartmentTaskListSerializer(created_tasks, many=True).data
         }, status=status.HTTP_201_CREATED)
 
@@ -457,11 +471,12 @@ class DepartmentTaskTemplateViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get', 'post'])
     def items(self, request, pk=None):
-        """Get or add template items."""
+        """Get or add template items (main items only, children are nested)."""
         template = self.get_object()
 
         if request.method == 'GET':
-            items = template.items.all()
+            # Only return main items, children are nested in the serializer
+            items = template.items.filter(parent__isnull=True).order_by('sequence')
             serializer = DepartmentTaskTemplateItemSerializer(items, many=True)
             return Response(serializer.data)
 
@@ -471,13 +486,39 @@ class DepartmentTaskTemplateViewSet(viewsets.ModelViewSet):
             serializer.save(template=template)
             return Response(serializer.data, status=status.HTTP_201_CREATED)
 
+    @action(detail=True, methods=['post'], url_path='items/(?P<item_id>[^/.]+)/children')
+    def add_child_item(self, request, pk=None, item_id=None):
+        """Add a child item to a template item."""
+        template = self.get_object()
+        try:
+            parent_item = template.items.get(id=item_id)
+        except DepartmentTaskTemplateItem.DoesNotExist:
+            return Response(
+                {'status': 'error', 'message': 'Üst şablon öğesi bulunamadı.'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # Child inherits department from parent
+        data = request.data.copy()
+        data['department'] = parent_item.department
+
+        serializer = DepartmentTaskTemplateItemSerializer(data=data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save(template=template, parent=parent_item)
+
+        # Return updated parent with children
+        return Response(
+            DepartmentTaskTemplateItemSerializer(parent_item).data,
+            status=status.HTTP_201_CREATED
+        )
+
     @action(detail=True, methods=['delete'], url_path='items/(?P<item_id>[^/.]+)')
     def remove_item(self, request, pk=None, item_id=None):
-        """Remove an item from template."""
+        """Remove an item from template (also removes its children)."""
         template = self.get_object()
         try:
             item = template.items.get(id=item_id)
-            item.delete()
+            item.delete()  # CASCADE will delete children
             return Response(status=status.HTTP_204_NO_CONTENT)
         except DepartmentTaskTemplateItem.DoesNotExist:
             return Response(
@@ -683,17 +724,27 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
             else:
                 errors.append({'index': idx, 'errors': serializer.errors})
 
+        # Auto-start tasks that have no dependencies
+        started_count = 0
+        for task in created_tasks:
+            if task.can_start():
+                try:
+                    task.start(user=request.user)
+                    started_count += 1
+                except ValueError:
+                    pass  # Task couldn't be started for some reason
+
         if errors:
             return Response({
                 'status': 'partial' if created_tasks else 'error',
-                'message': f'{len(created_tasks)} görev oluşturuldu, {len(errors)} hata.',
+                'message': f'{len(created_tasks)} görev oluşturuldu, {started_count} otomatik başlatıldı, {len(errors)} hata.',
                 'created': DepartmentTaskListSerializer(created_tasks, many=True).data,
                 'errors': errors
             }, status=status.HTTP_400_BAD_REQUEST if not created_tasks else status.HTTP_207_MULTI_STATUS)
 
         return Response({
             'status': 'success',
-            'message': f'{len(created_tasks)} görev oluşturuldu.',
+            'message': f'{len(created_tasks)} görev oluşturuldu, {started_count} otomatik başlatıldı.',
             'tasks': DepartmentTaskListSerializer(created_tasks, many=True).data
         }, status=status.HTTP_201_CREATED)
 

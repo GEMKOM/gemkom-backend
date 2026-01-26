@@ -350,17 +350,32 @@ class JobOrderFileUploadSerializer(serializers.ModelSerializer):
 # Department Task Template Serializers
 # ============================================================================
 
+class DepartmentTaskTemplateItemChildSerializer(serializers.ModelSerializer):
+    """Serializer for child template items (subtasks)."""
+    department_display = serializers.CharField(source='get_department_display', read_only=True)
+
+    class Meta:
+        model = DepartmentTaskTemplateItem
+        fields = ['id', 'department', 'department_display', 'title', 'sequence', 'weight']
+
+
 class DepartmentTaskTemplateItemSerializer(serializers.ModelSerializer):
-    """Serializer for template items."""
+    """Serializer for template items with children."""
     department_display = serializers.CharField(source='get_department_display', read_only=True)
     title = serializers.CharField(required=False, allow_blank=True, default='')
+    children = DepartmentTaskTemplateItemChildSerializer(many=True, read_only=True)
+    children_count = serializers.SerializerMethodField()
 
     class Meta:
         model = DepartmentTaskTemplateItem
         fields = [
             'id', 'department', 'department_display', 'title',
-            'sequence', 'depends_on'
+            'sequence', 'weight', 'depends_on', 'parent',
+            'children', 'children_count'
         ]
+
+    def get_children_count(self, obj):
+        return obj.children.count()
 
 
 class DepartmentTaskTemplateListSerializer(serializers.ModelSerializer):
@@ -377,7 +392,7 @@ class DepartmentTaskTemplateListSerializer(serializers.ModelSerializer):
 
 class DepartmentTaskTemplateDetailSerializer(serializers.ModelSerializer):
     """Full serializer for template detail."""
-    items = DepartmentTaskTemplateItemSerializer(many=True, read_only=True)
+    items = serializers.SerializerMethodField()
     created_by_name = serializers.CharField(
         source='created_by.get_full_name',
         read_only=True,
@@ -390,7 +405,11 @@ class DepartmentTaskTemplateDetailSerializer(serializers.ModelSerializer):
             'id', 'name', 'description', 'is_active', 'is_default',
             'items', 'created_at', 'created_by', 'created_by_name', 'updated_at'
         ]
-        read_only_fields = ['created_at', 'created_by', 'updated_at']
+
+    def get_items(self, obj):
+        # Only return main items (no parent), children are nested
+        main_items = obj.items.filter(parent__isnull=True).order_by('sequence')
+        return DepartmentTaskTemplateItemSerializer(main_items, many=True).data
 
 
 class DepartmentTaskTemplateCreateUpdateSerializer(serializers.ModelSerializer):
@@ -418,7 +437,8 @@ class DepartmentTaskSubtaskSerializer(serializers.ModelSerializer):
         model = JobOrderDepartmentTask
         fields = [
             'id', 'title', 'department', 'department_display',
-            'status', 'status_display', 'assigned_to', 'assigned_to_name',
+            'status', 'status_display', 'weight',
+            'assigned_to', 'assigned_to_name',
             'target_completion_date', 'completed_at'
         ]
 
@@ -441,7 +461,7 @@ class DepartmentTaskListSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'job_order', 'job_order_title',
             'department', 'department_display', 'title',
-            'status', 'status_display', 'sequence',
+            'status', 'status_display', 'sequence', 'weight',
             'assigned_to', 'assigned_to_name',
             'target_start_date', 'target_completion_date',
             'started_at', 'completed_at',
@@ -487,7 +507,7 @@ class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'job_order', 'job_order_title',
             'department', 'department_display', 'title', 'description',
-            'status', 'status_display', 'sequence',
+            'status', 'status_display', 'sequence', 'weight',
             'assigned_to', 'assigned_to_name',
             'target_start_date', 'target_completion_date',
             'started_at', 'completed_at',
@@ -518,7 +538,7 @@ class DepartmentTaskCreateSerializer(serializers.ModelSerializer):
         fields = [
             'job_order', 'department', 'title', 'description',
             'assigned_to', 'target_start_date', 'target_completion_date',
-            'depends_on', 'sequence',
+            'depends_on', 'sequence', 'weight',
             'parent', 'notes'
         ]
 
@@ -547,7 +567,7 @@ class DepartmentTaskUpdateSerializer(serializers.ModelSerializer):
         fields = [
             'title', 'description', 'assigned_to',
             'target_start_date', 'target_completion_date',
-            'depends_on', 'sequence', 'notes'
+            'depends_on', 'sequence', 'weight', 'notes'
         ]
 
     def validate(self, attrs):
@@ -568,24 +588,41 @@ class ApplyTemplateSerializer(serializers.Serializer):
     )
 
     def create_tasks_from_template(self, job_order, user):
-        """Create department tasks from template."""
+        """Create department tasks from template, including subtasks and weights."""
         template = self.validated_data['template_id']
         created_tasks = []
         task_mapping = {}  # template_item_id -> created_task
 
-        # First pass: create all tasks (title auto-fills from job_order.title)
-        for item in template.items.all().order_by('sequence'):
+        # First pass: create main tasks (no parent)
+        main_items = template.items.filter(parent__isnull=True).order_by('sequence')
+        for item in main_items:
             task = JobOrderDepartmentTask.objects.create(
                 job_order=job_order,
                 department=item.department,
+                title=item.title or '',  # Will auto-fill from job_order.title if empty
                 sequence=item.sequence,
+                weight=item.weight,  # Copy weight from template
                 created_by=user
             )
             created_tasks.append(task)
             task_mapping[item.id] = task
 
-        # Second pass: set up dependencies
-        for item in template.items.all():
+            # Create children for this item
+            for child_item in item.children.order_by('sequence'):
+                child_task = JobOrderDepartmentTask.objects.create(
+                    job_order=job_order,
+                    department=child_item.department,
+                    title=child_item.title,  # Subtasks keep their template title
+                    sequence=child_item.sequence,
+                    weight=child_item.weight,  # Copy weight from template
+                    parent=task,
+                    created_by=user
+                )
+                created_tasks.append(child_task)
+                task_mapping[child_item.id] = child_task
+
+        # Second pass: set up dependencies (only for main tasks)
+        for item in main_items:
             if item.depends_on.exists():
                 task = task_mapping[item.id]
                 for dep_item in item.depends_on.all():

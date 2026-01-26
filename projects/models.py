@@ -215,16 +215,35 @@ class JobOrder(models.Model):
         return children
 
     def update_completion_percentage(self):
-        """Calculate completion based on department task progress."""
-        dept_tasks = self.department_tasks.all()
-        if not dept_tasks.exists():
+        """
+        Calculate completion based on department task progress using weights.
+
+        Formula: (sum of completed task weights / total weight) * 100
+        Skipped tasks are excluded from the calculation.
+        Only main tasks (no parent) are counted - subtasks contribute to parent's weight.
+        """
+        from django.db.models import Sum
+
+        # Only count main tasks (no parent)
+        main_tasks = self.department_tasks.filter(parent__isnull=True)
+
+        if not main_tasks.exists():
             self.completion_percentage = Decimal('0.00')
         else:
-            completed = dept_tasks.filter(status='completed').count()
-            skipped = dept_tasks.filter(status='skipped').count()
-            total = dept_tasks.count() - skipped
-            if total > 0:
-                self.completion_percentage = Decimal((completed / total) * 100).quantize(Decimal('0.01'))
+            # Get completed task weights
+            completed_weight = main_tasks.filter(
+                status='completed'
+            ).aggregate(total=Sum('weight'))['total'] or 0
+
+            # Get total weight (excluding skipped)
+            total_weight = main_tasks.exclude(
+                status='skipped'
+            ).aggregate(total=Sum('weight'))['total'] or 0
+
+            if total_weight > 0:
+                self.completion_percentage = Decimal(
+                    (completed_weight / total_weight) * 100
+                ).quantize(Decimal('0.01'))
             else:
                 self.completion_percentage = Decimal('100.00')
 
@@ -498,6 +517,7 @@ class DepartmentTaskTemplateItem(models.Model):
     """
     Individual department task within a template.
     Defines which departments in what order with dependencies.
+    Supports hierarchy - main tasks have no parent, subtasks have parent.
     """
     template = models.ForeignKey(
         DepartmentTaskTemplate,
@@ -508,7 +528,24 @@ class DepartmentTaskTemplateItem(models.Model):
     title = models.CharField(max_length=255, blank=True)  # Auto-filled from department if empty
     sequence = models.PositiveIntegerField(default=1)
 
-    # Dependencies - this task can start when these are done
+    # Weight for progress calculation (default: 10 points)
+    # Higher weight = more impact on completion percentage
+    weight = models.PositiveIntegerField(
+        default=10,
+        validators=[MinValueValidator(1), MaxValueValidator(100)],
+        help_text='Görev ağırlığı (1-100 puan). Varsayılan: 10'
+    )
+
+    # Hierarchical - main items have no parent, sub-items have parent
+    parent = models.ForeignKey(
+        'self',
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='children'
+    )
+
+    # Dependencies - this task can start when these are done (only for main items)
     depends_on = models.ManyToManyField(
         'self',
         symmetrical=False,
@@ -518,17 +555,21 @@ class DepartmentTaskTemplateItem(models.Model):
 
     class Meta:
         ordering = ['template', 'sequence']
-        unique_together = [('template', 'department')]
         verbose_name = 'Şablon Öğesi'
         verbose_name_plural = 'Şablon Öğeleri'
 
     def __str__(self):
-        return f"{self.template.name} - {self.get_department_display()}"
+        if self.parent:
+            return f"{self.template.name} - {self.parent.title} - {self.title}"
+        return f"{self.template.name} - {self.title or self.get_department_display()}"
 
     def save(self, *args, **kwargs):
-        # Auto-fill title from department display name if not provided
-        if not self.title:
+        # Auto-fill title from department display name if not provided (for main items)
+        if not self.title and not self.parent:
             self.title = self.get_department_display()
+        # Inherit department from parent if this is a child item
+        if self.parent:
+            self.department = self.parent.department
         super().save(*args, **kwargs)
 
 
@@ -576,6 +617,13 @@ class JobOrderDepartmentTask(models.Model):
         choices=STATUS_CHOICES,
         default='pending',
         db_index=True
+    )
+
+    # Weight for progress calculation (default: 10 points)
+    weight = models.PositiveIntegerField(
+        default=10,
+        validators=[MinValueValidator(1), MaxValueValidator(100)],
+        help_text='Görev ağırlığı (1-100 puan). Varsayılan: 10'
     )
 
     # Assignment
