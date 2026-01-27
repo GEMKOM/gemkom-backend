@@ -24,6 +24,7 @@ from .serializers import (
     DepartmentTaskTemplateDetailSerializer,
     DepartmentTaskTemplateCreateUpdateSerializer,
     DepartmentTaskTemplateItemSerializer,
+    DepartmentTaskTemplateItemUpdateSerializer,
     DepartmentTaskListSerializer,
     DepartmentTaskDetailSerializer,
     DepartmentTaskCreateSerializer,
@@ -512,19 +513,29 @@ class DepartmentTaskTemplateViewSet(viewsets.ModelViewSet):
             status=status.HTTP_201_CREATED
         )
 
-    @action(detail=True, methods=['delete'], url_path='items/(?P<item_id>[^/.]+)')
-    def remove_item(self, request, pk=None, item_id=None):
-        """Remove an item from template (also removes its children)."""
+    @action(detail=True, methods=['delete', 'patch'], url_path='items/(?P<item_id>[^/.]+)')
+    def update_or_remove_item(self, request, pk=None, item_id=None):
+        """Update or remove an item from template."""
         template = self.get_object()
         try:
             item = template.items.get(id=item_id)
-            item.delete()  # CASCADE will delete children
-            return Response(status=status.HTTP_204_NO_CONTENT)
         except DepartmentTaskTemplateItem.DoesNotExist:
             return Response(
                 {'status': 'error', 'message': 'Şablon öğesi bulunamadı.'},
                 status=status.HTTP_404_NOT_FOUND
             )
+
+        if request.method == 'DELETE':
+            item.delete()  # CASCADE will delete children
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        elif request.method == 'PATCH':
+            serializer = DepartmentTaskTemplateItemUpdateSerializer(
+                item, data=request.data, partial=True
+            )
+            serializer.is_valid(raise_exception=True)
+            serializer.save()
+            return Response(DepartmentTaskTemplateItemSerializer(item).data)
 
     @action(detail=False, methods=['get'])
     def department_choices(self, request):

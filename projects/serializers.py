@@ -419,6 +419,23 @@ class DepartmentTaskTemplateCreateUpdateSerializer(serializers.ModelSerializer):
         fields = ['name', 'description', 'is_active', 'is_default']
 
 
+class DepartmentTaskTemplateItemUpdateSerializer(serializers.ModelSerializer):
+    """Serializer for updating template items."""
+    class Meta:
+        model = DepartmentTaskTemplateItem
+        fields = ['department', 'title', 'sequence', 'weight', 'depends_on']
+
+    def validate_department(self, value):
+        """Prevent department change if item has children."""
+        instance = self.instance
+        if instance and instance.children.exists():
+            if value != instance.department:
+                raise serializers.ValidationError(
+                    "Alt öğeleri olan bir öğenin departmanı değiştirilemez."
+                )
+        return value
+
+
 # ============================================================================
 # Job Order Department Task Serializers
 # ============================================================================

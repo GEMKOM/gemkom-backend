@@ -216,33 +216,57 @@ class JobOrder(models.Model):
 
     def update_completion_percentage(self):
         """
-        Calculate completion based on department task progress using weights.
+        Calculate completion based on department task progress using nested weights.
 
-        Formula: (sum of completed task weights / total weight) * 100
-        Skipped tasks are excluded from the calculation.
-        Only main tasks (no parent) are counted - subtasks contribute to parent's weight.
+        For tasks without subtasks:
+            - Completed task contributes its full weight
+            - Pending/in_progress contributes 0
+
+        For tasks with subtasks:
+            - Task contributes: (completed_subtask_weight / total_subtask_weight) * task_weight
+            - Skipped subtasks are excluded from calculation
+
+        Skipped main tasks are excluded from the total weight calculation.
         """
         from django.db.models import Sum
 
         # Only count main tasks (no parent)
-        main_tasks = self.department_tasks.filter(parent__isnull=True)
+        main_tasks = self.department_tasks.filter(parent__isnull=True).exclude(status='skipped')
 
         if not main_tasks.exists():
             self.completion_percentage = Decimal('0.00')
         else:
-            # Get completed task weights
-            completed_weight = main_tasks.filter(
-                status='completed'
-            ).aggregate(total=Sum('weight'))['total'] or 0
+            total_weight = 0
+            earned_weight = 0
 
-            # Get total weight (excluding skipped)
-            total_weight = main_tasks.exclude(
-                status='skipped'
-            ).aggregate(total=Sum('weight'))['total'] or 0
+            for task in main_tasks:
+                task_weight = task.weight
+                total_weight += task_weight
+
+                # Check if task has subtasks
+                subtasks = task.subtasks.exclude(status='skipped')
+
+                if subtasks.exists():
+                    # Nested calculation: use subtask weights
+                    subtask_total = subtasks.aggregate(total=Sum('weight'))['total'] or 0
+                    subtask_completed = subtasks.filter(
+                        status='completed'
+                    ).aggregate(total=Sum('weight'))['total'] or 0
+
+                    if subtask_total > 0:
+                        # Proportional contribution based on subtask completion
+                        earned_weight += (subtask_completed / subtask_total) * task_weight
+                    elif task.status == 'completed':
+                        # No non-skipped subtasks but task is complete
+                        earned_weight += task_weight
+                else:
+                    # No subtasks: use task's own status
+                    if task.status == 'completed':
+                        earned_weight += task_weight
 
             if total_weight > 0:
                 self.completion_percentage = Decimal(
-                    (completed_weight / total_weight) * 100
+                    (earned_weight / total_weight) * 100
                 ).quantize(Decimal('0.01'))
             else:
                 self.completion_percentage = Decimal('100.00')
