@@ -608,6 +608,7 @@ class JobOrderDepartmentTask(models.Model):
     """
     STATUS_CHOICES = [
         ('pending', 'Bekliyor'),
+        ('blocked', 'Engellenmiş'),
         ('in_progress', 'Devam Ediyor'),
         ('completed', 'Tamamlandı'),
         ('skipped', 'Atlandı'),
@@ -719,13 +720,58 @@ class JobOrderDepartmentTask(models.Model):
         super().save(*args, **kwargs)
 
     def can_start(self):
-        """Check if all dependencies are completed."""
+        """
+        Check if task can be started.
+        - Main tasks: check if all dependencies are completed
+        - Subtasks: check if parent is not blocked
+        """
+        # For subtasks, parent must not be blocked
+        if self.parent and self.parent.status == 'blocked':
+            return False
+
+        # Check own dependencies
         return not self.depends_on.exclude(status__in=['completed', 'skipped']).exists()
+
+    def update_status_from_dependencies(self):
+        """
+        Update task status based on dependency completion.
+        - If dependencies are incomplete or parent is blocked: set to 'blocked'
+        - If all dependencies are complete and parent allows: set to 'in_progress'
+        Updates pending, blocked, or in_progress tasks.
+        Cascades status changes to subtasks.
+        """
+        # Don't update completed or skipped tasks
+        if self.status in ['completed', 'skipped']:
+            return
+
+        old_status = self.status
+
+        if self.can_start():
+            # All dependencies complete - transition to in_progress
+            if self.status != 'in_progress':
+                self.status = 'in_progress'
+                if not self.started_at:
+                    self.started_at = timezone.now()
+                self.save(update_fields=['status', 'started_at'])
+        else:
+            # Dependencies incomplete - ensure it's blocked
+            if self.status != 'blocked':
+                self.status = 'blocked'
+                self.save(update_fields=['status'])
+
+        # If status changed, update all subtasks
+        if old_status != self.status and not self.parent:
+            for subtask in self.subtasks.all():
+                subtask.update_status_from_dependencies()
 
     def start(self, user=None):
         """Start working on this task."""
-        if self.status != 'pending':
-            raise ValueError("Sadece bekleyen görevler başlatılabilir.")
+        if self.status not in ['pending', 'blocked']:
+            raise ValueError("Sadece bekleyen veya engellenmiş görevler başlatılabilir.")
+
+        # For subtasks, check if parent is blocked
+        if self.parent and self.parent.status == 'blocked':
+            raise ValueError("Üst görev engellenmiş olduğu için bu alt görev başlatılamaz.")
 
         if not self.can_start():
             raise ValueError("Bağımlı görevler henüz tamamlanmadı.")
@@ -743,6 +789,10 @@ class JobOrderDepartmentTask(models.Model):
         if self.status != 'in_progress':
             raise ValueError("Sadece devam eden görevler tamamlanabilir.")
 
+        # For subtasks: ensure parent is not blocked
+        if self.parent and self.parent.status == 'blocked':
+            raise ValueError("Üst görev engellenmiş olduğu için bu alt görev tamamlanamaz.")
+
         # For main tasks: check all subtasks are complete
         if not self.parent:
             incomplete_subtasks = self.subtasks.exclude(status__in=['completed', 'skipped']).count()
@@ -755,6 +805,10 @@ class JobOrderDepartmentTask(models.Model):
         self.completed_at = timezone.now()
         self.completed_by = user
         self.save(update_fields=['status', 'completed_at', 'completed_by'])
+
+        # Update all dependent tasks - check if they can now start
+        for dependent_task in self.dependents.all():
+            dependent_task.update_status_from_dependencies()
 
         # If this is a subtask, check if parent can auto-complete
         if self.parent:
@@ -798,10 +852,18 @@ class JobOrderDepartmentTask(models.Model):
         if self.status == 'completed':
             raise ValueError("Tamamlanmış görevler atlanamaz.")
 
+        # For subtasks: ensure parent is not blocked
+        if self.parent and self.parent.status == 'blocked':
+            raise ValueError("Üst görev engellenmiş olduğu için bu alt görev atlanamaz.")
+
         self.status = 'skipped'
         self.completed_at = timezone.now()
         self.completed_by = user
         self.save(update_fields=['status', 'completed_at', 'completed_by'])
+
+        # Update all dependent tasks - check if they can now start
+        for dependent_task in self.dependents.all():
+            dependent_task.update_status_from_dependencies()
 
         # Update job order completion percentage
         self.job_order.update_completion_percentage()
@@ -822,6 +884,10 @@ class JobOrderDepartmentTask(models.Model):
         self.completed_at = None
         self.completed_by = None
         self.save(update_fields=['status', 'completed_at', 'completed_by'])
+
+        # Update all dependent tasks - they may need to be blocked again
+        for dependent_task in self.dependents.filter(status='in_progress'):
+            dependent_task.update_status_from_dependencies()
 
         # Revert job order if it was auto-completed
         if self.job_order.status == 'completed':

@@ -576,6 +576,23 @@ class DepartmentTaskCreateSerializer(serializers.ModelSerializer):
 
         return attrs
 
+    def create(self, validated_data):
+        """Create task and set initial status based on dependencies."""
+        # Extract depends_on from validated data (ManyToMany field)
+        depends_on_tasks = validated_data.pop('depends_on', [])
+
+        # Create the task
+        task = super().create(validated_data)
+
+        # Set dependencies if any
+        if depends_on_tasks:
+            task.depends_on.set(depends_on_tasks)
+
+        # Update status based on dependencies
+        task.update_status_from_dependencies()
+
+        return task
+
 
 class DepartmentTaskUpdateSerializer(serializers.ModelSerializer):
     """Serializer for updating department tasks."""
@@ -595,6 +612,19 @@ class DepartmentTaskUpdateSerializer(serializers.ModelSerializer):
                 "Tamamlanmış veya atlanan görevler güncellenemez."
             )
         return attrs
+
+    def update(self, instance, validated_data):
+        """Update task and refresh status if dependencies changed."""
+        depends_on_changed = 'depends_on' in validated_data
+
+        # Update the task
+        task = super().update(instance, validated_data)
+
+        # If dependencies were changed, update status accordingly
+        if depends_on_changed:
+            task.update_status_from_dependencies()
+
+        return task
 
 
 class ApplyTemplateSerializer(serializers.Serializer):

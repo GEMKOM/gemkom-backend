@@ -324,19 +324,13 @@ class JobOrderViewSet(viewsets.ModelViewSet):
 
         created_tasks = serializer.create_tasks_from_template(job_order, request.user)
 
-        # Auto-start tasks that have no dependencies
-        started_count = 0
+        # Update task statuses based on dependencies
         for task in created_tasks:
-            if task.can_start():
-                try:
-                    task.start(user=request.user)
-                    started_count += 1
-                except ValueError:
-                    pass
+            task.update_status_from_dependencies()
 
         return Response({
             'status': 'success',
-            'message': f'{len(created_tasks)} departman görevi oluşturuldu, {started_count} otomatik başlatıldı.',
+            'message': f'{len(created_tasks)} departman görevi oluşturuldu.',
             'tasks': DepartmentTaskListSerializer(created_tasks, many=True).data
         }, status=status.HTTP_201_CREATED)
 
@@ -735,27 +729,21 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
             else:
                 errors.append({'index': idx, 'errors': serializer.errors})
 
-        # Auto-start tasks that have no dependencies
-        started_count = 0
+        # Update task statuses based on dependencies
         for task in created_tasks:
-            if task.can_start():
-                try:
-                    task.start(user=request.user)
-                    started_count += 1
-                except ValueError:
-                    pass  # Task couldn't be started for some reason
+            task.update_status_from_dependencies()
 
         if errors:
             return Response({
                 'status': 'partial' if created_tasks else 'error',
-                'message': f'{len(created_tasks)} görev oluşturuldu, {started_count} otomatik başlatıldı, {len(errors)} hata.',
+                'message': f'{len(created_tasks)} görev oluşturuldu, {len(errors)} hata.',
                 'created': DepartmentTaskListSerializer(created_tasks, many=True).data,
                 'errors': errors
             }, status=status.HTTP_400_BAD_REQUEST if not created_tasks else status.HTTP_207_MULTI_STATUS)
 
         return Response({
             'status': 'success',
-            'message': f'{len(created_tasks)} görev oluşturuldu, {started_count} otomatik başlatıldı.',
+            'message': f'{len(created_tasks)} görev oluşturuldu.',
             'tasks': DepartmentTaskListSerializer(created_tasks, many=True).data
         }, status=status.HTTP_201_CREATED)
 
