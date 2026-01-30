@@ -179,6 +179,15 @@ class Item(models.Model):
         help_text="Current available stock quantity"
     )
 
+    # Weight for progress calculation
+    unit_weight = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal('1.00'),
+        validators=[MinValueValidator(Decimal('0.01'))],
+        help_text="Birim ağırlığı (ilerleme hesaplaması için)"
+    )
+
     def __str__(self):
         return f"{self.code} - {self.name}"
 
@@ -319,6 +328,15 @@ class PurchaseRequestItem(models.Model):
     item = models.ForeignKey(Item, on_delete=models.CASCADE, related_name='requests')
     quantity = models.DecimalField(max_digits=10, decimal_places=2)  # ADDED: Frontend sends this
     priority = models.CharField(max_length=20, choices=PurchaseRequest.PRIORITY_CHOICES, default='normal')
+
+    # Link to source planning request item for progress tracking
+    planning_request_item = models.ForeignKey(
+        'planning.PlanningRequestItem',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='purchase_request_items'
+    )
 
     # Original item description from PlanningRequestItem
     item_description = models.CharField(

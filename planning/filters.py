@@ -1,4 +1,5 @@
 import django_filters
+from django.db import models
 from .models import PlanningRequestItem, PlanningRequest
 
 
@@ -82,26 +83,34 @@ class PlanningRequestItemFilter(django_filters.FilterSet):
 
     def filter_is_available(self, queryset, name, value):
         """
-        Filter items by availability status.
-        - is_available=true: Only items NOT in active purchase requests (rejected/cancelled are OK)
-        - is_available=false: Only items already in active purchase requests
+        Filter items by availability status (supports partial conversion).
+        - is_available=true: Items with remaining quantity for purchase
+        - is_available=false: Items fully converted (no remaining quantity)
         """
-        from django.db.models import Q, Exists, OuterRef
-        from procurement.models import PurchaseRequest
+        from django.db.models import Q, Sum, OuterRef, Subquery, Value
+        from django.db.models.functions import Coalesce
+        from decimal import Decimal
+        from procurement.models import PurchaseRequestItem
 
-        # Subquery to check if item is in any active purchase request
-        active_pr_exists = PurchaseRequest.objects.filter(
-            planning_request_items=OuterRef('pk')
+        # Subquery to calculate quantity already in active PRs
+        quantity_in_active_prs = PurchaseRequestItem.objects.filter(
+            planning_request_item=OuterRef('pk')
         ).exclude(
-            Q(status='rejected') | Q(status='cancelled')
+            Q(purchase_request__status='rejected') |
+            Q(purchase_request__status='cancelled')
+        ).values('planning_request_item').annotate(
+            total=Sum('quantity')
+        ).values('total')
+
+        # Annotate with remaining quantity
+        queryset = queryset.annotate(
+            _qty_in_prs=Coalesce(Subquery(quantity_in_active_prs), Value(Decimal('0.00'))),
         )
 
-        if value:  # is_available=true
-            # Exclude items that are in active purchase requests
-            return queryset.exclude(Exists(active_pr_exists))
-        else:  # is_available=false
-            # Only include items that are in active purchase requests
-            return queryset.filter(Exists(active_pr_exists))
+        if value:  # is_available=true - has remaining quantity
+            return queryset.filter(quantity_to_purchase__gt=models.F('_qty_in_prs'))
+        else:  # is_available=false - fully converted
+            return queryset.filter(quantity_to_purchase__lte=models.F('_qty_in_prs'))
 
     def filter_needs_purchase(self, queryset, name, value):
         """
@@ -118,38 +127,44 @@ class PlanningRequestItemFilter(django_filters.FilterSet):
 
     def filter_available_for_procurement(self, queryset, name, value):
         """
-        Filter items available for procurement to select.
+        Filter items available for procurement to select (supports partial conversion).
 
         An item is available for procurement if:
         1. Planning request status is 'ready' or 'converted'
         2. Item has quantity_to_purchase > 0
-        3. Item is NOT already in an active purchase request (submitted or approved)
+        3. Item has remaining quantity (quantity_to_purchase > quantity_in_active_prs)
 
         Note: 'converted' status is included so that when a PR is rejected, items become available again.
-        The key protection is in step 3 - items already in active PRs are excluded to prevent duplicate orders.
+        With partial conversion, items can be partially in PRs but still have remaining quantity available.
 
         This is the main filter procurement should use!
         """
         if not value:
             return queryset
 
-        from django.db.models import Q, Exists, OuterRef
+        from django.db.models import Q, Sum, OuterRef, Subquery, Value
+        from django.db.models.functions import Coalesce
         from decimal import Decimal
-        from procurement.models import PurchaseRequest
+        from procurement.models import PurchaseRequestItem
 
-        # Subquery to check if item is in any active purchase request (submitted or approved, not rejected/cancelled)
-        # This is the key filter that prevents duplicate orders
-        active_pr_exists = PurchaseRequest.objects.filter(
-            planning_request_items=OuterRef('pk')
+        # Subquery to calculate quantity already in active PRs
+        quantity_in_active_prs = PurchaseRequestItem.objects.filter(
+            planning_request_item=OuterRef('pk')
         ).exclude(
-            Q(status='rejected') | Q(status='cancelled')
+            Q(purchase_request__status='rejected') |
+            Q(purchase_request__status='cancelled')
+        ).values('planning_request_item').annotate(
+            total=Sum('quantity')
+        ).values('total')
+
+        # Annotate with quantity in active PRs
+        queryset = queryset.annotate(
+            _qty_in_prs=Coalesce(Subquery(quantity_in_active_prs), Value(Decimal('0.00'))),
         )
 
         return queryset.filter(
             Q(planning_request__status='ready') | Q(planning_request__status='converted'),  # Ready or converted
-            quantity_to_purchase__gt=Decimal('0')  # Must need purchasing
-        ).exclude(
-            Exists(active_pr_exists)  # NOT in active purchase request - prevents duplicate orders
+            quantity_to_purchase__gt=models.F('_qty_in_prs')  # Has remaining quantity available (also implies > 0)
         )
 
 

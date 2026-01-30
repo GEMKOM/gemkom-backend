@@ -518,8 +518,47 @@ class PlanningRequestItem(models.Model):
 
     @property
     def is_converted(self):
-        """Check if this planning request item has been converted to a purchase request"""
-        return self.purchase_requests.exists()
+        """Check if this planning request item has been fully converted to purchase requests"""
+        return self.quantity_remaining_for_purchase <= Decimal('0.00')
+
+    @property
+    def is_partially_converted(self):
+        """Check if this planning request item has been partially converted to purchase requests"""
+        qty_in_prs = self.quantity_in_active_prs
+        return qty_in_prs > Decimal('0.00') and qty_in_prs < self.quantity_to_purchase
+
+    @property
+    def quantity_in_active_prs(self):
+        """
+        Sum of quantities in active (non-rejected/cancelled) PurchaseRequestItems.
+        This tracks how much of quantity_to_purchase has been converted.
+        """
+        from django.db.models import Sum, Q
+
+        # Get sum from PurchaseRequestItems that link back to this PlanningRequestItem
+        result = self.purchase_request_items.exclude(
+            Q(purchase_request__status='rejected') |
+            Q(purchase_request__status='cancelled')
+        ).aggregate(total=Sum('quantity'))
+
+        return result['total'] or Decimal('0.00')
+
+    @property
+    def quantity_remaining_for_purchase(self):
+        """
+        Quantity still available for new purchase requests.
+        This is quantity_to_purchase minus what's already in active PRs.
+        """
+        remaining = self.quantity_to_purchase - self.quantity_in_active_prs
+        return max(remaining, Decimal('0.00'))
+
+    @property
+    def is_available_for_purchase(self):
+        """
+        Check if this item is available for use in a new purchase request.
+        An item is available if it has remaining quantity to convert.
+        """
+        return self.quantity_remaining_for_purchase > Decimal('0.00')
 
     @property
     def is_fully_from_inventory(self):
@@ -530,6 +569,70 @@ class PlanningRequestItem(models.Model):
     def is_partially_from_inventory(self):
         """Check if this item is partially fulfilled from inventory"""
         return self.quantity_from_inventory > Decimal('0.00') and self.quantity_from_inventory < self.quantity
+
+    @property
+    def total_weight(self):
+        """Total weight = quantity_to_purchase × item.unit_weight"""
+        if self.item and self.quantity_to_purchase:
+            return self.quantity_to_purchase * self.item.unit_weight
+        return Decimal('0.00')
+
+    def get_procurement_progress(self):
+        """
+        Calculate procurement progress for this item.
+
+        Returns: (earned_weight, total_weight)
+
+        Progress stages:
+        - 0%: No PurchaseRequestItem exists
+        - 40%: PurchaseRequestItem exists (PR submitted)
+        - 50%: PurchaseRequest approved
+        - 100%: PurchaseOrder fully paid
+        """
+        total = self.total_weight
+        if total == Decimal('0.00'):
+            return (Decimal('0.00'), Decimal('0.00'))
+
+        # Get all PurchaseRequestItems for this PlanningRequestItem
+        pr_items = self.purchase_request_items.select_related(
+            'purchase_request'
+        ).prefetch_related(
+            'po_lines__po'
+        )
+
+        if not pr_items.exists():
+            return (Decimal('0.00'), total)
+
+        # Calculate weighted progress
+        earned = Decimal('0.00')
+
+        for pri in pr_items:
+            item_weight = pri.quantity * self.item.unit_weight
+            pr_status = pri.purchase_request.status
+
+            if pr_status in ('cancelled', 'rejected'):
+                # Doesn't count
+                continue
+
+            # Check if PO exists and is paid
+            po_lines = pri.po_lines.all()
+            if po_lines.exists():
+                # Check payment status
+                all_paid = all(
+                    line.po.status == 'paid'
+                    for line in po_lines
+                )
+                if all_paid:
+                    earned += item_weight * Decimal('1.0')  # 100%
+                else:
+                    # PO exists but not paid = approved level
+                    earned += item_weight * Decimal('0.5')  # 50%
+            elif pr_status == 'approved':
+                earned += item_weight * Decimal('0.5')  # 50%
+            elif pr_status == 'submitted':
+                earned += item_weight * Decimal('0.4')  # 40%
+
+        return (earned, total)
 
 
 class FileAsset(models.Model):

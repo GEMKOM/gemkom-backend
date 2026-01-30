@@ -518,6 +518,8 @@ class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
     subtasks_count = serializers.SerializerMethodField()
     depends_on_tasks = DepartmentTaskSubtaskSerializer(source='depends_on', many=True, read_only=True)
     can_start = serializers.SerializerMethodField()
+    procurement_progress = serializers.SerializerMethodField()
+    cnc_progress = serializers.SerializerMethodField()
 
     class Meta:
         model = JobOrderDepartmentTask
@@ -530,6 +532,7 @@ class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
             'started_at', 'completed_at',
             'depends_on', 'depends_on_tasks', 'can_start',
             'parent', 'parent_title', 'subtasks', 'subtasks_count',
+            'procurement_progress', 'cnc_progress',
             'notes',
             'created_at', 'created_by', 'created_by_name',
             'updated_at', 'completed_by', 'completed_by_name'
@@ -544,6 +547,98 @@ class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
 
     def get_can_start(self, obj):
         return obj.can_start()
+
+    def get_procurement_progress(self, obj):
+        """Return procurement progress details for procurement tasks."""
+        if obj.department != 'procurement':
+            return None
+
+        from decimal import Decimal
+        from planning.models import PlanningRequestItem
+
+        earned, total = obj.get_procurement_progress()
+
+        items = PlanningRequestItem.objects.filter(
+            job_no=obj.job_order.job_no,
+            quantity_to_purchase__gt=0
+        ).select_related('item')
+
+        items_data = []
+        for item in items:
+            item_earned, item_total = item.get_procurement_progress()
+            percentage = float((item_earned / item_total * 100).quantize(Decimal('0.01'))) if item_total > 0 else 0
+
+            # Determine status based on percentage
+            if percentage >= 100:
+                status = 'paid'
+            elif percentage >= 50:
+                status = 'approved'
+            elif percentage >= 40:
+                status = 'submitted'
+            else:
+                status = 'pending'
+
+            items_data.append({
+                'id': item.id,
+                'item_code': item.item.code if item.item else None,
+                'item_name': item.item.name if item.item else item.item_description,
+                'quantity': float(item.quantity_to_purchase),
+                'unit_weight': float(item.item.unit_weight) if item.item else 1,
+                'total_weight': float(item.total_weight),
+                'progress': {
+                    'percentage': percentage,
+                    'status': status
+                }
+            })
+
+        return {
+            'percentage': float((earned / total * 100).quantize(Decimal('0.01'))) if total > 0 else 0,
+            'total_weight': float(total),
+            'earned_weight': float(earned),
+            'items': items_data
+        }
+
+    def get_cnc_progress(self, obj):
+        """Return CNC cutting progress details for CNC Kesim subtasks."""
+        if obj.title != 'CNC Kesim':
+            return None
+
+        from decimal import Decimal
+        from cnc_cutting.models import CncPart
+
+        earned, total = obj.get_cnc_progress()
+
+        cnc_parts = CncPart.objects.filter(
+            job_no=obj.job_order.job_no
+        ).select_related('cnc_task')
+
+        parts_data = []
+        for part in cnc_parts:
+            part_weight = (part.weight_kg or Decimal('0')) * (part.quantity or 1)
+            is_complete = part.cnc_task.completion_date is not None
+
+            parts_data.append({
+                'id': part.id,
+                'job_no': part.job_no,
+                'image_no': part.image_no,
+                'position_no': part.position_no,
+                'quantity': part.quantity,
+                'weight_kg': float(part.weight_kg) if part.weight_kg else None,
+                'total_weight': float(part_weight),
+                'cnc_task_key': part.cnc_task.key,  # CncTask uses 'key' as primary key
+                'cnc_task_complete': is_complete,
+                'progress': {
+                    'percentage': 100 if is_complete else 0,
+                    'status': 'cut' if is_complete else 'pending'
+                }
+            })
+
+        return {
+            'percentage': float((earned / total * 100).quantize(Decimal('0.01'))) if total > 0 else 0,
+            'total_weight': float(total),
+            'earned_weight': float(earned),
+            'parts': parts_data
+        }
 
 
 class DepartmentTaskCreateSerializer(serializers.ModelSerializer):

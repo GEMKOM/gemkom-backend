@@ -115,6 +115,8 @@ class PurchaseRequestItemInputSerializer(serializers.Serializer):
         allow_empty=True,
         help_text="List of FileAsset IDs to attach to this purchase request item"
     )
+    # Link to source planning request item for progress tracking
+    planning_request_item_id = serializers.IntegerField(required=False, allow_null=True)
 
 class ItemOfferSerializer(serializers.ModelSerializer):
     purchase_request_item = serializers.PrimaryKeyRelatedField(read_only=True)
@@ -378,6 +380,16 @@ class PurchaseRequestCreateSerializer(serializers.ModelSerializer):
                         f"({item_data['quantity']}) for item code {item.code}."
                     )
 
+            # Get planning request item if provided
+            planning_request_item = None
+            planning_request_item_id = item_data.get('planning_request_item_id')
+            if planning_request_item_id:
+                from planning.models import PlanningRequestItem
+                try:
+                    planning_request_item = PlanningRequestItem.objects.get(id=planning_request_item_id)
+                except PlanningRequestItem.DoesNotExist:
+                    pass
+
             # create merged PR line
             pri = PurchaseRequestItem.objects.create(
                 purchase_request=pr,
@@ -386,7 +398,8 @@ class PurchaseRequestCreateSerializer(serializers.ModelSerializer):
                 item_description=item_data.get('item_description', ''),
                 priority=item_data.get('priority', 'normal'),
                 specifications=item_data.get('specifications', ''),
-                order=i
+                order=i,
+                planning_request_item=planning_request_item
             )
             request_items.append(pri)
 

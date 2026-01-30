@@ -332,8 +332,12 @@ class PlanningRequestItemListSerializer(serializers.ModelSerializer):
     item_stock_quantity = serializers.DecimalField(source='item.stock_quantity', read_only=True, max_digits=10, decimal_places=2)
     files_count = serializers.IntegerField(read_only=True)
     is_converted = serializers.ReadOnlyField()
+    is_partially_converted = serializers.ReadOnlyField()
     is_fully_from_inventory = serializers.ReadOnlyField()
     is_partially_from_inventory = serializers.ReadOnlyField()
+    is_available_for_purchase = serializers.ReadOnlyField()
+    quantity_in_active_prs = serializers.ReadOnlyField()
+    quantity_remaining_for_purchase = serializers.ReadOnlyField()
     planning_request_number = serializers.CharField(source='planning_request.request_number', read_only=True)
 
     class Meta:
@@ -341,9 +345,11 @@ class PlanningRequestItemListSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'item', 'item_code', 'item_name', 'item_unit', 'item_type', 'item_stock_quantity',
             'job_no', 'quantity', 'quantity_from_inventory', 'quantity_to_purchase',
+            'quantity_in_active_prs', 'quantity_remaining_for_purchase',
             'item_description', 'priority', 'specifications',
             'source_item_index', 'order', 'files_count',
-            'is_converted', 'is_fully_from_inventory', 'is_partially_from_inventory',
+            'is_converted', 'is_partially_converted', 'is_fully_from_inventory',
+            'is_partially_from_inventory', 'is_available_for_purchase',
             'planning_request', 'planning_request_number'
         ]
         read_only_fields = ['id', 'quantity_from_inventory', 'quantity_to_purchase']
@@ -359,9 +365,12 @@ class PlanningRequestItemSerializer(serializers.ModelSerializer):
     files = FileAttachmentSerializer(many=True, read_only=True)
     attachments = AttachmentUploadSerializer(many=True, write_only=True, required=False)
     is_converted = serializers.ReadOnlyField()
+    is_partially_converted = serializers.ReadOnlyField()
     is_fully_from_inventory = serializers.ReadOnlyField()
     is_partially_from_inventory = serializers.ReadOnlyField()
-    is_available = serializers.SerializerMethodField()
+    is_available_for_purchase = serializers.ReadOnlyField()
+    quantity_in_active_prs = serializers.ReadOnlyField()
+    quantity_remaining_for_purchase = serializers.ReadOnlyField()
     purchase_request_info = serializers.SerializerMethodField()
     planning_request_number = serializers.CharField(source='planning_request.request_number', read_only=True)
 
@@ -373,44 +382,41 @@ class PlanningRequestItemSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'item', 'item_id', 'item_code', 'item_name', 'item_unit', 'item_type', 'item_stock_quantity',
             'job_no', 'quantity', 'quantity_from_inventory', 'quantity_to_purchase',
+            'quantity_in_active_prs', 'quantity_remaining_for_purchase',
             'item_description', 'priority', 'specifications',
             'source_item_index', 'order', 'files', 'attachments',
-            'is_converted', 'is_fully_from_inventory', 'is_partially_from_inventory',
-            'is_available', 'purchase_request_info', 'planning_request', 'planning_request_number'
+            'is_converted', 'is_partially_converted', 'is_fully_from_inventory',
+            'is_partially_from_inventory', 'is_available_for_purchase',
+            'purchase_request_info', 'planning_request', 'planning_request_number'
         ]
         read_only_fields = ['id', 'quantity_from_inventory', 'quantity_to_purchase']
 
-    def get_is_available(self, obj):
-        """
-        Check if this planning request item is available for use in a new purchase request.
-        An item is unavailable if it's already in an active purchase request (not rejected or cancelled).
-        """
-        from django.db.models import Q
-
-        # Check if item is in any active purchase request
-        active_prs = obj.purchase_requests.exclude(
-            Q(status='rejected') | Q(status='cancelled')
-        )
-
-        return not active_prs.exists()
-
     def get_purchase_request_info(self, obj):
-        """Get info about active purchase requests this item was converted to (excludes rejected/cancelled)"""
+        """
+        Get info about active purchase requests this item was converted to.
+        Includes quantity per PurchaseRequestItem for partial conversion tracking.
+        """
         from django.db.models import Q
 
-        purchase_requests = []
-        # Only show active purchase requests (exclude rejected and cancelled)
-        active_prs = obj.purchase_requests.exclude(
-            Q(status='rejected') | Q(status='cancelled')
-        )
-        for pr in active_prs:
-            purchase_requests.append({
+        purchase_request_items = obj.purchase_request_items.exclude(
+            Q(purchase_request__status='rejected') |
+            Q(purchase_request__status='cancelled')
+        ).select_related('purchase_request')
+
+        if not purchase_request_items.exists():
+            return None
+
+        result = []
+        for pri in purchase_request_items:
+            pr = pri.purchase_request
+            result.append({
                 'id': pr.id,
                 'request_number': pr.request_number,
                 'title': pr.title,
-                'status': pr.status
+                'status': pr.status,
+                'quantity': float(pri.quantity),  # Quantity in this specific PR
             })
-        return purchase_requests if purchase_requests else None
+        return result
     
 
 

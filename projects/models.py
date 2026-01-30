@@ -218,13 +218,17 @@ class JobOrder(models.Model):
         """
         Calculate completion based on department task progress using nested weights.
 
-        For tasks without subtasks:
-            - Completed task contributes its full weight
-            - Pending/in_progress contributes 0
+        For procurement tasks:
+            - Progress comes from PlanningRequestItem procurement status
+            - Uses item unit_weight × quantity_to_purchase for weighting
 
         For tasks with subtasks:
             - Task contributes: (completed_subtask_weight / total_subtask_weight) * task_weight
             - Skipped subtasks are excluded from calculation
+
+        For tasks without subtasks:
+            - Completed task contributes its full weight
+            - Pending/in_progress contributes 0
 
         Skipped main tasks are excluded from the total weight calculation.
         """
@@ -236,36 +240,59 @@ class JobOrder(models.Model):
         if not main_tasks.exists():
             self.completion_percentage = Decimal('0.00')
         else:
-            total_weight = 0
-            earned_weight = 0
+            total_weight = Decimal('0.00')
+            earned_weight = Decimal('0.00')
 
             for task in main_tasks:
-                task_weight = task.weight
+                task_weight = Decimal(task.weight)
                 total_weight += task_weight
 
-                # Check if task has subtasks
-                subtasks = task.subtasks.exclude(status='skipped')
-
-                if subtasks.exists():
-                    # Nested calculation: use subtask weights
-                    subtask_total = subtasks.aggregate(total=Sum('weight'))['total'] or 0
-                    subtask_completed = subtasks.filter(
-                        status='completed'
-                    ).aggregate(total=Sum('weight'))['total'] or 0
-
-                    if subtask_total > 0:
-                        # Proportional contribution based on subtask completion
-                        earned_weight += (subtask_completed / subtask_total) * task_weight
+                if task.department == 'procurement':
+                    # Procurement-specific: use PlanningRequestItem progress
+                    pr_earned, pr_total = task.get_procurement_progress()
+                    if pr_total > 0:
+                        task_progress = pr_earned / pr_total
+                        earned_weight += task_progress * task_weight
                     elif task.status == 'completed':
-                        # No non-skipped subtasks but task is complete
+                        # No items to procure but task is complete
                         earned_weight += task_weight
                 else:
-                    # No subtasks: use task's own status
-                    if task.status == 'completed':
-                        earned_weight += task_weight
+                    # Check if task has subtasks
+                    subtasks = task.subtasks.exclude(status='skipped')
+
+                    if subtasks.exists():
+                        # Nested calculation: use subtask weights with special handling
+                        subtask_total_weight = Decimal('0')
+                        subtask_earned_weight = Decimal('0')
+
+                        for subtask in subtasks:
+                            subtask_weight = Decimal(subtask.weight)
+                            subtask_total_weight += subtask_weight
+
+                            # Handle CNC Kesim subtask specially
+                            if subtask.title == 'CNC Kesim':
+                                cnc_earned, cnc_total = subtask.get_cnc_progress()
+                                if cnc_total > 0:
+                                    subtask_progress = cnc_earned / cnc_total
+                                    subtask_earned_weight += subtask_progress * subtask_weight
+                                elif subtask.status == 'completed':
+                                    subtask_earned_weight += subtask_weight
+                            elif subtask.status == 'completed':
+                                subtask_earned_weight += subtask_weight
+
+                        if subtask_total_weight > 0:
+                            # Proportional contribution based on subtask completion
+                            earned_weight += (subtask_earned_weight / subtask_total_weight) * task_weight
+                        elif task.status == 'completed':
+                            # No non-skipped subtasks but task is complete
+                            earned_weight += task_weight
+                    else:
+                        # No subtasks: use task's own status
+                        if task.status == 'completed':
+                            earned_weight += task_weight
 
             if total_weight > 0:
-                self.completion_percentage = Decimal(
+                self.completion_percentage = (
                     (earned_weight / total_weight) * 100
                 ).quantize(Decimal('0.01'))
             else:
@@ -898,3 +925,109 @@ class JobOrderDepartmentTask(models.Model):
 
         # Update job order completion percentage
         self.job_order.update_completion_percentage()
+
+    def get_procurement_progress(self):
+        """
+        Calculate progress for procurement tasks based on PlanningRequestItem status.
+        Returns (earned_weight, total_weight) tuple.
+
+        Progress stages per item:
+        - 0%: No PurchaseRequestItem exists
+        - 40%: PurchaseRequestItem exists (PR submitted)
+        - 50%: PurchaseRequest approved
+        - 100%: PurchaseOrder fully paid
+        """
+        if self.department != 'procurement':
+            return (Decimal('0.00'), Decimal('0.00'))
+
+        from planning.models import PlanningRequestItem
+
+        # Get all planning request items for this job that need procurement
+        pr_items = PlanningRequestItem.objects.filter(
+            job_no=self.job_order.job_no,
+            quantity_to_purchase__gt=0
+        ).select_related('item')
+
+        if not pr_items.exists():
+            return (Decimal('0.00'), Decimal('0.00'))
+
+        total_weight = Decimal('0.00')
+        earned_weight = Decimal('0.00')
+
+        for item in pr_items:
+            earned, total = item.get_procurement_progress()
+            total_weight += total
+            earned_weight += earned
+
+        return (earned_weight, total_weight)
+
+    def check_auto_complete(self, user=None):
+        """
+        Check if procurement task should auto-complete.
+        Returns True if auto-completed, False otherwise.
+        """
+        if self.department != 'procurement':
+            return False
+
+        if self.status != 'in_progress':
+            return False
+
+        earned, total = self.get_procurement_progress()
+        if total > 0 and earned >= total:
+            # All items at 100%
+            self.complete(user=user)
+            return True
+        return False
+
+    def get_cnc_progress(self):
+        """
+        Calculate progress for CNC Kesim subtask based on CncPart completion.
+
+        Returns: (earned_weight, total_weight)
+
+        Progress:
+        - 0%: No CncPart for this job, OR CncTask not complete
+        - 100%: CncPart exists AND CncTask.completion_date is set
+        """
+        if self.title != 'CNC Kesim':
+            return (Decimal('0.00'), Decimal('0.00'))
+
+        from cnc_cutting.models import CncPart
+
+        # Get all CncParts for this job
+        cnc_parts = CncPart.objects.filter(
+            job_no=self.job_order.job_no
+        ).select_related('cnc_task')
+
+        if not cnc_parts.exists():
+            return (Decimal('0.00'), Decimal('0.00'))
+
+        total_weight = Decimal('0.00')
+        earned_weight = Decimal('0.00')
+
+        for part in cnc_parts:
+            part_weight = (part.weight_kg or Decimal('0')) * (part.quantity or 1)
+            total_weight += part_weight
+
+            # Only count if CncTask is completed
+            if part.cnc_task.completion_date is not None:
+                earned_weight += part_weight
+
+        return (earned_weight, total_weight)
+
+    def check_cnc_auto_complete(self, user=None):
+        """
+        Check if CNC Kesim subtask should auto-complete.
+        Returns True if auto-completed, False otherwise.
+        """
+        if self.title != 'CNC Kesim':
+            return False
+
+        if self.status != 'in_progress':
+            return False
+
+        earned, total = self.get_cnc_progress()
+        if total > 0 and earned >= total:
+            self.complete(user=user)
+            return True
+        return False
