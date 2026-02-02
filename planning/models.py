@@ -377,13 +377,14 @@ class PlanningRequest(models.Model):
                 'fully_from_inventory': False
             }
 
-    def mark_ready_for_procurement(self, erp_code):
+    def mark_ready_for_procurement(self, erp_code, request_number=None):
         """
         Mark planning request as ready for procurement after ERP entry.
         Called by planning team after entering items into ERP system.
 
         Args:
             erp_code: The ERP system code/reference for this request
+            request_number: Optional custom request number to set
 
         Returns dict with status info.
         """
@@ -393,14 +394,21 @@ class PlanningRequest(models.Model):
         if not erp_code or not erp_code.strip():
             raise ValueError("ERP code is required to mark request as ready for procurement.")
 
+        update_fields = ['erp_code', 'status', 'ready_at']
+
+        if request_number:
+            self.request_number = request_number.strip()
+            update_fields.append('request_number')
+
         self.erp_code = erp_code.strip()
         self.status = 'ready'
         self.ready_at = timezone.now()
-        self.save(update_fields=['erp_code', 'status', 'ready_at'])
+        self.save(update_fields=update_fields)
 
         return {
             'status': 'ready',
             'message': 'Planning request marked as ready for procurement.',
+            'request_number': self.request_number,
             'erp_code': self.erp_code
         }
 

@@ -624,7 +624,8 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
 
         Request body:
         {
-            "erp_code": "ERP-2024-12345"
+            "erp_code": "ERP-2024-12345",
+            "request_number": "GS-12345"  // optional
         }
         """
         planning_request = self.get_object()
@@ -638,8 +639,10 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
         if not erp_code:
             return Response({"detail": "ERP code is required."}, status=400)
 
+        request_number = request.data.get('request_number', '').strip() or None
+
         try:
-            result = planning_request.mark_ready_for_procurement(erp_code)
+            result = planning_request.mark_ready_for_procurement(erp_code, request_number=request_number)
         except ValueError as e:
             return Response({"detail": str(e)}, status=400)
 
@@ -650,6 +653,7 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
         return Response({
             "detail": result['message'],
             "status": result['status'],
+            "request_number": result['request_number'],
             "erp_code": result['erp_code'],
             "planning_request": pr_serializer.data
         })
