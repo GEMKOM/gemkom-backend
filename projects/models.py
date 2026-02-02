@@ -234,8 +234,8 @@ class JobOrder(models.Model):
         """
         from django.db.models import Sum
 
-        # Only count main tasks (no parent)
-        main_tasks = self.department_tasks.filter(parent__isnull=True).exclude(status='skipped')
+        # Only count main tasks (no parent), excluding skipped and cancelled
+        main_tasks = self.department_tasks.filter(parent__isnull=True).exclude(status__in=['skipped', 'cancelled'])
 
         if not main_tasks.exists():
             self.completion_percentage = Decimal('0.00')
@@ -257,8 +257,8 @@ class JobOrder(models.Model):
                         # No items to procure but task is complete
                         earned_weight += task_weight
                 else:
-                    # Check if task has subtasks
-                    subtasks = task.subtasks.exclude(status='skipped')
+                    # Check if task has subtasks (exclude skipped and cancelled)
+                    subtasks = task.subtasks.exclude(status__in=['skipped', 'cancelled'])
 
                     if subtasks.exists():
                         # Nested calculation: use subtask weights with special handling
@@ -413,7 +413,7 @@ class JobOrder(models.Model):
             self.parent.update_status_from_children()
 
     def hold(self, reason=""):
-        """Put job on hold. Cascades to all children."""
+        """Put job on hold. Cascades to all children and department tasks."""
         if self.status != 'active':
             raise ValueError("Sadece aktif işler beklemeye alınabilir.")
         self.status = 'on_hold'
@@ -423,8 +423,11 @@ class JobOrder(models.Model):
         for child in self.children.filter(status='active'):
             child.hold(reason=reason)
 
+        # Cascade to department tasks (put in_progress tasks on hold)
+        self.department_tasks.filter(status='in_progress').update(status='on_hold')
+
     def resume(self):
-        """Resume from hold. Cascades to all children."""
+        """Resume from hold. Cascades to all children and department tasks."""
         if self.status != 'on_hold':
             raise ValueError("Sadece beklemedeki işler devam ettirilebilir.")
         self.status = 'active'
@@ -434,8 +437,11 @@ class JobOrder(models.Model):
         for child in self.children.filter(status='on_hold'):
             child.resume()
 
+        # Cascade to department tasks (resume on_hold tasks back to in_progress)
+        self.department_tasks.filter(status='on_hold').update(status='in_progress')
+
     def cancel(self, user=None):
-        """Cancel the job order. Cascades to all children."""
+        """Cancel the job order. Cascades to all children and department tasks."""
         if self.status == 'completed':
             raise ValueError("Tamamlanmış işler iptal edilemez.")
         self.status = 'cancelled'
@@ -444,6 +450,11 @@ class JobOrder(models.Model):
         # Cascade to children (except completed ones)
         for child in self.children.exclude(status='completed'):
             child.cancel(user=user)
+
+        # Cascade to department tasks (cancel non-completed/skipped tasks)
+        self.department_tasks.exclude(
+            status__in=['completed', 'skipped']
+        ).update(status='cancelled')
 
 
 # =============================================================================
@@ -645,7 +656,9 @@ class JobOrderDepartmentTask(models.Model):
         ('pending', 'Bekliyor'),
         ('blocked', 'Engellenmiş'),
         ('in_progress', 'Devam Ediyor'),
+        ('on_hold', 'Askıda'),
         ('completed', 'Tamamlandı'),
+        ('cancelled', 'İptal Edildi'),
         ('skipped', 'Atlandı'),
     ]
 
@@ -1135,6 +1148,10 @@ class JobOrderDepartmentTask(models.Model):
         if self.status == 'skipped':
             return Decimal('100.00')
 
+        # Cancelled tasks are 0%
+        if self.status == 'cancelled':
+            return Decimal('0.00')
+
         # Pending/blocked tasks are 0%
         if self.status in ['pending', 'blocked']:
             return Decimal('0.00')
@@ -1206,8 +1223,8 @@ class JobOrderDepartmentTask(models.Model):
             earned_weight = Decimal('0.00')
 
             for subtask in subtasks:
-                # Skip skipped subtasks in the calculation
-                if subtask.status == 'skipped':
+                # Skip skipped and cancelled subtasks in the calculation
+                if subtask.status in ['skipped', 'cancelled']:
                     continue
 
                 subtask_weight = Decimal(str(subtask.weight))
@@ -1223,3 +1240,263 @@ class JobOrderDepartmentTask(models.Model):
 
         # Simple tasks without subtasks - in progress but no subtasks = 0%
         return Decimal('0.00')
+
+
+def discussion_attachment_upload_path(instance, filename):
+    """Upload path: discussion_files/{job_no}/{topic_id}/{filename}"""
+    topic = instance.topic or instance.comment.topic
+    job_no = topic.job_order.job_no
+    topic_id = topic.id
+    return f'discussion_files/{job_no}/{topic_id}/{filename}'
+
+
+class JobOrderDiscussionTopic(models.Model):
+    """Discussion topic for main job orders."""
+
+    PRIORITY_CHOICES = [
+        ('low', 'Düşük'),
+        ('normal', 'Normal'),
+        ('high', 'Yüksek'),
+        ('urgent', 'Acil'),
+    ]
+
+    # Core fields
+    job_order = models.ForeignKey(
+        JobOrder,
+        on_delete=models.CASCADE,
+        related_name='discussion_topics',
+        limit_choices_to={'parent__isnull': True}
+    )
+    title = models.CharField(max_length=255)
+    content = models.TextField()
+    priority = models.CharField(
+        max_length=20,
+        choices=PRIORITY_CHOICES,
+        default='normal',
+        db_index=True
+    )
+
+    # Ownership
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='discussion_topics_created'
+    )
+
+    # @mentions
+    mentioned_users = models.ManyToManyField(
+        User,
+        blank=True,
+        related_name='discussion_topics_mentioned_in'
+    )
+
+    # Edit tracking
+    is_edited = models.BooleanField(default=False)
+    edited_at = models.DateTimeField(null=True, blank=True)
+
+    # Audit
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    # Soft delete
+    is_deleted = models.BooleanField(default=False, db_index=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    deleted_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='discussion_topics_deleted'
+    )
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['job_order', 'is_deleted']),
+            models.Index(fields=['created_by', 'created_at']),
+            models.Index(fields=['priority', 'created_at']),
+        ]
+
+    def extract_mentions(self):
+        """Extract @username mentions."""
+        import re
+        pattern = r'@(\w+)'
+        usernames = re.findall(pattern, self.content)
+        users = User.objects.filter(username__in=usernames)
+        return users
+
+    def get_comment_count(self):
+        return self.comments.filter(is_deleted=False).count()
+
+    def get_participant_count(self):
+        commenter_ids = self.comments.filter(
+            is_deleted=False
+        ).values_list('created_by_id', flat=True).distinct()
+        participants = set(commenter_ids)
+        if self.created_by_id:
+            participants.add(self.created_by_id)
+        return len(participants)
+
+
+class JobOrderDiscussionComment(models.Model):
+    """Comment within a discussion topic."""
+
+    topic = models.ForeignKey(
+        JobOrderDiscussionTopic,
+        on_delete=models.CASCADE,
+        related_name='comments'
+    )
+    content = models.TextField()
+
+    # Ownership
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='discussion_comments_created'
+    )
+
+    # @mentions
+    mentioned_users = models.ManyToManyField(
+        User,
+        blank=True,
+        related_name='discussion_comments_mentioned_in'
+    )
+
+    # Edit tracking
+    is_edited = models.BooleanField(default=False)
+    edited_at = models.DateTimeField(null=True, blank=True)
+
+    # Audit
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    # Soft delete
+    is_deleted = models.BooleanField(default=False, db_index=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    deleted_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='discussion_comments_deleted'
+    )
+
+    class Meta:
+        ordering = ['created_at']
+        indexes = [
+            models.Index(fields=['topic', 'is_deleted', 'created_at']),
+            models.Index(fields=['created_by', 'created_at']),
+        ]
+
+    def extract_mentions(self):
+        """Extract @username mentions."""
+        import re
+        pattern = r'@(\w+)'
+        usernames = re.findall(pattern, self.content)
+        users = User.objects.filter(username__in=usernames)
+        return users
+
+
+class DiscussionAttachment(models.Model):
+    """File attachment for discussions."""
+
+    topic = models.ForeignKey(
+        JobOrderDiscussionTopic,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='attachments'
+    )
+    comment = models.ForeignKey(
+        JobOrderDiscussionComment,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='attachments'
+    )
+    file = models.FileField(
+        upload_to=discussion_attachment_upload_path,
+        storage=PrivateMediaStorage()
+    )
+    name = models.CharField(max_length=255, blank=True)
+    size = models.PositiveIntegerField(default=0)
+
+    uploaded_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='discussion_attachments_uploaded'
+    )
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['uploaded_at']
+
+    def save(self, *args, **kwargs):
+        if self.file:
+            self.name = self.file.name
+            self.size = self.file.size
+        super().save(*args, **kwargs)
+
+
+class DiscussionNotification(models.Model):
+    """Track notifications for discussions."""
+
+    NOTIFICATION_TYPE_CHOICES = [
+        ('topic_mention', 'Konuda Etiketlendi'),
+        ('comment_mention', 'Yorumda Etiketlendi'),
+        ('new_comment', 'Yeni Yorum'),
+    ]
+
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='discussion_notifications'
+    )
+    notification_type = models.CharField(
+        max_length=20,
+        choices=NOTIFICATION_TYPE_CHOICES,
+        db_index=True
+    )
+
+    topic = models.ForeignKey(
+        JobOrderDiscussionTopic,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='notifications'
+    )
+    comment = models.ForeignKey(
+        JobOrderDiscussionComment,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='notifications'
+    )
+
+    # Status
+    is_read = models.BooleanField(default=False, db_index=True)
+    is_emailed = models.BooleanField(default=False)
+    emailed_at = models.DateTimeField(null=True, blank=True)
+    email_error = models.TextField(blank=True, null=True)
+
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    read_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['user', 'is_read']),
+            models.Index(fields=['user', 'notification_type', 'created_at']),
+        ]
+        unique_together = [
+            ('user', 'topic', 'comment', 'notification_type')
+        ]
+
+    def mark_as_read(self):
+        if not self.is_read:
+            self.is_read = True
+            self.read_at = timezone.now()
+            self.save(update_fields=['is_read', 'read_at'])

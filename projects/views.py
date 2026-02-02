@@ -1,14 +1,17 @@
-from rest_framework import viewsets, status
+from rest_framework import viewsets, status, permissions
 from rest_framework.response import Response
 from rest_framework.filters import SearchFilter, OrderingFilter
 from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser, FormParser
 from django_filters.rest_framework import DjangoFilterBackend
+from django.utils import timezone
 
 from .models import (
     Customer, JobOrder, JobOrderFile,
     DepartmentTaskTemplate, DepartmentTaskTemplateItem,
-    JobOrderDepartmentTask, DEPARTMENT_CHOICES
+    JobOrderDepartmentTask, DEPARTMENT_CHOICES,
+    JobOrderDiscussionTopic, JobOrderDiscussionComment,
+    DiscussionAttachment, DiscussionNotification
 )
 from .serializers import (
     CustomerListSerializer,
@@ -30,7 +33,18 @@ from .serializers import (
     DepartmentTaskCreateSerializer,
     DepartmentTaskUpdateSerializer,
     ApplyTemplateSerializer,
+    JobOrderDiscussionTopicListSerializer,
+    JobOrderDiscussionTopicDetailSerializer,
+    JobOrderDiscussionTopicCreateSerializer,
+    JobOrderDiscussionTopicUpdateSerializer,
+    JobOrderDiscussionCommentListSerializer,
+    JobOrderDiscussionCommentDetailSerializer,
+    JobOrderDiscussionCommentCreateSerializer,
+    JobOrderDiscussionCommentUpdateSerializer,
+    DiscussionAttachmentSerializer,
+    DiscussionNotificationSerializer,
 )
+from .permissions import IsOfficeUser, IsTopicOwnerOrReadOnly, IsCommentAuthorOrReadOnly
 
 
 class CustomerViewSet(viewsets.ModelViewSet):
@@ -1016,3 +1030,181 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
             {'value': choice[0], 'label': choice[1]}
             for choice in DEPARTMENT_CHOICES
         ])
+
+
+# ============================================================================
+# Discussion System ViewSets
+# ============================================================================
+
+class JobOrderDiscussionTopicViewSet(viewsets.ModelViewSet):
+    """ViewSet for discussion topics."""
+
+    queryset = JobOrderDiscussionTopic.objects.filter(
+        is_deleted=False
+    ).select_related('job_order', 'created_by').prefetch_related('mentioned_users', 'attachments')
+
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    search_fields = ['title', 'content', 'job_order__job_no', 'job_order__title']
+    ordering_fields = ['created_at', 'priority', 'updated_at']
+    ordering = ['-created_at']
+    filterset_fields = {
+        'job_order': ['exact'],
+        'priority': ['exact', 'in'],
+        'created_by': ['exact'],
+    }
+
+    def get_serializer_class(self):
+        if self.action == 'list':
+            return JobOrderDiscussionTopicListSerializer
+        elif self.action == 'retrieve':
+            return JobOrderDiscussionTopicDetailSerializer
+        elif self.action == 'create':
+            return JobOrderDiscussionTopicCreateSerializer
+        elif self.action in ['update', 'partial_update']:
+            return JobOrderDiscussionTopicUpdateSerializer
+        return JobOrderDiscussionTopicDetailSerializer
+
+    def get_permissions(self):
+        if self.action in ['update', 'partial_update', 'destroy']:
+            return [IsTopicOwnerOrReadOnly()]
+        return [IsOfficeUser()]
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
+
+    def destroy(self, request, *args, **kwargs):
+        topic = self.get_object()
+        topic.is_deleted = True
+        topic.deleted_at = timezone.now()
+        topic.deleted_by = request.user
+        topic.save(update_fields=['is_deleted', 'deleted_at', 'deleted_by'])
+        return Response({'status': 'success', 'message': 'Tartışma konusu silindi.'}, status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=True, methods=['get'])
+    def comments(self, request, pk=None):
+        """Get all comments for this topic."""
+        topic = self.get_object()
+        comments = topic.comments.filter(is_deleted=False).select_related('created_by').prefetch_related('mentioned_users', 'attachments')
+        serializer = JobOrderDiscussionCommentListSerializer(comments, many=True, context={'request': request})
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['post'], parser_classes=[MultiPartParser])
+    def upload_attachment(self, request, pk=None):
+        """Upload file attachment to topic."""
+        topic = self.get_object()
+        file_obj = request.data.get('file')
+
+        if not file_obj:
+            return Response({'error': 'Dosya gerekli.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        attachment = DiscussionAttachment.objects.create(
+            topic=topic,
+            file=file_obj,
+            uploaded_by=request.user
+        )
+
+        serializer = DiscussionAttachmentSerializer(attachment, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class JobOrderDiscussionCommentViewSet(viewsets.ModelViewSet):
+    """ViewSet for discussion comments."""
+
+    queryset = JobOrderDiscussionComment.objects.filter(
+        is_deleted=False
+    ).select_related('topic', 'topic__job_order', 'created_by').prefetch_related('mentioned_users', 'attachments')
+
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    search_fields = ['content']
+    ordering_fields = ['created_at']
+    ordering = ['created_at']
+    filterset_fields = {
+        'topic': ['exact'],
+        'created_by': ['exact'],
+    }
+
+    def get_serializer_class(self):
+        if self.action == 'list':
+            return JobOrderDiscussionCommentListSerializer
+        elif self.action == 'retrieve':
+            return JobOrderDiscussionCommentDetailSerializer
+        elif self.action == 'create':
+            return JobOrderDiscussionCommentCreateSerializer
+        elif self.action in ['update', 'partial_update']:
+            return JobOrderDiscussionCommentUpdateSerializer
+        return JobOrderDiscussionCommentDetailSerializer
+
+    def get_permissions(self):
+        if self.action in ['update', 'partial_update', 'destroy']:
+            return [IsCommentAuthorOrReadOnly()]
+        return [IsOfficeUser()]
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
+
+    def destroy(self, request, *args, **kwargs):
+        comment = self.get_object()
+        comment.is_deleted = True
+        comment.deleted_at = timezone.now()
+        comment.deleted_by = request.user
+        comment.save(update_fields=['is_deleted', 'deleted_at', 'deleted_by'])
+        return Response({'status': 'success', 'message': 'Yorum silindi.'}, status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=True, methods=['post'], parser_classes=[MultiPartParser])
+    def upload_attachment(self, request, pk=None):
+        """Upload file attachment to comment."""
+        comment = self.get_object()
+        file_obj = request.data.get('file')
+
+        if not file_obj:
+            return Response({'error': 'Dosya gerekli.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        attachment = DiscussionAttachment.objects.create(
+            comment=comment,
+            file=file_obj,
+            uploaded_by=request.user
+        )
+
+        serializer = DiscussionAttachmentSerializer(attachment, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class DiscussionNotificationViewSet(viewsets.ReadOnlyModelViewSet):
+    """ViewSet for notifications (read-only + mark as read)."""
+
+    queryset = DiscussionNotification.objects.all()
+    serializer_class = DiscussionNotificationSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    filter_backends = [DjangoFilterBackend, OrderingFilter]
+    ordering_fields = ['created_at']
+    ordering = ['-created_at']
+    filterset_fields = {
+        'is_read': ['exact'],
+        'notification_type': ['exact'],
+    }
+
+    def get_queryset(self):
+        return DiscussionNotification.objects.filter(
+            user=self.request.user
+        ).select_related('topic', 'topic__job_order', 'comment')
+
+    @action(detail=True, methods=['post'])
+    def mark_read(self, request, pk=None):
+        notification = self.get_object()
+        notification.mark_as_read()
+        serializer = self.get_serializer(notification)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['post'])
+    def mark_all_read(self, request):
+        updated = DiscussionNotification.objects.filter(
+            user=request.user,
+            is_read=False
+        ).update(is_read=True, read_at=timezone.now())
+        return Response({'status': 'success', 'message': f'{updated} bildirim okundu olarak işaretlendi.'})
+
+    @action(detail=False, methods=['get'])
+    def unread_count(self, request):
+        count = DiscussionNotification.objects.filter(user=request.user, is_read=False).count()
+        return Response({'count': count})

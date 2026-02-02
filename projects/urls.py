@@ -2,7 +2,9 @@ from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .views import (
     CustomerViewSet, JobOrderViewSet,
-    DepartmentTaskTemplateViewSet, JobOrderDepartmentTaskViewSet
+    DepartmentTaskTemplateViewSet, JobOrderDepartmentTaskViewSet,
+    JobOrderDiscussionTopicViewSet, JobOrderDiscussionCommentViewSet,
+    DiscussionNotificationViewSet
 )
 
 router = DefaultRouter()
@@ -10,6 +12,9 @@ router.register(r'customers', CustomerViewSet)
 router.register(r'job-orders', JobOrderViewSet)
 router.register(r'task-templates', DepartmentTaskTemplateViewSet)
 router.register(r'department-tasks', JobOrderDepartmentTaskViewSet)
+router.register(r'discussion-topics', JobOrderDiscussionTopicViewSet)
+router.register(r'discussion-comments', JobOrderDiscussionCommentViewSet)
+router.register(r'discussion-notifications', DiscussionNotificationViewSet)
 
 urlpatterns = [
     path('', include(router.urls)),

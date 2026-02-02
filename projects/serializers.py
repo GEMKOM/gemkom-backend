@@ -1,8 +1,11 @@
 from rest_framework import serializers
+from django.utils import timezone
 from .models import (
     Customer, JobOrder, JobOrderFile,
     DepartmentTaskTemplate, DepartmentTaskTemplateItem,
-    JobOrderDepartmentTask, DEPARTMENT_CHOICES
+    JobOrderDepartmentTask, DEPARTMENT_CHOICES,
+    JobOrderDiscussionTopic, JobOrderDiscussionComment,
+    DiscussionAttachment, DiscussionNotification
 )
 
 
@@ -883,3 +886,196 @@ class ApplyTemplateSerializer(serializers.Serializer):
                         task.depends_on.add(task_mapping[dep_item.id])
 
         return created_tasks
+
+
+# ============================================================================
+# Discussion System Serializers
+# ============================================================================
+
+class JobOrderDiscussionTopicListSerializer(serializers.ModelSerializer):
+    """Lightweight serializer for list views."""
+    job_order_no = serializers.CharField(source='job_order.job_no', read_only=True)
+    job_order_title = serializers.CharField(source='job_order.title', read_only=True)
+    priority_display = serializers.CharField(source='get_priority_display', read_only=True)
+    created_by_name = serializers.CharField(source='created_by.get_full_name', read_only=True, default='')
+    comment_count = serializers.SerializerMethodField()
+    participant_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = JobOrderDiscussionTopic
+        fields = [
+            'id', 'job_order', 'job_order_no', 'job_order_title',
+            'title', 'priority', 'priority_display',
+            'created_by', 'created_by_name', 'created_at',
+            'is_edited', 'edited_at',
+            'comment_count', 'participant_count'
+        ]
+
+    def get_comment_count(self, obj):
+        return obj.get_comment_count()
+
+    def get_participant_count(self, obj):
+        return obj.get_participant_count()
+
+
+class JobOrderDiscussionTopicDetailSerializer(serializers.ModelSerializer):
+    """Full serializer for detail views."""
+    job_order_no = serializers.CharField(source='job_order.job_no', read_only=True)
+    job_order_title = serializers.CharField(source='job_order.title', read_only=True)
+    priority_display = serializers.CharField(source='get_priority_display', read_only=True)
+    created_by_name = serializers.CharField(source='created_by.get_full_name', read_only=True, default='')
+    created_by_username = serializers.CharField(source='created_by.username', read_only=True, default='')
+    mentioned_users_data = serializers.SerializerMethodField()
+    attachments_data = serializers.SerializerMethodField()
+
+    class Meta:
+        model = JobOrderDiscussionTopic
+        fields = [
+            'id', 'job_order', 'job_order_no', 'job_order_title',
+            'title', 'content', 'priority', 'priority_display',
+            'created_by', 'created_by_name', 'created_by_username',
+            'mentioned_users', 'mentioned_users_data',
+            'attachments_data',
+            'is_edited', 'edited_at',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = ['created_by', 'created_at', 'is_edited', 'edited_at']
+
+    def get_mentioned_users_data(self, obj):
+        return [{'id': u.id, 'username': u.username, 'full_name': u.get_full_name()} for u in obj.mentioned_users.all()]
+
+    def get_attachments_data(self, obj):
+        return [{'id': a.id, 'name': a.name, 'size': a.size, 'uploaded_by': a.uploaded_by.get_full_name() if a.uploaded_by else '', 'uploaded_at': a.uploaded_at} for a in obj.attachments.all()]
+
+
+class JobOrderDiscussionTopicCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = JobOrderDiscussionTopic
+        fields = ['job_order', 'title', 'content', 'priority']
+
+    def validate_job_order(self, value):
+        if value.parent is not None:
+            raise serializers.ValidationError("Tartışma konuları sadece ana iş emirleri için oluşturulabilir.")
+        return value
+
+    def create(self, validated_data):
+        topic = super().create(validated_data)
+        mentioned_users = topic.extract_mentions()
+        if mentioned_users.exists():
+            topic.mentioned_users.set(mentioned_users)
+        return topic
+
+
+class JobOrderDiscussionTopicUpdateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = JobOrderDiscussionTopic
+        fields = ['title', 'content', 'priority']
+
+    def update(self, instance, validated_data):
+        validated_data['is_edited'] = True
+        validated_data['edited_at'] = timezone.now()
+        topic = super().update(instance, validated_data)
+        mentioned_users = topic.extract_mentions()
+        topic.mentioned_users.set(mentioned_users)
+        return topic
+
+
+class JobOrderDiscussionCommentListSerializer(serializers.ModelSerializer):
+    created_by_name = serializers.CharField(source='created_by.get_full_name', read_only=True, default='')
+    created_by_username = serializers.CharField(source='created_by.username', read_only=True, default='')
+
+    class Meta:
+        model = JobOrderDiscussionComment
+        fields = [
+            'id', 'topic', 'content',
+            'created_by', 'created_by_name', 'created_by_username',
+            'created_at', 'is_edited', 'edited_at'
+        ]
+
+
+class JobOrderDiscussionCommentDetailSerializer(serializers.ModelSerializer):
+    created_by_name = serializers.CharField(source='created_by.get_full_name', read_only=True, default='')
+    created_by_username = serializers.CharField(source='created_by.username', read_only=True, default='')
+    mentioned_users_data = serializers.SerializerMethodField()
+    attachments_data = serializers.SerializerMethodField()
+
+    class Meta:
+        model = JobOrderDiscussionComment
+        fields = [
+            'id', 'topic', 'content',
+            'created_by', 'created_by_name', 'created_by_username',
+            'mentioned_users', 'mentioned_users_data',
+            'attachments_data',
+            'is_edited', 'edited_at',
+            'created_at'
+        ]
+        read_only_fields = ['created_by', 'created_at', 'is_edited', 'edited_at']
+
+    def get_mentioned_users_data(self, obj):
+        return [{'id': u.id, 'username': u.username, 'full_name': u.get_full_name()} for u in obj.mentioned_users.all()]
+
+    def get_attachments_data(self, obj):
+        return [{'id': a.id, 'name': a.name, 'size': a.size, 'uploaded_by': a.uploaded_by.get_full_name() if a.uploaded_by else '', 'uploaded_at': a.uploaded_at} for a in obj.attachments.all()]
+
+
+class JobOrderDiscussionCommentCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = JobOrderDiscussionComment
+        fields = ['topic', 'content']
+
+    def validate_topic(self, value):
+        if value.is_deleted:
+            raise serializers.ValidationError("Bu konu silinmiş.")
+        return value
+
+    def create(self, validated_data):
+        comment = super().create(validated_data)
+        mentioned_users = comment.extract_mentions()
+        if mentioned_users.exists():
+            comment.mentioned_users.set(mentioned_users)
+        return comment
+
+
+class JobOrderDiscussionCommentUpdateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = JobOrderDiscussionComment
+        fields = ['content']
+
+    def update(self, instance, validated_data):
+        validated_data['is_edited'] = True
+        validated_data['edited_at'] = timezone.now()
+        comment = super().update(instance, validated_data)
+        mentioned_users = comment.extract_mentions()
+        comment.mentioned_users.set(mentioned_users)
+        return comment
+
+
+class DiscussionAttachmentSerializer(serializers.ModelSerializer):
+    uploaded_by_name = serializers.CharField(source='uploaded_by.get_full_name', read_only=True, default='')
+
+    class Meta:
+        model = DiscussionAttachment
+        fields = ['id', 'topic', 'comment', 'file', 'name', 'size', 'uploaded_by', 'uploaded_by_name', 'uploaded_at']
+        read_only_fields = ['name', 'size', 'uploaded_by', 'uploaded_at']
+
+
+class DiscussionNotificationSerializer(serializers.ModelSerializer):
+    notification_type_display = serializers.CharField(source='get_notification_type_display', read_only=True)
+    topic_title = serializers.CharField(source='topic.title', read_only=True)
+    topic_job_order = serializers.CharField(source='topic.job_order.job_no', read_only=True)
+    comment_preview = serializers.SerializerMethodField()
+
+    class Meta:
+        model = DiscussionNotification
+        fields = [
+            'id', 'notification_type', 'notification_type_display',
+            'topic', 'topic_title', 'topic_job_order',
+            'comment', 'comment_preview',
+            'is_read', 'created_at', 'read_at'
+        ]
+        read_only_fields = ['created_at', 'read_at']
+
+    def get_comment_preview(self, obj):
+        if obj.comment and obj.comment.content:
+            return obj.comment.content[:100] + ('...' if len(obj.comment.content) > 100 else '')
+        return None
