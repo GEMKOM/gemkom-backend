@@ -118,6 +118,7 @@ class JobOrderDepartmentTaskNestedSerializer(serializers.ModelSerializer):
         default=None
     )
     can_start = serializers.SerializerMethodField()
+    completion_percentage = serializers.SerializerMethodField()
 
     class Meta:
         model = JobOrderDepartmentTask
@@ -126,11 +127,15 @@ class JobOrderDepartmentTaskNestedSerializer(serializers.ModelSerializer):
             'status', 'status_display', 'sequence',
             'assigned_to', 'assigned_to_name',
             'can_start',
+            'completion_percentage',
             'target_completion_date', 'completed_at'
         ]
 
     def get_can_start(self, obj):
         return obj.can_start()
+
+    def get_completion_percentage(self, obj):
+        return float(obj.get_completion_percentage())
 
 
 class JobOrderDetailSerializer(serializers.ModelSerializer):
@@ -472,6 +477,7 @@ class DepartmentTaskListSerializer(serializers.ModelSerializer):
     )
     subtasks_count = serializers.SerializerMethodField()
     can_start = serializers.SerializerMethodField()
+    completion_percentage = serializers.SerializerMethodField()
 
     class Meta:
         model = JobOrderDepartmentTask
@@ -483,14 +489,31 @@ class DepartmentTaskListSerializer(serializers.ModelSerializer):
             'target_start_date', 'target_completion_date',
             'started_at', 'completed_at',
             'parent', 'subtasks_count', 'can_start',
+            'completion_percentage',
             'created_at'
         ]
 
     def get_subtasks_count(self, obj):
+        """Return count of subtasks, or parts/items count for special tasks."""
+        if obj.title == 'CNC Kesim':
+            from cnc_cutting.models import CncPart
+            return CncPart.objects.filter(job_no=obj.job_order.job_no).count()
+        if obj.title == 'Talaşlı İmalat':
+            from tasks.models import Part
+            return Part.objects.filter(job_no=obj.job_order.job_no).count()
+        if obj.department == 'procurement':
+            from planning.models import PlanningRequestItem
+            return PlanningRequestItem.objects.filter(
+                job_no=obj.job_order.job_no,
+                quantity_to_purchase__gt=0
+            ).count()
         return obj.subtasks.count()
 
     def get_can_start(self, obj):
         return obj.can_start()
+
+    def get_completion_percentage(self, obj):
+        return float(obj.get_completion_percentage())
 
 
 class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
@@ -520,6 +543,8 @@ class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
     can_start = serializers.SerializerMethodField()
     procurement_progress = serializers.SerializerMethodField()
     cnc_progress = serializers.SerializerMethodField()
+    machining_progress = serializers.SerializerMethodField()
+    completion_percentage = serializers.SerializerMethodField()
 
     class Meta:
         model = JobOrderDepartmentTask
@@ -532,7 +557,8 @@ class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
             'started_at', 'completed_at',
             'depends_on', 'depends_on_tasks', 'can_start',
             'parent', 'parent_title', 'subtasks', 'subtasks_count',
-            'procurement_progress', 'cnc_progress',
+            'procurement_progress', 'cnc_progress', 'machining_progress',
+            'completion_percentage',
             'notes',
             'created_at', 'created_by', 'created_by_name',
             'updated_at', 'completed_by', 'completed_by_name'
@@ -543,6 +569,19 @@ class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
         ]
 
     def get_subtasks_count(self, obj):
+        """Return count of subtasks, or parts/items count for special tasks."""
+        if obj.title == 'CNC Kesim':
+            from cnc_cutting.models import CncPart
+            return CncPart.objects.filter(job_no=obj.job_order.job_no).count()
+        if obj.title == 'Talaşlı İmalat':
+            from tasks.models import Part
+            return Part.objects.filter(job_no=obj.job_order.job_no).count()
+        if obj.department == 'procurement':
+            from planning.models import PlanningRequestItem
+            return PlanningRequestItem.objects.filter(
+                job_no=obj.job_order.job_no,
+                quantity_to_purchase__gt=0
+            ).count()
         return obj.subtasks.count()
 
     def get_can_start(self, obj):
@@ -639,6 +678,78 @@ class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
             'earned_weight': float(earned),
             'parts': parts_data
         }
+
+    def get_machining_progress(self, obj):
+        """Return machining progress details for Talaşlı İmalat subtasks."""
+        if obj.title != 'Talaşlı İmalat':
+            return None
+
+        from decimal import Decimal
+        from tasks.models import Part, Operation
+        from django.db.models import Sum, Q, ExpressionWrapper, FloatField, Value
+        from django.db.models.functions import Coalesce
+
+        earned, total = obj.get_machining_progress()
+
+        parts = Part.objects.filter(
+            job_no=obj.job_order.job_no
+        ).prefetch_related('operations')
+
+        parts_data = []
+        for part in parts:
+            # Get operations with annotated hours
+            operations = Operation.objects.filter(part=part).annotate(
+                total_hours_spent=Coalesce(
+                    ExpressionWrapper(
+                        Sum('timers__finish_time', filter=Q(timers__finish_time__isnull=False)) -
+                        Sum('timers__start_time', filter=Q(timers__finish_time__isnull=False)),
+                        output_field=FloatField()
+                    ) / 3600000.0,
+                    Value(0.0)
+                )
+            )
+
+            # Calculate estimated and spent hours for this part
+            estimated_hours = operations.aggregate(total=Sum('estimated_hours'))['total'] or Decimal('0.00')
+            hours_spent = sum(Decimal(str(op.total_hours_spent)) for op in operations)
+
+            # Calculate progress percentage
+            if estimated_hours > 0:
+                progress_pct = min(
+                    float((hours_spent / estimated_hours * 100).quantize(Decimal('0.01'))),
+                    100.0
+                )
+            else:
+                progress_pct = 0.0
+
+            parts_data.append({
+                'id': part.key,
+                'key': part.key,
+                'name': part.name,
+                'job_no': part.job_no,
+                'image_no': part.image_no,
+                'position_no': part.position_no,
+                'quantity': part.quantity,
+                'estimated_hours': float(estimated_hours),
+                'hours_spent': float(hours_spent),
+                'material': part.material,
+                'dimensions': part.dimensions,
+                'part_complete': part.completion_date is not None,
+                'progress': {
+                    'percentage': progress_pct,
+                    'status': 'completed' if progress_pct >= 100 else 'in_progress'
+                }
+            })
+
+        return {
+            'percentage': float((earned / total * 100).quantize(Decimal('0.01'))) if total > 0 else 0,
+            'total_hours': float(total),
+            'earned_hours': float(earned),
+            'parts': parts_data
+        }
+
+    def get_completion_percentage(self, obj):
+        return float(obj.get_completion_percentage())
 
 
 class DepartmentTaskCreateSerializer(serializers.ModelSerializer):

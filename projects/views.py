@@ -136,6 +136,18 @@ class JobOrderViewSet(viewsets.ModelViewSet):
             'customer', 'parent', 'created_by', 'completed_by'
         ).prefetch_related('children')
 
+        # For retrieve action, prefetch department tasks with related data
+        if self.action == 'retrieve':
+            from django.db.models import Prefetch
+            queryset = queryset.prefetch_related(
+                Prefetch(
+                    'department_tasks',
+                    queryset=JobOrderDepartmentTask.objects.select_related(
+                        'assigned_to', 'job_order'
+                    ).filter(parent__isnull=True).order_by('sequence')
+                )
+            )
+
         # Filter by root only (no parent) if requested
         root_only = self.request.query_params.get('root_only', 'false').lower() == 'true'
         if root_only:
@@ -589,6 +601,248 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(parent__isnull=True)
 
         return queryset
+
+    def list(self, request, *args, **kwargs):
+        """Override list to return CNC parts for 'CNC Kesim' parent tasks."""
+        parent_id = request.query_params.get('parent')
+
+        # Check if we're listing subtasks of a "CNC Kesim" task
+        if parent_id:
+            try:
+                parent_task = JobOrderDepartmentTask.objects.get(id=parent_id)
+                if parent_task.title == 'CNC Kesim':
+                    # Return CNC parts instead of subtasks
+                    from cnc_cutting.models import CncPart
+                    from decimal import Decimal
+
+                    cnc_parts = CncPart.objects.filter(
+                        job_no=parent_task.job_order.job_no
+                    ).select_related('cnc_task')
+
+                    parts_data = []
+                    for part in cnc_parts:
+                        part_weight = (part.weight_kg or Decimal('0')) * (part.quantity or 1)
+                        is_complete = part.cnc_task.completion_date is not None
+
+                        # Map CNC part to department task structure
+                        parts_data.append({
+                            'id': f'cnc-part-{part.id}',
+                            'type': 'cnc_part',
+                            'cnc_part_id': part.id,
+                            'job_order': part.cnc_task.nesting_id,
+                            'job_order_title': parent_task.job_order.title,
+                            'department': parent_task.department,
+                            'department_display': parent_task.get_department_display(),
+                            'title': f'{part.image_no} - Pos {part.position_no}' if part.position_no else part.image_no,
+                            'status': 'completed' if is_complete else 'in_progress',
+                            'status_display': 'Tamamlandı' if is_complete else 'Devam Ediyor',
+                            'sequence': None,
+                            'weight': float(part_weight),
+                            'assigned_to': None,
+                            'assigned_to_name': '',
+                            'target_start_date': None,
+                            'target_completion_date': None,
+                            'started_at': None,
+                            'completed_at': part.cnc_task.completion_date,
+                            'parent': parent_task.id,
+                            'subtasks_count': 0,
+                            'can_start': False,
+                            'created_at': None,
+                            # CNC-specific fields
+                            'cnc_data': {
+                                'job_no': part.job_no,
+                                'image_no': part.image_no,
+                                'position_no': part.position_no,
+                                'quantity': part.quantity,
+                                'weight_kg': float(part.weight_kg) if part.weight_kg else None,
+                                'total_weight': float(part_weight),
+                                'cnc_task_key': part.cnc_task.key,
+                            }
+                        })
+
+                    # Return in paginated format to match standard response structure
+                    return Response({
+                        'count': len(parts_data),
+                        'next': None,
+                        'previous': None,
+                        'results': parts_data
+                    })
+
+                # Check if this is a "Talaşlı İmalat" task
+                if parent_task.title == 'Talaşlı İmalat':
+                    # Return machining Parts instead of subtasks
+                    from tasks.models import Part, Operation
+                    from django.db.models import Sum, Q, ExpressionWrapper, FloatField, Value
+                    from django.db.models.functions import Coalesce
+                    from decimal import Decimal
+
+                    parts = Part.objects.filter(
+                        job_no=parent_task.job_order.job_no
+                    ).prefetch_related('operations')
+
+                    parts_data = []
+                    for part in parts:
+                        # Get operations with annotated hours
+                        operations = Operation.objects.filter(part=part).annotate(
+                            total_hours_spent=Coalesce(
+                                ExpressionWrapper(
+                                    Sum('timers__finish_time', filter=Q(timers__finish_time__isnull=False)) -
+                                    Sum('timers__start_time', filter=Q(timers__finish_time__isnull=False)),
+                                    output_field=FloatField()
+                                ) / 3600000.0,
+                                Value(0.0)
+                            )
+                        )
+
+                        # Calculate hours
+                        estimated_hours = operations.aggregate(total=Sum('estimated_hours'))['total'] or Decimal('0.00')
+                        hours_spent = sum(Decimal(str(op.total_hours_spent)) for op in operations)
+
+                        # Calculate progress
+                        if estimated_hours > 0:
+                            progress_pct = min(float(hours_spent / estimated_hours * 100), 100.0)
+                        else:
+                            progress_pct = 0.0
+
+                        # Map Part to department task structure
+                        parts_data.append({
+                            'id': f'machining-part-{part.key}',
+                            'type': 'machining_part',
+                            'part_key': part.key,
+                            'job_order': part.key,
+                            'job_order_title': parent_task.job_order.title,
+                            'department': parent_task.department,
+                            'department_display': parent_task.get_department_display(),
+                            'title': f'{part.image_no} - Pos {part.position_no}' if part.position_no else part.name,
+                            'status': 'completed' if progress_pct >= 100 else 'in_progress',
+                            'status_display': 'Tamamlandı' if progress_pct >= 100 else 'Devam Ediyor',
+                            'completion_percentage': progress_pct,
+                            'sequence': None,
+                            'weight': float(estimated_hours),
+                            'assigned_to': None,
+                            'assigned_to_name': '',
+                            'target_start_date': None,
+                            'target_completion_date': None,
+                            'started_at': None,
+                            'completed_at': part.completion_date,
+                            'parent': parent_task.id,
+                            'subtasks_count': 0,
+                            'can_start': False,
+                            'created_at': part.created_at,
+                            # Machining-specific fields
+                            'machining_data': {
+                                'key': part.key,
+                                'name': part.name,
+                                'job_no': part.job_no,
+                                'image_no': part.image_no,
+                                'position_no': part.position_no,
+                                'quantity': part.quantity,
+                                'estimated_hours': float(estimated_hours),
+                                'hours_spent': float(hours_spent),
+                                'material': part.material,
+                                'dimensions': part.dimensions,
+                            }
+                        })
+
+                    # Return in paginated format to match standard response structure
+                    return Response({
+                        'count': len(parts_data),
+                        'next': None,
+                        'previous': None,
+                        'results': parts_data
+                    })
+
+                # Check if this is a procurement task
+                if parent_task.department == 'procurement':
+                    # Return PlanningRequestItems instead of subtasks
+                    from planning.models import PlanningRequestItem
+                    from decimal import Decimal
+
+                    items = PlanningRequestItem.objects.filter(
+                        job_no=parent_task.job_order.job_no,
+                        quantity_to_purchase__gt=0  # Only items that need procurement
+                    ).select_related('item', 'planning_request')
+
+                    items_data = []
+                    for item in items:
+                        # Calculate progress for this item
+                        earned, total = item.get_procurement_progress() if hasattr(item, 'get_procurement_progress') else (Decimal('0.00'), item.total_weight if hasattr(item, 'total_weight') else Decimal('1.00'))
+
+                        if total > 0:
+                            progress_pct = float((earned / total * 100).quantize(Decimal('0.01')))
+                        else:
+                            progress_pct = 0.0
+
+                        # Determine status based on progress
+                        if progress_pct >= 100:
+                            status = 'completed'
+                            status_display = 'Ödendi'
+                        elif progress_pct >= 50:
+                            status = 'in_progress'
+                            status_display = 'Onaylandı'
+                        elif progress_pct >= 40:
+                            status = 'in_progress'
+                            status_display = 'Gönderildi'
+                        else:
+                            status = 'pending'
+                            status_display = 'Bekliyor'
+
+                        # Map PlanningRequestItem to department task structure
+                        item_name = item.item.name if item.item else item.item_description
+                        item_code = item.item.code if item.item else ''
+
+                        items_data.append({
+                            'id': f'procurement-item-{item.id}',
+                            'type': 'procurement_item',
+                            'procurement_item_id': item.id,
+                            'job_order': item.job_no,
+                            'job_order_title': parent_task.job_order.title,
+                            'department': parent_task.department,
+                            'department_display': parent_task.get_department_display(),
+                            'title': f'{item_code} - {item_name}' if item_code else item_name,
+                            'status': status,
+                            'status_display': status_display,
+                            'completion_percentage': progress_pct,
+                            'sequence': None,
+                            'weight': float(total),
+                            'assigned_to': None,
+                            'assigned_to_name': '',
+                            'target_start_date': None,
+                            'target_completion_date': None,
+                            'started_at': None,
+                            'completed_at': None,
+                            'parent': parent_task.id,
+                            'subtasks_count': 0,
+                            'can_start': False,
+                            'created_at': item.planning_request.created_at if item.planning_request else None,
+                            # Procurement-specific fields
+                            'procurement_data': {
+                                'id': item.id,
+                                'item_code': item_code,
+                                'item_name': item_name,
+                                'item_description': item.item_description,
+                                'quantity': float(item.quantity),
+                                'quantity_to_purchase': float(item.quantity_to_purchase),
+                                'quantity_from_inventory': float(item.quantity_from_inventory),
+                                'unit_weight': float(item.item.unit_weight) if item.item and hasattr(item.item, 'unit_weight') else 1.0,
+                                'total_weight': float(total),
+                                'earned_weight': float(earned),
+                            }
+                        })
+
+                    # Return in paginated format to match standard response structure
+                    return Response({
+                        'count': len(items_data),
+                        'next': None,
+                        'previous': None,
+                        'results': items_data
+                    })
+
+            except JobOrderDepartmentTask.DoesNotExist:
+                pass
+
+        # Default behavior for non-CNC/non-machining/non-procurement tasks
+        return super().list(request, *args, **kwargs)
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)

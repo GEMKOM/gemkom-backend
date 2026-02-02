@@ -277,6 +277,14 @@ class JobOrder(models.Model):
                                     subtask_earned_weight += subtask_progress * subtask_weight
                                 elif subtask.status == 'completed':
                                     subtask_earned_weight += subtask_weight
+                            # Handle Talaşlı İmalat subtask specially
+                            elif subtask.title == 'Talaşlı İmalat':
+                                machining_earned, machining_total = subtask.get_machining_progress()
+                                if machining_total > 0:
+                                    subtask_progress = machining_earned / machining_total
+                                    subtask_earned_weight += subtask_progress * subtask_weight
+                                elif subtask.status == 'completed':
+                                    subtask_earned_weight += subtask_weight
                             elif subtask.status == 'completed':
                                 subtask_earned_weight += subtask_weight
 
@@ -1031,3 +1039,187 @@ class JobOrderDepartmentTask(models.Model):
             self.complete(user=user)
             return True
         return False
+
+    def get_machining_progress(self):
+        """
+        Calculate progress for Talaşlı İmalat subtask based on Operation hour tracking.
+
+        Returns: (earned_hours, total_estimated_hours)
+
+        Uses existing fields:
+        - Operation.estimated_hours (stored field)
+        - total_hours_spent (calculated via queryset annotation from timers)
+
+        Progress per Operation = min(total_hours_spent / estimated_hours, 1.0)
+        Aggregate: sum all operation progress weighted by estimated_hours
+        """
+        if self.title != 'Talaşlı İmalat':
+            return (Decimal('0.00'), Decimal('0.00'))
+
+        from tasks.models import Operation
+        from django.db.models import Sum, Q, ExpressionWrapper, FloatField, Value
+        from django.db.models.functions import Coalesce
+
+        # Get all operations for parts with this job_no
+        operations = Operation.objects.filter(
+            part__job_no=self.job_order.job_no
+        ).annotate(
+            # Calculate total_hours_spent using same logic as OperationViewSet
+            total_hours_spent=Coalesce(
+                ExpressionWrapper(
+                    Sum('timers__finish_time', filter=Q(timers__finish_time__isnull=False)) -
+                    Sum('timers__start_time', filter=Q(timers__finish_time__isnull=False)),
+                    output_field=FloatField()
+                ) / 3600000.0,
+                Value(0.0)
+            )
+        )
+
+        total_estimated = Decimal('0.00')
+        earned_hours = Decimal('0.00')
+
+        for op in operations:
+            if not op.estimated_hours or op.estimated_hours <= 0:
+                # Skip operations with no estimate
+                continue
+
+            estimated = Decimal(str(op.estimated_hours))
+            total_estimated += estimated
+
+            # Get hours spent (already annotated)
+            spent = Decimal(str(op.total_hours_spent))
+
+            # Calculate progress for this operation (capped at 100%)
+            progress = min(spent / estimated, Decimal('1.0'))
+            earned_hours += progress * estimated
+
+        return (earned_hours, total_estimated)
+
+    def check_machining_auto_complete(self, user=None):
+        """
+        Check if Talaşlı İmalat subtask should auto-complete.
+        Returns True if auto-completed, False otherwise.
+        """
+        if self.title != 'Talaşlı İmalat':
+            return False
+
+        if self.status != 'in_progress':
+            return False
+
+        earned, total = self.get_machining_progress()
+        if total > 0 and earned >= total:
+            self.complete(user=user)
+            return True
+        return False
+
+    def get_completion_percentage(self, skip_expensive_calculations=False):
+        """
+        Calculate completion percentage for this department task.
+
+        For CNC Kesim tasks: based on CNC part completion
+        For procurement tasks: based on procurement progress
+        For tasks with subtasks: based on subtask completion
+        For simple tasks: 0% or 100% based on status
+
+        Args:
+            skip_expensive_calculations: If True, skip CNC/machining progress queries
+                                       and return approximate values for in_progress tasks
+        """
+        from decimal import Decimal
+
+        # Completed tasks are 100%
+        if self.status == 'completed':
+            return Decimal('100.00')
+
+        # Skipped tasks are considered 100%
+        if self.status == 'skipped':
+            return Decimal('100.00')
+
+        # Pending/blocked tasks are 0%
+        if self.status in ['pending', 'blocked']:
+            return Decimal('0.00')
+
+        # In-progress tasks - calculate based on type
+
+        # For nested serializers, skip expensive calculations and return approximation
+        if skip_expensive_calculations:
+            # For special tasks (CNC, Talaşlı İmalat), return 50% as approximate in-progress value
+            if self.title in ['CNC Kesim', 'Talaşlı İmalat'] or self.department == 'procurement':
+                return Decimal('50.00')
+
+            # For tasks with subtasks, try quick calculation using only status
+            if hasattr(self, '_prefetched_objects_cache') and 'subtasks' in self._prefetched_objects_cache:
+                subtasks = self.subtasks.all()
+            else:
+                # Use count-based query instead of fetching all subtasks
+                from django.db.models import Count, Q
+                counts = self.subtasks.aggregate(
+                    total=Count('id', filter=~Q(status='skipped')),
+                    completed=Count('id', filter=Q(status='completed'))
+                )
+                if counts['total'] > 0:
+                    return (Decimal(str(counts['completed'])) / Decimal(str(counts['total'])) * 100).quantize(Decimal('0.01'))
+                return Decimal('0.00')
+
+            # If subtasks were prefetched, use them
+            if subtasks.exists():
+                total_count = 0
+                completed_count = 0
+                for subtask in subtasks:
+                    if subtask.status != 'skipped':
+                        total_count += 1
+                        if subtask.status == 'completed':
+                            completed_count += 1
+
+                if total_count > 0:
+                    return (Decimal(str(completed_count)) / Decimal(str(total_count)) * 100).quantize(Decimal('0.01'))
+
+            return Decimal('0.00')
+
+        # Full calculation (for detail views)
+
+        # CNC Kesim tasks
+        if self.title == 'CNC Kesim':
+            earned, total = self.get_cnc_progress()
+            if total > 0:
+                return ((earned / total) * 100).quantize(Decimal('0.01'))
+            return Decimal('0.00')
+
+        # Talaşlı İmalat tasks
+        if self.title == 'Talaşlı İmalat':
+            earned, total = self.get_machining_progress()
+            if total > 0:
+                return ((earned / total) * 100).quantize(Decimal('0.01'))
+            return Decimal('0.00')
+
+        # Procurement tasks
+        if self.department == 'procurement':
+            earned, total = self.get_procurement_progress()
+            if total > 0:
+                return ((earned / total) * 100).quantize(Decimal('0.01'))
+            return Decimal('0.00')
+
+        # Tasks with subtasks - calculate based on subtask completion
+        subtasks = self.subtasks.all()
+        if subtasks.exists():
+            total_weight = Decimal('0.00')
+            earned_weight = Decimal('0.00')
+
+            for subtask in subtasks:
+                # Skip skipped subtasks in the calculation
+                if subtask.status == 'skipped':
+                    continue
+
+                subtask_weight = Decimal(str(subtask.weight))
+                total_weight += subtask_weight
+
+                # Recursively get subtask completion (also skip expensive calculations)
+                subtask_percentage = subtask.get_completion_percentage(skip_expensive_calculations=skip_expensive_calculations)
+                earned_weight += (subtask_percentage / 100) * subtask_weight
+
+            if total_weight > 0:
+                return ((earned_weight / total_weight) * 100).quantize(Decimal('0.01'))
+            return Decimal('0.00')
+
+        # Simple tasks without subtasks - in progress but no subtasks = 0%
+        return Decimal('0.00')
