@@ -1,72 +1,66 @@
-from django.db.models.signals import post_save
-from django.dispatch import receiver
 from django.utils import timezone
-from .models import JobOrderDiscussionTopic, JobOrderDiscussionComment, DiscussionNotification
+from .models import DiscussionNotification
 from core.emails import send_plain_email
 
 
-@receiver(post_save, sender=JobOrderDiscussionTopic)
-def handle_topic_created(sender, instance, created, **kwargs):
-    """Notify @mentioned users when topic is created."""
-    if not created:
-        return
-
-    mentioned_users = instance.mentioned_users.exclude(id=instance.created_by_id)
+def send_topic_notifications(topic):
+    """Send notifications to @mentioned users in a topic."""
+    mentioned_users = topic.mentioned_users.exclude(id=topic.created_by_id)
 
     for user in mentioned_users:
         notification, created = DiscussionNotification.objects.get_or_create(
             user=user,
-            topic=instance,
+            topic=topic,
             comment=None,
             notification_type='topic_mention',
             defaults={'is_read': False, 'is_emailed': False}
         )
 
         if created:
-            send_topic_mention_email(user, instance)
+            send_topic_mention_email(user, topic)
             notification.is_emailed = True
             notification.emailed_at = timezone.now()
             notification.save(update_fields=['is_emailed', 'emailed_at'])
 
 
-@receiver(post_save, sender=JobOrderDiscussionComment)
-def handle_comment_created(sender, instance, created, **kwargs):
-    """Notify topic owner and @mentioned users when comment is created."""
-    if not created:
-        return
+def send_comment_notifications(comment):
+    """Send notifications to topic owner and @mentioned users."""
+    topic = comment.topic
 
-    topic = instance.topic
-
-    # Notify topic owner
-    if topic.created_by and topic.created_by != instance.created_by:
+    # Notify topic owner (if someone else commented)
+    if topic.created_by and topic.created_by != comment.created_by:
         notification, created = DiscussionNotification.objects.get_or_create(
             user=topic.created_by,
             topic=topic,
-            comment=instance,
+            comment=comment,
             notification_type='new_comment',
             defaults={'is_read': False, 'is_emailed': False}
         )
 
         if created:
-            send_new_comment_email(topic.created_by, instance)
+            send_new_comment_email(topic.created_by, comment)
             notification.is_emailed = True
             notification.emailed_at = timezone.now()
             notification.save(update_fields=['is_emailed', 'emailed_at'])
 
-    # Notify @mentioned users
-    mentioned_users = instance.mentioned_users.exclude(id__in=[instance.created_by_id, topic.created_by_id])
+    # Notify @mentioned users (excluding comment author and topic owner)
+    exclude_ids = [comment.created_by_id]
+    if topic.created_by_id:
+        exclude_ids.append(topic.created_by_id)
+
+    mentioned_users = comment.mentioned_users.exclude(id__in=exclude_ids)
 
     for user in mentioned_users:
         notification, created = DiscussionNotification.objects.get_or_create(
             user=user,
             topic=topic,
-            comment=instance,
+            comment=comment,
             notification_type='comment_mention',
             defaults={'is_read': False, 'is_emailed': False}
         )
 
         if created:
-            send_comment_mention_email(user, instance)
+            send_comment_mention_email(user, comment)
             notification.is_emailed = True
             notification.emailed_at = timezone.now()
             notification.save(update_fields=['is_emailed', 'emailed_at'])
@@ -87,9 +81,10 @@ Konu: {topic.title}
 {topic.content}
 
 ---
-Tartışmayı görüntülemek için sisteme giriş yapınız.
+Tartışmayı görüntülemek için aşağıdaki linke tıklayınız.
+https://ofis.gemcore.com.tr/projects/project-tracking/?job_no={topic.job_order.job_no}&topic_id={topic.id}
 
-GEMKOM Backend Sistemi
+GEMKOM Sistemi
 """
 
     try:
@@ -113,7 +108,8 @@ Yorum:
 {comment.content}
 
 ---
-Tartışmayı görüntülemek için sisteme giriş yapınız.
+Tartışmayı görüntülemek için aşağıdaki linke tıklayınız.
+https://ofis.gemcore.com.tr/projects/project-tracking/?job_no={topic.job_order.job_no}&topic_id={topic.id}
 
 GEMKOM Backend Sistemi
 """
@@ -139,7 +135,8 @@ Yorum:
 {comment.content}
 
 ---
-Tartışmayı görüntülemek için sisteme giriş yapınız.
+Tartışmayı görüntülemek için aşağıdaki linke tıklayınız.
+https://ofis.gemcore.com.tr/projects/project-tracking/?job_no={topic.job_order.job_no}&topic_id={topic.id}
 
 GEMKOM Backend Sistemi
 """

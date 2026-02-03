@@ -148,19 +148,7 @@ class JobOrderViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         queryset = JobOrder.objects.select_related(
             'customer', 'parent', 'created_by', 'completed_by'
-        ).prefetch_related('children')
-
-        # For retrieve action, prefetch department tasks with related data
-        if self.action == 'retrieve':
-            from django.db.models import Prefetch
-            queryset = queryset.prefetch_related(
-                Prefetch(
-                    'department_tasks',
-                    queryset=JobOrderDepartmentTask.objects.select_related(
-                        'assigned_to', 'job_order'
-                    ).filter(parent__isnull=True).order_by('sequence')
-                )
-            )
+        )
 
         # Filter by root only (no parent) if requested
         root_only = self.request.query_params.get('root_only', 'false').lower() == 'true'
@@ -316,6 +304,145 @@ class JobOrderViewSet(viewsets.ModelViewSet):
             }
 
         return Response(build_tree(root))
+
+    # -------------------------------------------------------------------------
+    # Tab-specific endpoints (lightweight data loading)
+    # -------------------------------------------------------------------------
+
+    @action(detail=True, methods=['get'])
+    def general(self, request, job_no=None):
+        """
+        Tab 1: General information only.
+        Returns basic job order info without nested data.
+        """
+        job_order = self.get_object()
+        data = {
+            'job_no': job_order.job_no,
+            'title': job_order.title,
+            'description': job_order.description,
+            'customer': job_order.customer_id,
+            'customer_name': job_order.customer.name if job_order.customer else None,
+            'customer_code': job_order.customer.code if job_order.customer else None,
+            'customer_order_no': job_order.customer_order_no,
+            'status': job_order.status,
+            'status_display': job_order.get_status_display(),
+            'priority': job_order.priority,
+            'priority_display': job_order.get_priority_display(),
+            'target_completion_date': job_order.target_completion_date,
+            'started_at': job_order.started_at,
+            'completed_at': job_order.completed_at,
+            'estimated_cost': job_order.estimated_cost,
+            'labor_cost': job_order.labor_cost,
+            'material_cost': job_order.material_cost,
+            'subcontractor_cost': job_order.subcontractor_cost,
+            'total_cost': job_order.total_cost,
+            'cost_currency': job_order.cost_currency,
+            'completion_percentage': job_order.completion_percentage,
+            'parent': job_order.parent_id,
+            'parent_title': job_order.parent.title if job_order.parent else None,
+            'created_at': job_order.created_at,
+            'created_by': job_order.created_by_id,
+            'created_by_name': job_order.created_by.get_full_name() if job_order.created_by else None,
+            'updated_at': job_order.updated_at,
+        }
+        return Response(data)
+
+    @action(detail=True, methods=['get'])
+    def department_tasks(self, request, job_no=None):
+        """
+        Tab 2: Department tasks with progress.
+        Returns main tasks with their subtasks nested.
+        """
+        job_order = self.get_object()
+        tasks = job_order.department_tasks.filter(
+            parent__isnull=True
+        ).select_related('assigned_to').prefetch_related('subtasks').order_by('sequence')
+
+        from .serializers import JobOrderDepartmentTaskNestedSerializer
+        return Response(JobOrderDepartmentTaskNestedSerializer(tasks, many=True).data)
+
+    @action(detail=True, methods=['get'])
+    def subtasks(self, request, job_no=None):
+        """
+        Tab 3: Child job orders (subtasks).
+        Returns direct children of this job order.
+        """
+        job_order = self.get_object()
+        children = job_order.children.select_related('customer').order_by('job_no')
+
+        data = [{
+            'job_no': child.job_no,
+            'title': child.title,
+            'status': child.status,
+            'status_display': child.get_status_display(),
+            'priority': child.priority,
+            'priority_display': child.get_priority_display(),
+            'completion_percentage': child.completion_percentage,
+            'target_completion_date': child.target_completion_date,
+            'children_count': child.children.count(),
+        } for child in children]
+
+        return Response(data)
+
+    @action(detail=True, methods=['get'])
+    def files(self, request, job_no=None):
+        """
+        Tab 4: Files/attachments.
+        Returns all files for this job order.
+        """
+        job_order = self.get_object()
+        files = job_order.files.select_related('uploaded_by').order_by('-uploaded_at')
+
+        data = [{
+            'id': f.id,
+            'file_name': f.file_name,
+            'file_type': f.file_type,
+            'file_size': f.file_size,
+            'file_url': f.file.url if f.file else None,
+            'description': f.description,
+            'uploaded_by': f.uploaded_by_id,
+            'uploaded_by_name': f.uploaded_by.get_full_name() if f.uploaded_by else None,
+            'uploaded_at': f.uploaded_at,
+        } for f in files]
+
+        return Response(data)
+
+    @action(detail=True, methods=['get'])
+    def topics(self, request, job_no=None):
+        """
+        Tab 5: Discussion topics.
+        Returns all discussion topics for this job order.
+        Only available for main job orders (parent IS NULL).
+        """
+        job_order = self.get_object()
+
+        if job_order.parent is not None:
+            return Response(
+                {'error': 'Tartışma konuları sadece ana iş emirlerinde bulunur.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        topics = job_order.discussion_topics.filter(
+            is_deleted=False
+        ).select_related('created_by').prefetch_related('comments').order_by('-created_at')
+
+        data = [{
+            'id': topic.id,
+            'title': topic.title,
+            'content': topic.content,
+            'priority': topic.priority,
+            'priority_display': topic.get_priority_display(),
+            'created_by': topic.created_by_id,
+            'created_by_name': topic.created_by.get_full_name() if topic.created_by else None,
+            'created_by_username': topic.created_by.username if topic.created_by else None,
+            'created_at': topic.created_at,
+            'is_edited': topic.is_edited,
+            'edited_at': topic.edited_at,
+            'comment_count': topic.get_comment_count(),
+            'participant_count': topic.get_participant_count(),
+        } for topic in topics]
+
+        return Response(data)
 
     @action(detail=False, methods=['get'])
     def status_choices(self, request):
@@ -1069,8 +1196,13 @@ class JobOrderDiscussionTopicViewSet(viewsets.ModelViewSet):
             return [IsTopicOwnerOrReadOnly()]
         return [IsOfficeUser()]
 
-    def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user)
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        topic = serializer.save(created_by=request.user)
+        # Return detail serializer with full topic data including id
+        detail_serializer = JobOrderDiscussionTopicDetailSerializer(topic, context={'request': request})
+        return Response(detail_serializer.data, status=status.HTTP_201_CREATED)
 
     def destroy(self, request, *args, **kwargs):
         topic = self.get_object()
@@ -1139,8 +1271,13 @@ class JobOrderDiscussionCommentViewSet(viewsets.ModelViewSet):
             return [IsCommentAuthorOrReadOnly()]
         return [IsOfficeUser()]
 
-    def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user)
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        comment = serializer.save(created_by=request.user)
+        # Return detail serializer with full comment data including id
+        detail_serializer = JobOrderDiscussionCommentDetailSerializer(comment, context={'request': request})
+        return Response(detail_serializer.data, status=status.HTTP_201_CREATED)
 
     def destroy(self, request, *args, **kwargs):
         comment = self.get_object()

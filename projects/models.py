@@ -1256,8 +1256,8 @@ class JobOrderDiscussionTopic(models.Model):
     PRIORITY_CHOICES = [
         ('low', 'Düşük'),
         ('normal', 'Normal'),
-        ('high', 'Yüksek'),
-        ('urgent', 'Acil'),
+        ('high', 'Önemli'),
+        ('urgent', 'Çok Önemli'),
     ]
 
     # Core fields

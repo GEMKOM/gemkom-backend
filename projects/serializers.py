@@ -158,13 +158,11 @@ class JobOrderDetailSerializer(serializers.ModelSerializer):
         default=''
     )
     parent_title = serializers.CharField(source='parent.title', read_only=True, default=None)
-    children = serializers.SerializerMethodField()
     children_count = serializers.SerializerMethodField()
     hierarchy_level = serializers.SerializerMethodField()
-    department_tasks = serializers.SerializerMethodField()
     department_tasks_count = serializers.SerializerMethodField()
-    files = serializers.SerializerMethodField()
     files_count = serializers.SerializerMethodField()
+    topics_count = serializers.SerializerMethodField()
 
     class Meta:
         model = JobOrder
@@ -176,9 +174,8 @@ class JobOrderDetailSerializer(serializers.ModelSerializer):
             'estimated_cost', 'labor_cost', 'material_cost',
             'subcontractor_cost', 'total_cost', 'cost_currency',
             'last_cost_calculation', 'completion_percentage',
-            'parent', 'parent_title', 'children', 'children_count', 'hierarchy_level',
-            'department_tasks', 'department_tasks_count',
-            'files', 'files_count',
+            'parent', 'parent_title', 'children_count', 'hierarchy_level',
+            'department_tasks_count', 'files_count', 'topics_count',
             'created_at', 'created_by', 'created_by_name',
             'updated_at', 'completed_by', 'completed_by_name'
         ]
@@ -189,30 +186,22 @@ class JobOrderDetailSerializer(serializers.ModelSerializer):
             'completed_by'
         ]
 
-    def get_children(self, obj):
-        children = obj.children.order_by('job_no')
-        return JobOrderChildSerializer(children, many=True).data
-
     def get_children_count(self, obj):
         return obj.children.count()
 
     def get_hierarchy_level(self, obj):
         return obj.get_hierarchy_level()
 
-    def get_department_tasks(self, obj):
-        # Only return main tasks (no parent), ordered by sequence
-        tasks = obj.department_tasks.filter(parent__isnull=True).order_by('sequence')
-        return JobOrderDepartmentTaskNestedSerializer(tasks, many=True).data
-
     def get_department_tasks_count(self, obj):
         return obj.department_tasks.filter(parent__isnull=True).count()
 
-    def get_files(self, obj):
-        files = obj.files.all()
-        return JobOrderFileNestedSerializer(files, many=True, context=self.context).data
-
     def get_files_count(self, obj):
         return obj.files.count()
+
+    def get_topics_count(self, obj):
+        if obj.parent is not None:
+            return 0
+        return obj.discussion_topics.filter(is_deleted=False).count()
 
 
 class JobOrderCreateSerializer(serializers.ModelSerializer):
@@ -945,7 +934,7 @@ class JobOrderDiscussionTopicDetailSerializer(serializers.ModelSerializer):
         return [{'id': u.id, 'username': u.username, 'full_name': u.get_full_name()} for u in obj.mentioned_users.all()]
 
     def get_attachments_data(self, obj):
-        return [{'id': a.id, 'name': a.name, 'size': a.size, 'uploaded_by': a.uploaded_by.get_full_name() if a.uploaded_by else '', 'uploaded_at': a.uploaded_at} for a in obj.attachments.all()]
+        return [{'id': a.id, 'name': a.name, 'size': a.size, 'file_url': a.file.url if a.file else None, 'uploaded_by': a.uploaded_by.get_full_name() if a.uploaded_by else '', 'uploaded_at': a.uploaded_at} for a in obj.attachments.all()]
 
 
 class JobOrderDiscussionTopicCreateSerializer(serializers.ModelSerializer):
@@ -963,6 +952,9 @@ class JobOrderDiscussionTopicCreateSerializer(serializers.ModelSerializer):
         mentioned_users = topic.extract_mentions()
         if mentioned_users.exists():
             topic.mentioned_users.set(mentioned_users)
+            # Send notifications after M2M is set
+            from .signals import send_topic_notifications
+            send_topic_notifications(topic)
         return topic
 
 
@@ -983,14 +975,19 @@ class JobOrderDiscussionTopicUpdateSerializer(serializers.ModelSerializer):
 class JobOrderDiscussionCommentListSerializer(serializers.ModelSerializer):
     created_by_name = serializers.CharField(source='created_by.get_full_name', read_only=True, default='')
     created_by_username = serializers.CharField(source='created_by.username', read_only=True, default='')
+    attachments_data = serializers.SerializerMethodField()
 
     class Meta:
         model = JobOrderDiscussionComment
         fields = [
             'id', 'topic', 'content',
             'created_by', 'created_by_name', 'created_by_username',
-            'created_at', 'is_edited', 'edited_at'
+            'created_at', 'is_edited', 'edited_at',
+            'attachments_data'
         ]
+
+    def get_attachments_data(self, obj):
+        return [{'id': a.id, 'name': a.name, 'size': a.size, 'file_url': a.file.url if a.file else None, 'uploaded_by': a.uploaded_by.get_full_name() if a.uploaded_by else '', 'uploaded_at': a.uploaded_at} for a in obj.attachments.all()]
 
 
 class JobOrderDiscussionCommentDetailSerializer(serializers.ModelSerializer):
@@ -1015,7 +1012,7 @@ class JobOrderDiscussionCommentDetailSerializer(serializers.ModelSerializer):
         return [{'id': u.id, 'username': u.username, 'full_name': u.get_full_name()} for u in obj.mentioned_users.all()]
 
     def get_attachments_data(self, obj):
-        return [{'id': a.id, 'name': a.name, 'size': a.size, 'uploaded_by': a.uploaded_by.get_full_name() if a.uploaded_by else '', 'uploaded_at': a.uploaded_at} for a in obj.attachments.all()]
+        return [{'id': a.id, 'name': a.name, 'size': a.size, 'file_url': a.file.url if a.file else None, 'uploaded_by': a.uploaded_by.get_full_name() if a.uploaded_by else '', 'uploaded_at': a.uploaded_at} for a in obj.attachments.all()]
 
 
 class JobOrderDiscussionCommentCreateSerializer(serializers.ModelSerializer):
@@ -1033,6 +1030,9 @@ class JobOrderDiscussionCommentCreateSerializer(serializers.ModelSerializer):
         mentioned_users = comment.extract_mentions()
         if mentioned_users.exists():
             comment.mentioned_users.set(mentioned_users)
+        # Send notifications after M2M is set
+        from .signals import send_comment_notifications
+        send_comment_notifications(comment)
         return comment
 
 
