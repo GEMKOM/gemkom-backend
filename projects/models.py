@@ -1577,7 +1577,7 @@ class TechnicalDrawingRelease(models.Model):
     folder_path = models.CharField(max_length=500)
 
     # Release details
-    changelog = models.TextField(help_text='Değişiklik açıklaması')
+    changelog = models.TextField(blank=True, help_text='Değişiklik açıklaması')
     hardcopy_count = models.PositiveIntegerField(default=0, help_text='Hardcopy set sayısı')
 
     status = models.CharField(

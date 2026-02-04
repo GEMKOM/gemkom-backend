@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from django.utils import timezone
+from django.contrib.auth import get_user_model
 from .models import (
     Customer, JobOrder, JobOrderFile,
     DepartmentTaskTemplate, DepartmentTaskTemplateItem,
@@ -8,6 +9,28 @@ from .models import (
     DiscussionAttachment, DiscussionNotification,
     TechnicalDrawingRelease
 )
+
+# Stakeholder teams that should receive drawing release notifications
+DRAWING_RELEASE_STAKEHOLDER_TEAMS = [
+    'procurement',      # Satın Alma
+    'planning',         # Planlama
+    'manufacturing',    # İmalat
+    'qualitycontrol',   # Kalite Kontrol
+    'logistics',        # Lojistik
+    'sales',            # Proje Taahhüt
+]
+
+
+def get_drawing_release_stakeholders():
+    """
+    Get all active users from stakeholder teams who should receive
+    drawing release notifications.
+    """
+    User = get_user_model()
+    return User.objects.filter(
+        is_active=True,
+        profile__team__in=DRAWING_RELEASE_STAKEHOLDER_TEAMS
+    ).distinct()
 
 
 class CustomerListSerializer(serializers.ModelSerializer):
@@ -1177,12 +1200,14 @@ class TechnicalDrawingReleaseDetailSerializer(serializers.ModelSerializer):
 class TechnicalDrawingReleaseCreateSerializer(serializers.ModelSerializer):
     """Serializer for creating a new release."""
     topic_content = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    auto_complete_design_task = serializers.BooleanField(write_only=True, required=False, default=False)
 
     class Meta:
         model = TechnicalDrawingRelease
         fields = [
             'job_order', 'folder_path', 'changelog',
-            'revision_code', 'hardcopy_count', 'topic_content'
+            'revision_code', 'hardcopy_count', 'topic_content',
+            'auto_complete_design_task'
         ]
 
     def validate_job_order(self, value):
@@ -1192,6 +1217,7 @@ class TechnicalDrawingReleaseCreateSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         topic_content = validated_data.pop('topic_content', '')
+        auto_complete_design_task = validated_data.pop('auto_complete_design_task', False)
         job_order = validated_data['job_order']
 
         # Set revision number
@@ -1201,7 +1227,23 @@ class TechnicalDrawingReleaseCreateSerializer(serializers.ModelSerializer):
 
         # Create release topic
         topic_title = f"Teknik Çizim Yayını - Rev.{release.revision_code or release.revision_number}"
-        content = topic_content or release.changelog
+
+        # Build topic content in the same format as the notification email
+        if topic_content:
+            content = topic_content
+        else:
+            released_by_name = release.released_by.get_full_name() if release.released_by else 'Bilinmeyen'
+            content = f"""{released_by_name} yeni teknik çizim yayınladı:
+
+İş Emri: {job_order.job_no} - {job_order.title}
+Revizyon: {release.revision_code or release.revision_number}
+Hardcopy: {release.hardcopy_count} set planlama birimine bırakılacaktır.
+
+Klasör Yolu:
+{release.folder_path}
+
+Değişiklikler:
+{release.changelog}"""
 
         topic = JobOrderDiscussionTopic.objects.create(
             job_order=job_order,
@@ -1212,14 +1254,35 @@ class TechnicalDrawingReleaseCreateSerializer(serializers.ModelSerializer):
             created_by=release.released_by
         )
 
-        # Extract and set mentions
-        mentioned_users = topic.extract_mentions()
-        if mentioned_users.exists():
-            topic.mentioned_users.set(mentioned_users)
+        # Extract mentions from content and add stakeholder teams
+        mentioned_users_from_content = topic.extract_mentions()
+        stakeholder_users = get_drawing_release_stakeholders()
+
+        # Combine mentioned users and stakeholders (excluding the releaser)
+        all_mentioned_ids = set()
+        if mentioned_users_from_content.exists():
+            all_mentioned_ids.update(mentioned_users_from_content.values_list('id', flat=True))
+        all_mentioned_ids.update(stakeholder_users.values_list('id', flat=True))
+
+        # Exclude the person who released
+        if release.released_by_id:
+            all_mentioned_ids.discard(release.released_by_id)
+
+        if all_mentioned_ids:
+            topic.mentioned_users.set(all_mentioned_ids)
 
         # Link topic to release
         release.release_topic = topic
         release.save(update_fields=['release_topic'])
+
+        # Auto-complete design department task if flag is set
+        if auto_complete_design_task:
+            design_task = job_order.department_tasks.filter(
+                department='design',
+                parent__isnull=True
+            ).first()
+            if design_task and design_task.status == 'in_progress':
+                design_task.complete(user=release.released_by)
 
         # Send notifications
         from .signals import send_drawing_released_notifications
@@ -1247,7 +1310,7 @@ class SelfRevisionSerializer(serializers.Serializer):
 class CompleteRevisionSerializer(serializers.Serializer):
     """Serializer for completing a revision."""
     folder_path = serializers.CharField(required=True)
-    changelog = serializers.CharField(required=True)
+    changelog = serializers.CharField(required=False, allow_blank=True)
     revision_code = serializers.CharField(required=False, allow_blank=True)
     hardcopy_count = serializers.IntegerField(required=False, default=0)
     topic_content = serializers.CharField(required=False, allow_blank=True)
