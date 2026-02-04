@@ -4,7 +4,7 @@ from .views import (
     CustomerViewSet, JobOrderViewSet,
     DepartmentTaskTemplateViewSet, JobOrderDepartmentTaskViewSet,
     JobOrderDiscussionTopicViewSet, JobOrderDiscussionCommentViewSet,
-    DiscussionNotificationViewSet
+    DiscussionNotificationViewSet, TechnicalDrawingReleaseViewSet
 )
 
 router = DefaultRouter()
@@ -15,6 +15,7 @@ router.register(r'department-tasks', JobOrderDepartmentTaskViewSet)
 router.register(r'discussion-topics', JobOrderDiscussionTopicViewSet)
 router.register(r'discussion-comments', JobOrderDiscussionCommentViewSet)
 router.register(r'discussion-notifications', DiscussionNotificationViewSet)
+router.register(r'drawing-releases', TechnicalDrawingReleaseViewSet)
 
 urlpatterns = [
     path('', include(router.urls)),

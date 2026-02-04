@@ -5,7 +5,8 @@ from .models import (
     DepartmentTaskTemplate, DepartmentTaskTemplateItem,
     JobOrderDepartmentTask, DEPARTMENT_CHOICES,
     JobOrderDiscussionTopic, JobOrderDiscussionComment,
-    DiscussionAttachment, DiscussionNotification
+    DiscussionAttachment, DiscussionNotification,
+    TechnicalDrawingRelease
 )
 
 
@@ -886,7 +887,12 @@ class JobOrderDiscussionTopicListSerializer(serializers.ModelSerializer):
     job_order_no = serializers.CharField(source='job_order.job_no', read_only=True)
     job_order_title = serializers.CharField(source='job_order.title', read_only=True)
     priority_display = serializers.CharField(source='get_priority_display', read_only=True)
+    topic_type_display = serializers.CharField(source='get_topic_type_display', read_only=True)
+    revision_status_display = serializers.SerializerMethodField()
     created_by_name = serializers.CharField(source='created_by.get_full_name', read_only=True, default='')
+    revision_assigned_to_name = serializers.CharField(
+        source='revision_assigned_to.get_full_name', read_only=True, default=None
+    )
     comment_count = serializers.SerializerMethodField()
     participant_count = serializers.SerializerMethodField()
 
@@ -895,6 +901,10 @@ class JobOrderDiscussionTopicListSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'job_order', 'job_order_no', 'job_order_title',
             'title', 'priority', 'priority_display',
+            'topic_type', 'topic_type_display',
+            'revision_status', 'revision_status_display',
+            'revision_assigned_to', 'revision_assigned_to_name',
+            'related_release',
             'created_by', 'created_by_name', 'created_at',
             'is_edited', 'edited_at',
             'comment_count', 'participant_count'
@@ -906,14 +916,23 @@ class JobOrderDiscussionTopicListSerializer(serializers.ModelSerializer):
     def get_participant_count(self, obj):
         return obj.get_participant_count()
 
+    def get_revision_status_display(self, obj):
+        return obj.get_revision_status_display() if obj.revision_status else None
+
 
 class JobOrderDiscussionTopicDetailSerializer(serializers.ModelSerializer):
     """Full serializer for detail views."""
     job_order_no = serializers.CharField(source='job_order.job_no', read_only=True)
     job_order_title = serializers.CharField(source='job_order.title', read_only=True)
     priority_display = serializers.CharField(source='get_priority_display', read_only=True)
+    topic_type_display = serializers.CharField(source='get_topic_type_display', read_only=True)
+    revision_status_display = serializers.SerializerMethodField()
     created_by_name = serializers.CharField(source='created_by.get_full_name', read_only=True, default='')
     created_by_username = serializers.CharField(source='created_by.username', read_only=True, default='')
+    revision_assigned_to_name = serializers.CharField(
+        source='revision_assigned_to.get_full_name', read_only=True, default=None
+    )
+    related_release_data = serializers.SerializerMethodField()
     mentioned_users_data = serializers.SerializerMethodField()
     attachments_data = serializers.SerializerMethodField()
 
@@ -922,6 +941,10 @@ class JobOrderDiscussionTopicDetailSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'job_order', 'job_order_no', 'job_order_title',
             'title', 'content', 'priority', 'priority_display',
+            'topic_type', 'topic_type_display',
+            'revision_status', 'revision_status_display',
+            'revision_assigned_to', 'revision_assigned_to_name',
+            'related_release', 'related_release_data',
             'created_by', 'created_by_name', 'created_by_username',
             'mentioned_users', 'mentioned_users_data',
             'attachments_data',
@@ -929,6 +952,19 @@ class JobOrderDiscussionTopicDetailSerializer(serializers.ModelSerializer):
             'created_at', 'updated_at'
         ]
         read_only_fields = ['created_by', 'created_at', 'is_edited', 'edited_at']
+
+    def get_revision_status_display(self, obj):
+        return obj.get_revision_status_display() if obj.revision_status else None
+
+    def get_related_release_data(self, obj):
+        if not obj.related_release:
+            return None
+        return {
+            'id': obj.related_release.id,
+            'revision_number': obj.related_release.revision_number,
+            'revision_code': obj.related_release.revision_code,
+            'status': obj.related_release.status
+        }
 
     def get_mentioned_users_data(self, obj):
         return [{'id': u.id, 'username': u.username, 'full_name': u.get_full_name()} for u in obj.mentioned_users.all()]
@@ -1079,3 +1115,145 @@ class DiscussionNotificationSerializer(serializers.ModelSerializer):
         if obj.comment and obj.comment.content:
             return obj.comment.content[:100] + ('...' if len(obj.comment.content) > 100 else '')
         return None
+
+
+# ============================================================================
+# Technical Drawing Release Serializers
+# ============================================================================
+
+class TechnicalDrawingReleaseListSerializer(serializers.ModelSerializer):
+    """Lightweight serializer for list views."""
+    job_order_no = serializers.CharField(source='job_order.job_no', read_only=True)
+    job_order_title = serializers.CharField(source='job_order.title', read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    released_by_name = serializers.CharField(source='released_by.get_full_name', read_only=True, default='')
+
+    class Meta:
+        model = TechnicalDrawingRelease
+        fields = [
+            'id', 'job_order', 'job_order_no', 'job_order_title',
+            'revision_number', 'revision_code', 'folder_path',
+            'status', 'status_display',
+            'released_by', 'released_by_name', 'released_at',
+            'hardcopy_count'
+        ]
+
+
+class TechnicalDrawingReleaseDetailSerializer(serializers.ModelSerializer):
+    """Full serializer for detail views."""
+    job_order_no = serializers.CharField(source='job_order.job_no', read_only=True)
+    job_order_title = serializers.CharField(source='job_order.title', read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    released_by_name = serializers.CharField(source='released_by.get_full_name', read_only=True, default='')
+    release_topic_id = serializers.IntegerField(source='release_topic.id', read_only=True, default=None)
+    pending_revision_requests = serializers.SerializerMethodField()
+
+    class Meta:
+        model = TechnicalDrawingRelease
+        fields = [
+            'id', 'job_order', 'job_order_no', 'job_order_title',
+            'revision_number', 'revision_code', 'folder_path',
+            'changelog', 'hardcopy_count',
+            'status', 'status_display',
+            'released_by', 'released_by_name', 'released_at',
+            'release_topic_id', 'pending_revision_requests',
+            'created_at', 'updated_at'
+        ]
+
+    def get_pending_revision_requests(self, obj):
+        """Get pending revision request topics for this release."""
+        pending_topics = obj.revision_topics.filter(
+            revision_status='pending',
+            is_deleted=False
+        )
+        return [{
+            'id': t.id,
+            'title': t.title,
+            'created_by': t.created_by.get_full_name() if t.created_by else '',
+            'created_at': t.created_at
+        } for t in pending_topics]
+
+
+class TechnicalDrawingReleaseCreateSerializer(serializers.ModelSerializer):
+    """Serializer for creating a new release."""
+    topic_content = serializers.CharField(write_only=True, required=False, allow_blank=True)
+
+    class Meta:
+        model = TechnicalDrawingRelease
+        fields = [
+            'job_order', 'folder_path', 'changelog',
+            'revision_code', 'hardcopy_count', 'topic_content'
+        ]
+
+    def validate_job_order(self, value):
+        if value.parent is not None:
+            raise serializers.ValidationError("Teknik çizim yayınları sadece ana iş emirleri için oluşturulabilir.")
+        return value
+
+    def create(self, validated_data):
+        topic_content = validated_data.pop('topic_content', '')
+        job_order = validated_data['job_order']
+
+        # Set revision number
+        validated_data['revision_number'] = TechnicalDrawingRelease.get_next_revision_number(job_order)
+
+        release = super().create(validated_data)
+
+        # Create release topic
+        topic_title = f"Teknik Çizim Yayını - Rev.{release.revision_code or release.revision_number}"
+        content = topic_content or release.changelog
+
+        topic = JobOrderDiscussionTopic.objects.create(
+            job_order=job_order,
+            title=topic_title,
+            content=content,
+            priority='normal',
+            topic_type='drawing_release',
+            created_by=release.released_by
+        )
+
+        # Extract and set mentions
+        mentioned_users = topic.extract_mentions()
+        if mentioned_users.exists():
+            topic.mentioned_users.set(mentioned_users)
+
+        # Link topic to release
+        release.release_topic = topic
+        release.save(update_fields=['release_topic'])
+
+        # Send notifications
+        from .signals import send_drawing_released_notifications
+        send_drawing_released_notifications(release, topic)
+
+        return release
+
+
+class RevisionRequestSerializer(serializers.Serializer):
+    """Serializer for requesting a revision."""
+    reason = serializers.CharField(required=True)
+
+
+class ApproveRevisionSerializer(serializers.Serializer):
+    """Serializer for approving a revision request."""
+    topic_id = serializers.IntegerField(required=True)
+    assigned_to = serializers.IntegerField(required=False, allow_null=True)
+
+
+class SelfRevisionSerializer(serializers.Serializer):
+    """Serializer for self-initiating a revision."""
+    reason = serializers.CharField(required=True)
+
+
+class CompleteRevisionSerializer(serializers.Serializer):
+    """Serializer for completing a revision."""
+    folder_path = serializers.CharField(required=True)
+    changelog = serializers.CharField(required=True)
+    revision_code = serializers.CharField(required=False, allow_blank=True)
+    hardcopy_count = serializers.IntegerField(required=False, default=0)
+    topic_content = serializers.CharField(required=False, allow_blank=True)
+
+
+class RejectRevisionSerializer(serializers.Serializer):
+    """Serializer for rejecting a revision request."""
+    topic_id = serializers.IntegerField(required=True)
+    reason = serializers.CharField(required=True)

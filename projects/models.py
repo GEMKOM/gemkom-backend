@@ -1260,6 +1260,19 @@ class JobOrderDiscussionTopic(models.Model):
         ('urgent', 'Çok Önemli'),
     ]
 
+    TOPIC_TYPE_CHOICES = [
+        ('general', 'Genel'),
+        ('drawing_release', 'Çizim Yayını'),
+        ('revision_request', 'Revizyon Talebi'),
+    ]
+
+    REVISION_STATUS_CHOICES = [
+        ('pending', 'Onay Bekliyor'),
+        ('in_progress', 'Devam Ediyor'),
+        ('resolved', 'Çözüldü'),
+        ('rejected', 'Reddedildi'),
+    ]
+
     # Core fields
     job_order = models.ForeignKey(
         JobOrder,
@@ -1274,6 +1287,37 @@ class JobOrderDiscussionTopic(models.Model):
         choices=PRIORITY_CHOICES,
         default='normal',
         db_index=True
+    )
+
+    # Topic type for special workflows
+    topic_type = models.CharField(
+        max_length=20,
+        choices=TOPIC_TYPE_CHOICES,
+        default='general',
+        db_index=True
+    )
+
+    # For revision requests
+    revision_status = models.CharField(
+        max_length=20,
+        choices=REVISION_STATUS_CHOICES,
+        null=True,
+        blank=True,
+        db_index=True
+    )
+    revision_assigned_to = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='assigned_revision_requests'
+    )
+    related_release = models.ForeignKey(
+        'TechnicalDrawingRelease',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='revision_topics'
     )
 
     # Ownership
@@ -1448,6 +1492,13 @@ class DiscussionNotification(models.Model):
         ('topic_mention', 'Konuda Etiketlendi'),
         ('comment_mention', 'Yorumda Etiketlendi'),
         ('new_comment', 'Yeni Yorum'),
+        ('drawing_released', 'Çizim Yayınlandı'),
+        ('revision_requested', 'Revizyon Talep Edildi'),
+        ('revision_approved', 'Revizyon Onaylandı'),
+        ('revision_completed', 'Revizyon Tamamlandı'),
+        ('revision_rejected', 'Revizyon Reddedildi'),
+        ('job_on_hold', 'İş Beklemede'),
+        ('job_resumed', 'İş Devam Ediyor'),
     ]
 
     user = models.ForeignKey(
@@ -1500,3 +1551,88 @@ class DiscussionNotification(models.Model):
             self.is_read = True
             self.read_at = timezone.now()
             self.save(update_fields=['is_read', 'read_at'])
+
+
+class TechnicalDrawingRelease(models.Model):
+    """Tracks technical drawing releases for a job order."""
+
+    STATUS_CHOICES = [
+        ('released', 'Yayınlandı'),
+        ('in_revision', 'Revizyon Yapılıyor'),
+        ('superseded', 'Güncelliğini Kaybetti'),
+    ]
+
+    job_order = models.ForeignKey(
+        JobOrder,
+        on_delete=models.CASCADE,
+        related_name='technical_drawing_releases',
+        limit_choices_to={'parent__isnull': True}
+    )
+
+    # Version tracking
+    revision_number = models.PositiveIntegerField(default=1)
+    revision_code = models.CharField(max_length=10, blank=True)  # e.g., "A1", "B2"
+
+    # Folder path (network path to drawings)
+    folder_path = models.CharField(max_length=500)
+
+    # Release details
+    changelog = models.TextField(help_text='Değişiklik açıklaması')
+    hardcopy_count = models.PositiveIntegerField(default=0, help_text='Hardcopy set sayısı')
+
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default='released',
+        db_index=True
+    )
+
+    # Who released
+    released_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='drawing_releases'
+    )
+    released_at = models.DateTimeField(auto_now_add=True)
+
+    # Link to discussion topic announcing this release
+    release_topic = models.OneToOneField(
+        JobOrderDiscussionTopic,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='drawing_release'
+    )
+
+    # Audit
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-revision_number']
+        unique_together = [('job_order', 'revision_number')]
+        indexes = [
+            models.Index(fields=['job_order', 'status']),
+        ]
+        verbose_name = 'Teknik Çizim Yayını'
+        verbose_name_plural = 'Teknik Çizim Yayınları'
+
+    def __str__(self):
+        return f"{self.job_order.job_no} - Rev.{self.revision_number}"
+
+    @staticmethod
+    def get_next_revision_number(job_order):
+        """Get the next revision number for a job order."""
+        latest = TechnicalDrawingRelease.objects.filter(
+            job_order=job_order
+        ).order_by('-revision_number').first()
+        return (latest.revision_number + 1) if latest else 1
+
+    @staticmethod
+    def get_current_release(job_order):
+        """Get the latest active release for a job order."""
+        return TechnicalDrawingRelease.objects.filter(
+            job_order=job_order,
+            status='released'
+        ).order_by('-revision_number').first()
