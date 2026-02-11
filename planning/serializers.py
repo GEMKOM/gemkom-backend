@@ -394,29 +394,41 @@ class PlanningRequestItemSerializer(serializers.ModelSerializer):
     def get_purchase_request_info(self, obj):
         """
         Get info about active purchase requests this item was converted to.
-        Includes quantity per PurchaseRequestItem for partial conversion tracking.
+        Checks both the FK path (PurchaseRequestItem.planning_request_item) and the
+        M2M path (PurchaseRequest.planning_request_items) to cover all linking scenarios.
         """
         from django.db.models import Q
 
-        purchase_request_items = obj.purchase_request_items.exclude(
+        result = {}
+
+        # FK path: PurchaseRequestItem has planning_request_item set (quantity is known)
+        for pri in obj.purchase_request_items.exclude(
             Q(purchase_request__status='rejected') |
             Q(purchase_request__status='cancelled')
-        ).select_related('purchase_request')
-
-        if not purchase_request_items.exists():
-            return None
-
-        result = []
-        for pri in purchase_request_items:
+        ).select_related('purchase_request'):
             pr = pri.purchase_request
-            result.append({
+            result[pr.id] = {
                 'id': pr.id,
                 'request_number': pr.request_number,
                 'title': pr.title,
                 'status': pr.status,
-                'quantity': float(pri.quantity),  # Quantity in this specific PR
-            })
-        return result
+                'quantity': float(pri.quantity),
+            }
+
+        # M2M path: item was attached via PurchaseRequest.planning_request_items.add()
+        for pr in obj.purchase_requests.exclude(
+            Q(status='rejected') | Q(status='cancelled')
+        ):
+            if pr.id not in result:
+                result[pr.id] = {
+                    'id': pr.id,
+                    'request_number': pr.request_number,
+                    'title': pr.title,
+                    'status': pr.status,
+                    'quantity': None,
+                }
+
+        return list(result.values()) if result else None
     
 
 
