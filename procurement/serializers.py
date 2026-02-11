@@ -146,6 +146,8 @@ class PurchaseRequestListSerializer(serializers.ModelSerializer):
     items_count = serializers.IntegerField(read_only=True)
     planning_request_keys = serializers.SerializerMethodField()
     purchase_orders = serializers.PrimaryKeyRelatedField(many=True, read_only=True)
+    item_type = serializers.SerializerMethodField()
+    item_type_label = serializers.SerializerMethodField()
 
     class Meta:
         model = PurchaseRequest
@@ -155,12 +157,26 @@ class PurchaseRequestListSerializer(serializers.ModelSerializer):
             'total_amount_eur', 'currency_rates_snapshot',
             'created_at', 'updated_at', 'submitted_at',
             'items_count', 'cancelled_at', 'cancelled_by', 'cancellation_reason', 'needed_date',
-            'planning_request_keys', 'purchase_orders'
+            'planning_request_keys', 'purchase_orders', 'item_type', 'item_type_label'
         ]
         read_only_fields = ['request_number', 'created_at', 'updated_at', 'submitted_at', 'cancelled_at', 'cancelled_by']
 
     def get_status_label(self, obj):
         return obj.get_status_display()
+
+    def get_item_type(self, obj):
+        """Get the item_type from the first request item"""
+        first_item = obj.request_items.order_by('order').first()
+        if first_item and first_item.item:
+            return first_item.item.item_type
+        return None
+
+    def get_item_type_label(self, obj):
+        """Get the item_type display label from the first request item"""
+        first_item = obj.request_items.order_by('order').first()
+        if first_item and first_item.item:
+            return first_item.item.get_item_type_display()
+        return None
 
     def get_planning_request_keys(self, obj):
         """Get unique planning request numbers (cheap with prefetch_related)"""
@@ -185,6 +201,7 @@ class PurchaseRequestSerializer(serializers.ModelSerializer):
     approval = serializers.SerializerMethodField()
     purchase_orders = serializers.PrimaryKeyRelatedField(many=True, read_only=True)
     planning_request_info = serializers.SerializerMethodField()
+    files = FileAttachmentSerializer(many=True, read_only=True)
 
     def get_approval(self, obj):
         # if prefetch exists, use it; else fall back to query
@@ -230,9 +247,10 @@ class PurchaseRequestSerializer(serializers.ModelSerializer):
             'total_amount_eur', 'currency_rates_snapshot',
             'created_at', 'updated_at', 'submitted_at',
             'request_items', 'offers', 'approval', 'cancelled_at', 'cancelled_by', 'cancellation_reason', 'needed_date', 'purchase_orders',
-            'planning_request_info'
+            'planning_request_info', 'files'
         ]
         read_only_fields = ['request_number', 'created_at', 'updated_at', 'submitted_at', 'cancelled_at', 'cancelled_by']
+
 
 # Special serializer for creating purchase requests with nested data
 class PurchaseRequestCreateSerializer(serializers.ModelSerializer):
@@ -330,21 +348,38 @@ class PurchaseRequestCreateSerializer(serializers.ModelSerializer):
         )
 
         # Attach planning request items if provided
+        user = self.context['request'].user
+        ct_pr = ContentType.objects.get_for_model(PurchaseRequest)
+
         if planning_request_item_ids:
             from django.db.models import Q
 
             planning_request_items = PlanningRequestItem.objects.filter(
                 Q(planning_request__status='ready') | Q(planning_request__status='converted'),
                 id__in=planning_request_item_ids
-            ).select_related('planning_request')
+            ).select_related('planning_request').prefetch_related('planning_request__files')
 
             # Attach items to purchase request
             pr.planning_request_items.set(planning_request_items)
 
             # Get unique planning requests and mark them as 'converted'
-            # Note: They will only be marked as 'completed' when the purchase request is approved
+            # Also copy PlanningRequest-level files to PurchaseRequest
             planning_requests = set(item.planning_request for item in planning_request_items)
+            copied_asset_ids = set()  # Track copied assets to avoid duplicates
             for planning_request in planning_requests:
+                # Copy files from PlanningRequest to PurchaseRequest
+                for source_attachment in planning_request.files.all():
+                    if source_attachment.asset_id not in copied_asset_ids:
+                        FileAttachment.objects.create(
+                            asset=source_attachment.asset,
+                            uploaded_by=user,
+                            description=source_attachment.description,
+                            content_type=ct_pr,
+                            object_id=pr.id,
+                            source_attachment=source_attachment,
+                        )
+                        copied_asset_ids.add(source_attachment.asset_id)
+
                 # Check completion stats
                 stats = planning_request.get_completion_stats()
 
@@ -416,26 +451,33 @@ class PurchaseRequestCreateSerializer(serializers.ModelSerializer):
                 PurchaseRequestItemAllocation.objects.bulk_create(to_create)
 
             # Create file attachments for this purchase request item
+            user = self.context['request'].user
+            ct_item = ContentType.objects.get_for_model(PurchaseRequestItem)
+
+            # First, copy files from PlanningRequestItem if available
+            if planning_request_item:
+                for source_attachment in planning_request_item.files.all():
+                    FileAttachment.objects.create(
+                        asset=source_attachment.asset,
+                        uploaded_by=user,
+                        description=source_attachment.description,
+                        content_type=ct_item,
+                        object_id=pri.id,
+                        source_attachment=source_attachment,
+                    )
+
+            # Then, add any additional file assets explicitly provided
             file_asset_ids = item_data.get('file_asset_ids', [])
-            print(f"Processing item {i}: file_asset_ids = {file_asset_ids}")
             if file_asset_ids:
-                user = self.context['request'].user
-                ct_item = ContentType.objects.get_for_model(PurchaseRequestItem)
-
-                # Get file assets
                 file_assets = FileAsset.objects.filter(id__in=file_asset_ids)
-                print(f"Found {file_assets.count()} file assets for IDs {file_asset_ids}")
-
-                # Create FileAttachment for each asset
                 for asset in file_assets:
-                    attachment = FileAttachment.objects.create(
+                    FileAttachment.objects.create(
                         asset=asset,
                         uploaded_by=user,
                         description='',
                         content_type=ct_item,
                         object_id=pri.id,
                     )
-                    print(f"Created FileAttachment {attachment.id} for PurchaseRequestItem {pri.id} with asset {asset.id}")
 
         # Create SupplierOffers + ItemOffers
         for supplier_data in suppliers_data:

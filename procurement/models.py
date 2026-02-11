@@ -246,7 +246,14 @@ class PurchaseRequest(models.Model):
         ApprovalWorkflow,
         related_query_name="purchase_request",  # lets you filter from workflow side if needed
     )
-    
+
+    # Generic relation for file attachments
+    files = GenericRelation(
+        'planning.FileAttachment',
+        content_type_field='content_type',
+        object_id_field='object_id'
+    )
+
     class Meta:
         ordering = ['-created_at']
     

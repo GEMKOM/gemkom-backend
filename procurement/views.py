@@ -252,7 +252,8 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
                 .prefetch_related(
                     "request_items__item",
                     "request_items__allocations",
-                    "request_items__files",
+                    "request_items__files__asset",
+                    "files__asset",
                     "offers__supplier",
                     "offers__item_offers",
                     "purchase_orders",
@@ -310,7 +311,7 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
         """Get current user's purchase requests"""
         user = request.user
         queryset = PurchaseRequest.objects.filter(requestor=user)
-        serializer = self.get_serializer(queryset, many=True)
+        serializer = PurchaseRequestListSerializer(queryset, many=True)
         return Response(serializer.data)
     
     @action(detail=False, methods=['get'], permission_classes=[IsFinanceAuthorized])
@@ -328,7 +329,8 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
                 order=F('workflow__current_stage_order'),  # ← no nested Subquery, use F() directly
                 is_complete=False,
                 is_rejected=False,
-                approver_user_ids__contains=[user.id],     # JSONB contains int
+                approver_user_ids__contains=[user.id],
+     # JSONB contains int
             )
             .annotate(already_decided=Exists(my_decision_qs))
             .filter(already_decided=False)
@@ -345,12 +347,12 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
 
         page = self.paginate_queryset(queryset)
         if page is not None:
-            ser = PurchaseRequestSerializer(page, many=True)
+            ser = PurchaseRequestListSerializer(page, many=True)
             return self.get_paginated_response(ser.data)
-        ser = PurchaseRequestSerializer(queryset, many=True)
+        ser = PurchaseRequestListSerializer(queryset, many=True)
         return Response(ser.data)
 
-        
+
     @action(detail=False, methods=['get'], permission_classes=[IsFinanceAuthorized])
     def approved_by_me(self, request):
         """
@@ -390,10 +392,10 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
 
         page = self.paginate_queryset(qs)
         if page is not None:
-            ser = self.get_serializer(page, many=True)
+            ser = PurchaseRequestListSerializer(page, many=True)
             return self.get_paginated_response(ser.data)
 
-        ser = self.get_serializer(qs, many=True)
+        ser = PurchaseRequestListSerializer(qs, many=True)
         return Response(ser.data)
 
 
@@ -421,6 +423,48 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
         except Exception as e:
             return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
         return Response({"detail": "Purchase request cancelled."}, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["GET"])
+    def all_files(self, request, pk=None):
+        """
+        Get all files for a purchase request and its items.
+        Returns files organized by what they belong to.
+        """
+        from planning.serializers import FileAttachmentSerializer
+
+        pr = self.get_object()
+
+        # Get request-level files
+        request_files = FileAttachmentSerializer(
+            pr.files.select_related('asset', 'uploaded_by').all(),
+            many=True,
+            context={'request': request}
+        ).data
+
+        # Get item-level files
+        items_with_files = []
+        for item in pr.request_items.prefetch_related('files__asset', 'files__uploaded_by').select_related('item').all():
+            item_files = FileAttachmentSerializer(
+                item.files.all(),
+                many=True,
+                context={'request': request}
+            ).data
+            items_with_files.append({
+                'item_id': item.id,
+                'item_code': item.item.code,
+                'item_name': item.item.name,
+                'files': item_files
+            })
+
+        total_files = len(request_files) + sum(len(i['files']) for i in items_with_files)
+
+        return Response({
+            'purchase_request_id': pr.id,
+            'request_number': pr.request_number,
+            'request_files': request_files,
+            'items': items_with_files,
+            'total_files': total_files
+        })
 
     @action(detail=True, methods=["POST"], permission_classes=[IsFinanceAuthorized])
     def attach_planning_items(self, request, pk=None):
