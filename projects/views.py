@@ -849,7 +849,10 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
                         hours_spent = sum(Decimal(str(op.total_hours_spent)) for op in operations)
 
                         # Calculate progress
-                        if estimated_hours > 0:
+                        is_part_completed = part.completion_date is not None
+                        if is_part_completed:
+                            progress_pct = 100.0
+                        elif estimated_hours > 0:
                             progress_pct = min(float(hours_spent / estimated_hours * 100), 100.0)
                         else:
                             progress_pct = 0.0
@@ -864,8 +867,8 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
                             'department': parent_task.department,
                             'department_display': parent_task.get_department_display(),
                             'title': f'{part.image_no} - Pos {part.position_no}' if part.position_no else part.name,
-                            'status': 'completed' if progress_pct >= 100 else 'in_progress',
-                            'status_display': 'Tamamlandı' if progress_pct >= 100 else 'Devam Ediyor',
+                            'status': 'completed' if is_part_completed else 'in_progress',
+                            'status_display': 'Tamamlandı' if is_part_completed else 'Devam Ediyor',
                             'completion_percentage': progress_pct,
                             'sequence': None,
                             'weight': float(estimated_hours),

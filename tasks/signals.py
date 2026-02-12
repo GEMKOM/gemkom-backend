@@ -60,6 +60,16 @@ def _update_job_order_for_operation(operation):
         pass
 
 
+@receiver(post_save, sender=Operation)
+def update_job_order_on_operation_change(sender, instance, **kwargs):
+    """
+    When an Operation is saved (especially completion_date changes),
+    update related JobOrder completion percentage.
+    """
+    if instance.part:
+        _update_job_order_for_operation(instance)
+
+
 @receiver(post_save, sender=Part)
 def update_cached_job_no_on_part_update(sender, instance: Part, **kwargs):
     """

@@ -194,7 +194,7 @@ class JobOrderDetailSerializer(serializers.ModelSerializer):
             'job_no', 'title', 'description',
             'customer', 'customer_name', 'customer_code', 'customer_order_no',
             'status', 'status_display', 'priority', 'priority_display',
-            'target_completion_date', 'started_at', 'completed_at',
+            'target_completion_date', 'started_at', 'completed_at', 'incoterms',
             'estimated_cost', 'labor_cost', 'material_cost',
             'subcontractor_cost', 'total_cost', 'cost_currency',
             'last_cost_calculation', 'completion_percentage',
@@ -242,7 +242,7 @@ class JobOrderCreateSerializer(serializers.ModelSerializer):
         fields = [
             'job_no', 'title', 'description',
             'customer', 'customer_order_no',
-            'priority', 'target_completion_date',
+            'priority', 'target_completion_date', 'incoterms',
             'estimated_cost', 'cost_currency',
             'parent'
         ]
@@ -284,7 +284,7 @@ class JobOrderUpdateSerializer(serializers.ModelSerializer):
         model = JobOrder
         fields = [
             'title', 'description', 'customer_order_no',
-            'priority', 'target_completion_date',
+            'priority', 'target_completion_date', 'incoterms',
             'estimated_cost', 'cost_currency'
         ]
 
@@ -510,7 +510,7 @@ class DepartmentTaskListSerializer(serializers.ModelSerializer):
         ]
 
     def get_subtasks_count(self, obj):
-        """Return count of subtasks, or parts/items count for special tasks."""
+        """Return count of subtasks, or parts/items/requests count for special tasks."""
         if obj.title == 'CNC Kesim':
             from cnc_cutting.models import CncPart
             return CncPart.objects.filter(job_no=obj.job_order.job_no).count()
@@ -518,11 +518,10 @@ class DepartmentTaskListSerializer(serializers.ModelSerializer):
             from tasks.models import Part
             return Part.objects.filter(job_no=obj.job_order.job_no).count()
         if obj.department == 'procurement':
-            from planning.models import PlanningRequestItem
-            return PlanningRequestItem.objects.filter(
-                job_no=obj.job_order.job_no,
-                quantity_to_purchase__gt=0
-            ).count()
+            from procurement.models import PurchaseRequest
+            return PurchaseRequest.objects.filter(
+                planning_request_items__job_no=obj.job_order.job_no
+            ).exclude(status='cancelled').distinct().count()
         return obj.subtasks.count()
 
     def get_can_start(self, obj):
@@ -585,7 +584,7 @@ class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
         ]
 
     def get_subtasks_count(self, obj):
-        """Return count of subtasks, or parts/items count for special tasks."""
+        """Return count of subtasks, or parts/items/requests count for special tasks."""
         if obj.title == 'CNC Kesim':
             from cnc_cutting.models import CncPart
             return CncPart.objects.filter(job_no=obj.job_order.job_no).count()
@@ -593,11 +592,10 @@ class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
             from tasks.models import Part
             return Part.objects.filter(job_no=obj.job_order.job_no).count()
         if obj.department == 'procurement':
-            from planning.models import PlanningRequestItem
-            return PlanningRequestItem.objects.filter(
-                job_no=obj.job_order.job_no,
-                quantity_to_purchase__gt=0
-            ).count()
+            from procurement.models import PurchaseRequest
+            return PurchaseRequest.objects.filter(
+                planning_request_items__job_no=obj.job_order.job_no
+            ).exclude(status='cancelled').distinct().count()
         return obj.subtasks.count()
 
     def get_can_start(self, obj):
@@ -609,48 +607,53 @@ class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
             return None
 
         from decimal import Decimal
-        from planning.models import PlanningRequestItem
+        from procurement.models import PurchaseRequest
 
         earned, total = obj.get_procurement_progress()
 
-        items = PlanningRequestItem.objects.filter(
-            job_no=obj.job_order.job_no,
-            quantity_to_purchase__gt=0
-        ).select_related('item')
+        # Get purchase requests that have items allocated to this job order
+        purchase_requests = PurchaseRequest.objects.filter(
+            planning_request_items__job_no=obj.job_order.job_no
+        ).exclude(
+            status='cancelled'
+        ).distinct().select_related('requestor').prefetch_related(
+            'request_items__item',
+            'planning_request_items'
+        ).order_by('-created_at')
 
-        items_data = []
-        for item in items:
-            item_earned, item_total = item.get_procurement_progress()
-            percentage = float((item_earned / item_total * 100).quantize(Decimal('0.01'))) if item_total > 0 else 0
+        requests_data = []
+        for pr in purchase_requests:
+            # Count items for this job order
+            job_items = pr.planning_request_items.filter(job_no=obj.job_order.job_no)
+            items_count = job_items.count()
 
-            # Determine status based on percentage
-            if percentage >= 100:
-                status = 'paid'
-            elif percentage >= 50:
-                status = 'approved'
-            elif percentage >= 40:
-                status = 'submitted'
-            else:
-                status = 'pending'
+            # Get item names for this job
+            item_names = [
+                item.item.name if item.item else item.item_description
+                for item in job_items[:3]
+            ]
+            if job_items.count() > 3:
+                item_names.append(f'+{job_items.count() - 3} more')
 
-            items_data.append({
-                'id': item.id,
-                'item_code': item.item.code if item.item else None,
-                'item_name': item.item.name if item.item else item.item_description,
-                'quantity': float(item.quantity_to_purchase),
-                'unit_weight': float(item.item.unit_weight) if item.item else 1,
-                'total_weight': float(item.total_weight),
-                'progress': {
-                    'percentage': percentage,
-                    'status': status
-                }
+            requests_data.append({
+                'id': pr.id,
+                'request_number': pr.request_number,
+                'title': pr.title,
+                'status': pr.status,
+                'status_display': pr.get_status_display(),
+                'priority': pr.priority,
+                'requestor': pr.requestor.get_full_name() if pr.requestor else None,
+                'items_count': items_count,
+                'item_names': item_names,
+                'created_at': pr.created_at,
+                'submitted_at': pr.submitted_at,
             })
 
         return {
             'percentage': float((earned / total * 100).quantize(Decimal('0.01'))) if total > 0 else 0,
             'total_weight': float(total),
             'earned_weight': float(earned),
-            'items': items_data
+            'requests': requests_data
         }
 
     def get_cnc_progress(self, obj):

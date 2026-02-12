@@ -488,7 +488,7 @@ class PurchaseOrderLine(models.Model):
 
     # Source of truth = the ItemOffer we awarded (recommended)
     item_offer = models.ForeignKey('ItemOffer', on_delete=models.PROTECT, related_name='po_lines')
-    purchase_request_item = models.ForeignKey('PurchaseRequestItem', on_delete=models.PROTECT, related_name='+')
+    purchase_request_item = models.ForeignKey('PurchaseRequestItem', on_delete=models.PROTECT, related_name='po_lines')
 
     # Freeze values at PO creation time
     quantity = models.DecimalField(max_digits=12, decimal_places=2)

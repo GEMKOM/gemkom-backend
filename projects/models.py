@@ -130,6 +130,7 @@ class JobOrder(models.Model):
     target_completion_date = models.DateField(null=True, blank=True)
     started_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
+    incoterms = models.CharField(null=True, blank=True)
 
     # Cost tracking (calculated periodically)
     estimated_cost = models.DecimalField(
@@ -1099,6 +1100,11 @@ class JobOrderDepartmentTask(models.Model):
             estimated = Decimal(str(op.estimated_hours))
             total_estimated += estimated
 
+            # Completed operations are 100% regardless of hours spent
+            if op.completion_date is not None:
+                earned_hours += estimated
+                continue
+
             # Get hours spent (already annotated)
             spent = Decimal(str(op.total_hours_spent))
 
@@ -1111,6 +1117,7 @@ class JobOrderDepartmentTask(models.Model):
     def check_machining_auto_complete(self, user=None):
         """
         Check if Talaşlı İmalat subtask should auto-complete.
+        Auto-completes only when ALL parts for this job order have completion_date set.
         Returns True if auto-completed, False otherwise.
         """
         if self.title != 'Talaşlı İmalat':
@@ -1119,8 +1126,9 @@ class JobOrderDepartmentTask(models.Model):
         if self.status != 'in_progress':
             return False
 
-        earned, total = self.get_machining_progress()
-        if total > 0 and earned >= total:
+        from tasks.models import Part
+        parts = Part.objects.filter(job_no=self.job_order.job_no)
+        if parts.exists() and not parts.filter(completion_date__isnull=True).exists():
             self.complete(user=user)
             return True
         return False
@@ -1152,7 +1160,36 @@ class JobOrderDepartmentTask(models.Model):
         if self.status == 'cancelled':
             return Decimal('0.00')
 
-        # Pending/blocked tasks are 0%
+        # Special tasks (CNC, Machining, Procurement) calculate real progress
+        # even when blocked/pending, since underlying work happens independently
+        is_special_task = (
+            self.title in ['CNC Kesim', 'Talaşlı İmalat']
+            or self.department == 'procurement'
+        )
+
+        if is_special_task:
+            if skip_expensive_calculations:
+                return Decimal('50.00')
+
+            if self.title == 'CNC Kesim':
+                earned, total = self.get_cnc_progress()
+                if total > 0:
+                    return ((earned / total) * 100).quantize(Decimal('0.01'))
+                return Decimal('0.00')
+
+            if self.title == 'Talaşlı İmalat':
+                earned, total = self.get_machining_progress()
+                if total > 0:
+                    return ((earned / total) * 100).quantize(Decimal('0.01'))
+                return Decimal('0.00')
+
+            if self.department == 'procurement':
+                earned, total = self.get_procurement_progress()
+                if total > 0:
+                    return ((earned / total) * 100).quantize(Decimal('0.01'))
+                return Decimal('0.00')
+
+        # Pending/blocked tasks (non-special) are 0%
         if self.status in ['pending', 'blocked']:
             return Decimal('0.00')
 
@@ -1160,10 +1197,6 @@ class JobOrderDepartmentTask(models.Model):
 
         # For nested serializers, skip expensive calculations and return approximation
         if skip_expensive_calculations:
-            # For special tasks (CNC, Talaşlı İmalat), return 50% as approximate in-progress value
-            if self.title in ['CNC Kesim', 'Talaşlı İmalat'] or self.department == 'procurement':
-                return Decimal('50.00')
-
             # For tasks with subtasks, try quick calculation using only status
             if hasattr(self, '_prefetched_objects_cache') and 'subtasks' in self._prefetched_objects_cache:
                 subtasks = self.subtasks.all()
@@ -1194,27 +1227,6 @@ class JobOrderDepartmentTask(models.Model):
             return Decimal('0.00')
 
         # Full calculation (for detail views)
-
-        # CNC Kesim tasks
-        if self.title == 'CNC Kesim':
-            earned, total = self.get_cnc_progress()
-            if total > 0:
-                return ((earned / total) * 100).quantize(Decimal('0.01'))
-            return Decimal('0.00')
-
-        # Talaşlı İmalat tasks
-        if self.title == 'Talaşlı İmalat':
-            earned, total = self.get_machining_progress()
-            if total > 0:
-                return ((earned / total) * 100).quantize(Decimal('0.01'))
-            return Decimal('0.00')
-
-        # Procurement tasks
-        if self.department == 'procurement':
-            earned, total = self.get_procurement_progress()
-            if total > 0:
-                return ((earned / total) * 100).quantize(Decimal('0.01'))
-            return Decimal('0.00')
 
         # Tasks with subtasks - calculate based on subtask completion
         subtasks = self.subtasks.all()
