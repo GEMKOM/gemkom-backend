@@ -105,6 +105,7 @@ class JobOrder(models.Model):
 
     # Basic info
     title = models.CharField(max_length=255)
+    quantity = models.PositiveIntegerField(default=1)
     description = models.TextField(blank=True, null=True)
     customer = models.ForeignKey(
         Customer,
@@ -1577,8 +1578,7 @@ class TechnicalDrawingRelease(models.Model):
     job_order = models.ForeignKey(
         JobOrder,
         on_delete=models.CASCADE,
-        related_name='technical_drawing_releases',
-        limit_choices_to={'parent__isnull': True}
+        related_name='technical_drawing_releases'
     )
 
     # Version tracking

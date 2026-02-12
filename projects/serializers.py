@@ -117,7 +117,7 @@ class JobOrderListSerializer(serializers.ModelSerializer):
     class Meta:
         model = JobOrder
         fields = [
-            'job_no', 'title', 'customer', 'customer_name', 'customer_code',
+            'job_no', 'title', 'quantity', 'customer', 'customer_name', 'customer_code',
             'status', 'status_display', 'priority', 'priority_display',
             'target_completion_date', 'completion_percentage',
             'parent', 'children_count', 'hierarchy_level',
@@ -182,7 +182,7 @@ class JobOrderDetailSerializer(serializers.ModelSerializer):
         default=''
     )
     parent_title = serializers.CharField(source='parent.title', read_only=True, default=None)
-    children = JobOrderListSerializer(many=True, read_only=True)
+    children = serializers.SerializerMethodField()
     children_count = serializers.SerializerMethodField()
     hierarchy_level = serializers.SerializerMethodField()
     department_tasks_count = serializers.SerializerMethodField()
@@ -192,7 +192,7 @@ class JobOrderDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model = JobOrder
         fields = [
-            'job_no', 'title', 'description',
+            'job_no', 'title', 'quantity', 'description',
             'customer', 'customer_name', 'customer_code', 'customer_order_no',
             'status', 'status_display', 'priority', 'priority_display',
             'target_completion_date', 'started_at', 'completed_at', 'incoterms',
@@ -210,6 +210,10 @@ class JobOrderDetailSerializer(serializers.ModelSerializer):
             'completion_percentage', 'created_at', 'created_by', 'updated_at',
             'completed_by'
         ]
+
+    def get_children(self, obj):
+        children = obj.children.order_by('job_no')
+        return JobOrderListSerializer(children, many=True).data
 
     def get_children_count(self, obj):
         return obj.children.count()
@@ -241,7 +245,7 @@ class JobOrderCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = JobOrder
         fields = [
-            'job_no', 'title', 'description',
+            'job_no', 'title', 'quantity', 'description',
             'customer', 'customer_order_no',
             'priority', 'target_completion_date', 'incoterms',
             'estimated_cost', 'cost_currency',
@@ -1213,11 +1217,6 @@ class TechnicalDrawingReleaseCreateSerializer(serializers.ModelSerializer):
             'revision_code', 'hardcopy_count', 'topic_content',
             'auto_complete_design_task'
         ]
-
-    def validate_job_order(self, value):
-        if value.parent is not None:
-            raise serializers.ValidationError("Teknik çizim yayınları sadece ana iş emirleri için oluşturulabilir.")
-        return value
 
     def create(self, validated_data):
         topic_content = validated_data.pop('topic_content', '')

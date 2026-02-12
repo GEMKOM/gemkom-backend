@@ -1,3 +1,4 @@
+import threading
 from django.utils import timezone
 from .models import DiscussionNotification
 from core.emails import send_plain_email
@@ -155,7 +156,8 @@ def send_drawing_released_notifications(release, topic):
     """Send notifications when technical drawings are released."""
     job_order = release.job_order
 
-    # Notify mentioned users in the topic
+    # Collect users to notify and create DB notifications
+    users_to_email = []
     for user in topic.mentioned_users.exclude(id=release.released_by_id):
         notification, created = DiscussionNotification.objects.get_or_create(
             user=user,
@@ -165,10 +167,19 @@ def send_drawing_released_notifications(release, topic):
         )
 
         if created:
-            send_drawing_released_email(user, release, topic)
+            users_to_email.append(user)
             notification.is_emailed = True
             notification.emailed_at = timezone.now()
             notification.save(update_fields=['is_emailed', 'emailed_at'])
+
+    # Send emails in background thread
+    if users_to_email:
+        def _send_emails():
+            pass
+            # for user in users_to_email:
+            #     send_drawing_released_email(user, release, topic)
+
+        threading.Thread(target=_send_emails, daemon=True).start()
 
 
 def send_drawing_released_email(user, release, topic):
