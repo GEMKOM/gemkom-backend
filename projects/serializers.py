@@ -505,7 +505,7 @@ class DepartmentTaskListSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'job_order', 'job_order_title',
             'department', 'department_display', 'title',
-            'status', 'status_display', 'sequence', 'weight',
+            'status', 'status_display', 'sequence', 'weight', 'manual_progress',
             'assigned_to', 'assigned_to_name',
             'target_start_date', 'target_completion_date',
             'started_at', 'completed_at',
@@ -571,7 +571,7 @@ class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'job_order', 'job_order_title',
             'department', 'department_display', 'title', 'description',
-            'status', 'status_display', 'sequence', 'weight',
+            'status', 'status_display', 'sequence', 'weight', 'manual_progress',
             'assigned_to', 'assigned_to_name',
             'target_start_date', 'target_completion_date',
             'started_at', 'completed_at',
@@ -831,7 +831,7 @@ class DepartmentTaskUpdateSerializer(serializers.ModelSerializer):
         fields = [
             'title', 'description', 'assigned_to',
             'target_start_date', 'target_completion_date',
-            'depends_on', 'sequence', 'weight', 'notes'
+            'depends_on', 'sequence', 'weight', 'manual_progress', 'notes'
         ]
 
     def validate(self, attrs):
@@ -846,6 +846,7 @@ class DepartmentTaskUpdateSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
         """Update task and refresh status if dependencies changed."""
         depends_on_changed = 'depends_on' in validated_data
+        progress_changed = 'manual_progress' in validated_data
 
         # Update the task
         task = super().update(instance, validated_data)
@@ -853,6 +854,10 @@ class DepartmentTaskUpdateSerializer(serializers.ModelSerializer):
         # If dependencies were changed, update status accordingly
         if depends_on_changed:
             task.update_status_from_dependencies()
+
+        # If manual progress changed, update job order completion
+        if progress_changed:
+            task.job_order.update_completion_percentage()
 
         return task
 

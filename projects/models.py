@@ -297,9 +297,11 @@ class JobOrder(models.Model):
                             # No non-skipped subtasks but task is complete
                             earned_weight += task_weight
                     else:
-                        # No subtasks: use task's own status
+                        # No subtasks: use manual_progress or status
                         if task.status == 'completed':
                             earned_weight += task_weight
+                        elif task.manual_progress > 0:
+                            earned_weight += (task.manual_progress / Decimal('100')) * task_weight
 
             if total_weight > 0:
                 self.completion_percentage = (
@@ -699,6 +701,14 @@ class JobOrderDepartmentTask(models.Model):
         default=10,
         validators=[MinValueValidator(1), MaxValueValidator(100)],
         help_text='Görev ağırlığı (1-100 puan). Varsayılan: 10'
+    )
+
+    # Manual progress for regular tasks (0-100)
+    manual_progress = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=Decimal('0.00'),
+        validators=[MinValueValidator(Decimal('0')), MaxValueValidator(Decimal('100'))],
     )
 
     # Assignment
@@ -1210,7 +1220,7 @@ class JobOrderDepartmentTask(models.Model):
                 )
                 if counts['total'] > 0:
                     return (Decimal(str(counts['completed'])) / Decimal(str(counts['total'])) * 100).quantize(Decimal('0.01'))
-                return Decimal('0.00')
+                return self.manual_progress
 
             # If subtasks were prefetched, use them
             if subtasks.exists():
@@ -1225,7 +1235,7 @@ class JobOrderDepartmentTask(models.Model):
                 if total_count > 0:
                     return (Decimal(str(completed_count)) / Decimal(str(total_count)) * 100).quantize(Decimal('0.01'))
 
-            return Decimal('0.00')
+            return self.manual_progress
 
         # Full calculation (for detail views)
 
@@ -1251,8 +1261,8 @@ class JobOrderDepartmentTask(models.Model):
                 return ((earned_weight / total_weight) * 100).quantize(Decimal('0.01'))
             return Decimal('0.00')
 
-        # Simple tasks without subtasks - in progress but no subtasks = 0%
-        return Decimal('0.00')
+        # Simple tasks without subtasks - use manual_progress
+        return self.manual_progress
 
 
 def discussion_attachment_upload_path(instance, filename):
