@@ -721,7 +721,7 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
     ).prefetch_related('subtasks', 'depends_on')
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     search_fields = ['title', 'description', 'job_order__job_no', 'job_order__title']
-    ordering_fields = ['sequence', 'status', 'created_at', 'target_completion_date']
+    ordering_fields = ['sequence', 'status', 'created_at', 'target_completion_date', 'job_order']
     ordering = ['job_order', 'sequence']
     filterset_fields = {
         'job_order': ['exact'],
