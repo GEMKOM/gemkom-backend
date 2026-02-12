@@ -107,21 +107,20 @@ class JobOrderChildSerializer(serializers.ModelSerializer):
 class JobOrderListSerializer(serializers.ModelSerializer):
     """Lightweight serializer for list views."""
     customer_name = serializers.CharField(source='customer.name', read_only=True)
+    customer_short_name = serializers.CharField(source='customer.short_name', read_only=True)
     customer_code = serializers.CharField(source='customer.code', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     priority_display = serializers.CharField(source='get_priority_display', read_only=True)
     children_count = serializers.SerializerMethodField()
     hierarchy_level = serializers.SerializerMethodField()
-    department_tasks_count = serializers.SerializerMethodField()
 
     class Meta:
         model = JobOrder
         fields = [
-            'job_no', 'title', 'quantity', 'customer', 'customer_name', 'customer_code',
+            'job_no', 'title', 'quantity', 'customer', 'customer_name', 'customer_short_name', 'customer_code',
             'status', 'status_display', 'priority', 'priority_display',
             'target_completion_date', 'completion_percentage',
             'parent', 'children_count', 'hierarchy_level',
-            'department_tasks_count',
             'created_at'
         ]
 
@@ -130,9 +129,6 @@ class JobOrderListSerializer(serializers.ModelSerializer):
 
     def get_hierarchy_level(self, obj):
         return obj.get_hierarchy_level()
-
-    def get_department_tasks_count(self, obj):
-        return obj.department_tasks.filter(parent__isnull=True).count()
 
 
 class JobOrderDepartmentTaskNestedSerializer(serializers.ModelSerializer):
@@ -168,6 +164,7 @@ class JobOrderDepartmentTaskNestedSerializer(serializers.ModelSerializer):
 class JobOrderDetailSerializer(serializers.ModelSerializer):
     """Full serializer for detail views."""
     customer_name = serializers.CharField(source='customer.name', read_only=True)
+    customer_short_name = serializers.CharField(source='customer.short_name', read_only=True)
     customer_code = serializers.CharField(source='customer.code', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     priority_display = serializers.CharField(source='get_priority_display', read_only=True)
@@ -185,7 +182,6 @@ class JobOrderDetailSerializer(serializers.ModelSerializer):
     children = serializers.SerializerMethodField()
     children_count = serializers.SerializerMethodField()
     hierarchy_level = serializers.SerializerMethodField()
-    department_tasks_count = serializers.SerializerMethodField()
     files_count = serializers.SerializerMethodField()
     topics_count = serializers.SerializerMethodField()
 
@@ -193,14 +189,14 @@ class JobOrderDetailSerializer(serializers.ModelSerializer):
         model = JobOrder
         fields = [
             'job_no', 'title', 'quantity', 'description',
-            'customer', 'customer_name', 'customer_code', 'customer_order_no',
+            'customer', 'customer_name', 'customer_short_name', 'customer_code', 'customer_order_no',
             'status', 'status_display', 'priority', 'priority_display',
             'target_completion_date', 'started_at', 'completed_at', 'incoterms',
             'estimated_cost', 'labor_cost', 'material_cost',
             'subcontractor_cost', 'total_cost', 'cost_currency',
             'last_cost_calculation', 'completion_percentage',
             'parent', 'parent_title', 'children', 'children_count', 'hierarchy_level',
-            'department_tasks_count', 'files_count', 'topics_count',
+            'files_count', 'topics_count',
             'created_at', 'created_by', 'created_by_name',
             'updated_at', 'completed_by', 'completed_by_name'
         ]
@@ -220,9 +216,6 @@ class JobOrderDetailSerializer(serializers.ModelSerializer):
 
     def get_hierarchy_level(self, obj):
         return obj.get_hierarchy_level()
-
-    def get_department_tasks_count(self, obj):
-        return obj.department_tasks.filter(parent__isnull=True).count()
 
     def get_files_count(self, obj):
         return obj.files.count()
