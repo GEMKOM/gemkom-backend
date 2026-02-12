@@ -182,6 +182,7 @@ class JobOrderDetailSerializer(serializers.ModelSerializer):
         default=''
     )
     parent_title = serializers.CharField(source='parent.title', read_only=True, default=None)
+    children = JobOrderListSerializer(many=True, read_only=True)
     children_count = serializers.SerializerMethodField()
     hierarchy_level = serializers.SerializerMethodField()
     department_tasks_count = serializers.SerializerMethodField()
@@ -198,7 +199,7 @@ class JobOrderDetailSerializer(serializers.ModelSerializer):
             'estimated_cost', 'labor_cost', 'material_cost',
             'subcontractor_cost', 'total_cost', 'cost_currency',
             'last_cost_calculation', 'completion_percentage',
-            'parent', 'parent_title', 'children_count', 'hierarchy_level',
+            'parent', 'parent_title', 'children', 'children_count', 'hierarchy_level',
             'department_tasks_count', 'files_count', 'topics_count',
             'created_at', 'created_by', 'created_by_name',
             'updated_at', 'completed_by', 'completed_by_name'
