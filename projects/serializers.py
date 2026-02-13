@@ -484,6 +484,7 @@ class DepartmentTaskListSerializer(serializers.ModelSerializer):
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     department_display = serializers.CharField(source='get_department_display', read_only=True)
     job_order_title = serializers.CharField(source='job_order.title', read_only=True)
+    customer_name = serializers.SerializerMethodField()
     assigned_to_name = serializers.CharField(
         source='assigned_to.get_full_name',
         read_only=True,
@@ -496,7 +497,7 @@ class DepartmentTaskListSerializer(serializers.ModelSerializer):
     class Meta:
         model = JobOrderDepartmentTask
         fields = [
-            'id', 'job_order', 'job_order_title',
+            'id', 'job_order', 'job_order_title', 'customer_name',
             'department', 'department_display', 'title',
             'status', 'status_display', 'sequence', 'weight', 'manual_progress',
             'assigned_to', 'assigned_to_name',
@@ -506,6 +507,10 @@ class DepartmentTaskListSerializer(serializers.ModelSerializer):
             'completion_percentage',
             'created_at'
         ]
+
+    def get_customer_name(self, obj):
+        customer = obj.job_order.customer
+        return customer.short_name or customer.name
 
     def get_subtasks_count(self, obj):
         """Return count of subtasks, or parts/items/requests count for special tasks."""
@@ -840,6 +845,7 @@ class DepartmentTaskUpdateSerializer(serializers.ModelSerializer):
         """Update task and refresh status if dependencies changed."""
         depends_on_changed = 'depends_on' in validated_data
         progress_changed = 'manual_progress' in validated_data
+        weight_changed = 'weight' in validated_data
 
         # Update the task
         task = super().update(instance, validated_data)
@@ -848,8 +854,8 @@ class DepartmentTaskUpdateSerializer(serializers.ModelSerializer):
         if depends_on_changed:
             task.update_status_from_dependencies()
 
-        # If manual progress changed, update job order completion
-        if progress_changed:
+        # If manual progress or weight changed, update job order completion
+        if progress_changed or weight_changed:
             task.job_order.update_completion_percentage()
 
         return task

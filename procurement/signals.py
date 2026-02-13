@@ -1,6 +1,6 @@
 from django.db.models.signals import post_save
 from django.dispatch import receiver
-from .models import PurchaseRequest, PurchaseOrder
+from .models import PurchaseRequest, PurchaseOrder, PurchaseOrderLine, PaymentSchedule
 
 
 @receiver(post_save, sender=PurchaseRequest)
@@ -14,6 +14,20 @@ def update_job_order_on_po_change(sender, instance, **kwargs):
     """Update job order progress when PO status changes (especially paid)."""
     if instance.pr:
         _update_related_job_orders(instance.pr)
+
+
+@receiver(post_save, sender=PaymentSchedule)
+def update_job_order_on_payment(sender, instance, **kwargs):
+    """Update job order progress when a payment schedule is paid."""
+    if instance.purchase_order and instance.purchase_order.pr:
+        _update_related_job_orders(instance.purchase_order.pr)
+
+
+@receiver(post_save, sender=PurchaseOrderLine)
+def update_job_order_on_delivery(sender, instance, **kwargs):
+    """Update job order progress when a PO line is marked as delivered."""
+    if instance.po and instance.po.pr:
+        _update_related_job_orders(instance.po.pr)
 
 
 def _update_related_job_orders(purchase_request):

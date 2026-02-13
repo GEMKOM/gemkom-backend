@@ -599,6 +599,7 @@ class PurchaseOrderLineSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'purchase_request_item', 'item_code', 'item_name', 'item_description',
             'quantity', 'unit_price', 'total_price', 'delivery_days', 'notes',
+            'is_delivered', 'delivered_at',
             'allocations',
         ]
 

@@ -306,11 +306,15 @@ class JobOrder(models.Model):
                             earned_weight += (task.manual_progress / Decimal('100')) * task_weight
 
             if total_weight > 0:
-                self.completion_percentage = (
+                pct = (
                     (earned_weight / total_weight) * 100
                 ).quantize(Decimal('0.01'))
+                # Cap at 99% unless job order is actually completed
+                if self.status != 'completed':
+                    pct = min(pct, Decimal('99.00'))
+                self.completion_percentage = pct
             else:
-                self.completion_percentage = Decimal('100.00')
+                self.completion_percentage = Decimal('0.00')
 
         self.save(update_fields=['completion_percentage'])
 
@@ -326,7 +330,11 @@ class JobOrder(models.Model):
         # Average of children completion
         from django.db.models import Avg
         child_avg = self.children.aggregate(avg=Avg('completion_percentage'))['avg'] or Decimal('0.00')
-        self.completion_percentage = Decimal(child_avg).quantize(Decimal('0.01'))
+        pct = Decimal(child_avg).quantize(Decimal('0.01'))
+        # Cap at 99% unless job order is actually completed
+        if self.status != 'completed':
+            pct = min(pct, Decimal('99.00'))
+        self.completion_percentage = pct
         self.save(update_fields=['completion_percentage'])
 
         # Recursively update parent
@@ -1173,6 +1181,9 @@ class JobOrderDepartmentTask(models.Model):
         if self.status == 'cancelled':
             return Decimal('0.00')
 
+        # Cap at 99% for non-completed tasks to avoid confusion
+        MAX_IN_PROGRESS = Decimal('99.00')
+
         # Special tasks (CNC, Machining, Procurement) calculate real progress
         # even when blocked/pending, since underlying work happens independently
         is_special_task = (
@@ -1187,19 +1198,22 @@ class JobOrderDepartmentTask(models.Model):
             if self.title == 'CNC Kesim':
                 earned, total = self.get_cnc_progress()
                 if total > 0:
-                    return ((earned / total) * 100).quantize(Decimal('0.01'))
+                    pct = ((earned / total) * 100).quantize(Decimal('0.01'))
+                    return min(pct, MAX_IN_PROGRESS)
                 return Decimal('0.00')
 
             if self.title == 'Talaşlı İmalat':
                 earned, total = self.get_machining_progress()
                 if total > 0:
-                    return ((earned / total) * 100).quantize(Decimal('0.01'))
+                    pct = ((earned / total) * 100).quantize(Decimal('0.01'))
+                    return min(pct, MAX_IN_PROGRESS)
                 return Decimal('0.00')
 
             if self.department == 'procurement':
                 earned, total = self.get_procurement_progress()
                 if total > 0:
-                    return ((earned / total) * 100).quantize(Decimal('0.01'))
+                    pct = ((earned / total) * 100).quantize(Decimal('0.01'))
+                    return min(pct, MAX_IN_PROGRESS)
                 return Decimal('0.00')
 
         # Pending/blocked tasks (non-special) are 0%
@@ -1221,8 +1235,9 @@ class JobOrderDepartmentTask(models.Model):
                     completed=Count('id', filter=Q(status='completed'))
                 )
                 if counts['total'] > 0:
-                    return (Decimal(str(counts['completed'])) / Decimal(str(counts['total'])) * 100).quantize(Decimal('0.01'))
-                return self.manual_progress
+                    pct = (Decimal(str(counts['completed'])) / Decimal(str(counts['total'])) * 100).quantize(Decimal('0.01'))
+                    return min(pct, MAX_IN_PROGRESS)
+                return min(self.manual_progress, MAX_IN_PROGRESS)
 
             # If subtasks were prefetched, use them
             if subtasks.exists():
@@ -1235,9 +1250,10 @@ class JobOrderDepartmentTask(models.Model):
                             completed_count += 1
 
                 if total_count > 0:
-                    return (Decimal(str(completed_count)) / Decimal(str(total_count)) * 100).quantize(Decimal('0.01'))
+                    pct = (Decimal(str(completed_count)) / Decimal(str(total_count)) * 100).quantize(Decimal('0.01'))
+                    return min(pct, MAX_IN_PROGRESS)
 
-            return self.manual_progress
+            return min(self.manual_progress, MAX_IN_PROGRESS)
 
         # Full calculation (for detail views)
 
@@ -1260,11 +1276,12 @@ class JobOrderDepartmentTask(models.Model):
                 earned_weight += (subtask_percentage / 100) * subtask_weight
 
             if total_weight > 0:
-                return ((earned_weight / total_weight) * 100).quantize(Decimal('0.01'))
+                pct = ((earned_weight / total_weight) * 100).quantize(Decimal('0.01'))
+                return min(pct, MAX_IN_PROGRESS)
             return Decimal('0.00')
 
         # Simple tasks without subtasks - use manual_progress
-        return self.manual_progress
+        return min(self.manual_progress, MAX_IN_PROGRESS)
 
 
 def discussion_attachment_upload_path(instance, filename):

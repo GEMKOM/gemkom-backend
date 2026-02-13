@@ -717,7 +717,7 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
     - POST /department-tasks/{id}/uncomplete/ - Revert completed task to in_progress
     """
     queryset = JobOrderDepartmentTask.objects.select_related(
-        'job_order', 'assigned_to', 'parent', 'created_by', 'completed_by'
+        'job_order', 'job_order__customer', 'assigned_to', 'parent', 'created_by', 'completed_by'
     ).prefetch_related('subtasks', 'depends_on')
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     search_fields = ['title', 'description', 'job_order__job_no', 'job_order__title']
@@ -913,22 +913,43 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
 
                     items = PlanningRequestItem.objects.filter(
                         job_no=parent_task.job_order.job_no,
-                        quantity_to_purchase__gt=0  # Only items that need procurement
-                    ).select_related('item', 'planning_request')
+                        quantity_to_purchase__gt=0
+                    ).select_related('item', 'planning_request').prefetch_related(
+                        'purchase_request_items__purchase_request',
+                        'purchase_request_items__po_lines__po',
+                    )
 
                     items_data = []
                     for item in items:
-                        # Calculate progress for this item
-                        earned, total = item.get_procurement_progress() if hasattr(item, 'get_procurement_progress') else (Decimal('0.00'), item.total_weight if hasattr(item, 'total_weight') else Decimal('1.00'))
+                        earned, total = item.get_procurement_progress()
 
                         if total > 0:
                             progress_pct = float((earned / total * 100).quantize(Decimal('0.01')))
                         else:
                             progress_pct = 0.0
 
+                        # Find linked purchase request and purchase order
+                        purchase_request_number = None
+                        purchase_order_id = None
+                        is_delivered = False
+
+                        pri_items = item.purchase_request_items.all()
+                        for pri in pri_items:
+                            pr = pri.purchase_request
+                            if pr.status not in ('cancelled', 'rejected'):
+                                purchase_request_number = pr.request_number
+                                po_lines = pri.po_lines.all()
+                                for po_line in po_lines:
+                                    purchase_order_id = po_line.po_id
+                                    is_delivered = po_line.is_delivered
+                                break
+
                         # Determine status based on progress
-                        if progress_pct >= 100:
+                        if is_delivered:
                             status = 'completed'
+                            status_display = 'Teslim Edildi'
+                        elif progress_pct >= 80:
+                            status = 'in_progress'
                             status_display = 'Ödendi'
                         elif progress_pct >= 50:
                             status = 'in_progress'
@@ -940,50 +961,22 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
                             status = 'pending'
                             status_display = 'Bekliyor'
 
-                        # Map PlanningRequestItem to department task structure
                         item_name = item.item.name if item.item else item.item_description
                         item_code = item.item.code if item.item else ''
 
                         items_data.append({
                             'id': f'procurement-item-{item.id}',
-                            'type': 'procurement_item',
-                            'procurement_item_id': item.id,
-                            'job_order': item.job_no,
-                            'job_order_title': parent_task.job_order.title,
-                            'department': parent_task.department,
-                            'department_display': parent_task.get_department_display(),
                             'title': f'{item_code} - {item_name}' if item_code else item_name,
+                            'planning_request_number': item.planning_request.request_number if item.planning_request else None,
+                            'quantity_to_purchase': float(item.quantity_to_purchase),
+                            'purchase_request_number': purchase_request_number,
+                            'purchase_order_id': purchase_order_id,
                             'status': status,
                             'status_display': status_display,
                             'completion_percentage': progress_pct,
-                            'sequence': None,
-                            'weight': float(total),
-                            'assigned_to': None,
-                            'assigned_to_name': '',
-                            'target_start_date': None,
-                            'target_completion_date': None,
-                            'started_at': None,
-                            'completed_at': None,
-                            'parent': parent_task.id,
-                            'subtasks_count': 0,
-                            'can_start': False,
-                            'created_at': item.planning_request.created_at if item.planning_request else None,
-                            # Procurement-specific fields
-                            'procurement_data': {
-                                'id': item.id,
-                                'item_code': item_code,
-                                'item_name': item_name,
-                                'item_description': item.item_description,
-                                'quantity': float(item.quantity),
-                                'quantity_to_purchase': float(item.quantity_to_purchase),
-                                'quantity_from_inventory': float(item.quantity_from_inventory),
-                                'unit_weight': float(item.item.unit_weight) if item.item and hasattr(item.item, 'unit_weight') else 1.0,
-                                'total_weight': float(total),
-                                'earned_weight': float(earned),
-                            }
+                            'is_delivered': is_delivered,
                         })
 
-                    # Return in paginated format to match standard response structure
                     return Response({
                         'count': len(items_data),
                         'next': None,

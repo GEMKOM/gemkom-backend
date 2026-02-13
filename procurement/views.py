@@ -825,6 +825,29 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
         serializer = PurchaseOrderDetailSerializer(po, context=self.get_serializer_context())
         return Response(serializer.data, status=200)
 
+    @action(detail=True, methods=["POST"])
+    @transaction.atomic
+    def mark_delivered(self, request, pk=None):
+        """Mark one or more PO lines as delivered."""
+        po = self.get_object()
+        line_ids = request.data.get("line_ids", [])
+        if not line_ids:
+            return Response({"detail": "line_ids is required."}, status=400)
+
+        lines = po.lines.filter(id__in=line_ids)
+        if not lines.exists():
+            return Response({"detail": "No matching lines found for this PO."}, status=404)
+
+        now = timezone.now()
+        updated = lines.filter(is_delivered=False).update(
+            is_delivered=True,
+            delivered_at=now,
+            delivered_by=request.user,
+        )
+
+        serializer = PurchaseOrderDetailSerializer(po, context=self.get_serializer_context())
+        return Response(serializer.data, status=200)
+
 class ProcurementReportViewSet(viewsets.GenericViewSet):
     """
     All procurement reports under /procurement/reports/<report-name>/.

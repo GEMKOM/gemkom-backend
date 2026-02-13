@@ -595,7 +595,8 @@ class PlanningRequestItem(models.Model):
         - 0%: No PurchaseRequestItem exists
         - 40%: PurchaseRequestItem exists (PR submitted)
         - 50%: PurchaseRequest approved
-        - 100%: PurchaseOrder fully paid
+        - 80%: PurchaseOrder fully paid
+        - 100%: All PO lines delivered
         """
         total = self.total_weight
         if total == Decimal('0.00'):
@@ -619,26 +620,24 @@ class PlanningRequestItem(models.Model):
             pr_status = pri.purchase_request.status
 
             if pr_status in ('cancelled', 'rejected'):
-                # Doesn't count
                 continue
 
-            # Check if PO exists and is paid
+            # Check PO lines
             po_lines = pri.po_lines.all()
             if po_lines.exists():
-                # Check payment status
-                all_paid = all(
-                    line.po.status == 'paid'
-                    for line in po_lines
-                )
-                if all_paid:
-                    earned += item_weight * Decimal('1.0')  # 100%
+                all_delivered = all(line.is_delivered for line in po_lines)
+                all_paid = all(line.po.status == 'paid' for line in po_lines)
+
+                if all_delivered:
+                    earned += item_weight * Decimal('1.0')    # 100%
+                elif all_paid:
+                    earned += item_weight * Decimal('0.8')    # 80%
                 else:
-                    # PO exists but not paid = approved level
-                    earned += item_weight * Decimal('0.5')  # 50%
+                    earned += item_weight * Decimal('0.5')    # 50% (PO exists)
             elif pr_status == 'approved':
-                earned += item_weight * Decimal('0.5')  # 50%
+                earned += item_weight * Decimal('0.5')        # 50%
             elif pr_status == 'submitted':
-                earned += item_weight * Decimal('0.4')  # 40%
+                earned += item_weight * Decimal('0.4')        # 40%
 
         return (earned, total)
 

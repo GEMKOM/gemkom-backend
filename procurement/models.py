@@ -505,6 +505,13 @@ class PurchaseOrderLine(models.Model):
 
     notes = models.TextField(blank=True)
 
+    # Delivery tracking
+    is_delivered = models.BooleanField(default=False)
+    delivered_at = models.DateTimeField(null=True, blank=True)
+    delivered_by = models.ForeignKey(
+        User, null=True, blank=True, on_delete=models.SET_NULL, related_name='delivered_po_lines'
+    )
+
     class Meta:
         ordering = ['id']
 
