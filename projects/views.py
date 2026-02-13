@@ -931,6 +931,7 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
                         # Find linked purchase request and purchase order
                         purchase_request_number = None
                         purchase_order_id = None
+                        po_line_id = None
                         is_delivered = False
 
                         pri_items = item.purchase_request_items.all()
@@ -941,6 +942,7 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
                                 po_lines = pri.po_lines.all()
                                 for po_line in po_lines:
                                     purchase_order_id = po_line.po_id
+                                    po_line_id = po_line.id
                                     is_delivered = po_line.is_delivered
                                 break
 
@@ -966,11 +968,13 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
 
                         items_data.append({
                             'id': f'procurement-item-{item.id}',
+                            'task_type': 'procurement_item',
                             'title': f'{item_code} - {item_name}' if item_code else item_name,
                             'planning_request_number': item.planning_request.request_number if item.planning_request else None,
                             'quantity_to_purchase': float(item.quantity_to_purchase),
                             'purchase_request_number': purchase_request_number,
                             'purchase_order_id': purchase_order_id,
+                            'po_line_id': po_line_id,
                             'status': status,
                             'status_display': status_display,
                             'completion_percentage': progress_pct,
