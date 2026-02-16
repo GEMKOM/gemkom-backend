@@ -968,21 +968,49 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
             "count": 45
         }
         """
-        from django.db.models import Q, Exists, OuterRef
-        from procurement.models import PurchaseRequest
+        from django.db.models import Q, Sum, OuterRef, Subquery, Value, F
+        from django.db.models.functions import Coalesce, Greatest
+        from decimal import Decimal
+        from procurement.models import PurchaseRequestItem
 
         # Start with filtered queryset
         qs = self.filter_queryset(self.get_queryset())
 
-        # Subquery to check if item is in any active purchase request
-        active_pr_exists = PurchaseRequest.objects.filter(
-            planning_request_items=OuterRef('pk')
+        # FK path: PurchaseRequestItems directly linked via planning_request_item FK
+        qty_via_fk = PurchaseRequestItem.objects.filter(
+            planning_request_item=OuterRef('pk')
         ).exclude(
-            Q(status='rejected') | Q(status='cancelled')
+            Q(purchase_request__status='rejected') |
+            Q(purchase_request__status='cancelled')
+        ).values('planning_request_item').annotate(
+            total=Sum('quantity')
+        ).values('total')
+
+        # M2M path: PurchaseRequestItems in PRs linked via M2M, matching by item_id
+        qty_via_m2m = PurchaseRequestItem.objects.filter(
+            purchase_request__planning_request_items=OuterRef('pk'),
+            item_id=OuterRef('item_id'),
+        ).exclude(
+            Q(purchase_request__status='rejected') |
+            Q(purchase_request__status='cancelled')
+        ).values('item_id').annotate(
+            total=Sum('quantity')
+        ).values('total')
+
+        zero = Value(Decimal('0.00'))
+
+        qs = qs.annotate(
+            _qty_in_prs=Greatest(
+                Coalesce(Subquery(qty_via_fk), zero),
+                Coalesce(Subquery(qty_via_m2m), zero),
+            ),
         )
 
-        # Count items that are NOT in active purchase requests
-        available_count = qs.exclude(Exists(active_pr_exists)).count()
+        # Count items with remaining quantity available
+        available_count = qs.filter(
+            Q(planning_request__status='ready') | Q(planning_request__status='converted'),
+            quantity_to_purchase__gt=F('_qty_in_prs')
+        ).count()
 
         return Response({
             "count": available_count
@@ -1004,8 +1032,10 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
             "availability_percentage": 45.0
         }
         """
-        from django.db.models import Q, Exists, OuterRef, Count, Case, When, IntegerField
-        from procurement.models import PurchaseRequest
+        from django.db.models import Q, Sum, OuterRef, Subquery, Value, F, Count, Case, When, IntegerField
+        from django.db.models.functions import Coalesce, Greatest
+        from decimal import Decimal
+        from procurement.models import PurchaseRequestItem
 
         # Start with filtered queryset
         qs = self.filter_queryset(self.get_queryset())
@@ -1021,26 +1051,47 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
                 "availability_percentage": 0.0
             })
 
-        # Subquery to check if item is in any active purchase request
-        active_pr_exists = PurchaseRequest.objects.filter(
-            planning_request_items=OuterRef('pk')
+        # FK path: PurchaseRequestItems directly linked via planning_request_item FK
+        qty_via_fk = PurchaseRequestItem.objects.filter(
+            planning_request_item=OuterRef('pk')
         ).exclude(
-            Q(status='rejected') | Q(status='cancelled')
+            Q(purchase_request__status='rejected') |
+            Q(purchase_request__status='cancelled')
+        ).values('planning_request_item').annotate(
+            total=Sum('quantity')
+        ).values('total')
+
+        # M2M path: PurchaseRequestItems in PRs linked via M2M, matching by item_id
+        qty_via_m2m = PurchaseRequestItem.objects.filter(
+            purchase_request__planning_request_items=OuterRef('pk'),
+            item_id=OuterRef('item_id'),
+        ).exclude(
+            Q(purchase_request__status='rejected') |
+            Q(purchase_request__status='cancelled')
+        ).values('item_id').annotate(
+            total=Sum('quantity')
+        ).values('total')
+
+        zero = Value(Decimal('0.00'))
+
+        qs = qs.annotate(
+            _qty_in_prs=Greatest(
+                Coalesce(Subquery(qty_via_fk), zero),
+                Coalesce(Subquery(qty_via_m2m), zero),
+            ),
         )
 
-        # Annotate each item with availability status and count
+        # Count available: ready/converted status AND has remaining quantity
+        is_available = (
+            Q(planning_request__status='ready') | Q(planning_request__status='converted')
+        ) & Q(quantity_to_purchase__gt=F('_qty_in_prs'))
+
         stats = qs.aggregate(
             available_items=Count(
-                Case(
-                    When(~Exists(active_pr_exists), then=1),
-                    output_field=IntegerField()
-                )
+                Case(When(is_available, then=1), output_field=IntegerField())
             ),
             unavailable_items=Count(
-                Case(
-                    When(Exists(active_pr_exists), then=1),
-                    output_field=IntegerField()
-                )
+                Case(When(~is_available, then=1), output_field=IntegerField())
             )
         )
 

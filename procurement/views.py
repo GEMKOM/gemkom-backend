@@ -491,30 +491,22 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Validate that planning request items are available (not already in active purchase requests)
-        # Reuse the same validation logic from PurchaseRequestCreateSerializer
+        # Validate that planning request items have remaining quantity available
         items = PlanningRequestItem.objects.filter(id__in=planning_request_item_ids).select_related(
             'item', 'planning_request'
         )
 
-        # Check each item for existing active purchase requests
         unavailable_items = []
         for item in items:
-            # Check if item is already in any active purchase request (not rejected or cancelled)
-            # Exclude the current PR since we're adding to it
-            active_prs = item.purchase_requests.exclude(
-                Q(status='rejected') | Q(status='cancelled') | Q(id=pr.id)
-            )
-
-            if active_prs.exists():
-                pr_numbers = ', '.join([pr_item.request_number for pr_item in active_prs[:3]])
+            if not item.is_available_for_purchase:
                 unavailable_items.append({
                     'item_id': item.id,
                     'item_code': item.item.code,
                     'item_name': item.item.name,
                     'job_no': item.job_no,
                     'planning_request': item.planning_request.request_number,
-                    'existing_purchase_requests': pr_numbers
+                    'quantity_to_purchase': item.quantity_to_purchase,
+                    'quantity_in_active_prs': item.quantity_in_active_prs,
                 })
 
         if unavailable_items:
@@ -522,13 +514,13 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
             for item in unavailable_items:
                 error_details.append(
                     f"Item '{item['item_code']} - {item['item_name']}' (Job: {item['job_no']}) from {item['planning_request']} "
-                    f"is already in purchase request(s): {item['existing_purchase_requests']}"
+                    f"has no remaining quantity (to_purchase: {item['quantity_to_purchase']}, already in PRs: {item['quantity_in_active_prs']})"
                 )
 
             error_message = {
-                "detail": "Some planning request items are already in active purchase requests.",
+                "detail": "Some planning request items have no remaining quantity available.",
                 "errors": error_details,
-                "note": "Items can only be reused if their purchase request is rejected or cancelled."
+                "note": "Items become available again if their purchase request is rejected or cancelled."
             }
             return Response(error_message, status=status.HTTP_400_BAD_REQUEST)
 

@@ -143,12 +143,12 @@ class PlanningRequestItemFilter(django_filters.FilterSet):
             return queryset
 
         from django.db.models import Q, Sum, OuterRef, Subquery, Value
-        from django.db.models.functions import Coalesce
+        from django.db.models.functions import Coalesce, Greatest
         from decimal import Decimal
         from procurement.models import PurchaseRequestItem
 
-        # Subquery to calculate quantity already in active PRs
-        quantity_in_active_prs = PurchaseRequestItem.objects.filter(
+        # FK path: PurchaseRequestItems directly linked via planning_request_item FK
+        qty_via_fk = PurchaseRequestItem.objects.filter(
             planning_request_item=OuterRef('pk')
         ).exclude(
             Q(purchase_request__status='rejected') |
@@ -157,9 +157,29 @@ class PlanningRequestItemFilter(django_filters.FilterSet):
             total=Sum('quantity')
         ).values('total')
 
-        # Annotate with quantity in active PRs
+        # M2M path: PurchaseRequestItems in PRs linked via M2M, matching by item_id.
+        # This covers historical data where FK was not set.
+        # May overcount when multiple planning items share the same item_id in one PR,
+        # but overcounting is safe (prevents items from falsely showing as available).
+        qty_via_m2m = PurchaseRequestItem.objects.filter(
+            purchase_request__planning_request_items=OuterRef('pk'),
+            item_id=OuterRef('item_id'),
+        ).exclude(
+            Q(purchase_request__status='rejected') |
+            Q(purchase_request__status='cancelled')
+        ).values('item_id').annotate(
+            total=Sum('quantity')
+        ).values('total')
+
+        zero = Value(Decimal('0.00'))
+
+        # Use the greater of FK and M2M totals — FK is authoritative when set,
+        # M2M is fallback for historical data
         queryset = queryset.annotate(
-            _qty_in_prs=Coalesce(Subquery(quantity_in_active_prs), Value(Decimal('0.00'))),
+            _qty_in_prs=Greatest(
+                Coalesce(Subquery(qty_via_fk), zero),
+                Coalesce(Subquery(qty_via_m2m), zero),
+            ),
         )
 
         return queryset.filter(

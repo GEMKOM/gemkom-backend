@@ -540,16 +540,36 @@ class PlanningRequestItem(models.Model):
         """
         Sum of quantities in active (non-rejected/cancelled) PurchaseRequestItems.
         This tracks how much of quantity_to_purchase has been converted.
+
+        Checks both:
+        - FK path: PurchaseRequestItem.planning_request_item (set by frontend per item)
+        - M2M path: PurchaseRequest.planning_request_items (set at PR level)
+        The FK path is authoritative when set. The M2M path is used as fallback
+        for historical data where FK was not set, matching by item_id within the PR.
         """
         from django.db.models import Sum, Q
 
-        # Get sum from PurchaseRequestItems that link back to this PlanningRequestItem
-        result = self.purchase_request_items.exclude(
+        # Primary: FK path — PurchaseRequestItems directly linked to this PlanningRequestItem
+        fk_result = self.purchase_request_items.exclude(
             Q(purchase_request__status='rejected') |
             Q(purchase_request__status='cancelled')
         ).aggregate(total=Sum('quantity'))
+        fk_total = fk_result['total'] or Decimal('0.00')
 
-        return result['total'] or Decimal('0.00')
+        if fk_total > Decimal('0.00'):
+            return fk_total
+
+        # Fallback: M2M path — find PurchaseRequestItems in linked PRs matching this item
+        from procurement.models import PurchaseRequestItem
+        m2m_total = PurchaseRequestItem.objects.filter(
+            purchase_request__planning_request_items=self,  # PR has this planning item via M2M
+            item_id=self.item_id,  # Same catalog item
+        ).exclude(
+            Q(purchase_request__status='rejected') |
+            Q(purchase_request__status='cancelled')
+        ).aggregate(total=Sum('quantity'))['total'] or Decimal('0.00')
+
+        return m2m_total
 
     @property
     def quantity_remaining_for_purchase(self):
