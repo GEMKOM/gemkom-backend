@@ -24,6 +24,7 @@ from .serializers import (
     PlanningRequestUpdateSerializer,
     PlanningRequestItemSerializer,
     PlanningRequestItemListSerializer,
+    PlanningRequestItemDeliverySerializer,
     BulkPlanningRequestItemSerializer,
     AttachmentUploadSerializer,
     FileAttachmentSerializer,
@@ -828,19 +829,57 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
     ordering = ['id']
 
     def get_queryset(self):
-        from django.db.models import Count
+        from django.db.models import Count, Sum, OuterRef, Subquery, Q, Value
+        from django.db.models.functions import Coalesce, Greatest
+        from decimal import Decimal
+        from procurement.models import PurchaseRequestItem
 
         # For list views, use minimal prefetching
         if self.action == 'list':
-            qs = PlanningRequestItem.objects.select_related(
-                'planning_request', 'item'
-            ).annotate(
-                files_count=Count('files')
-            )
+            simple = self.request.query_params.get('fields') == 'simple'
+
+            if simple:
+                # Lightweight: no subquery annotations needed
+                qs = PlanningRequestItem.objects.select_related(
+                    'planning_request', 'item', 'delivered_by'
+                )
+            else:
+                # FK path subquery
+                qty_via_fk = PurchaseRequestItem.objects.filter(
+                    planning_request_item=OuterRef('pk')
+                ).exclude(
+                    Q(purchase_request__status='rejected') |
+                    Q(purchase_request__status='cancelled')
+                ).values('planning_request_item').annotate(
+                    total=Sum('quantity')
+                ).values('total')
+
+                # M2M path subquery
+                qty_via_m2m = PurchaseRequestItem.objects.filter(
+                    purchase_request__planning_request_items=OuterRef('pk'),
+                    item_id=OuterRef('item_id'),
+                ).exclude(
+                    Q(purchase_request__status='rejected') |
+                    Q(purchase_request__status='cancelled')
+                ).values('item_id').annotate(
+                    total=Sum('quantity')
+                ).values('total')
+
+                zero = Value(Decimal('0.00'))
+
+                qs = PlanningRequestItem.objects.select_related(
+                    'planning_request', 'item', 'delivered_by'
+                ).annotate(
+                    files_count=Count('files'),
+                    _qty_in_prs=Greatest(
+                        Coalesce(Subquery(qty_via_fk), zero),
+                        Coalesce(Subquery(qty_via_m2m), zero),
+                    ),
+                )
         else:
             # For detail views, prefetch all related data
             qs = PlanningRequestItem.objects.select_related(
-                'planning_request', 'item'
+                'planning_request', 'item', 'delivered_by'
             ).prefetch_related(
                 Prefetch('files', queryset=FileAttachment.objects.select_related('asset', 'uploaded_by', 'source_attachment'))
             )
@@ -856,6 +895,8 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
 
     def get_serializer_class(self):
         if self.action == 'list':
+            if self.request.query_params.get('fields') == 'simple':
+                return PlanningRequestItemDeliverySerializer
             return PlanningRequestItemListSerializer
         return PlanningRequestItemSerializer
 
@@ -968,7 +1009,7 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
         item.delivered_by = request.user
         item.save(update_fields=['is_delivered', 'delivered_at', 'delivered_by'])
 
-        serializer = self.get_serializer(item)
+        serializer = PlanningRequestItemDeliverySerializer(item)
         return Response(serializer.data)
 
     @action(detail=False, methods=['POST'], permission_classes=[CanMarkDelivered], url_path='bulk_mark_delivered')
@@ -988,13 +1029,13 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
             return Response({"detail": "ids is required and must be a non-empty list."}, status=400)
 
         now = timezone.now()
-        items = PlanningRequestItem.objects.filter(id__in=ids, is_delivered=False)
-        updated = items.update(is_delivered=True, delivered_at=now, delivered_by=request.user)
+        PlanningRequestItem.objects.filter(id__in=ids, is_delivered=False).update(
+            is_delivered=True, delivered_at=now, delivered_by=request.user
+        )
 
-        return Response({
-            "detail": f"Marked {updated} items as delivered.",
-            "updated_count": updated,
-        })
+        items = PlanningRequestItem.objects.filter(id__in=ids).select_related('planning_request', 'item', 'delivered_by')
+        serializer = PlanningRequestItemDeliverySerializer(items, many=True)
+        return Response(serializer.data)
 
     @action(detail=False, methods=['GET'], permission_classes=[permissions.IsAuthenticated])
     def available_count(self, request):

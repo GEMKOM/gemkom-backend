@@ -323,21 +323,44 @@ class DepartmentRequestSerializer(serializers.ModelSerializer):
 
 
 # Planning Request Item Serializers
+class PlanningRequestItemDeliverySerializer(serializers.ModelSerializer):
+    """Minimal serializer returned by mark_delivered / bulk_mark_delivered and fields=simple list."""
+    item_code = serializers.CharField(source='item.code', read_only=True)
+    item_name = serializers.CharField(source='item.name', read_only=True)
+    item_unit = serializers.CharField(source='item.unit', read_only=True)
+    item_type = serializers.CharField(source='item.item_type', read_only=True)
+    planning_request_number = serializers.CharField(source='planning_request.request_number', read_only=True)
+    delivered_by_username = serializers.CharField(source='delivered_by.username', read_only=True, default=None)
+
+    class Meta:
+        model = PlanningRequestItem
+        fields = [
+            'id', 'item', 'item_code', 'item_name', 'item_unit', 'item_type',
+            'job_no', 'quantity', 'quantity_to_purchase',
+            'planning_request', 'planning_request_number',
+            'is_delivered', 'delivered_at', 'delivered_by', 'delivered_by_username',
+        ]
+
+
 class PlanningRequestItemListSerializer(serializers.ModelSerializer):
-    """Lightweight serializer for list views - excludes files and purchase request info"""
+    """Lightweight serializer for list views - excludes files and purchase request info.
+
+    Expects the queryset to be annotated with `_qty_in_prs` (see PlanningRequestItemViewSet.get_queryset).
+    All purchase-quantity-derived fields are computed from that annotation to avoid N+1 queries.
+    """
     item_code = serializers.CharField(source='item.code', read_only=True)
     item_name = serializers.CharField(source='item.name', read_only=True)
     item_unit = serializers.CharField(source='item.unit', read_only=True)
     item_type = serializers.CharField(source='item.item_type', read_only=True)
     item_stock_quantity = serializers.DecimalField(source='item.stock_quantity', read_only=True, max_digits=10, decimal_places=2)
     files_count = serializers.IntegerField(read_only=True)
-    is_converted = serializers.ReadOnlyField()
-    is_partially_converted = serializers.ReadOnlyField()
+    quantity_in_active_prs = serializers.SerializerMethodField()
+    quantity_remaining_for_purchase = serializers.SerializerMethodField()
+    is_converted = serializers.SerializerMethodField()
+    is_partially_converted = serializers.SerializerMethodField()
     is_fully_from_inventory = serializers.ReadOnlyField()
     is_partially_from_inventory = serializers.ReadOnlyField()
-    is_available_for_purchase = serializers.ReadOnlyField()
-    quantity_in_active_prs = serializers.ReadOnlyField()
-    quantity_remaining_for_purchase = serializers.ReadOnlyField()
+    is_available_for_purchase = serializers.SerializerMethodField()
     planning_request_number = serializers.CharField(source='planning_request.request_number', read_only=True)
     delivered_by_username = serializers.CharField(source='delivered_by.username', read_only=True, default=None)
 
@@ -356,6 +379,30 @@ class PlanningRequestItemListSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['id', 'quantity_from_inventory', 'quantity_to_purchase',
                             'is_delivered', 'delivered_at', 'delivered_by']
+
+    def _get_qty_in_prs(self, obj):
+        """Read from queryset annotation, fall back to model property."""
+        val = getattr(obj, '_qty_in_prs', None)
+        if val is not None:
+            return val
+        return obj.quantity_in_active_prs
+
+    def get_quantity_in_active_prs(self, obj):
+        return self._get_qty_in_prs(obj)
+
+    def get_quantity_remaining_for_purchase(self, obj):
+        remaining = obj.quantity_to_purchase - self._get_qty_in_prs(obj)
+        return max(remaining, Decimal('0.00'))
+
+    def get_is_converted(self, obj):
+        return self.get_quantity_remaining_for_purchase(obj) <= Decimal('0.00')
+
+    def get_is_partially_converted(self, obj):
+        qty = self._get_qty_in_prs(obj)
+        return qty > Decimal('0.00') and qty < obj.quantity_to_purchase
+
+    def get_is_available_for_purchase(self, obj):
+        return self.get_quantity_remaining_for_purchase(obj) > Decimal('0.00')
 
 
 class PlanningRequestItemSerializer(serializers.ModelSerializer):

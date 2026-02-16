@@ -59,6 +59,18 @@ class PlanningRequestItemFilter(django_filters.FilterSet):
         label='Available for Procurement'
     )
 
+    item_type = django_filters.CharFilter(
+        field_name='item__item_type',
+        lookup_expr='exact',
+        label='Item Type'
+    )
+
+    item_type_exclude = django_filters.CharFilter(
+        field_name='item__item_type',
+        exclude=True,
+        label='Exclude Item Type'
+    )
+
     class Meta:
         model = PlanningRequestItem
         fields = {
@@ -66,6 +78,7 @@ class PlanningRequestItemFilter(django_filters.FilterSet):
             'item': ['exact'],
             'job_no': ['exact', 'icontains'],
             'priority': ['exact'],
+            'is_delivered': ['exact'],
         }
 
     def filter_search(self, queryset, name, value):
