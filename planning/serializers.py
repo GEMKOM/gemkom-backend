@@ -339,6 +339,7 @@ class PlanningRequestItemListSerializer(serializers.ModelSerializer):
     quantity_in_active_prs = serializers.ReadOnlyField()
     quantity_remaining_for_purchase = serializers.ReadOnlyField()
     planning_request_number = serializers.CharField(source='planning_request.request_number', read_only=True)
+    delivered_by_username = serializers.CharField(source='delivered_by.username', read_only=True, default=None)
 
     class Meta:
         model = PlanningRequestItem
@@ -350,9 +351,11 @@ class PlanningRequestItemListSerializer(serializers.ModelSerializer):
             'source_item_index', 'order', 'files_count',
             'is_converted', 'is_partially_converted', 'is_fully_from_inventory',
             'is_partially_from_inventory', 'is_available_for_purchase',
+            'is_delivered', 'delivered_at', 'delivered_by', 'delivered_by_username',
             'planning_request', 'planning_request_number'
         ]
-        read_only_fields = ['id', 'quantity_from_inventory', 'quantity_to_purchase']
+        read_only_fields = ['id', 'quantity_from_inventory', 'quantity_to_purchase',
+                            'is_delivered', 'delivered_at', 'delivered_by']
 
 
 class PlanningRequestItemSerializer(serializers.ModelSerializer):
@@ -373,6 +376,7 @@ class PlanningRequestItemSerializer(serializers.ModelSerializer):
     quantity_remaining_for_purchase = serializers.ReadOnlyField()
     purchase_request_info = serializers.SerializerMethodField()
     planning_request_number = serializers.CharField(source='planning_request.request_number', read_only=True)
+    delivered_by_username = serializers.CharField(source='delivered_by.username', read_only=True, default=None)
 
     # For write operations
     item_id = serializers.IntegerField(write_only=True, required=False)
@@ -387,9 +391,11 @@ class PlanningRequestItemSerializer(serializers.ModelSerializer):
             'source_item_index', 'order', 'files', 'attachments',
             'is_converted', 'is_partially_converted', 'is_fully_from_inventory',
             'is_partially_from_inventory', 'is_available_for_purchase',
+            'is_delivered', 'delivered_at', 'delivered_by', 'delivered_by_username',
             'purchase_request_info', 'planning_request', 'planning_request_number'
         ]
-        read_only_fields = ['id', 'quantity_from_inventory', 'quantity_to_purchase']
+        read_only_fields = ['id', 'quantity_from_inventory', 'quantity_to_purchase',
+                            'is_delivered', 'delivered_at', 'delivered_by']
 
     def get_purchase_request_info(self, obj):
         """

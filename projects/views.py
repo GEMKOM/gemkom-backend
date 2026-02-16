@@ -932,7 +932,6 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
                         purchase_request_number = None
                         purchase_order_id = None
                         po_line_id = None
-                        is_delivered = False
 
                         pri_items = item.purchase_request_items.all()
                         for pri in pri_items:
@@ -943,11 +942,10 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
                                 for po_line in po_lines:
                                     purchase_order_id = po_line.po_id
                                     po_line_id = po_line.id
-                                    is_delivered = po_line.is_delivered
                                 break
 
                         # Determine status based on progress
-                        if is_delivered:
+                        if item.is_delivered:
                             status = 'completed'
                             status_display = 'Teslim Edildi'
                         elif progress_pct >= 80:
@@ -968,6 +966,7 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
 
                         items_data.append({
                             'id': f'procurement-item-{item.id}',
+                            'planning_request_item_id': item.id,
                             'task_type': 'procurement_item',
                             'title': f'{item_code} - {item_name}' if item_code else item_name,
                             'planning_request_number': item.planning_request.request_number if item.planning_request else None,
@@ -978,7 +977,7 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
                             'status': status,
                             'status_display': status_display,
                             'completion_percentage': progress_pct,
-                            'is_delivered': is_delivered,
+                            'is_delivered': item.is_delivered,
                         })
 
                     return Response({

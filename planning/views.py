@@ -32,6 +32,7 @@ from .serializers import (
     UpdateInventoryQuantitiesSerializer,
 )
 from .filters import PlanningRequestItemFilter, PlanningRequestFilter
+from .permissions import CanMarkDelivered
 from approvals.models import ApprovalWorkflow, ApprovalStageInstance, ApprovalDecision
 
 
@@ -952,6 +953,48 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
 
         attachment = _create_attachment_for_target(item, upload_serializer.validated_data, request.user)
         return Response(FileAttachmentSerializer(attachment, context={'request': request}).data, status=201)
+
+    @action(detail=True, methods=['POST'], permission_classes=[CanMarkDelivered], url_path='mark_delivered')
+    def mark_delivered(self, request, pk=None):
+        """Mark a single PlanningRequestItem as delivered."""
+        from django.utils import timezone
+
+        item = self.get_object()
+        if item.is_delivered:
+            return Response({"detail": "Item is already marked as delivered."}, status=400)
+
+        item.is_delivered = True
+        item.delivered_at = timezone.now()
+        item.delivered_by = request.user
+        item.save(update_fields=['is_delivered', 'delivered_at', 'delivered_by'])
+
+        serializer = self.get_serializer(item)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['POST'], permission_classes=[CanMarkDelivered], url_path='bulk_mark_delivered')
+    def bulk_mark_delivered(self, request):
+        """
+        Mark multiple PlanningRequestItems as delivered.
+
+        Request body:
+        {
+            "ids": [1, 2, 3]
+        }
+        """
+        from django.utils import timezone
+
+        ids = request.data.get('ids', [])
+        if not ids or not isinstance(ids, list):
+            return Response({"detail": "ids is required and must be a non-empty list."}, status=400)
+
+        now = timezone.now()
+        items = PlanningRequestItem.objects.filter(id__in=ids, is_delivered=False)
+        updated = items.update(is_delivered=True, delivered_at=now, delivered_by=request.user)
+
+        return Response({
+            "detail": f"Marked {updated} items as delivered.",
+            "updated_count": updated,
+        })
 
     @action(detail=False, methods=['GET'], permission_classes=[permissions.IsAuthenticated])
     def available_count(self, request):

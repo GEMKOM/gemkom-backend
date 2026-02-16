@@ -477,6 +477,14 @@ class PlanningRequestItem(models.Model):
     # Ordering
     order = models.PositiveIntegerField(default=0)
 
+    # Delivery tracking (independent of PO — can be marked delivered at any stage)
+    is_delivered = models.BooleanField(default=False)
+    delivered_at = models.DateTimeField(null=True, blank=True)
+    delivered_by = models.ForeignKey(
+        User, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='delivered_planning_items'
+    )
+
     # Generic relation for file attachments (mapped from DepartmentRequest files or new uploads)
     files = GenericRelation(
         'planning.FileAttachment',
@@ -615,18 +623,23 @@ class PlanningRequestItem(models.Model):
         - 0%: No PurchaseRequestItem exists
         - 40%: PurchaseRequestItem exists (PR submitted)
         - 50%: PurchaseRequest approved
-        - 80%: PurchaseOrder fully paid
-        - 100%: All PO lines delivered
+        - 80%: PurchaseOrder fully paid (or approved with DBS supplier)
+        - 100%: Item marked as delivered (only via is_delivered flag)
         """
         total = self.total_weight
         if total == Decimal('0.00'):
             return (Decimal('0.00'), Decimal('0.00'))
 
+        # Delivered = 100%, regardless of PR/PO state
+        if self.is_delivered:
+            return (total, total)
+
         # Get all PurchaseRequestItems for this PlanningRequestItem
         pr_items = self.purchase_request_items.select_related(
             'purchase_request'
         ).prefetch_related(
-            'po_lines__po'
+            'po_lines__po',
+            'offers__supplier_offer__supplier',
         )
 
         if not pr_items.exists():
@@ -645,19 +658,27 @@ class PlanningRequestItem(models.Model):
             # Check PO lines
             po_lines = pri.po_lines.all()
             if po_lines.exists():
-                all_delivered = all(line.is_delivered for line in po_lines)
                 all_paid = all(line.po.status == 'paid' for line in po_lines)
 
-                if all_delivered:
-                    earned += item_weight * Decimal('1.0')    # 100%
-                elif all_paid:
+                if all_paid:
                     earned += item_weight * Decimal('0.8')    # 80%
                 else:
-                    earned += item_weight * Decimal('0.5')    # 50% (PO exists)
+                    earned += item_weight * Decimal('0.5')    # 50% (PO exists, not yet paid)
             elif pr_status == 'approved':
-                earned += item_weight * Decimal('0.5')        # 50%
+                # Check if the recommended supplier is DBS (no PO will be created)
+                is_dbs = pri.offers.filter(
+                    is_recommended=True,
+                    supplier_offer__supplier__has_dbs=True,
+                ).exists()
+                if is_dbs:
+                    earned += item_weight * Decimal('0.8')    # 80% (DBS = paid level)
+                else:
+                    earned += item_weight * Decimal('0.5')    # 50%
             elif pr_status == 'submitted':
                 earned += item_weight * Decimal('0.4')        # 40%
+
+        # Cap at 80% of total — 100% is only reachable via is_delivered
+        earned = min(earned, total * Decimal('0.8'))
 
         return (earned, total)
 
