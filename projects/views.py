@@ -264,6 +264,24 @@ class JobOrderViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+    @action(detail=True, methods=['post'], url_path='recalculate_progress')
+    def recalculate_progress(self, request, job_no=None):
+        """Recalculate completion percentage for this job order from scratch."""
+        job_order = self.get_object()
+        old_pct = job_order.completion_percentage
+
+        # Recalculate children first so parent aggregation is accurate
+        for child in job_order.children.all():
+            child.update_completion_percentage()
+
+        job_order.update_completion_percentage()
+        job_order.refresh_from_db()
+        return Response({
+            'job_no': job_order.job_no,
+            'old_percentage': float(old_pct),
+            'new_percentage': float(job_order.completion_percentage),
+        })
+
     @action(detail=True, methods=['get'])
     def hierarchy(self, request, job_no=None):
         """

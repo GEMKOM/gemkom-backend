@@ -240,6 +240,9 @@ class JobOrder(models.Model):
         main_tasks = self.department_tasks.filter(parent__isnull=True).exclude(status__in=['skipped', 'cancelled'])
 
         if not main_tasks.exists():
+            if self.children.exists():
+                self.update_completion_from_children()
+                return
             self.completion_percentage = Decimal('0.00')
         else:
             total_weight = Decimal('0.00')
