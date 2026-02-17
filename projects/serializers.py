@@ -281,7 +281,7 @@ class JobOrderUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = JobOrder
         fields = [
-            'title', 'description', 'customer_order_no',
+            'title', 'quantity', 'description', 'customer_order_no',
             'priority', 'target_completion_date', 'incoterms',
             'estimated_cost', 'cost_currency'
         ]

@@ -995,6 +995,22 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
         attachment = _create_attachment_for_target(item, upload_serializer.validated_data, request.user)
         return Response(FileAttachmentSerializer(attachment, context={'request': request}).data, status=201)
 
+    @staticmethod
+    def _refresh_job_order_progress(job_nos, user=None):
+        """
+        Update job order completion for procurement tasks affected by delivery changes.
+        Auto-completes procurement tasks when all items reach 100%.
+        """
+        from projects.models import JobOrderDepartmentTask
+        procurement_tasks = JobOrderDepartmentTask.objects.filter(
+            job_order__job_no__in=job_nos,
+            department='procurement',
+        ).select_related('job_order')
+        for task in procurement_tasks:
+            if task.status == 'in_progress':
+                task.check_auto_complete(user=user)
+            task.job_order.update_completion_percentage()
+
     @action(detail=True, methods=['POST'], permission_classes=[CanMarkDelivered], url_path='mark_delivered')
     def mark_delivered(self, request, pk=None):
         """Mark a single PlanningRequestItem as delivered."""
@@ -1008,6 +1024,8 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
         item.delivered_at = timezone.now()
         item.delivered_by = request.user
         item.save(update_fields=['is_delivered', 'delivered_at', 'delivered_by'])
+
+        self._refresh_job_order_progress({item.job_no}, user=request.user)
 
         serializer = PlanningRequestItemDeliverySerializer(item)
         return Response(serializer.data)
@@ -1029,9 +1047,11 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
             return Response({"detail": "ids is required and must be a non-empty list."}, status=400)
 
         now = timezone.now()
-        PlanningRequestItem.objects.filter(id__in=ids, is_delivered=False).update(
-            is_delivered=True, delivered_at=now, delivered_by=request.user
-        )
+        affected_items = PlanningRequestItem.objects.filter(id__in=ids, is_delivered=False)
+        job_nos = set(affected_items.values_list('job_no', flat=True))
+        affected_items.update(is_delivered=True, delivered_at=now, delivered_by=request.user)
+
+        self._refresh_job_order_progress(job_nos, user=request.user)
 
         items = PlanningRequestItem.objects.filter(id__in=ids).select_related('planning_request', 'item', 'delivered_by')
         serializer = PlanningRequestItemDeliverySerializer(items, many=True)
