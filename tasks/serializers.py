@@ -551,6 +551,7 @@ class OperationPlanBulkListSerializer(serializers.ListSerializer):
             intent[obj.key] = final
 
         # PHASE 1: neutralize conflicts
+        # 1a) Null out plan_order for payload items that will be reassigned
         phase1 = []
         for key, final in intent.items():
             obj = inst_by_key[key]
@@ -561,6 +562,24 @@ class OperationPlanBulkListSerializer(serializers.ListSerializer):
 
         if phase1:
             Operation.objects.bulk_update(phase1, ["plan_order"])
+
+        # 1b) Null out plan_order for OTHER operations (not in payload) that
+        #     currently occupy a target (machine, plan_order) slot.
+        #     Without this, Phase 2 hits unique_operation_plan_order violation.
+        target_slots = set()
+        payload_pks = set(obj.pk for obj in inst_by_key.values())
+        for final in intent.values():
+            if final["in_plan"] and final["plan_order"] is not None and final["machine_fk_id"] is not None:
+                target_slots.add((final["machine_fk_id"], final["plan_order"]))
+
+        if target_slots:
+            from django.db.models import Q
+            slot_q = Q()
+            for machine_id, order in target_slots:
+                slot_q |= Q(machine_fk_id=machine_id, plan_order=order)
+            Operation.objects.filter(
+                slot_q, in_plan=True
+            ).exclude(pk__in=payload_pks).update(plan_order=None)
 
         # PHASE 2: apply final states
         phase2 = []
