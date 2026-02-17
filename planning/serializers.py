@@ -449,24 +449,36 @@ class PlanningRequestItemSerializer(serializers.ModelSerializer):
         Get info about active purchase requests this item was converted to.
         Checks both the FK path (PurchaseRequestItem.planning_request_item) and the
         M2M path (PurchaseRequest.planning_request_items) to cover all linking scenarios.
+        Uses prefetched data when available.
         """
         from django.db.models import Q
 
         result = {}
 
-        # FK path: PurchaseRequestItem has planning_request_item set (quantity is known)
-        for pri in obj.purchase_request_items.exclude(
-            Q(purchase_request__status='rejected') |
-            Q(purchase_request__status='cancelled')
-        ).select_related('purchase_request'):
-            pr = pri.purchase_request
-            result[pr.id] = {
-                'id': pr.id,
-                'request_number': pr.request_number,
-                'title': pr.title,
-                'status': pr.status,
-                'quantity': float(pri.quantity),
-            }
+        # FK path: use prefetched data if available
+        if hasattr(obj, '_prefetched_active_pr_items'):
+            for pri in obj._prefetched_active_pr_items:
+                pr = pri.purchase_request
+                result[pr.id] = {
+                    'id': pr.id,
+                    'request_number': pr.request_number,
+                    'title': pr.title,
+                    'status': pr.status,
+                    'quantity': float(pri.quantity),
+                }
+        else:
+            for pri in obj.purchase_request_items.exclude(
+                Q(purchase_request__status='rejected') |
+                Q(purchase_request__status='cancelled')
+            ).select_related('purchase_request'):
+                pr = pri.purchase_request
+                result[pr.id] = {
+                    'id': pr.id,
+                    'request_number': pr.request_number,
+                    'title': pr.title,
+                    'status': pr.status,
+                    'quantity': float(pri.quantity),
+                }
 
         # M2M path: item was attached via PurchaseRequest.planning_request_items.add()
         for pr in obj.purchase_requests.exclude(
@@ -566,9 +578,21 @@ class PlanningRequestSerializer(serializers.ModelSerializer):
 
         purchase_requests = {}
 
-        # Iterate through all items to find associated purchase requests
+        # Iterate through prefetched items to find associated purchase requests
         for item in obj.items.all():
-            # Only include active purchase requests (exclude rejected and cancelled)
+            # Use prefetched FK path data if available
+            if hasattr(item, '_prefetched_active_pr_items'):
+                for pri in item._prefetched_active_pr_items:
+                    pr = pri.purchase_request
+                    if pr.id not in purchase_requests:
+                        purchase_requests[pr.id] = {
+                            'id': pr.id,
+                            'request_number': pr.request_number,
+                            'title': pr.title,
+                            'status': pr.status
+                        }
+
+            # M2M path (already prefetched via items__purchase_requests)
             active_prs = item.purchase_requests.exclude(
                 Q(status='rejected') | Q(status='cancelled')
             )
@@ -784,13 +808,18 @@ class PlanningRequestUpdateSerializer(serializers.Serializer):
 
             instance.save()
 
-            # If items provided, replace all existing items
+            # If items provided, intelligently update existing items
             if items_data is not None:
-                # Delete all existing items
-                instance.items.all().delete()
+                # Build a lookup of existing items by (item_id, job_no)
+                existing_items = {}
+                for existing in instance.items.all():
+                    key = (existing.item_id, existing.job_no)
+                    existing_items[key] = existing
 
-                # Create new items
+                # Track which existing items are matched
+                matched_ids = set()
                 created_items = []
+
                 for idx, item_data in enumerate(items_data):
                     item_id = item_data.get('item_id')
                     item_code = item_data.get('item_code')
@@ -819,18 +848,38 @@ class PlanningRequestUpdateSerializer(serializers.Serializer):
                     except Exception:
                         raise serializers.ValidationError({"items": f"Item at index {idx} has invalid quantity"})
 
-                    planning_item = PlanningRequestItem.objects.create(
-                        planning_request=instance,
-                        item=item,
-                        job_no=item_data['job_no'],
-                        quantity=quantity,
-                        item_description=item_data.get('item_description', ''),
-                        priority=item_data.get('priority', 'normal'),
-                        specifications=item_data.get('specifications', ''),
-                        source_item_index=item_data.get('source_item_index'),
-                        order=idx + 1,
-                    )
-                    created_items.append(planning_item)
+                    # Check if this item+job_no already exists
+                    key = (item.id, item_data['job_no'])
+                    existing = existing_items.get(key)
+
+                    if existing and existing.id not in matched_ids:
+                        # Update existing item — preserve inventory & delivery data
+                        matched_ids.add(existing.id)
+                        existing.quantity = quantity
+                        existing.item_description = item_data.get('item_description', existing.item_description)
+                        existing.priority = item_data.get('priority', existing.priority)
+                        existing.specifications = item_data.get('specifications', existing.specifications)
+                        existing.source_item_index = item_data.get('source_item_index')
+                        existing.order = idx + 1
+                        existing.save()
+                        created_items.append(existing)
+                    else:
+                        # New item — create fresh
+                        planning_item = PlanningRequestItem.objects.create(
+                            planning_request=instance,
+                            item=item,
+                            job_no=item_data['job_no'],
+                            quantity=quantity,
+                            item_description=item_data.get('item_description', ''),
+                            priority=item_data.get('priority', 'normal'),
+                            specifications=item_data.get('specifications', ''),
+                            source_item_index=item_data.get('source_item_index'),
+                            order=idx + 1,
+                        )
+                        created_items.append(planning_item)
+
+                # Delete items that were removed from the payload
+                instance.items.exclude(id__in=[i.id for i in created_items]).delete()
             else:
                 # If items not provided, use existing items for file attachments
                 created_items = list(instance.items.all().order_by('order'))

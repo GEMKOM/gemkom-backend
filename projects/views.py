@@ -191,6 +191,19 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         detail_serializer = JobOrderDetailSerializer(serializer.instance)
         return Response(detail_serializer.data)
 
+    @action(detail=False, methods=['get'])
+    def dropdown(self, request):
+        """Lightweight list of non-completed job orders for dropdowns."""
+        results = [{'job_no': '1000', 'title': 'Fabrika İşleri'}]
+        job_orders = JobOrder.objects.exclude(
+            status__in=['completed', 'cancelled']
+        ).order_by('job_no').values_list('job_no', 'title')
+        results.extend(
+            {'job_no': job_no, 'title': title}
+            for job_no, title in job_orders
+        )
+        return Response(results)
+
     # -------------------------------------------------------------------------
     # Workflow Actions
     # -------------------------------------------------------------------------
@@ -767,6 +780,17 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
         main_only = self.request.query_params.get('main_only', 'false').lower() == 'true'
         if main_only:
             queryset = queryset.filter(parent__isnull=True)
+
+        # Filter to design tasks that have a pending revision request
+        has_pending_revision = self.request.query_params.get('has_pending_revision', '').lower() == 'true'
+        if has_pending_revision:
+            queryset = queryset.filter(
+                department='design',
+                parent__isnull=True,
+                job_order__technical_drawing_releases__revision_topics__topic_type='revision_request',
+                job_order__technical_drawing_releases__revision_topics__revision_status='pending',
+                job_order__technical_drawing_releases__revision_topics__is_deleted=False,
+            ).distinct()
 
         return queryset
 
@@ -1544,6 +1568,17 @@ class TechnicalDrawingReleaseViewSet(viewsets.ModelViewSet):
                 pass
         topic.save(update_fields=['revision_status', 'revision_assigned_to', 'updated_at'])
 
+        # Add approval comment to the revision topic
+        assigned_name = topic.revision_assigned_to.get_full_name() if topic.revision_assigned_to else None
+        comment_text = f"**Revizyon talebi onaylandı.** Çizim incelemeye alındı."
+        if assigned_name:
+            comment_text += f" Revizyon {assigned_name} tarafından gerçekleştirilecek."
+        JobOrderDiscussionComment.objects.create(
+            topic=topic,
+            content=comment_text,
+            created_by=request.user
+        )
+
         # Put job order on hold
         job_order = release.job_order
         job_order.hold(reason=f"Revizyon: {topic.title}")
@@ -1703,8 +1738,16 @@ class TechnicalDrawingReleaseViewSet(viewsets.ModelViewSet):
         new_release.release_topic = new_topic
         new_release.save(update_fields=['release_topic'])
 
-        # Resume job order
+        # Complete the design department task
         job_order = release.job_order
+        design_task = job_order.department_tasks.filter(
+            department='design',
+            parent__isnull=True
+        ).first()
+        if design_task and design_task.status == 'in_progress':
+            design_task.complete(user=request.user)
+
+        # Resume job order
         job_order.resume()
 
         # Send notifications

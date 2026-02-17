@@ -493,6 +493,9 @@ class DepartmentTaskListSerializer(serializers.ModelSerializer):
     subtasks_count = serializers.SerializerMethodField()
     can_start = serializers.SerializerMethodField()
     completion_percentage = serializers.SerializerMethodField()
+    is_under_revision = serializers.SerializerMethodField()
+    active_revision_release_id = serializers.SerializerMethodField()
+    pending_revision_request = serializers.SerializerMethodField()
 
     class Meta:
         model = JobOrderDepartmentTask
@@ -505,6 +508,8 @@ class DepartmentTaskListSerializer(serializers.ModelSerializer):
             'started_at', 'completed_at',
             'parent', 'subtasks_count', 'can_start',
             'completion_percentage',
+            'is_under_revision', 'active_revision_release_id',
+            'pending_revision_request',
             'created_at'
         ]
 
@@ -532,6 +537,48 @@ class DepartmentTaskListSerializer(serializers.ModelSerializer):
 
     def get_completion_percentage(self, obj):
         return float(obj.get_completion_percentage())
+
+    def _get_design_releases(self, obj):
+        """Return releases for top-level design tasks, or empty queryset."""
+        if obj.department != 'design' or obj.parent is not None:
+            return obj.job_order.technical_drawing_releases.none()
+        return obj.job_order.technical_drawing_releases.all()
+
+    def _get_revision_release(self, obj):
+        return self._get_design_releases(obj).filter(status='in_revision').first()
+
+    def get_is_under_revision(self, obj):
+        return self._get_revision_release(obj) is not None
+
+    def get_active_revision_release_id(self, obj):
+        release = self._get_revision_release(obj)
+        return release.id if release else None
+
+    def get_pending_revision_request(self, obj):
+        """Return pending revision request data for design tasks."""
+        releases = self._get_design_releases(obj)
+        if not releases.exists():
+            return None
+        # Find any release with a pending revision topic
+        from .models import JobOrderDiscussionTopic
+        topic = JobOrderDiscussionTopic.objects.filter(
+            related_release__in=releases,
+            topic_type='revision_request',
+            revision_status='pending',
+            is_deleted=False
+        ).select_related('created_by', 'related_release').first()
+        if not topic:
+            return None
+        return {
+            'topic_id': topic.id,
+            'release_id': topic.related_release_id,
+            'revision_code': topic.related_release.revision_code if topic.related_release else None,
+            'revision_number': topic.related_release.revision_number if topic.related_release else None,
+            'reason': topic.content,
+            'requested_by': topic.created_by.get_full_name() if topic.created_by else None,
+            'requested_by_id': topic.created_by_id,
+            'requested_at': topic.created_at,
+        }
 
 
 class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
@@ -563,6 +610,9 @@ class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
     cnc_progress = serializers.SerializerMethodField()
     machining_progress = serializers.SerializerMethodField()
     completion_percentage = serializers.SerializerMethodField()
+    is_under_revision = serializers.SerializerMethodField()
+    active_revision_release_id = serializers.SerializerMethodField()
+    pending_revision_request = serializers.SerializerMethodField()
 
     class Meta:
         model = JobOrderDepartmentTask
@@ -577,6 +627,8 @@ class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
             'parent', 'parent_title', 'subtasks', 'subtasks_count',
             'procurement_progress', 'cnc_progress', 'machining_progress',
             'completion_percentage',
+            'is_under_revision', 'active_revision_release_id',
+            'pending_revision_request',
             'notes',
             'created_at', 'created_by', 'created_by_name',
             'updated_at', 'completed_by', 'completed_by_name'
@@ -772,6 +824,47 @@ class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
 
     def get_completion_percentage(self, obj):
         return float(obj.get_completion_percentage())
+
+    def _get_design_releases(self, obj):
+        """Return releases for top-level design tasks, or empty queryset."""
+        if obj.department != 'design' or obj.parent is not None:
+            return obj.job_order.technical_drawing_releases.none()
+        return obj.job_order.technical_drawing_releases.all()
+
+    def _get_revision_release(self, obj):
+        return self._get_design_releases(obj).filter(status='in_revision').first()
+
+    def get_is_under_revision(self, obj):
+        return self._get_revision_release(obj) is not None
+
+    def get_active_revision_release_id(self, obj):
+        release = self._get_revision_release(obj)
+        return release.id if release else None
+
+    def get_pending_revision_request(self, obj):
+        """Return pending revision request data for design tasks."""
+        releases = self._get_design_releases(obj)
+        if not releases.exists():
+            return None
+        from .models import JobOrderDiscussionTopic
+        topic = JobOrderDiscussionTopic.objects.filter(
+            related_release__in=releases,
+            topic_type='revision_request',
+            revision_status='pending',
+            is_deleted=False
+        ).select_related('created_by', 'related_release').first()
+        if not topic:
+            return None
+        return {
+            'topic_id': topic.id,
+            'release_id': topic.related_release_id,
+            'revision_code': topic.related_release.revision_code if topic.related_release else None,
+            'revision_number': topic.related_release.revision_number if topic.related_release else None,
+            'reason': topic.content,
+            'requested_by': topic.created_by.get_full_name() if topic.created_by else None,
+            'requested_by_id': topic.created_by_id,
+            'requested_at': topic.created_at,
+        }
 
 
 class DepartmentTaskCreateSerializer(serializers.ModelSerializer):
@@ -1170,7 +1263,7 @@ class TechnicalDrawingReleaseListSerializer(serializers.ModelSerializer):
             'revision_number', 'revision_code', 'folder_path',
             'status', 'status_display',
             'released_by', 'released_by_name', 'released_at',
-            'hardcopy_count'
+            'hardcopy_count', 'changelog'
         ]
 
 

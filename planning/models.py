@@ -554,10 +554,39 @@ class PlanningRequestItem(models.Model):
         - M2M path: PurchaseRequest.planning_request_items (set at PR level)
         The FK path is authoritative when set. The M2M path is used as fallback
         for historical data where FK was not set, matching by item_id within the PR.
+
+        Uses prefetched data (_prefetched_active_pr_items) when available to avoid N+1 queries.
         """
+        # Use cached result if already computed during this instance's lifetime
+        if hasattr(self, '_cached_quantity_in_active_prs'):
+            return self._cached_quantity_in_active_prs
+
+        # Use prefetched data if available (set by viewset's Prefetch)
+        if hasattr(self, '_prefetched_active_pr_items'):
+            fk_total = sum(
+                (pri.quantity for pri in self._prefetched_active_pr_items),
+                Decimal('0.00')
+            )
+            if fk_total > Decimal('0.00'):
+                self._cached_quantity_in_active_prs = fk_total
+                return fk_total
+
+            # Fallback to M2M path (still needs a query but only when FK path has no results)
+            from django.db.models import Sum, Q
+            from procurement.models import PurchaseRequestItem
+            m2m_total = PurchaseRequestItem.objects.filter(
+                purchase_request__planning_request_items=self,
+                item_id=self.item_id,
+            ).exclude(
+                Q(purchase_request__status='rejected') |
+                Q(purchase_request__status='cancelled')
+            ).aggregate(total=Sum('quantity'))['total'] or Decimal('0.00')
+            self._cached_quantity_in_active_prs = m2m_total
+            return m2m_total
+
+        # No prefetch — fall back to DB queries
         from django.db.models import Sum, Q
 
-        # Primary: FK path — PurchaseRequestItems directly linked to this PlanningRequestItem
         fk_result = self.purchase_request_items.exclude(
             Q(purchase_request__status='rejected') |
             Q(purchase_request__status='cancelled')
@@ -565,18 +594,19 @@ class PlanningRequestItem(models.Model):
         fk_total = fk_result['total'] or Decimal('0.00')
 
         if fk_total > Decimal('0.00'):
+            self._cached_quantity_in_active_prs = fk_total
             return fk_total
 
-        # Fallback: M2M path — find PurchaseRequestItems in linked PRs matching this item
         from procurement.models import PurchaseRequestItem
         m2m_total = PurchaseRequestItem.objects.filter(
-            purchase_request__planning_request_items=self,  # PR has this planning item via M2M
-            item_id=self.item_id,  # Same catalog item
+            purchase_request__planning_request_items=self,
+            item_id=self.item_id,
         ).exclude(
             Q(purchase_request__status='rejected') |
             Q(purchase_request__status='cancelled')
         ).aggregate(total=Sum('quantity'))['total'] or Decimal('0.00')
 
+        self._cached_quantity_in_active_prs = m2m_total
         return m2m_total
 
     @property

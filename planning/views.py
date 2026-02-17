@@ -309,11 +309,19 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
             )
         else:
             # For detail views, prefetch all related data
+            from procurement.models import PurchaseRequestItem as PRItem
             qs = PlanningRequest.objects.select_related(
                 'created_by', 'department_request'
             ).prefetch_related(
                 'items__item',
                 'items__purchase_requests',
+                Prefetch(
+                    'items__purchase_request_items',
+                    queryset=PRItem.objects.select_related('purchase_request').exclude(
+                        purchase_request__status__in=['rejected', 'cancelled']
+                    ),
+                    to_attr='_prefetched_active_pr_items'
+                ),
                 Prefetch('files', queryset=FileAttachment.objects.select_related('asset', 'uploaded_by', 'source_attachment')),
                 Prefetch('items__files', queryset=FileAttachment.objects.select_related('asset', 'uploaded_by', 'source_attachment')),
             )
