@@ -94,11 +94,10 @@ def record_decision(subject, user, approve: bool, comment: str = "") -> tuple[Ap
     if wf.is_complete or wf.is_rejected:
         raise ValueError("Workflow already finished.")
 
-    stage = ApprovalStageInstance.objects.select_for_update().get(
+    stage = ApprovalStageInstance.objects.select_for_update(nowait=True).get(
         workflow=wf, order=wf.current_stage_order
     )
     if stage.is_complete or stage.is_rejected:
-        # defensive; normally shouldn't happen
         next_stage = wf.stage_instances.filter(order__gt=stage.order).order_by("order").first()
         if next_stage:
             return wf, next_stage, "moved"

@@ -133,57 +133,60 @@ def _email_finance_pos_created(pr: PurchaseRequest, pos_list):
 
 
 # --------- Submit PR (uses core engine) ---------
-@transaction.atomic
 def submit_purchase_request(pr: PurchaseRequest, by_user):
-    policy = pick_policy_for_purchase_request(pr)
-    if not policy or not policy.stages.exists():
-        raise ValueError("No applicable approval policy/stages configured.")
+    with transaction.atomic():
+        policy = pick_policy_for_purchase_request(pr)
+        if not policy or not policy.stages.exists():
+            raise ValueError("No applicable approval policy/stages configured.")
 
-    # Build a snapshot for audit/viewing
-    stages_qs = policy.stages.all().order_by("order")
-    snapshot = {
-        "policy": {"id": policy.id, "name": policy.name},
-        "stages": [
-            {
-                "order": s.order,
-                "name": s.name,
-                "required_approvals": s.required_approvals,
-                "users": list(s.approver_users.values_list("id", flat=True)),
-                "groups": list(s.approver_groups.values_list("id", flat=True)),
-            }
-            for s in stages_qs
-        ],
-    }
+        # Build a snapshot for audit/viewing
+        stages_qs = policy.stages.all().order_by("order")
+        snapshot = {
+            "policy": {"id": policy.id, "name": policy.name},
+            "stages": [
+                {
+                    "order": s.order,
+                    "name": s.name,
+                    "required_approvals": s.required_approvals,
+                    "users": list(s.approver_users.values_list("id", flat=True)),
+                    "groups": list(s.approver_groups.values_list("id", flat=True)),
+                }
+                for s in stages_qs
+            ],
+        }
 
-    # Expand groups to users for actual approvers
-    def _builder(stage, _subject):
-        u_ids = list(stage.approver_users.values_list("id", flat=True))
-        g_ids = list(stage.approver_groups.values_list("id", flat=True))
-        u_ids += resolve_group_user_ids(g_ids)
-        # dedupe, keep order
-        seen = set()
-        ordered = []
-        for uid in u_ids:
-            if uid not in seen:
-                seen.add(uid)
-                ordered.append(uid)
-        return ordered, g_ids
+        # Expand groups to users for actual approvers
+        def _builder(stage, _subject):
+            u_ids = list(stage.approver_users.values_list("id", flat=True))
+            g_ids = list(stage.approver_groups.values_list("id", flat=True))
+            u_ids += resolve_group_user_ids(g_ids)
+            # dedupe, keep order
+            seen = set()
+            ordered = []
+            for uid in u_ids:
+                if uid not in seen:
+                    seen.add(uid)
+                    ordered.append(uid)
+            return ordered, g_ids
 
-    wf = create_workflow(pr, policy, snapshot=snapshot, approver_user_ids_builder=_builder)
+        wf = create_workflow(pr, policy, snapshot=snapshot, approver_user_ids_builder=_builder)
 
-    moved = False
-    finished = False
-    # Auto-bypass if the requester is the sole approver for current stage(s)
-    while True:
-        changed, done = auto_bypass_self_approver(wf, pr.requestor_id)
-        moved |= bool(changed)
-        finished |= bool(done)
-        if done or not changed:
-            break
+        moved = False
+        finished = False
+        # Auto-bypass if the requester is the sole approver for current stage(s)
+        while True:
+            changed, done = auto_bypass_self_approver(wf, pr.requestor_id)
+            moved |= bool(changed)
+            finished |= bool(done)
+            if done or not changed:
+                break
+        if finished:
+            pr.status = "approved"
+            pr.save(update_fields=["status"])
+            created_pos = create_pos_from_recommended(pr)
+
+    # Emails sent outside the transaction
     if finished:
-        pr.status = "approved"
-        pr.save(update_fields=["status"])
-        created_pos = create_pos_from_recommended(pr)
         _email_requestor_on_final(pr, status_str="Onaylandı", comment="(Otomatik geçiş)")
         return wf
 
@@ -194,28 +197,31 @@ def submit_purchase_request(pr: PurchaseRequest, by_user):
 
 
 # --------- Decide on PR (uses core engine) ---------
-@transaction.atomic
 def decide(pr: PurchaseRequest, user, approve: bool, comment: str = ""):
-    wf, stage, outcome = record_decision(pr, user, approve, comment)
+    # DB writes in a transaction; emails and PO creation run after commit.
+    with transaction.atomic():
+        wf, stage, outcome = record_decision(pr, user, approve, comment)
 
-    if outcome == "rejected":
-        pr.status = "rejected"
-        pr.save(update_fields=["status"])
-        return wf
+        if outcome == "rejected":
+            pr.status = "rejected"
+            pr.save(update_fields=["status"])
+            return wf
 
+        if outcome == "completed":
+            pr.status = "approved"
+            pr.save(update_fields=["status"])
+            created_pos = create_pos_from_recommended(pr)
+
+        if outcome == "pending":
+            return wf
+
+    # Emails sent outside the transaction — won't hold DB locks
     if outcome == "moved":
         _email_approvers_for_current_stage(wf, reason=f"Önceki aşama onaylandı (#{stage.order})")
-        return wf
-
-    if outcome == "completed":
-        pr.status = "approved"
-        pr.save(update_fields=["status"])
-        created_pos = create_pos_from_recommended(pr)
+    elif outcome == "completed":
         _email_requestor_on_final(pr, status_str="Onaylandı", comment="")
         _email_finance_pos_created(pr, created_pos)
-        return wf
 
-    # "pending" → quorum not yet reached; no side effect
     return wf
 
 

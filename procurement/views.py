@@ -39,7 +39,7 @@ from .serializers import (
     PurchaseOrderDetailSerializer,
 )
 from rest_framework.exceptions import ValidationError, PermissionDenied
-from django.db import transaction
+from django.db import transaction, OperationalError
 from decimal import Decimal
 
 from django.db.models import Q, OuterRef, Exists, Value, IntegerField
@@ -287,6 +287,8 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
             return Response({"detail": "Cancelled requests cannot be processed."}, status=400)
         try:
             decide(pr, request.user, approve=True, comment=request.data.get("comment",""))
+        except OperationalError:
+            return Response({"detail": "This request is currently being processed. Please try again."}, status=409)
         except PermissionError as e:
             return Response({"detail": str(e)}, status=403)
         except Exception as e:
@@ -300,6 +302,8 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
             return Response({"detail": "Cancelled requests cannot be processed."}, status=400)
         try:
             decide(pr, request.user, approve=False, comment=request.data.get("comment",""))
+        except OperationalError:
+            return Response({"detail": "This request is currently being processed. Please try again."}, status=409)
         except PermissionError as e:
             return Response({"detail": str(e)}, status=403)
         except Exception as e:

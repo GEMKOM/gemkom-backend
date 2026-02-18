@@ -277,14 +277,11 @@ class PurchaseRequest(models.Model):
 
         - When approved: Mark related planning requests as 'completed' if all items are now in approved PRs
         - When rejected: Revert planning requests back to 'ready' if they have available items
+
+        NOTE: Status is saved by the caller (decide()), not here, to avoid
+        triggering post_save signals redundantly.
         """
-        from django.db.models import Q
-
         if event == "approved":
-            # Purchase request was approved - update related planning requests
-            self.status = 'approved'
-            self.save(update_fields=['status'])
-
             # Get all unique planning requests from this PR's items
             planning_requests = set()
             for item in self.planning_request_items.all():
@@ -293,13 +290,12 @@ class PurchaseRequest(models.Model):
 
             # Check each planning request's completion status
             for planning_request in planning_requests:
-                # Use the planning request's own completion check method
                 planning_request.check_and_update_completion_status()
 
         elif event == "rejected":
-            # Purchase request was rejected - update status and restore planning request status
-            self.status = 'rejected'
-            self.save(update_fields=['status'])
+            # Restore planning request status if items are no longer in any active PRs
+            from procurement.services import restore_planning_request_status
+            restore_planning_request_status(self)
 
             # Restore planning request status if items are no longer in any active PRs
             from procurement.services import restore_planning_request_status
