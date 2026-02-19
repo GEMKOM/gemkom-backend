@@ -1192,6 +1192,58 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
             'tasks': DepartmentTaskListSerializer(created_tasks, many=True).data
         }, status=status.HTTP_201_CREATED)
 
+    def destroy(self, request, *args, **kwargs):
+        task = self.get_object()
+
+        # Block deletion of main tasks (no parent)
+        if task.parent_id is None:
+            return Response(
+                {'status': 'error', 'message': 'Ana görevler silinemez.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Block if there are regular subtasks
+        if task.subtasks.exists():
+            return Response(
+                {'status': 'error', 'message': 'Alt görevleri olan bir görev silinemez. Önce alt görevleri silin.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Block if this is a 'CNC Kesim' task that has CNC parts
+        if task.title == 'CNC Kesim':
+            from cnc_cutting.models import CncPart
+            if CncPart.objects.filter(job_no=task.job_order.job_no).exists():
+                return Response(
+                    {'status': 'error', 'message': 'CNC parçaları olan bir görev silinemez. Önce CNC parçalarını silin.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+        # Block if this is a 'Talaşlı İmalat' task that has machining parts
+        if task.title == 'Talaşlı İmalat':
+            from tasks.models import Part
+            if Part.objects.filter(job_no=task.job_order.job_no).exists():
+                return Response(
+                    {'status': 'error', 'message': 'Talaşlı imalat parçaları olan bir görev silinemez. Önce parçaları silin.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+        # Block if the task has a subcontracting assignment with statement lines.
+        # Django would raise ProtectedError on delete anyway, but we return a clean message.
+        try:
+            assignment = task.subcontracting_assignment
+            if assignment.statement_lines.exists():
+                return Response(
+                    {'status': 'error', 'message': 'Bu göreve ait taşeron hakediş kalemleri bulunmaktadır. Görev silinemez.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+        except Exception:
+            pass  # No assignment — nothing to check
+
+        job_order = task.job_order
+        task.delete()
+        job_order.update_completion_percentage()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
     @action(detail=False, methods=['get'])
     def status_choices(self, request):
         """Get available status choices."""
