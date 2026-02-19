@@ -148,6 +148,107 @@ class SubcontractorStatementViewSet(viewsets.ModelViewSet):
             status=status.HTTP_200_OK
         )
 
+    @action(detail=False, methods=['post'], url_path='generate-bulk')
+    def generate_bulk(self, request):
+        """
+        Create or refresh statements for ALL active subcontractors for a given period.
+        Skips subcontractors that have no assignments with unbilled progress.
+        Already-submitted/approved statements for the period are left untouched.
+
+        POST /subcontracting/statements/generate-bulk/
+        Body: {year, month}
+
+        Response: {
+            created: [...],   # new statements
+            refreshed: [...], # existing draft/rejected statements that were refreshed
+            skipped: [...],   # subcontractors with no unbilled progress
+            untouched: [...], # subcontractors with submitted/approved statements (not modified)
+            errors: [...]     # any failures
+        }
+        """
+        year = request.data.get('year')
+        month = request.data.get('month')
+
+        if not all([year, month]):
+            return Response(
+                {'detail': 'year ve month alanları gereklidir.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            year = int(year)
+            month = int(month)
+        except (TypeError, ValueError):
+            return Response(
+                {'detail': 'year ve month geçerli tam sayılar olmalıdır.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        active_subcontractors = Subcontractor.objects.filter(is_active=True)
+
+        created, refreshed, skipped, untouched, errors = [], [], [], [], []
+
+        for subcontractor in active_subcontractors:
+            # Check if an immutable statement already exists for this period
+            existing = SubcontractorStatement.objects.filter(
+                subcontractor=subcontractor, year=year, month=month
+            ).first()
+
+            if existing and existing.status in ('submitted', 'approved', 'paid'):
+                untouched.append({
+                    'subcontractor_id': subcontractor.id,
+                    'subcontractor_name': subcontractor.name,
+                    'statement_id': existing.id,
+                    'status': existing.status,
+                })
+                continue
+
+            try:
+                is_new = existing is None
+                statement = generate_or_refresh_statement(
+                    subcontractor_id=subcontractor.id,
+                    year=year,
+                    month=month,
+                    created_by=request.user,
+                )
+
+                # Skip if the statement ended up with no line items (nothing to bill)
+                if statement.work_total == 0 and not statement.adjustments.exists():
+                    # Clean up empty draft we just created if it was brand new
+                    if is_new:
+                        statement.delete()
+                    skipped.append({
+                        'subcontractor_id': subcontractor.id,
+                        'subcontractor_name': subcontractor.name,
+                    })
+                    continue
+
+                entry = {
+                    'subcontractor_id': subcontractor.id,
+                    'subcontractor_name': subcontractor.name,
+                    'statement_id': statement.id,
+                    'work_total': str(statement.work_total),
+                    'grand_total': str(statement.grand_total),
+                    'currency': statement.currency,
+                }
+                (created if is_new else refreshed).append(entry)
+
+            except Exception as e:
+                errors.append({
+                    'subcontractor_id': subcontractor.id,
+                    'subcontractor_name': subcontractor.name,
+                    'error': str(e),
+                })
+
+        return Response({
+            'period': f'{year}/{month:02d}',
+            'created': created,
+            'refreshed': refreshed,
+            'skipped': skipped,
+            'untouched': untouched,
+            'errors': errors,
+        }, status=status.HTTP_200_OK)
+
     @action(detail=True, methods=['post'], url_path='refresh')
     def refresh(self, request, pk=None):
         """Re-snapshot line items from current progress data (draft/rejected only)."""
