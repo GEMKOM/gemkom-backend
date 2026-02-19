@@ -473,7 +473,7 @@ class DepartmentTaskSubtaskSerializer(serializers.ModelSerializer):
     class Meta:
         model = JobOrderDepartmentTask
         fields = [
-            'id', 'title', 'department', 'department_display',
+            'id', 'title', 'task_type', 'department', 'department_display',
             'status', 'status_display', 'weight',
             'assigned_to', 'assigned_to_name',
             'target_completion_date', 'completed_at'
@@ -502,7 +502,7 @@ class DepartmentTaskListSerializer(serializers.ModelSerializer):
         model = JobOrderDepartmentTask
         fields = [
             'id', 'job_order', 'job_order_title', 'customer_name',
-            'department', 'department_display', 'title',
+            'department', 'department_display', 'title', 'task_type',
             'status', 'status_display', 'sequence', 'weight', 'manual_progress',
             'assigned_to', 'assigned_to_name',
             'target_start_date', 'target_completion_date',
@@ -520,10 +520,10 @@ class DepartmentTaskListSerializer(serializers.ModelSerializer):
 
     def get_subtasks_count(self, obj):
         """Return count of subtasks, or parts/items/requests count for special tasks."""
-        if obj.title == 'CNC Kesim':
+        if obj.task_type == 'cnc_cutting':
             from cnc_cutting.models import CncPart
             return CncPart.objects.filter(job_no=obj.job_order.job_no).count()
-        if obj.title == 'Talaşlı İmalat':
+        if obj.task_type == 'machining':
             from tasks.models import Part
             return Part.objects.filter(job_no=obj.job_order.job_no).count()
         if obj.department == 'procurement':
@@ -619,7 +619,7 @@ class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
         model = JobOrderDepartmentTask
         fields = [
             'id', 'job_order', 'job_order_title',
-            'department', 'department_display', 'title', 'description',
+            'department', 'department_display', 'title', 'task_type', 'description',
             'status', 'status_display', 'sequence', 'weight', 'manual_progress',
             'assigned_to', 'assigned_to_name',
             'target_start_date', 'target_completion_date',
@@ -641,10 +641,10 @@ class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
 
     def get_subtasks_count(self, obj):
         """Return count of subtasks, or parts/items/requests count for special tasks."""
-        if obj.title == 'CNC Kesim':
+        if obj.task_type == 'cnc_cutting':
             from cnc_cutting.models import CncPart
             return CncPart.objects.filter(job_no=obj.job_order.job_no).count()
-        if obj.title == 'Talaşlı İmalat':
+        if obj.task_type == 'machining':
             from tasks.models import Part
             return Part.objects.filter(job_no=obj.job_order.job_no).count()
         if obj.department == 'procurement':
@@ -977,6 +977,7 @@ class ApplyTemplateSerializer(serializers.Serializer):
                 title=item.title or '',  # Will auto-fill from job_order.title if empty
                 sequence=item.sequence,
                 weight=item.weight,  # Copy weight from template
+                task_type=item.task_type or None,
                 created_by=user
             )
             created_tasks.append(task)
@@ -990,6 +991,7 @@ class ApplyTemplateSerializer(serializers.Serializer):
                     title=child_item.title,  # Subtasks keep their template title
                     sequence=child_item.sequence,
                     weight=child_item.weight,  # Copy weight from template
+                    task_type=child_item.task_type or None,
                     parent=task,
                     created_by=user
                 )

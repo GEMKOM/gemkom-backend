@@ -802,7 +802,7 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
         if parent_id:
             try:
                 parent_task = JobOrderDepartmentTask.objects.get(id=parent_id)
-                if parent_task.title == 'CNC Kesim':
+                if parent_task.task_type == 'cnc_cutting':
                     # Return CNC parts instead of subtasks
                     from cnc_cutting.models import CncPart
                     from decimal import Decimal
@@ -861,7 +861,7 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
                     })
 
                 # Check if this is a "Talaşlı İmalat" task
-                if parent_task.title == 'Talaşlı İmalat':
+                if parent_task.task_type == 'machining':
                     # Return machining Parts instead of subtasks
                     from tasks.models import Part, Operation
                     from django.db.models import Sum, Q, ExpressionWrapper, FloatField, Value
@@ -1210,7 +1210,7 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
             )
 
         # Block if this is a 'CNC Kesim' task that has CNC parts
-        if task.title == 'CNC Kesim':
+        if task.task_type == 'cnc_cutting':
             from cnc_cutting.models import CncPart
             if CncPart.objects.filter(job_no=task.job_order.job_no).exists():
                 return Response(
@@ -1219,7 +1219,7 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
                 )
 
         # Block if this is a 'Talaşlı İmalat' task that has machining parts
-        if task.title == 'Talaşlı İmalat':
+        if task.task_type == 'machining':
             from tasks.models import Part
             if Part.objects.filter(job_no=task.job_order.job_no).exists():
                 return Response(

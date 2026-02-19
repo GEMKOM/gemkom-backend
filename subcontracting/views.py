@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from django.db import models
+from django.db import transaction as db_transaction
 from rest_framework import serializers as drf_serializers
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -88,6 +90,109 @@ class SubcontractingAssignmentViewSet(viewsets.ModelViewSet):
         if job_no:
             qs = qs.filter(department_task__job_order_id=job_no)
         return qs
+
+    @action(detail=False, methods=['post'], url_path='create-with-subtask')
+    def create_with_subtask(self, request):
+        """
+        Atomically create a subtask under a 'Kaynaklı İmalat' task and assign
+        a subcontractor to it in one step.
+
+        POST /subcontracting/assignments/create-with-subtask/
+        Body:
+          kaynak_task_id      – ID of the 'Kaynaklı İmalat' JobOrderDepartmentTask
+          subcontractor       – Subcontractor ID
+          price_tier          – SubcontractingPriceTier ID
+          allocated_weight_kg – weight to assign (must fit in tier's remaining)
+          title               – (optional) subtask title; defaults to subcontractor name
+          weight              – (optional) subtask weight for progress calc, default 10
+        """
+        from projects.models import JobOrderDepartmentTask
+
+        kaynak_task_id      = request.data.get('kaynak_task_id')
+        subcontractor_id    = request.data.get('subcontractor')
+        price_tier_id       = request.data.get('price_tier')
+        allocated_weight_kg = request.data.get('allocated_weight_kg')
+        subtask_weight      = int(request.data.get('weight', 10))
+        subtask_title       = request.data.get('title', '').strip()
+
+        missing = [k for k, v in {
+            'kaynak_task_id': kaynak_task_id,
+            'subcontractor': subcontractor_id,
+            'price_tier': price_tier_id,
+            'allocated_weight_kg': allocated_weight_kg,
+        }.items() if not v]
+        if missing:
+            return Response(
+                {'detail': f'Şu alanlar gereklidir: {", ".join(missing)}'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            kaynak_task = JobOrderDepartmentTask.objects.select_related('job_order').get(
+                pk=kaynak_task_id
+            )
+        except JobOrderDepartmentTask.DoesNotExist:
+            return Response(
+                {'detail': 'Kaynaklı İmalat görevi bulunamadı.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if kaynak_task.task_type != 'welding':
+            return Response(
+                {'detail': "Bu işlem yalnızca 'Kaynaklı İmalat' görevi üzerinde yapılabilir."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not subtask_title:
+            try:
+                subtask_title = Subcontractor.objects.get(pk=subcontractor_id).name
+            except Subcontractor.DoesNotExist:
+                return Response(
+                    {'detail': 'Taşeron bulunamadı.'},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+        subtask_weight = max(1, min(subtask_weight, 100))
+        next_sequence = (
+            kaynak_task.subtasks.aggregate(m=models.Max('sequence'))['m'] or 0
+        ) + 1
+
+        try:
+            with db_transaction.atomic():
+                subtask = JobOrderDepartmentTask.objects.create(
+                    job_order=kaynak_task.job_order,
+                    department=kaynak_task.department,
+                    parent=kaynak_task,
+                    title=subtask_title,
+                    status='pending',
+                    weight=subtask_weight,
+                    sequence=next_sequence,
+                    created_by=request.user,
+                )
+
+                serializer = SubcontractingAssignmentSerializer(
+                    data={
+                        'department_task': subtask.pk,
+                        'subcontractor': subcontractor_id,
+                        'price_tier': price_tier_id,
+                        'allocated_weight_kg': allocated_weight_kg,
+                    },
+                    context={'request': request},
+                )
+                if not serializer.is_valid():
+                    raise drf_serializers.ValidationError(serializer.errors)
+
+                assignment = serializer.save(created_by=request.user)
+
+        except drf_serializers.ValidationError as e:
+            return Response(e.detail, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({'detail': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(
+            SubcontractingAssignmentSerializer(assignment, context={'request': request}).data,
+            status=status.HTTP_201_CREATED,
+        )
 
 
 # ---------------------------------------------------------------------------

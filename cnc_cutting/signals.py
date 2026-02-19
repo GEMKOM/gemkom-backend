@@ -25,7 +25,7 @@ def _update_related_job_orders(cnc_task):
 
             # Check if CNC Kesim subtask should auto-complete
             cnc_subtask = job_order.department_tasks.filter(
-                title='CNC Kesim'
+                task_type='cnc_cutting'
             ).first()
             if cnc_subtask:
                 cnc_subtask.check_cnc_auto_complete()

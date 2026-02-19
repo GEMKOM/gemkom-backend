@@ -69,8 +69,6 @@ def on_department_task_saved(sender, instance, **kwargs):
     # Only care about subtasks (have a parent)
     if not instance.parent_id:
         return
-    if instance.department != 'manufacturing':
-        return
 
     # Cheap check: does this task have a subcontracting assignment?
     # We access the reverse OneToOne via a try/except to avoid extra DB hits

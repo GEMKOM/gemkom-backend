@@ -282,7 +282,7 @@ class JobOrder(models.Model):
                             subtask_total_weight += subtask_weight
 
                             # Handle CNC Kesim subtask specially
-                            if subtask.title == 'CNC Kesim':
+                            if subtask.task_type == 'cnc_cutting':
                                 cnc_earned, cnc_total = subtask.get_cnc_progress()
                                 if cnc_total > 0:
                                     subtask_progress = cnc_earned / cnc_total
@@ -290,7 +290,7 @@ class JobOrder(models.Model):
                                 elif subtask.status == 'completed':
                                     subtask_earned_weight += subtask_weight
                             # Handle Talaşlı İmalat subtask specially
-                            elif subtask.title == 'Talaşlı İmalat':
+                            elif subtask.task_type == 'machining':
                                 machining_earned, machining_total = subtask.get_machining_progress()
                                 if machining_total > 0:
                                     subtask_progress = machining_earned / machining_total
@@ -630,6 +630,20 @@ class DepartmentTaskTemplateItem(models.Model):
         help_text='Görev ağırlığı (1-100 puan). Varsayılan: 10'
     )
 
+    # Special task type — propagated to created JobOrderDepartmentTask
+    TASK_TYPE_CHOICES = [
+        ('cnc_cutting', 'CNC Kesim'),
+        ('machining', 'Talaşlı İmalat'),
+        ('welding', 'Kaynaklı İmalat'),
+    ]
+    task_type = models.CharField(
+        max_length=20,
+        choices=TASK_TYPE_CHOICES,
+        null=True,
+        blank=True,
+        help_text='Special task type — leave blank for regular tasks.'
+    )
+
     # Hierarchical - main items have no parent, sub-items have parent
     parent = models.ForeignKey(
         'self',
@@ -686,6 +700,12 @@ class JobOrderDepartmentTask(models.Model):
         ('skipped', 'Atlandı'),
     ]
 
+    TASK_TYPE_CHOICES = [
+        ('cnc_cutting', 'CNC Kesim'),
+        ('machining', 'Talaşlı İmalat'),
+        ('welding', 'Kaynaklı İmalat'),
+    ]
+
     job_order = models.ForeignKey(
         JobOrder,
         on_delete=models.CASCADE,
@@ -708,6 +728,14 @@ class JobOrderDepartmentTask(models.Model):
 
     # Task details
     title = models.CharField(max_length=255, blank=True)  # Auto-filled from job_order.title
+    task_type = models.CharField(
+        max_length=20,
+        choices=TASK_TYPE_CHOICES,
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text='Special task type — drives progress calculation and subcontracting logic. Leave blank for regular tasks.'
+    )
     description = models.TextField(blank=True, null=True)
     status = models.CharField(
         max_length=20,
@@ -1042,7 +1070,7 @@ class JobOrderDepartmentTask(models.Model):
         - 0%: No CncPart for this job, OR CncTask not complete
         - 100%: CncPart exists AND CncTask.completion_date is set
         """
-        if self.title != 'CNC Kesim':
+        if self.task_type != 'cnc_cutting':
             return (Decimal('0.00'), Decimal('0.00'))
 
         from cnc_cutting.models import CncPart
@@ -1073,7 +1101,7 @@ class JobOrderDepartmentTask(models.Model):
         Check if CNC Kesim subtask should auto-complete.
         Returns True if auto-completed, False otherwise.
         """
-        if self.title != 'CNC Kesim':
+        if self.task_type != 'cnc_cutting':
             return False
 
         if self.status != 'in_progress':
@@ -1098,7 +1126,7 @@ class JobOrderDepartmentTask(models.Model):
         Progress per Operation = min(total_hours_spent / estimated_hours, 1.0)
         Aggregate: sum all operation progress weighted by estimated_hours
         """
-        if self.title != 'Talaşlı İmalat':
+        if self.task_type != 'machining':
             return (Decimal('0.00'), Decimal('0.00'))
 
         from tasks.models import Operation
@@ -1151,7 +1179,7 @@ class JobOrderDepartmentTask(models.Model):
         Auto-completes only when ALL parts for this job order have completion_date set.
         Returns True if auto-completed, False otherwise.
         """
-        if self.title != 'Talaşlı İmalat':
+        if self.task_type != 'machining':
             return False
 
         if self.status != 'in_progress':
@@ -1197,7 +1225,7 @@ class JobOrderDepartmentTask(models.Model):
         # Special tasks (CNC, Machining, Procurement) calculate real progress
         # even when blocked/pending, since underlying work happens independently
         is_special_task = (
-            self.title in ['CNC Kesim', 'Talaşlı İmalat']
+            self.task_type in ('cnc_cutting', 'machining')
             or self.department == 'procurement'
         )
 
@@ -1205,14 +1233,14 @@ class JobOrderDepartmentTask(models.Model):
             if skip_expensive_calculations:
                 return Decimal('50.00')
 
-            if self.title == 'CNC Kesim':
+            if self.task_type == 'cnc_cutting':
                 earned, total = self.get_cnc_progress()
                 if total > 0:
                     pct = ((earned / total) * 100).quantize(Decimal('0.01'))
                     return min(pct, MAX_IN_PROGRESS)
                 return Decimal('0.00')
 
-            if self.title == 'Talaşlı İmalat':
+            if self.task_type == 'machining':
                 earned, total = self.get_machining_progress()
                 if total > 0:
                     pct = ((earned / total) * 100).quantize(Decimal('0.01'))

@@ -52,7 +52,7 @@ def _update_job_order_for_operation(operation):
         job_order.update_completion_percentage()
 
         # Check if Talaşlı İmalat subtask should auto-complete
-        machining_subtask = job_order.department_tasks.filter(title='Talaşlı İmalat').first()
+        machining_subtask = job_order.department_tasks.filter(task_type='machining').first()
         if machining_subtask:
             machining_subtask.check_machining_auto_complete()
 
@@ -102,7 +102,7 @@ def _update_related_job_orders(part):
         job_order.update_completion_percentage()
 
         # Check if Talaşlı İmalat subtask should auto-complete
-        machining_subtask = job_order.department_tasks.filter(title='Talaşlı İmalat').first()
+        machining_subtask = job_order.department_tasks.filter(task_type='machining').first()
         if machining_subtask:
             machining_subtask.check_machining_auto_complete()
     except JobOrder.DoesNotExist:

@@ -122,14 +122,15 @@ class SubcontractingAssignmentSerializer(serializers.ModelSerializer):
         price_tier = data.get('price_tier', getattr(self.instance, 'price_tier', None))
         allocated = data.get('allocated_weight_kg', getattr(self.instance, 'allocated_weight_kg', Decimal('0')))
 
-        # Must be a manufacturing subtask
-        if dept_task.department != 'manufacturing':
-            raise serializers.ValidationError(
-                "Taşeron ataması yalnızca imalat departmanı alt görevlerine yapılabilir."
-            )
+        # Must be a subtask whose parent is titled "Kaynaklı İmalat"
         if dept_task.parent_id is None:
             raise serializers.ValidationError(
-                "Taşeron ataması yalnızca alt görevlere (subtask) yapılabilir, ana göreve yapılamaz."
+                "Taşeron ataması yalnızca alt görevlere yapılabilir, ana göreve yapılamaz."
+            )
+        parent = dept_task.parent
+        if parent.task_type != 'welding':
+            raise serializers.ValidationError(
+                "Taşeron ataması yalnızca 'Kaynaklı İmalat' alt görevi altındaki görevlere yapılabilir."
             )
 
         # Price tier must belong to the same job order
