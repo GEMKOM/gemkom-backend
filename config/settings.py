@@ -86,6 +86,7 @@ INSTALLED_APPS = [
     'planning',
     'welding',
     'projects',
+    'subcontracting.apps.SubcontractingConfig',
 ]
 
 MIDDLEWARE = [

@@ -194,6 +194,7 @@ class JobOrderDetailSerializer(serializers.ModelSerializer):
             'target_completion_date', 'started_at', 'completed_at', 'incoterms',
             'estimated_cost', 'labor_cost', 'material_cost',
             'subcontractor_cost', 'total_cost', 'cost_currency',
+            'total_weight_kg',
             'last_cost_calculation', 'completion_percentage',
             'parent', 'parent_title', 'children', 'children_count', 'hierarchy_level',
             'files_count', 'topics_count',
@@ -283,7 +284,7 @@ class JobOrderUpdateSerializer(serializers.ModelSerializer):
         fields = [
             'title', 'quantity', 'description', 'customer_order_no',
             'priority', 'target_completion_date', 'incoterms',
-            'estimated_cost', 'cost_currency'
+            'estimated_cost', 'cost_currency', 'total_weight_kg'
         ]
 
     def validate(self, attrs):

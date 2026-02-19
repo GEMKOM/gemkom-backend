@@ -30,4 +30,5 @@ urlpatterns = [
     path('welding/', include('welding.urls')),
     path('tasks/', include('tasks.urls')),
     path('projects/', include('projects.urls')),
+    path('subcontracting/', include('subcontracting.urls')),
 ]

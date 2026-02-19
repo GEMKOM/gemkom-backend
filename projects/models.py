@@ -165,6 +165,13 @@ class JobOrder(models.Model):
         default='EUR'
     )
     last_cost_calculation = models.DateTimeField(null=True, blank=True)
+    total_weight_kg = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text='Total weight in kg (set by planning for subcontracting cost calculation)'
+    )
 
     # Progress tracking (auto-calculated from department tasks)
     completion_percentage = models.DecimalField(
