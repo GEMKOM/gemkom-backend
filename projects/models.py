@@ -636,6 +636,7 @@ class DepartmentTaskTemplateItem(models.Model):
         ('machining', 'Talaşlı İmalat'),
         ('welding', 'Kaynaklı İmalat'),
         ('painting', 'Boya'),
+        ('part', 'Parça'),
     ]
     task_type = models.CharField(
         max_length=20,
@@ -706,6 +707,7 @@ class JobOrderDepartmentTask(models.Model):
         ('machining', 'Talaşlı İmalat'),
         ('welding', 'Kaynaklı İmalat'),
         ('painting', 'Boya'),
+        ('part', 'Parça'),
     ]
 
     job_order = models.ForeignKey(
@@ -808,6 +810,44 @@ class JobOrderDepartmentTask(models.Model):
         related_name='department_tasks_completed'
     )
 
+    # ---- QC computed properties (no DB columns) ----
+
+    @property
+    def qc_required(self) -> bool:
+        """Manufacturing parts and manufacturing main tasks require QC approval."""
+        if self.department != 'manufacturing':
+            return False
+        return self.task_type == 'part' or self.parent is None
+
+    @property
+    def has_qc_approval(self) -> bool:
+        """True if at least one QCReview for this task was approved."""
+        # Prefetch-cache aware to avoid N+1 in list views
+        if hasattr(self, '_prefetched_objects_cache') and 'qc_reviews' in self._prefetched_objects_cache:
+            return any(r.status == 'approved' for r in self.qc_reviews.all())
+        return self.qc_reviews.filter(status='approved').exists()
+
+    @property
+    def qc_status(self) -> str:
+        """
+        'not_required' | 'pending' | 'waiting' | 'approved' | 'rejected'
+        Uses prefetch cache when available.
+        """
+        if not self.qc_required:
+            return 'not_required'
+        if hasattr(self, '_prefetched_objects_cache') and 'qc_reviews' in self._prefetched_objects_cache:
+            reviews = sorted(self.qc_reviews.all(), key=lambda r: r.submitted_at, reverse=True)
+        else:
+            reviews = list(self.qc_reviews.order_by('-submitted_at'))
+        if not reviews:
+            return 'pending'
+        latest = reviews[0]
+        if latest.status == 'approved':
+            return 'approved'
+        if latest.status == 'rejected':
+            return 'rejected'
+        return 'waiting'
+
     class Meta:
         ordering = ['job_order', 'sequence']
         indexes = [
@@ -898,6 +938,13 @@ class JobOrderDepartmentTask(models.Model):
         """Mark task as completed."""
         if self.status != 'in_progress':
             raise ValueError("Sadece devam eden görevler tamamlanabilir.")
+
+        # QC gate: manufacturing parts and manufacturing main tasks require QC approval
+        if self.qc_required and not self.has_qc_approval:
+            raise ValueError(
+                "Bu görev Kalite Kontrol onayı olmadan tamamlanamaz. "
+                "Lütfen önce KK incelemesi için gönderin."
+            )
 
         # For subtasks: ensure parent is not blocked
         if self.parent and self.parent.status == 'blocked':

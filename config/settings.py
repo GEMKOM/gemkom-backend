@@ -87,6 +87,7 @@ INSTALLED_APPS = [
     'welding',
     'projects',
     'subcontracting.apps.SubcontractingConfig',
+    'quality_control',
 ]
 
 MIDDLEWARE = [

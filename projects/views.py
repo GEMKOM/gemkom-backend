@@ -750,7 +750,7 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
     """
     queryset = JobOrderDepartmentTask.objects.select_related(
         'job_order', 'job_order__customer', 'assigned_to', 'parent', 'created_by', 'completed_by'
-    ).prefetch_related('subtasks', 'depends_on')
+    ).prefetch_related('subtasks', 'depends_on', 'qc_reviews')
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     search_fields = ['title', 'description', 'job_order__job_no', 'job_order__title']
     ordering_fields = ['sequence', 'status', 'created_at', 'target_completion_date', 'job_order']

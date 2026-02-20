@@ -497,6 +497,9 @@ class DepartmentTaskListSerializer(serializers.ModelSerializer):
     is_under_revision = serializers.SerializerMethodField()
     active_revision_release_id = serializers.SerializerMethodField()
     pending_revision_request = serializers.SerializerMethodField()
+    qc_required = serializers.BooleanField(read_only=True)
+    has_qc_approval = serializers.BooleanField(read_only=True)
+    qc_status = serializers.CharField(read_only=True)
 
     class Meta:
         model = JobOrderDepartmentTask
@@ -511,6 +514,7 @@ class DepartmentTaskListSerializer(serializers.ModelSerializer):
             'completion_percentage',
             'is_under_revision', 'active_revision_release_id',
             'pending_revision_request',
+            'qc_required', 'has_qc_approval', 'qc_status',
             'created_at'
         ]
 
@@ -614,6 +618,9 @@ class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
     is_under_revision = serializers.SerializerMethodField()
     active_revision_release_id = serializers.SerializerMethodField()
     pending_revision_request = serializers.SerializerMethodField()
+    qc_required = serializers.BooleanField(read_only=True)
+    has_qc_approval = serializers.BooleanField(read_only=True)
+    qc_status = serializers.CharField(read_only=True)
 
     class Meta:
         model = JobOrderDepartmentTask
@@ -630,6 +637,7 @@ class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
             'completion_percentage',
             'is_under_revision', 'active_revision_release_id',
             'pending_revision_request',
+            'qc_required', 'has_qc_approval', 'qc_status',
             'notes',
             'created_at', 'created_by', 'created_by_name',
             'updated_at', 'completed_by', 'completed_by_name'

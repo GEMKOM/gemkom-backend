@@ -31,4 +31,5 @@ urlpatterns = [
     path('tasks/', include('tasks.urls')),
     path('projects/', include('projects.urls')),
     path('subcontracting/', include('subcontracting.urls')),
+    path('quality-control/', include('quality_control.urls')),
 ]
