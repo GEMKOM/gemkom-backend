@@ -821,11 +821,8 @@ class JobOrderDepartmentTask(models.Model):
 
     @property
     def has_qc_approval(self) -> bool:
-        """True if at least one QCReview for this task was approved."""
-        # Prefetch-cache aware to avoid N+1 in list views
-        if hasattr(self, '_prefetched_objects_cache') and 'qc_reviews' in self._prefetched_objects_cache:
-            return any(r.status == 'approved' for r in self.qc_reviews.all())
-        return self.qc_reviews.filter(status='approved').exists()
+        """True if QC is effectively approved (direct approval or rejection resolved via NCR)."""
+        return self.qc_status == 'approved'
 
     @property
     def qc_status(self) -> str:
@@ -845,6 +842,10 @@ class JobOrderDepartmentTask(models.Model):
         if latest.status == 'approved':
             return 'approved'
         if latest.status == 'rejected':
+            # If the rejection's NCR has been resolved, the cycle is unblocked
+            ncr = latest.ncr
+            if ncr and ncr.status in ('approved', 'closed'):
+                return 'approved'
             return 'rejected'
         return 'waiting'
 

@@ -5,6 +5,7 @@ from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser, FormParser
 from django_filters.rest_framework import DjangoFilterBackend
 from django.utils import timezone
+from django.db import transaction
 
 from .models import (
     Customer, JobOrder, JobOrderFile,
@@ -52,6 +53,7 @@ from .serializers import (
     SelfRevisionSerializer,
     CompleteRevisionSerializer,
     RejectRevisionSerializer,
+    BulkCreateSubtasksSerializer,
 )
 from .permissions import IsOfficeUser, IsTopicOwnerOrReadOnly, IsCommentAuthorOrReadOnly
 
@@ -733,6 +735,53 @@ class DepartmentTaskTemplateViewSet(viewsets.ModelViewSet):
         ])
 
 
+def _bulk_create_subtask_tree(parent_task, tasks_data, user):
+    """
+    Inserts a nested subtask tree under parent_task using bulk_create per level.
+    One DB round-trip per depth level (not per task).
+    Returns a flat list of all created JobOrderDepartmentTask instances (with PKs).
+    """
+    job_order = parent_task.job_order
+    department = parent_task.department
+    all_created = []
+
+    def process_level(items_data, parent_obj):
+        if not items_data:
+            return
+        instances = []
+        children_per_instance = []
+        for item in items_data:
+            children_per_instance.append(item.get('subtasks', []))
+            instances.append(JobOrderDepartmentTask(
+                job_order=job_order,
+                department=department,
+                parent=parent_obj,
+                title=item['title'],
+                weight=item.get('weight', 10),
+                sequence=item.get('sequence', 1),
+                task_type=item.get('task_type') or None,
+                description=item.get('description') or None,
+                notes=item.get('notes') or None,
+                assigned_to=item.get('assigned_to'),
+                target_start_date=item.get('target_start_date'),
+                target_completion_date=item.get('target_completion_date'),
+                status='pending',
+                created_by=user,
+            ))
+        created = JobOrderDepartmentTask.objects.bulk_create(instances)
+        all_created.extend(created)
+        for created_instance, children in zip(created, children_per_instance):
+            process_level(children, created_instance)
+
+    with transaction.atomic():
+        process_level(tasks_data, parent_task)
+        for task in all_created:
+            task.update_status_from_dependencies()
+        job_order.update_completion_percentage()
+
+    return all_created
+
+
 # =============================================================================
 # Job Order Department Task ViewSet
 # =============================================================================
@@ -750,7 +799,7 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
     """
     queryset = JobOrderDepartmentTask.objects.select_related(
         'job_order', 'job_order__customer', 'assigned_to', 'parent', 'created_by', 'completed_by'
-    ).prefetch_related('subtasks', 'depends_on', 'qc_reviews')
+    ).prefetch_related('subtasks', 'depends_on', 'qc_reviews', 'qc_reviews__ncr')
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     search_fields = ['title', 'description', 'job_order__job_no', 'job_order__title']
     ordering_fields = ['sequence', 'status', 'created_at', 'target_completion_date', 'job_order']
@@ -1209,6 +1258,58 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
             'message': f'{len(created_tasks)} görev oluşturuldu.',
             'tasks': DepartmentTaskListSerializer(created_tasks, many=True).data
         }, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['post'], url_path='bulk_create_subtasks')
+    def bulk_create_subtasks(self, request, pk=None):
+        """
+        Bulk-create a nested tree of subtasks under the given parent task.
+
+        URL: POST /api/projects/department-tasks/{pk}/bulk_create_subtasks/
+
+        Input:
+        {
+            "tasks": [
+                {
+                    "title": "Frame Welding",
+                    "weight": 30,
+                    "sequence": 1,
+                    "subtasks": [
+                        {"title": "Tack Weld", "weight": 10, "sequence": 1},
+                        {"title": "Final Weld", "weight": 20, "sequence": 2}
+                    ]
+                }
+            ]
+        }
+
+        - Department is inherited from the parent task.
+        - depends_on is not supported in this endpoint.
+        - Returns a flat list of all created tasks at all depth levels.
+        """
+        parent_task = self.get_object()
+
+        if parent_task.status in ('completed', 'cancelled', 'skipped'):
+            return Response(
+                {'status': 'error', 'message': 'Tamamlanmış, iptal edilmiş veya atlanan görevlere alt görev eklenemez.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        serializer = BulkCreateSubtasksSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        created_tasks = _bulk_create_subtask_tree(
+            parent_task=parent_task,
+            tasks_data=serializer.validated_data['tasks'],
+            user=request.user,
+        )
+
+        return Response(
+            {
+                'status': 'success',
+                'message': f'{len(created_tasks)} alt görev oluşturuldu.',
+                'tasks': DepartmentTaskListSerializer(created_tasks, many=True).data,
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
     def destroy(self, request, *args, **kwargs):
         task = self.get_object()

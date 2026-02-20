@@ -24,7 +24,7 @@ class QCReviewListSerializer(serializers.ModelSerializer):
             'submitted_by', 'submitted_by_name', 'submitted_at',
             'status', 'status_display',
             'reviewed_by', 'reviewed_by_name', 'reviewed_at',
-            'comment', 'ncr',
+            'comment', 'part_data', 'ncr',
         ]
 
 
@@ -43,7 +43,7 @@ class QCReviewDetailSerializer(serializers.ModelSerializer):
             'submitted_by', 'submitted_by_name', 'submitted_at',
             'status', 'status_display',
             'reviewed_by', 'reviewed_by_name', 'reviewed_at',
-            'comment', 'ncr',
+            'comment', 'part_data', 'ncr',
         ]
         read_only_fields = [
             'submitted_by', 'submitted_at', 'reviewed_by', 'reviewed_at', 'status', 'ncr',
@@ -53,6 +53,7 @@ class QCReviewDetailSerializer(serializers.ModelSerializer):
 class QCReviewSubmitSerializer(serializers.Serializer):
     """Input for submitting a task to QC review."""
     task_id = serializers.IntegerField()
+    part_data = serializers.JSONField(required=False, default=dict)
 
     def validate_task_id(self, value):
         from projects.models import JobOrderDepartmentTask
@@ -62,10 +63,57 @@ class QCReviewSubmitSerializer(serializers.Serializer):
             raise serializers.ValidationError("Geçersiz görev ID.")
 
 
+class QCReviewBulkSubmitSerializer(serializers.Serializer):
+    """
+    Input for bulk-submitting multiple QC reviews for a single task.
+    Each item in `reviews` becomes one QCReview with its own part_data.
+    """
+    task_id = serializers.IntegerField()
+    reviews = serializers.ListField(
+        child=serializers.JSONField(default=dict),
+        min_length=1,
+    )
+
+    def validate_task_id(self, value):
+        from projects.models import JobOrderDepartmentTask
+        try:
+            return JobOrderDepartmentTask.objects.get(pk=value)
+        except JobOrderDepartmentTask.DoesNotExist:
+            raise serializers.ValidationError("Geçersiz görev ID.")
+
+    def validate_reviews(self, value):
+        if not value:
+            raise serializers.ValidationError("En az bir inceleme gereklidir.")
+        return value
+
+
 class QCDecisionSerializer(serializers.Serializer):
-    """Input for a QC team member to approve or reject a review."""
+    """
+    Input for a QC team member to approve or reject a review.
+    On rejection, the optional ncr_* fields prefill the auto-created NCR.
+    """
     approve = serializers.BooleanField()
     comment = serializers.CharField(required=False, allow_blank=True, default='')
+
+    # NCR prefill fields — only used when approve=False
+    ncr_title = serializers.CharField(required=False, allow_blank=True, default='')
+    ncr_description = serializers.CharField(required=False, allow_blank=True, default='')
+    ncr_defect_type = serializers.ChoiceField(
+        choices=[c[0] for c in NCR.DEFECT_TYPE_CHOICES],
+        required=False,
+        default='other',
+    )
+    ncr_severity = serializers.ChoiceField(
+        choices=[c[0] for c in NCR.SEVERITY_CHOICES],
+        required=False,
+        default='minor',
+    )
+    ncr_affected_quantity = serializers.IntegerField(required=False, min_value=1, default=1)
+    ncr_disposition = serializers.ChoiceField(
+        choices=[c[0] for c in NCR.DISPOSITION_CHOICES],
+        required=False,
+        default='pending',
+    )
 
 
 # =============================================================================
@@ -89,6 +137,7 @@ class NCRListSerializer(serializers.ModelSerializer):
             'defect_type', 'defect_type_display',
             'status', 'status_display',
             'assigned_team', 'disposition',
+            'submission_count',
             'created_by', 'created_by_name', 'created_at',
         ]
 
@@ -117,9 +166,10 @@ class NCRDetailSerializer(serializers.ModelSerializer):
             'disposition', 'disposition_display',
             'assigned_team', 'assigned_members', 'assigned_members_data',
             'status', 'status_display',
+            'submission_count',
             'created_by', 'created_by_name', 'created_at', 'updated_at',
         ]
-        read_only_fields = ['ncr_number', 'created_by', 'created_at', 'updated_at']
+        read_only_fields = ['ncr_number', 'submission_count', 'created_by', 'created_at', 'updated_at']
 
     def get_assigned_members_data(self, obj):
         return [
@@ -156,6 +206,21 @@ class NCRUpdateSerializer(serializers.ModelSerializer):
             'root_cause', 'corrective_action', 'disposition',
             'assigned_team', 'assigned_members',
         ]
+
+
+class NCRSubmitSerializer(serializers.ModelSerializer):
+    """
+    Optional field updates sent alongside an NCR submission (or resubmission).
+    All fields are optional — only provided fields are saved before the workflow is created.
+    """
+    class Meta:
+        model = NCR
+        fields = ['root_cause', 'corrective_action', 'disposition']
+        extra_kwargs = {
+            'root_cause': {'required': False},
+            'corrective_action': {'required': False},
+            'disposition': {'required': False},
+        }
 
 
 class NCRDecisionSerializer(serializers.Serializer):

@@ -33,9 +33,23 @@ def resolve_group_user_ids(group_ids) -> list[int]:
 
 
 def get_workflow(subject) -> ApprovalWorkflow:
-    """Fetch the workflow for any subject object (by content type + id)."""
+    """
+    Fetch the active workflow for any subject object (by content type + id).
+    When multiple workflows exist (e.g. after NCR resubmission), returns the
+    active (not completed, not rejected) one. Falls back to the most recently
+    created workflow if all are finished.
+    """
     ct = ContentType.objects.get_for_model(type(subject))
-    return ApprovalWorkflow.objects.get(content_type=ct, object_id=subject.id)
+    qs = ApprovalWorkflow.objects.filter(content_type=ct, object_id=subject.id)
+    # Prefer the active (unfinished) workflow
+    active = qs.filter(is_complete=False, is_rejected=False).order_by('-created_at').first()
+    if active:
+        return active
+    # All finished — return the most recent one (caller will raise "already finished")
+    latest = qs.order_by('-created_at').first()
+    if latest:
+        return latest
+    raise ApprovalWorkflow.DoesNotExist(f"No ApprovalWorkflow for {type(subject).__name__} id={subject.id}")
 
 
 # --------- Creation ---------

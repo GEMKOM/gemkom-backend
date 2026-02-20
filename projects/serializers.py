@@ -1431,3 +1431,51 @@ class RejectRevisionSerializer(serializers.Serializer):
     """Serializer for rejecting a revision request."""
     topic_id = serializers.IntegerField(required=True)
     reason = serializers.CharField(required=True)
+
+
+class SubtaskItemSerializer(serializers.Serializer):
+    """
+    Recursive input serializer for a single node in a subtask tree.
+    Department is NOT accepted — it is always inherited from the root parent task.
+    depends_on is NOT accepted — M2M cannot be set during bulk_create.
+    The subtasks field uses ListField(DictField) to defer recursive validation
+    until the class is fully defined (validate_subtasks handles the recursion).
+    """
+    title = serializers.CharField(max_length=255)
+    weight = serializers.IntegerField(default=10, min_value=1, max_value=100)
+    sequence = serializers.IntegerField(default=1, min_value=1)
+    task_type = serializers.ChoiceField(
+        choices=[c[0] for c in JobOrderDepartmentTask.TASK_TYPE_CHOICES],
+        required=False,
+        allow_null=True,
+        default=None,
+    )
+    description = serializers.CharField(required=False, allow_blank=True, allow_null=True, default=None)
+    notes = serializers.CharField(required=False, allow_blank=True, allow_null=True, default=None)
+    assigned_to = serializers.PrimaryKeyRelatedField(
+        queryset=get_user_model().objects.filter(is_active=True),
+        required=False,
+        allow_null=True,
+        default=None,
+    )
+    target_start_date = serializers.DateField(required=False, allow_null=True, default=None)
+    target_completion_date = serializers.DateField(required=False, allow_null=True, default=None)
+    subtasks = serializers.ListField(child=serializers.DictField(), required=False, default=list)
+
+    def validate_subtasks(self, value):
+        validated = []
+        for item in value:
+            child = SubtaskItemSerializer(data=item)
+            child.is_valid(raise_exception=True)
+            validated.append(child.validated_data)
+        return validated
+
+
+class BulkCreateSubtasksSerializer(serializers.Serializer):
+    """Top-level input wrapper for the bulk_create_subtasks endpoint."""
+    tasks = SubtaskItemSerializer(many=True)
+
+    def validate_tasks(self, value):
+        if not value:
+            raise serializers.ValidationError("En az bir görev gereklidir.")
+        return value

@@ -7,12 +7,12 @@ from rest_framework.filters import SearchFilter, OrderingFilter
 from .models import QCReview, NCR
 from .serializers import (
     QCReviewListSerializer, QCReviewDetailSerializer,
-    QCReviewSubmitSerializer, QCDecisionSerializer,
+    QCReviewSubmitSerializer, QCReviewBulkSubmitSerializer, QCDecisionSerializer,
     NCRListSerializer, NCRDetailSerializer,
-    NCRCreateSerializer, NCRUpdateSerializer, NCRDecisionSerializer,
+    NCRCreateSerializer, NCRUpdateSerializer, NCRSubmitSerializer, NCRDecisionSerializer,
 )
 from .approval_service import (
-    submit_for_qc_review, decide_qc_review,
+    submit_for_qc_review, bulk_submit_for_qc_review, decide_qc_review,
     submit_ncr, decide_ncr,
     email_ncr_assigned_members,
 )
@@ -61,11 +61,33 @@ class QCReviewViewSet(viewsets.ReadOnlyModelViewSet):
         serializer = QCReviewSubmitSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         task = serializer.validated_data['task_id']  # already a task instance from validate_task_id
+        part_data = serializer.validated_data.get('part_data') or {}
         try:
-            review = submit_for_qc_review(task, submitted_by=request.user)
+            review = submit_for_qc_review(task, submitted_by=request.user, part_data=part_data)
             return Response(
                 QCReviewDetailSerializer(review).data,
                 status=status.HTTP_201_CREATED
+            )
+        except ValueError as e:
+            return Response({'status': 'error', 'message': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=False, methods=['post'], url_path='bulk_submit')
+    def bulk_submit(self, request):
+        """
+        Submit multiple QC reviews for a single task at once.
+        Each entry in `reviews` becomes one QCReview with its own part_data.
+
+        Body: { "task_id": <id>, "reviews": [ {}, {"location": "A1"}, ... ] }
+        """
+        serializer = QCReviewBulkSubmitSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        task = serializer.validated_data['task_id']  # already a task instance
+        part_data_list = serializer.validated_data['reviews']
+        try:
+            reviews = bulk_submit_for_qc_review(task, submitted_by=request.user, part_data_list=part_data_list)
+            return Response(
+                QCReviewDetailSerializer(reviews, many=True).data,
+                status=status.HTTP_201_CREATED,
             )
         except ValueError as e:
             return Response({'status': 'error', 'message': str(e)}, status=status.HTTP_400_BAD_REQUEST)
@@ -86,12 +108,22 @@ class QCReviewViewSet(viewsets.ReadOnlyModelViewSet):
             )
         serializer = QCDecisionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        vd = serializer.validated_data
+        ncr_data = {
+            'title': vd.get('ncr_title', ''),
+            'description': vd.get('ncr_description', ''),
+            'defect_type': vd.get('ncr_defect_type', 'other'),
+            'severity': vd.get('ncr_severity', 'minor'),
+            'affected_quantity': vd.get('ncr_affected_quantity', 1),
+            'disposition': vd.get('ncr_disposition', 'pending'),
+        }
         try:
             decide_qc_review(
                 review,
                 user=request.user,
-                approve=serializer.validated_data['approve'],
-                comment=serializer.validated_data.get('comment', ''),
+                approve=vd['approve'],
+                comment=vd.get('comment', ''),
+                ncr_data=ncr_data if not vd['approve'] else None,
             )
             review.refresh_from_db()
             return Response(QCReviewDetailSerializer(review).data)
@@ -138,7 +170,9 @@ class NCRViewSet(viewsets.ModelViewSet):
             return NCRCreateSerializer
         if self.action in ('update', 'partial_update'):
             return NCRUpdateSerializer
-        if self.action in ('decide',):
+        if self.action == 'submit':
+            return NCRSubmitSerializer
+        if self.action == 'decide':
             return NCRDecisionSerializer
         return NCRDetailSerializer
 
@@ -156,10 +190,12 @@ class NCRViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def submit(self, request, pk=None):
-        """Submit NCR for QC approval."""
+        """Submit NCR for QC approval. Optionally update fields (root_cause, corrective_action, etc.) in the same request."""
         ncr = self.get_object()
+        serializer = NCRSubmitSerializer(ncr, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
         try:
-            submit_ncr(ncr, by_user=request.user)
+            submit_ncr(ncr, by_user=request.user, field_updates=serializer.validated_data)
             ncr.refresh_from_db()
             return Response(NCRDetailSerializer(ncr).data)
         except ValueError as e:
@@ -195,13 +231,19 @@ class NCRViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def close(self, request, pk=None):
-        """Close an approved NCR."""
+        """Close an approved NCR and unblock the linked task if still blocked."""
         ncr = self.get_object()
         if ncr.status != 'approved':
             return Response(
                 {'status': 'error', 'message': "Sadece onaylanmış NCR'lar kapatılabilir."},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        ncr.status = 'closed'
-        ncr.save(update_fields=['status'])
+        from django.db import transaction
+        with transaction.atomic():
+            ncr.status = 'closed'
+            ncr.save(update_fields=['status'])
+            task = ncr.department_task
+            if task and task.status == 'blocked':
+                task.status = 'in_progress'
+                task.save(update_fields=['status'])
         return Response(NCRDetailSerializer(ncr).data)

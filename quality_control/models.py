@@ -44,6 +44,9 @@ class QCReview(models.Model):
     reviewed_at = models.DateTimeField(null=True, blank=True)
     comment = models.TextField(blank=True)
 
+    # Free-form part data submitted with the review (location, quantity, drawing no, position no, etc.)
+    part_data = models.JSONField(default=dict, blank=True)
+
     # Auto-linked NCR on rejection (FK in reverse; we also add a direct FK for convenience)
     ncr = models.ForeignKey(
         'NCR',
@@ -117,8 +120,8 @@ class NCR(models.Model):
     ]
 
     STATUS_CHOICES = [
-        ('draft', 'Taslak'),
-        ('submitted', 'Gönderildi'),
+        ('draft', 'Aksiyon Bekliyor'),
+        ('submitted', 'Onay Bekliyor'),
         ('approved', 'Onaylandı'),
         ('rejected', 'Reddedildi'),
         ('closed', 'Kapatıldı'),
@@ -193,6 +196,7 @@ class NCR(models.Model):
         default='draft',
         db_index=True
     )
+    submission_count = models.PositiveIntegerField(default=0)
 
     # Generic relation for approval workflow
     approvals = GenericRelation(

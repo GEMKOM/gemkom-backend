@@ -63,25 +63,27 @@ def _qc_team_builder(stage, _subject):
 # QCReview — submission and decision
 # =============================================================================
 
-def submit_for_qc_review(task, submitted_by) -> QCReview:
+def submit_for_qc_review(task, submitted_by, part_data: dict | None = None) -> QCReview:
     """
     Submit a manufacturing task for QC review.
     Creates a QCReview and an ApprovalWorkflow targeting the QC team.
 
     Permission: submitted_by must belong to the task's department or qualitycontrol.
+    part_data: optional free-form JSON (location, quantity, drawing no, position no, etc.)
     """
+    if not task.qc_required:
+        raise ValueError("Bu görev KK incelemesine uygun değil. Yalnızca imalat ana görevleri ve parça görevleri KK incelemesine gönderilebilir.")
+
     user_team = getattr(getattr(submitted_by, 'profile', None), 'team', None)
     if user_team not in (task.department, 'qualitycontrol') and not submitted_by.is_superuser:
         raise ValueError("Bu görevi KK için gönderme yetkiniz yok.")
-
-    if not task.qc_required:
-        raise ValueError("Bu görev Kalite Kontrol incelemesi gerektirmiyor.")
 
     with transaction.atomic():
         review = QCReview.objects.create(
             task=task,
             submitted_by=submitted_by,
             status='pending',
+            part_data=part_data or {},
         )
 
         policy = _get_or_create_policy(QC_REVIEW_POLICY_NAME)
@@ -98,11 +100,55 @@ def submit_for_qc_review(task, submitted_by) -> QCReview:
     return review
 
 
-def decide_qc_review(review: QCReview, user, approve: bool, comment: str = ""):
+def bulk_submit_for_qc_review(task, submitted_by, part_data_list: list[dict]) -> list[QCReview]:
+    """
+    Create multiple QCReviews for a single task in one atomic block.
+    Each item in part_data_list becomes one review with its own part_data.
+    A single notification email is sent to the QC team after the transaction.
+
+    Permission: same as submit_for_qc_review — submitted_by must belong to
+    the task's department or qualitycontrol team (or be a superuser).
+    """
+    if not task.qc_required:
+        raise ValueError("Bu görev KK incelemesine uygun değil. Yalnızca imalat ana görevleri ve parça görevleri KK incelemesine gönderilebilir.")
+
+    user_team = getattr(getattr(submitted_by, 'profile', None), 'team', None)
+    if user_team not in (task.department, 'qualitycontrol') and not submitted_by.is_superuser:
+        raise ValueError("Bu görevi KK için gönderme yetkiniz yok.")
+
+    policy = _get_or_create_policy(QC_REVIEW_POLICY_NAME)
+    reviews = []
+
+    with transaction.atomic():
+        for part_data in part_data_list:
+            review = QCReview.objects.create(
+                task=task,
+                submitted_by=submitted_by,
+                status='pending',
+                part_data=part_data or {},
+            )
+            snapshot = {
+                'task_id': task.id,
+                'task_title': task.title,
+                'job_order': task.job_order_id,
+                'submitted_by': submitted_by.id,
+            }
+            create_workflow(review, policy, snapshot=snapshot, approver_user_ids_builder=_qc_team_builder)
+            reviews.append(review)
+
+    # Single email for the entire batch
+    _email_qc_team_bulk_reviews_submitted(reviews, task, submitted_by)
+    return reviews
+
+
+def decide_qc_review(review: QCReview, user, approve: bool, comment: str = "", ncr_data: dict | None = None):
     """
     Record a QC team member's approval or rejection of a QCReview.
-    On rejection, blocks the task and auto-creates a linked NCR.
+    On rejection, blocks the task and auto-creates a linked NCR prefilled with ncr_data.
+    ncr_data keys: title, description, defect_type, severity, affected_quantity, disposition
     """
+    review._ncr_prefill = ncr_data or {}
+
     with transaction.atomic():
         wf, stage, outcome = record_decision(review, user, approve, comment)
 
@@ -142,19 +188,20 @@ def _on_qc_review_rejected(review: QCReview, comment: str = ""):
         task.status = 'blocked'
         task.save(update_fields=['status'])
 
-    # Auto-create NCR
+    # Auto-create NCR, prefilled with any data passed via _ncr_prefill
     reviewer = review.reviewed_by or review.submitted_by
+    prefill = getattr(review, '_ncr_prefill', {})
     ncr = NCR.objects.create(
         job_order=task.job_order,
         department_task=task,
         qc_review=review,
-        title=f"KK Red: {task.title}",
-        description=comment or "Kalite Kontrol incelemesi reddedildi.",
-        defect_type='other',
-        severity='minor',
+        title=prefill.get('title') or f"KK Red: {task.title}",
+        description=prefill.get('description') or comment or "Kalite Kontrol incelemesi reddedildi.",
+        defect_type=prefill.get('defect_type') or 'other',
+        severity=prefill.get('severity') or 'minor',
         detected_by=reviewer,
-        affected_quantity=1,
-        disposition='pending',
+        affected_quantity=prefill.get('affected_quantity') or 1,
+        disposition=prefill.get('disposition') or 'pending',
         assigned_team=task.department,
         status='draft',
         created_by=reviewer,
@@ -173,14 +220,39 @@ def _on_qc_review_rejected(review: QCReview, comment: str = ""):
 # NCR — submission and decision
 # =============================================================================
 
-def submit_ncr(ncr: NCR, by_user) -> None:
-    """Submit an NCR for QC approval (draft → submitted)."""
-    if ncr.status != 'draft':
-        raise ValueError("Sadece taslak durumundaki NCR'lar gönderilebilir.")
+def submit_ncr(ncr: NCR, by_user, field_updates: dict | None = None) -> None:
+    """
+    Submit (or resubmit) an NCR for QC approval.
+    Allowed from: draft, rejected.
+    submission_count is incremented on every submission.
+    A fresh ApprovalWorkflow is created each time.
+
+    field_updates: optional dict of NCR fields to save atomically before submission
+    (e.g. root_cause, corrective_action, disposition, assigned_members, etc.)
+    M2M fields (assigned_members) are handled separately after the save.
+    """
+    if ncr.status not in ('draft', 'rejected'):
+        raise ValueError("Sadece taslak veya reddedilmiş NCR'lar gönderilebilir.")
 
     with transaction.atomic():
+        update_fields = ['status', 'submission_count']
+        m2m_updates = {}
+
+        if field_updates:
+            m2m_fields = {'assigned_members'}
+            for field, value in field_updates.items():
+                if field in m2m_fields:
+                    m2m_updates[field] = value
+                else:
+                    setattr(ncr, field, value)
+                    update_fields.append(field)
+
         ncr.status = 'submitted'
-        ncr.save(update_fields=['status'])
+        ncr.submission_count += 1
+        ncr.save(update_fields=update_fields)
+
+        for field, value in m2m_updates.items():
+            getattr(ncr, field).set(value)
 
         policy = _get_or_create_policy(NCR_POLICY_NAME)
         snapshot = {
@@ -188,6 +260,7 @@ def submit_ncr(ncr: NCR, by_user) -> None:
             'title': ncr.title,
             'severity': ncr.severity,
             'job_order': ncr.job_order_id,
+            'submission_count': ncr.submission_count,
         }
         create_workflow(ncr, policy, snapshot=snapshot, approver_user_ids_builder=_qc_team_builder)
 
@@ -208,8 +281,14 @@ def decide_ncr(ncr: NCR, user, approve: bool, comment: str = ""):
 
 
 def _on_ncr_approved(ncr: NCR):
-    """handle_approval_event callback — status already set by decide_ncr."""
-    pass
+    """
+    Called by NCR.handle_approval_event on 'approved' event (inside atomic block).
+    Unblocks the linked task so work can resume after the NCR is resolved.
+    """
+    task = ncr.department_task
+    if task and task.status == 'blocked':
+        task.status = 'in_progress'
+        task.save(update_fields=['status'])
 
 
 def _on_ncr_rejected(ncr: NCR, comment: str = ""):
@@ -281,6 +360,27 @@ def _email_qc_team_ncr_submitted(ncr: NCR):
         f"Önem: {ncr.get_severity_display()}\n"
         f"Açıklama: {ncr.description}\n\n"
         f"Lütfen NCR'ı inceleyin.\n\n"
+        f"GEMKOM Sistemi"
+    )
+    send_plain_email(subject, body, to)
+
+
+def _email_qc_team_bulk_reviews_submitted(reviews: list, task, submitted_by):
+    to = _get_qc_team_emails()
+    if not to:
+        return
+    count = len(reviews)
+    review_ids = ", ".join(f"#{r.id}" for r in reviews)
+    subject = f"[KK İncelemesi] {task.job_order_id} — {task.title} ({count} inceleme)"
+    body = (
+        f"Merhaba Kalite Kontrol Ekibi,\n\n"
+        f"Aşağıdaki görev için {count} adet KK incelemesi gönderildi:\n\n"
+        f"İş Emri: {task.job_order_id}\n"
+        f"Görev: {task.title}\n"
+        f"Departman: {task.get_department_display()}\n"
+        f"Gönderen: {submitted_by.get_full_name()}\n"
+        f"İnceleme ID'leri: {review_ids}\n\n"
+        f"Lütfen incelemeleri gerçekleştirin.\n\n"
         f"GEMKOM Sistemi"
     )
     send_plain_email(subject, body, to)
