@@ -745,6 +745,7 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
     - POST /department-tasks/{id}/start/ - Start the task
     - POST /department-tasks/{id}/complete/ - Complete the task
     - POST /department-tasks/{id}/skip/ - Skip the task
+    - POST /department-tasks/{id}/unskip/ - Revert a skipped task back to pending
     - POST /department-tasks/{id}/uncomplete/ - Revert completed task to in_progress
     """
     queryset = JobOrderDepartmentTask.objects.select_related(
@@ -1101,6 +1102,23 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
             return Response({
                 'status': 'success',
                 'message': 'Görev atlandı.',
+                'task': DepartmentTaskDetailSerializer(task).data
+            })
+        except ValueError as e:
+            return Response(
+                {'status': 'error', 'message': str(e)},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+    @action(detail=True, methods=['post'])
+    def unskip(self, request, pk=None):
+        """Revert a skipped task back to pending."""
+        task = self.get_object()
+        try:
+            task.unskip()
+            return Response({
+                'status': 'success',
+                'message': 'Görev atlama durumu geri alındı.',
                 'task': DepartmentTaskDetailSerializer(task).data
             })
         except ValueError as e:

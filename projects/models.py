@@ -979,6 +979,26 @@ class JobOrderDepartmentTask(models.Model):
         # Check if all main tasks are complete -> auto-complete job order
         self._check_job_order_completion(user)
 
+    def unskip(self):
+        """Revert a skipped task back to its previous state."""
+        if self.status != 'skipped':
+            raise ValueError("Sadece atlanmış görevler geri alınabilir.")
+
+        self.status = 'pending'
+        self.completed_at = None
+        self.completed_by = None
+        self.save(update_fields=['status', 'completed_at', 'completed_by'])
+
+        # Re-evaluate status based on dependencies
+        self.update_status_from_dependencies()
+
+        # Update all dependent tasks - they may need to be re-blocked
+        for dependent_task in self.dependents.filter(status='in_progress'):
+            dependent_task.update_status_from_dependencies()
+
+        # Update job order completion percentage
+        self.job_order.update_completion_percentage()
+
     def uncomplete(self):
         """Revert a completed task back to in_progress."""
         if self.status != 'completed':
