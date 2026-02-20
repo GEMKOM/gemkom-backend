@@ -66,8 +66,16 @@ class SubcontractingPriceTierSerializer(serializers.ModelSerializer):
                 "İş emrinde toplam ağırlık (total_weight_kg) girilmeden fiyat kademesi oluşturulamaz."
             )
 
-        # Sum of all other tiers for this job order
-        qs = SubcontractingPriceTier.objects.filter(job_order=job_order)
+        # Paint tier weight mirrors other tiers — exclude it from the cap check
+        from subcontracting.services.painting import PAINT_TIER_NAME
+        name = data.get('name', getattr(self.instance, 'name', ''))
+        if name == PAINT_TIER_NAME:
+            return data
+
+        # Sum of all other non-paint tiers for this job order
+        qs = SubcontractingPriceTier.objects.filter(
+            job_order=job_order
+        ).exclude(name=PAINT_TIER_NAME)
         if self.instance:
             qs = qs.exclude(pk=self.instance.pk)
         existing_total = qs.aggregate(t=Sum('allocated_weight_kg'))['t'] or Decimal('0')
@@ -122,16 +130,18 @@ class SubcontractingAssignmentSerializer(serializers.ModelSerializer):
         price_tier = data.get('price_tier', getattr(self.instance, 'price_tier', None))
         allocated = data.get('allocated_weight_kg', getattr(self.instance, 'allocated_weight_kg', Decimal('0')))
 
-        # Must be a subtask whose parent is titled "Kaynaklı İmalat"
-        if dept_task.parent_id is None:
-            raise serializers.ValidationError(
-                "Taşeron ataması yalnızca alt görevlere yapılabilir, ana göreve yapılamaz."
-            )
-        parent = dept_task.parent
-        if parent.task_type != 'welding':
-            raise serializers.ValidationError(
-                "Taşeron ataması yalnızca 'Kaynaklı İmalat' alt görevi altındaki görevlere yapılabilir."
-            )
+        # Painting tasks are direct subtasks auto-assigned by the system — skip parent check.
+        # All other assignments must be subtasks under a 'Kaynaklı İmalat' (welding) parent.
+        if dept_task.task_type != 'painting':
+            if dept_task.parent_id is None:
+                raise serializers.ValidationError(
+                    "Taşeron ataması yalnızca alt görevlere yapılabilir, ana göreve yapılamaz."
+                )
+            parent = dept_task.parent
+            if parent.task_type != 'welding':
+                raise serializers.ValidationError(
+                    "Taşeron ataması yalnızca 'Kaynaklı İmalat' alt görevi altındaki görevlere yapılabilir."
+                )
 
         # Price tier must belong to the same job order
         if price_tier.job_order_id != dept_task.job_order_id:

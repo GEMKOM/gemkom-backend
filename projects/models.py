@@ -635,6 +635,7 @@ class DepartmentTaskTemplateItem(models.Model):
         ('cnc_cutting', 'CNC Kesim'),
         ('machining', 'Talaşlı İmalat'),
         ('welding', 'Kaynaklı İmalat'),
+        ('painting', 'Boya'),
     ]
     task_type = models.CharField(
         max_length=20,
@@ -704,6 +705,7 @@ class JobOrderDepartmentTask(models.Model):
         ('cnc_cutting', 'CNC Kesim'),
         ('machining', 'Talaşlı İmalat'),
         ('welding', 'Kaynaklı İmalat'),
+        ('painting', 'Boya'),
     ]
 
     job_order = models.ForeignKey(

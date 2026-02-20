@@ -60,7 +60,7 @@ class SubcontractingPriceTier(models.Model):
     name = models.CharField(max_length=200, help_text='e.g. "Ağır Plakalar", "Hafif Çerçeve"')
     price_per_kg = models.DecimalField(
         max_digits=12, decimal_places=4,
-        validators=[MinValueValidator(Decimal('0.0001'))]
+        validators=[MinValueValidator(Decimal('0'))]
     )
     currency = models.CharField(max_length=3, choices=CURRENCY_CHOICES, default='TRY')
     allocated_weight_kg = models.DecimalField(

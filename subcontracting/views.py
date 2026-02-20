@@ -85,10 +85,13 @@ class SubcontractingAssignmentViewSet(viewsets.ModelViewSet):
         )
         subcontractor = self.request.query_params.get('subcontractor')
         job_no = self.request.query_params.get('job_no')
+        department_task = self.request.query_params.get('department_task')
         if subcontractor:
             qs = qs.filter(subcontractor_id=subcontractor)
         if job_no:
             qs = qs.filter(department_task__job_order_id=job_no)
+        if department_task:
+            qs = qs.filter(department_task_id=department_task)
         return qs
 
     @action(detail=False, methods=['post'], url_path='create-with-subtask')

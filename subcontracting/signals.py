@@ -1,10 +1,11 @@
 import threading
 
 from django.db import transaction
-from django.db.models.signals import post_save
+from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
 
 from projects.models import JobOrderDepartmentTask
+from subcontracting.models import SubcontractingPriceTier
 
 # Thread-local state: deduplicate job_nos within a single request transaction.
 _pending = threading.local()
@@ -79,3 +80,40 @@ def on_department_task_saved(sender, instance, **kwargs):
         return
 
     _schedule_cost_update(instance.job_order_id)
+
+
+@receiver(post_save, sender=JobOrderDepartmentTask)
+def on_painting_task_saved(sender, instance, **kwargs):
+    """
+    When a task with task_type='painting' is saved, auto-create the paint
+    price tier and assignment (idempotent).
+    """
+    if instance.task_type != 'painting':
+        return
+
+    from subcontracting.services.painting import ensure_paint_assignment
+    # Keep a reference to avoid closure capturing a mutable `instance`
+    task_id = instance.pk
+
+    def _run():
+        # Re-fetch so we have a fresh instance with all relations loaded
+        try:
+            task = JobOrderDepartmentTask.objects.select_related('job_order').get(pk=task_id)
+            ensure_paint_assignment(task)
+        except JobOrderDepartmentTask.DoesNotExist:
+            pass
+
+    transaction.on_commit(_run)
+
+
+@receiver(post_save, sender=SubcontractingPriceTier)
+@receiver(post_delete, sender=SubcontractingPriceTier)
+def on_price_tier_changed(sender, instance, **kwargs):
+    """
+    When a price tier is added, updated, or deleted, sync the paint assignment
+    weight for that job order (paint weight = sum of all non-paint tiers).
+    """
+    from subcontracting.services.painting import sync_paint_assignment_weight
+    job_order = instance.job_order
+
+    transaction.on_commit(lambda: sync_paint_assignment_weight(job_order))
