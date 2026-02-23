@@ -180,10 +180,15 @@ class NCRViewSet(viewsets.ModelViewSet):
         return serializer.save(created_by=self.request.user, status='draft')
 
     def create(self, request, *args, **kwargs):
+        from django.db import transaction as db_transaction
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        ncr = self.perform_create(serializer)
-        # Notify assigned members after M2M is saved
+        with db_transaction.atomic():
+            ncr = self.perform_create(serializer)
+            task = ncr.department_task
+            if task and task.status not in ('completed', 'skipped', 'cancelled', 'blocked'):
+                task.status = 'blocked'
+                task.save(update_fields=['status'])
         if ncr.assigned_members.exists():
             email_ncr_assigned_members(ncr)
         return Response(NCRDetailSerializer(ncr).data, status=status.HTTP_201_CREATED)

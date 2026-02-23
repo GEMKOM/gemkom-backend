@@ -1082,21 +1082,26 @@ class JobOrderDepartmentTask(models.Model):
         Calculate progress for procurement tasks based on PlanningRequestItem status.
         Returns (earned_weight, total_weight) tuple.
 
-        Progress stages per item:
-        - 0%: No PurchaseRequestItem exists
-        - 40%: PurchaseRequestItem exists (PR submitted)
-        - 50%: PurchaseRequest approved
-        - 100%: PurchaseOrder fully paid
+        Progress per item (see PlanningRequestItem.get_procurement_progress for details):
+        - Stock portion (quantity_from_inventory) counts as 100% earned immediately.
+        - Purchase portion (quantity_to_purchase) follows PO stages:
+            0%:  No PurchaseRequestItem
+           40%:  PR submitted
+           50%:  PR approved or PO exists
+           80%:  PO fully paid or DBS supplier (hard cap for purchase portion)
+          100%:  is_delivered flag set on the item
         """
         if self.department != 'procurement':
             return (Decimal('0.00'), Decimal('0.00'))
 
+        from django.db.models import Q
         from planning.models import PlanningRequestItem
 
-        # Get all planning request items for this job that need procurement
+        # Include items that need purchasing OR were sourced from stock
         pr_items = PlanningRequestItem.objects.filter(
-            job_no=self.job_order.job_no,
-            quantity_to_purchase__gt=0
+            job_no=self.job_order.job_no
+        ).filter(
+            Q(quantity_to_purchase__gt=0) | Q(quantity_from_inventory__gt=0)
         ).select_related('item')
 
         if not pr_items.exists():

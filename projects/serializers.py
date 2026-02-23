@@ -111,8 +111,9 @@ class JobOrderListSerializer(serializers.ModelSerializer):
     customer_code = serializers.CharField(source='customer.code', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     priority_display = serializers.CharField(source='get_priority_display', read_only=True)
-    children_count = serializers.SerializerMethodField()
+    children_count = serializers.IntegerField(read_only=True)
     hierarchy_level = serializers.SerializerMethodField()
+    ncr_count = serializers.IntegerField(read_only=True)
 
     class Meta:
         model = JobOrder
@@ -121,11 +122,9 @@ class JobOrderListSerializer(serializers.ModelSerializer):
             'status', 'status_display', 'priority', 'priority_display',
             'target_completion_date', 'completion_percentage',
             'parent', 'children_count', 'hierarchy_level',
+            'ncr_count',
             'created_at'
         ]
-
-    def get_children_count(self, obj):
-        return obj.children.count()
 
     def get_hierarchy_level(self, obj):
         return obj.get_hierarchy_level()

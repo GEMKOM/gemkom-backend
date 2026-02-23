@@ -638,9 +638,9 @@ class PlanningRequestItem(models.Model):
 
     @property
     def total_weight(self):
-        """Total weight = quantity_to_purchase × item.unit_weight"""
-        if self.item and self.quantity_to_purchase:
-            return self.quantity_to_purchase * self.item.unit_weight
+        """Total weight = quantity × item.unit_weight (full item, stock + purchase)"""
+        if self.item and self.quantity:
+            return self.quantity * self.item.unit_weight
         return Decimal('0.00')
 
     def get_procurement_progress(self):
@@ -649,14 +649,18 @@ class PlanningRequestItem(models.Model):
 
         Returns: (earned_weight, total_weight)
 
-        Progress stages:
-        - 0%: No PurchaseRequestItem exists
-        - 40%: PurchaseRequestItem exists (PR submitted)
-        - 50%: PurchaseRequest approved
-        - 80%: PurchaseOrder fully paid (or approved with DBS supplier)
-        - 100%: Item marked as delivered (only via is_delivered flag)
+        total_weight = quantity × unit_weight  (full item: stock + purchase)
+
+        Progress logic:
+        - is_delivered = True → 100% override (total, total)
+        - Stock portion (quantity_from_inventory × unit_weight) → always 100% earned
+        - Purchase portion (quantity_to_purchase × unit_weight) → PO stages, capped at 80%:
+            0%:  No PurchaseRequestItem
+           40%:  PR submitted
+           50%:  PR approved or PO exists but not paid
+           80%:  PO fully paid (or DBS supplier)  ← hard cap for purchase portion
         """
-        total = self.total_weight
+        total = self.total_weight  # quantity × unit_weight
         if total == Decimal('0.00'):
             return (Decimal('0.00'), Decimal('0.00'))
 
@@ -664,7 +668,17 @@ class PlanningRequestItem(models.Model):
         if self.is_delivered:
             return (total, total)
 
-        # Get all PurchaseRequestItems for this PlanningRequestItem
+        stock_weight = self.quantity_from_inventory * self.item.unit_weight
+        purchase_weight = self.quantity_to_purchase * self.item.unit_weight
+
+        # Stock portion is always fully earned
+        earned = stock_weight
+
+        # If fully from stock, nothing to purchase → 100%
+        if purchase_weight == Decimal('0.00'):
+            return (earned, total)
+
+        # Purchase portion follows PO stages
         pr_items = self.purchase_request_items.select_related(
             'purchase_request'
         ).prefetch_related(
@@ -673,10 +687,9 @@ class PlanningRequestItem(models.Model):
         )
 
         if not pr_items.exists():
-            return (Decimal('0.00'), total)
+            return (earned, total)
 
-        # Calculate weighted progress
-        earned = Decimal('0.00')
+        purchase_earned = Decimal('0.00')
 
         for pri in pr_items:
             item_weight = pri.quantity * self.item.unit_weight
@@ -689,26 +702,23 @@ class PlanningRequestItem(models.Model):
             po_lines = pri.po_lines.all()
             if po_lines.exists():
                 all_paid = all(line.po.status == 'paid' for line in po_lines)
-
                 if all_paid:
-                    earned += item_weight * Decimal('0.8')    # 80%
+                    purchase_earned += item_weight * Decimal('0.8')    # 80%
                 else:
-                    earned += item_weight * Decimal('0.5')    # 50% (PO exists, not yet paid)
+                    purchase_earned += item_weight * Decimal('0.5')    # 50%
             elif pr_status == 'approved':
                 # Check if the recommended supplier is DBS (no PO will be created)
                 is_dbs = pri.offers.filter(
                     is_recommended=True,
                     supplier_offer__supplier__has_dbs=True,
                 ).exists()
-                if is_dbs:
-                    earned += item_weight * Decimal('0.8')    # 80% (DBS = paid level)
-                else:
-                    earned += item_weight * Decimal('0.5')    # 50%
+                purchase_earned += item_weight * (Decimal('0.8') if is_dbs else Decimal('0.5'))
             elif pr_status == 'submitted':
-                earned += item_weight * Decimal('0.4')        # 40%
+                purchase_earned += item_weight * Decimal('0.4')        # 40%
 
-        # Cap at 80% of total — 100% is only reachable via is_delivered
-        earned = min(earned, total * Decimal('0.8'))
+        # Cap applies ONLY to the purchase portion — stock portion is uncapped (inherently 100%)
+        purchase_earned = min(purchase_earned, purchase_weight * Decimal('0.8'))
+        earned += purchase_earned
 
         return (earned, total)
 
@@ -814,6 +824,7 @@ class InventoryAllocation(models.Model):
         """
         When saving, update the planning request item's quantity_from_inventory.
         Also update the Item's stock_quantity.
+        If the item becomes fully covered by inventory, mark it as delivered automatically.
         """
         is_new = self.pk is None
 
@@ -824,7 +835,16 @@ class InventoryAllocation(models.Model):
             item = self.planning_request_item
             item.quantity_from_inventory += self.allocated_quantity
             item.quantity_to_purchase = item.quantity - item.quantity_from_inventory
-            item.save(update_fields=['quantity_from_inventory', 'quantity_to_purchase'])
+
+            # Auto-mark delivered if fully covered by inventory
+            update_fields = ['quantity_from_inventory', 'quantity_to_purchase']
+            if item.quantity_from_inventory >= item.quantity and not item.is_delivered:
+                item.is_delivered = True
+                item.delivered_at = self.allocated_at
+                item.delivered_by = self.allocated_by
+                update_fields += ['is_delivered', 'delivered_at', 'delivered_by']
+
+            item.save(update_fields=update_fields)
 
             # Reduce stock from Item
             catalog_item = item.item
@@ -834,12 +854,22 @@ class InventoryAllocation(models.Model):
     def delete(self, *args, **kwargs):
         """
         When deleting, restore the quantities.
+        If the item was auto-delivered via inventory, clear the delivered flag.
         """
         # Restore planning request item quantities
         item = self.planning_request_item
         item.quantity_from_inventory -= self.allocated_quantity
         item.quantity_to_purchase = item.quantity - item.quantity_from_inventory
-        item.save(update_fields=['quantity_from_inventory', 'quantity_to_purchase'])
+
+        # Clear auto-delivery if no longer fully covered
+        update_fields = ['quantity_from_inventory', 'quantity_to_purchase']
+        if item.quantity_from_inventory < item.quantity and item.is_delivered:
+            item.is_delivered = False
+            item.delivered_at = None
+            item.delivered_by = None
+            update_fields += ['is_delivered', 'delivered_at', 'delivered_by']
+
+        item.save(update_fields=update_fields)
 
         # Restore stock to Item
         catalog_item = item.item
