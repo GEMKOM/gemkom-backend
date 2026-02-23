@@ -495,6 +495,7 @@ class DepartmentTaskListSerializer(serializers.ModelSerializer):
     completion_percentage = serializers.SerializerMethodField()
     is_under_revision = serializers.SerializerMethodField()
     active_revision_release_id = serializers.SerializerMethodField()
+    current_release_id = serializers.SerializerMethodField()
     pending_revision_request = serializers.SerializerMethodField()
     qc_required = serializers.BooleanField(read_only=True)
     has_qc_approval = serializers.BooleanField(read_only=True)
@@ -511,7 +512,7 @@ class DepartmentTaskListSerializer(serializers.ModelSerializer):
             'started_at', 'completed_at',
             'parent', 'subtasks_count', 'can_start',
             'completion_percentage',
-            'is_under_revision', 'active_revision_release_id',
+            'is_under_revision', 'active_revision_release_id', 'current_release_id',
             'pending_revision_request',
             'qc_required', 'has_qc_approval', 'qc_status',
             'created_at'
@@ -542,31 +543,39 @@ class DepartmentTaskListSerializer(serializers.ModelSerializer):
     def get_completion_percentage(self, obj):
         return float(obj.get_completion_percentage())
 
-    def _get_design_releases(self, obj):
-        """Return releases for top-level design tasks, or empty queryset."""
+    def _get_all_releases(self, obj):
+        """Return all releases for top-level design tasks, cached per object."""
         if obj.department != 'design' or obj.parent is not None:
-            return obj.job_order.technical_drawing_releases.none()
-        return obj.job_order.technical_drawing_releases.all()
-
-    def _get_revision_release(self, obj):
-        return self._get_design_releases(obj).filter(status='in_revision').first()
+            return []
+        if not hasattr(obj, '_cached_releases'):
+            obj._cached_releases = list(obj.job_order.technical_drawing_releases.order_by('-revision_number'))
+        return obj._cached_releases
 
     def get_is_under_revision(self, obj):
-        return self._get_revision_release(obj) is not None
+        return any(r.status == 'in_revision' for r in self._get_all_releases(obj))
 
     def get_active_revision_release_id(self, obj):
-        release = self._get_revision_release(obj)
-        return release.id if release else None
+        for r in self._get_all_releases(obj):
+            if r.status == 'in_revision':
+                return r.id
+        return None
+
+    def get_current_release_id(self, obj):
+        """Return the ID of the latest released (or in_revision) drawing release."""
+        for r in self._get_all_releases(obj):
+            if r.status in ('released', 'in_revision'):
+                return r.id
+        return None
 
     def get_pending_revision_request(self, obj):
         """Return pending revision request data for design tasks."""
-        releases = self._get_design_releases(obj)
-        if not releases.exists():
+        releases = self._get_all_releases(obj)
+        if not releases:
             return None
-        # Find any release with a pending revision topic
         from .models import JobOrderDiscussionTopic
+        release_ids = [r.id for r in releases]
         topic = JobOrderDiscussionTopic.objects.filter(
-            related_release__in=releases,
+            related_release__in=release_ids,
             topic_type='revision_request',
             revision_status='pending',
             is_deleted=False

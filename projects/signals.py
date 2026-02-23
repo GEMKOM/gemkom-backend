@@ -175,9 +175,8 @@ def send_drawing_released_notifications(release, topic):
     # Send emails in background thread
     if users_to_email:
         def _send_emails():
-            pass #ONAT GERI EKLE
-            # for user in users_to_email:
-            #     send_drawing_released_email(user, release, topic)
+            for user in users_to_email:
+                send_drawing_released_email(user, release, topic)
 
         threading.Thread(target=_send_emails, daemon=True).start()
 
