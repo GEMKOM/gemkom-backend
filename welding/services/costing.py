@@ -205,3 +205,6 @@ def recompute_welding_job_cost(job_no: str):
             cost_holiday=q2(v["c_hol"]),
             total_cost=u_tot,
         )
+
+    from projects.services.costing import recompute_job_cost_summary
+    recompute_job_cost_summary(job_no)

@@ -223,3 +223,7 @@ def recompute_part_cost_snapshot(part_key: str):
             cost_ww=q2(v["c_ww"]), cost_ah=q2(v["c_ah"]), cost_su=q2(v["c_su"]),
             total_cost=u_tot,
         )
+
+    if job_no_label:
+        from projects.services.costing import recompute_job_cost_summary
+        recompute_job_cost_summary(job_no_label)

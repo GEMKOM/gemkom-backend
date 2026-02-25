@@ -11,12 +11,10 @@ from subcontracting.models import SubcontractingAssignment, SubcontractorCostRec
 def recompute_subcontractor_cost(job_no: str) -> Decimal:
     """
     Recalculate current_cost on every SubcontractingAssignment for this job order,
-    then roll the total up to JobOrder.subcontractor_cost.
+    then trigger a full job cost summary recomputation.
 
-    Returns the new total subcontractor cost.
+    Returns the new total subcontractor cost (non-paint only, for reference).
     """
-    from projects.models import JobOrder
-
     assignments = list(
         SubcontractingAssignment.objects
         .filter(department_task__job_order_id=job_no)
@@ -29,12 +27,8 @@ def recompute_subcontractor_cost(job_no: str) -> Decimal:
         assignment.save(update_fields=['current_cost', 'cost_currency'])
         total += assignment.current_cost
 
-    try:
-        job = JobOrder.objects.get(job_no=job_no)
-        job.subcontractor_cost = total.quantize(Decimal('0.01'))
-        job.save(update_fields=['subcontractor_cost'])
-    except JobOrder.DoesNotExist:
-        pass
+    from projects.services.costing import recompute_job_cost_summary
+    recompute_job_cost_summary(job_no)
 
     return total
 

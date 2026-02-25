@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from django.utils import timezone
+from decimal import Decimal
 from django.contrib.auth import get_user_model
 from .models import (
     Customer, JobOrder, JobOrderFile,
@@ -191,20 +192,15 @@ class JobOrderDetailSerializer(serializers.ModelSerializer):
             'customer', 'customer_name', 'customer_short_name', 'customer_code', 'customer_order_no',
             'status', 'status_display', 'priority', 'priority_display',
             'target_completion_date', 'started_at', 'completed_at', 'incoterms',
-            'estimated_cost', 'labor_cost', 'material_cost',
-            'subcontractor_cost', 'total_cost', 'cost_currency',
-            'total_weight_kg',
-            'last_cost_calculation', 'completion_percentage',
+            'estimated_cost', 'total_weight_kg', 'completion_percentage',
             'parent', 'parent_title', 'children', 'children_count', 'hierarchy_level',
             'files_count', 'topics_count',
             'created_at', 'created_by', 'created_by_name',
             'updated_at', 'completed_by', 'completed_by_name'
         ]
         read_only_fields = [
-            'started_at', 'completed_at', 'labor_cost', 'material_cost',
-            'subcontractor_cost', 'total_cost', 'last_cost_calculation',
-            'completion_percentage', 'created_at', 'created_by', 'updated_at',
-            'completed_by'
+            'started_at', 'completed_at', 'completion_percentage',
+            'created_at', 'created_by', 'updated_at', 'completed_by'
         ]
 
     def get_children(self, obj):
@@ -241,7 +237,7 @@ class JobOrderCreateSerializer(serializers.ModelSerializer):
             'job_no', 'title', 'quantity', 'description',
             'customer', 'customer_order_no',
             'priority', 'target_completion_date', 'incoterms',
-            'estimated_cost', 'cost_currency',
+            'estimated_cost',
             'parent'
         ]
 
@@ -283,7 +279,7 @@ class JobOrderUpdateSerializer(serializers.ModelSerializer):
         fields = [
             'title', 'quantity', 'description', 'customer_order_no',
             'priority', 'target_completion_date', 'incoterms',
-            'estimated_cost', 'cost_currency', 'total_weight_kg'
+            'estimated_cost', 'total_weight_kg'
         ]
 
     def validate(self, attrs):
@@ -1487,3 +1483,260 @@ class BulkCreateSubtasksSerializer(serializers.Serializer):
         if not value:
             raise serializers.ValidationError("En az bir görev gereklidir.")
         return value
+
+
+# ============================================================================
+# Cost Serializers
+# ============================================================================
+
+from .models import (
+    JobOrderCostSummary, JobOrderProcurementLine,
+    JobOrderQCCostLine, JobOrderShippingCostLine,
+)
+from procurement.models import Item as ProcurementItem
+from planning.models import PlanningRequestItem
+
+
+class JobOrderCostSummarySerializer(serializers.ModelSerializer):
+    """Read/write serializer for JobOrderCostSummary. Cost fields are read-only."""
+    class Meta:
+        model = JobOrderCostSummary
+        fields = [
+            'job_order',
+            'labor_cost', 'material_cost', 'subcontractor_cost',
+            'paint_cost', 'qc_cost', 'shipping_cost', 'actual_total_cost',
+            'selling_price', 'selling_price_currency',
+            'last_updated',
+        ]
+        read_only_fields = [
+            'job_order',
+            'labor_cost', 'material_cost', 'subcontractor_cost',
+            'paint_cost', 'qc_cost', 'shipping_cost', 'actual_total_cost',
+            'last_updated',
+        ]
+
+
+class JobOrderProcurementLineSerializer(serializers.ModelSerializer):
+    """Serializer for saved procurement cost lines."""
+    item_code = serializers.CharField(source='item.code', read_only=True, default=None)
+    item_name = serializers.CharField(source='item.name', read_only=True, default=None)
+    item_unit = serializers.CharField(source='item.unit', read_only=True, default=None)
+
+    class Meta:
+        model = JobOrderProcurementLine
+        fields = [
+            'id', 'job_order',
+            'item', 'item_code', 'item_name', 'item_unit',
+            'item_description',
+            'quantity', 'unit_price', 'amount_eur',
+            'planning_request_item', 'order',
+            'created_at',
+        ]
+        read_only_fields = ['id', 'amount_eur', 'created_at', 'item_code', 'item_name', 'item_unit']
+
+
+class ProcurementLineInputSerializer(serializers.Serializer):
+    """Single line input within a procurement submit request."""
+    item = serializers.PrimaryKeyRelatedField(
+        queryset=ProcurementItem.objects.all(),
+        required=False, allow_null=True
+    )
+    item_description = serializers.CharField(max_length=500, default='', allow_blank=True)
+    quantity = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=Decimal('0.01'))
+    unit_price = serializers.DecimalField(max_digits=16, decimal_places=2, min_value=Decimal('0'))
+    planning_request_item = serializers.PrimaryKeyRelatedField(
+        queryset=PlanningRequestItem.objects.all(),
+        required=False, allow_null=True
+    )
+    order = serializers.IntegerField(default=0, min_value=0)
+
+    def validate(self, attrs):
+        if not attrs.get('item') and not attrs.get('item_description'):
+            raise serializers.ValidationError(
+                "Either 'item' or 'item_description' must be provided."
+            )
+        return attrs
+
+
+class ProcurementLinesSubmitSerializer(serializers.Serializer):
+    """Replace all procurement lines for a job order atomically."""
+    job_order = serializers.SlugRelatedField(
+        slug_field='job_no',
+        queryset=JobOrder.objects.all()
+    )
+    lines = ProcurementLineInputSerializer(many=True)
+
+    def validate_lines(self, value):
+        if value is None:
+            return []
+        return value
+
+
+class ProcurementPreviewLineSerializer(serializers.Serializer):
+    """Read-only preview line returned before submitting procurement cost lines."""
+    planning_request_item = serializers.IntegerField()
+    item = serializers.IntegerField(allow_null=True)
+    item_code = serializers.CharField(allow_null=True)
+    item_name = serializers.CharField(allow_null=True)
+    item_unit = serializers.CharField(allow_null=True)
+    item_description = serializers.CharField(allow_blank=True)
+    quantity = serializers.DecimalField(max_digits=12, decimal_places=2)
+    unit_price_eur = serializers.DecimalField(max_digits=16, decimal_places=2, allow_null=True)
+    original_unit_price = serializers.DecimalField(max_digits=16, decimal_places=2, allow_null=True)
+    original_currency = serializers.CharField(allow_null=True)
+    price_source = serializers.ChoiceField(
+        choices=['po_line', 'recommended_offer', 'any_offer', 'none']
+    )
+    order = serializers.IntegerField()
+
+
+class JobOrderQCCostLineSerializer(serializers.ModelSerializer):
+    created_by_name = serializers.CharField(
+        source='created_by.get_full_name', read_only=True, default=None
+    )
+
+    class Meta:
+        model = JobOrderQCCostLine
+        fields = [
+            'id', 'job_order',
+            'description', 'amount', 'currency', 'amount_eur',
+            'date', 'notes',
+            'created_at', 'created_by', 'created_by_name', 'updated_at',
+        ]
+        read_only_fields = ['id', 'created_at', 'created_by', 'updated_at']
+
+    def validate(self, attrs):
+        if attrs.get('currency') == 'EUR':
+            amount = attrs.get('amount')
+            amount_eur = attrs.get('amount_eur')
+            if amount is not None and amount_eur is not None and amount != amount_eur:
+                raise serializers.ValidationError(
+                    "When currency is EUR, amount_eur must equal amount."
+                )
+            # Auto-fill amount_eur from amount when currency is EUR
+            if amount is not None and amount_eur is None:
+                attrs['amount_eur'] = amount
+        return attrs
+
+
+class JobOrderShippingCostLineSerializer(serializers.ModelSerializer):
+    created_by_name = serializers.CharField(
+        source='created_by.get_full_name', read_only=True, default=None
+    )
+
+    class Meta:
+        model = JobOrderShippingCostLine
+        fields = [
+            'id', 'job_order',
+            'description', 'amount', 'currency', 'amount_eur',
+            'date', 'notes',
+            'created_at', 'created_by', 'created_by_name', 'updated_at',
+        ]
+        read_only_fields = ['id', 'created_at', 'created_by', 'updated_at']
+
+    def validate(self, attrs):
+        if attrs.get('currency') == 'EUR':
+            amount = attrs.get('amount')
+            amount_eur = attrs.get('amount_eur')
+            if amount is not None and amount_eur is not None and amount != amount_eur:
+                raise serializers.ValidationError(
+                    "When currency is EUR, amount_eur must equal amount."
+                )
+            if amount is not None and amount_eur is None:
+                attrs['amount_eur'] = amount
+        return attrs
+
+
+class CostTableRowSerializer(serializers.Serializer):
+    """Read-only row in the cost table view."""
+    job_no = serializers.CharField()
+    title = serializers.CharField()
+    customer_name = serializers.SerializerMethodField()
+    status = serializers.CharField()
+
+    # Costs from JobOrderCostSummary (may be null if no summary yet)
+    labor_cost = serializers.SerializerMethodField()
+    material_cost = serializers.SerializerMethodField()
+    subcontractor_cost = serializers.SerializerMethodField()
+    paint_cost = serializers.SerializerMethodField()
+    qc_cost = serializers.SerializerMethodField()
+    shipping_cost = serializers.SerializerMethodField()
+    actual_total_cost = serializers.SerializerMethodField()
+
+    # From JobOrder
+    estimated_cost = serializers.DecimalField(max_digits=16, decimal_places=2)
+
+    # From JobOrderCostSummary
+    selling_price = serializers.SerializerMethodField()
+    selling_price_currency = serializers.SerializerMethodField()
+    margin_eur = serializers.SerializerMethodField()
+    margin_pct = serializers.SerializerMethodField()
+    last_updated = serializers.SerializerMethodField()
+
+    def _summary(self, obj):
+        try:
+            return obj.cost_summary
+        except JobOrderCostSummary.DoesNotExist:
+            return None
+
+    def get_customer_name(self, obj):
+        if not obj.customer:
+            return None
+        return obj.customer.short_name or obj.customer.name
+
+    def get_labor_cost(self, obj):
+        s = self._summary(obj)
+        return str(s.labor_cost) if s else '0.00'
+
+    def get_material_cost(self, obj):
+        s = self._summary(obj)
+        return str(s.material_cost) if s else '0.00'
+
+    def get_subcontractor_cost(self, obj):
+        s = self._summary(obj)
+        return str(s.subcontractor_cost) if s else '0.00'
+
+    def get_paint_cost(self, obj):
+        s = self._summary(obj)
+        return str(s.paint_cost) if s else '0.00'
+
+    def get_qc_cost(self, obj):
+        s = self._summary(obj)
+        return str(s.qc_cost) if s else '0.00'
+
+    def get_shipping_cost(self, obj):
+        s = self._summary(obj)
+        return str(s.shipping_cost) if s else '0.00'
+
+    def get_actual_total_cost(self, obj):
+        s = self._summary(obj)
+        return str(s.actual_total_cost) if s else '0.00'
+
+    def get_selling_price(self, obj):
+        s = self._summary(obj)
+        return str(s.selling_price) if s else '0.00'
+
+    def get_selling_price_currency(self, obj):
+        s = self._summary(obj)
+        return s.selling_price_currency if s else 'EUR'
+
+    def get_margin_eur(self, obj):
+        s = self._summary(obj)
+        if not s:
+            return None
+        if s.selling_price_currency != 'EUR' or s.selling_price == 0:
+            return None
+        from decimal import Decimal
+        return str(s.selling_price - s.actual_total_cost)
+
+    def get_margin_pct(self, obj):
+        s = self._summary(obj)
+        if not s or s.selling_price == 0 or s.selling_price_currency != 'EUR':
+            return None
+        from decimal import Decimal
+        pct = (s.selling_price - s.actual_total_cost) / s.selling_price * 100
+        return str(pct.quantize(Decimal('0.01')))
+
+    def get_last_updated(self, obj):
+        s = self._summary(obj)
+        return s.last_updated.isoformat() if s else None

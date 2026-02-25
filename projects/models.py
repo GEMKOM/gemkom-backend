@@ -133,38 +133,13 @@ class JobOrder(models.Model):
     completed_at = models.DateTimeField(null=True, blank=True)
     incoterms = models.CharField(null=True, blank=True)
 
-    # Cost tracking (calculated periodically)
+    # Cost tracking
     estimated_cost = models.DecimalField(
         max_digits=16,
         decimal_places=2,
-        default=Decimal('0.00')
+        default=Decimal('0.00'),
+        help_text='User-entered estimated cost (EUR) for comparison with actual cost.'
     )
-    labor_cost = models.DecimalField(
-        max_digits=16,
-        decimal_places=2,
-        default=Decimal('0.00')
-    )
-    material_cost = models.DecimalField(
-        max_digits=16,
-        decimal_places=2,
-        default=Decimal('0.00')
-    )
-    subcontractor_cost = models.DecimalField(
-        max_digits=16,
-        decimal_places=2,
-        default=Decimal('0.00')
-    )
-    total_cost = models.DecimalField(
-        max_digits=16,
-        decimal_places=2,
-        default=Decimal('0.00')
-    )
-    cost_currency = models.CharField(
-        max_length=3,
-        choices=CURRENCY_CHOICES,
-        default='EUR'
-    )
-    last_cost_calculation = models.DateTimeField(null=True, blank=True)
     total_weight_kg = models.DecimalField(
         max_digits=12,
         decimal_places=2,
@@ -1790,3 +1765,178 @@ class TechnicalDrawingRelease(models.Model):
             job_order=job_order,
             status='released'
         ).order_by('-revision_number').first()
+
+
+# =============================================================================
+# Job Order Cost Models
+# =============================================================================
+
+class JobOrderCostSummary(models.Model):
+    """
+    Auto-computed cost rollup per job order (single source of truth).
+    Updated by recompute_job_cost_summary() whenever underlying costs change.
+    All monetary values in EUR.
+    """
+    job_order = models.OneToOneField(
+        JobOrder,
+        on_delete=models.CASCADE,
+        primary_key=True,
+        related_name='cost_summary'
+    )
+    labor_cost = models.DecimalField(
+        max_digits=16, decimal_places=2, default=Decimal('0.00'),
+        help_text='Welding + machining cost (EUR)'
+    )
+    material_cost = models.DecimalField(
+        max_digits=16, decimal_places=2, default=Decimal('0.00'),
+        help_text='Sum of procurement lines (EUR)'
+    )
+    subcontractor_cost = models.DecimalField(
+        max_digits=16, decimal_places=2, default=Decimal('0.00'),
+        help_text='Non-paint subcontracting assignments (EUR)'
+    )
+    paint_cost = models.DecimalField(
+        max_digits=16, decimal_places=2, default=Decimal('0.00'),
+        help_text='Paint subcontracting assignments (EUR, using statement-date FX)'
+    )
+    qc_cost = models.DecimalField(
+        max_digits=16, decimal_places=2, default=Decimal('0.00'),
+        help_text='Sum of QC cost lines (EUR)'
+    )
+    shipping_cost = models.DecimalField(
+        max_digits=16, decimal_places=2, default=Decimal('0.00'),
+        help_text='Sum of shipping cost lines (EUR)'
+    )
+    actual_total_cost = models.DecimalField(
+        max_digits=16, decimal_places=2, default=Decimal('0.00'),
+        help_text='Sum of all cost components (EUR)'
+    )
+    selling_price = models.DecimalField(
+        max_digits=16, decimal_places=2, default=Decimal('0.00')
+    )
+    selling_price_currency = models.CharField(
+        max_length=3, choices=CURRENCY_CHOICES, default='EUR'
+    )
+    last_updated = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'İş Emri Maliyet Özeti'
+        verbose_name_plural = 'İş Emri Maliyet Özetleri'
+
+    def __str__(self):
+        return f"{self.job_order_id} - {self.actual_total_cost} EUR"
+
+
+class JobOrderProcurementLine(models.Model):
+    """
+    Material cost detail lines for a job order.
+    Pre-populated from PlanningRequestItem + purchase prices.
+    All lines for a job are replaced atomically on each submit.
+    unit_price is treated as EUR.
+    """
+    job_order = models.ForeignKey(
+        JobOrder,
+        on_delete=models.CASCADE,
+        related_name='procurement_lines'
+    )
+    item = models.ForeignKey(
+        'procurement.Item',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='procurement_cost_lines'
+    )
+    item_description = models.CharField(max_length=500, blank=True)
+    quantity = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('1.00'))
+    unit_price = models.DecimalField(
+        max_digits=16, decimal_places=2, default=Decimal('0.00'),
+        help_text='Unit price in EUR'
+    )
+    amount_eur = models.DecimalField(
+        max_digits=16, decimal_places=2, default=Decimal('0.00'),
+        help_text='Computed server-side: quantity × unit_price'
+    )
+    planning_request_item = models.ForeignKey(
+        'planning.PlanningRequestItem',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='procurement_cost_lines'
+    )
+    order = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['job_order', 'order']
+        indexes = [models.Index(fields=['job_order'])]
+        verbose_name = 'Tedarik Maliyet Kalemi'
+        verbose_name_plural = 'Tedarik Maliyet Kalemleri'
+
+    def __str__(self):
+        return f"{self.job_order_id} - {self.item_description} - {self.amount_eur} EUR"
+
+
+class JobOrderQCCostLine(models.Model):
+    """Itemized QC cost entries for a job order, entered by QC department."""
+    job_order = models.ForeignKey(
+        JobOrder,
+        on_delete=models.CASCADE,
+        related_name='qc_cost_lines'
+    )
+    description = models.CharField(max_length=500)
+    amount = models.DecimalField(max_digits=16, decimal_places=2)
+    currency = models.CharField(max_length=3, choices=CURRENCY_CHOICES, default='EUR')
+    amount_eur = models.DecimalField(
+        max_digits=16, decimal_places=2, default=Decimal('0.00'),
+        help_text='EUR equivalent (user-provided; server validates if currency=EUR)'
+    )
+    date = models.DateField(null=True, blank=True)
+    notes = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='qc_cost_lines_created'
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['job_order', '-date', 'id']
+        indexes = [models.Index(fields=['job_order'])]
+        verbose_name = 'KK Maliyet Kalemi'
+        verbose_name_plural = 'KK Maliyet Kalemleri'
+
+    def __str__(self):
+        return f"{self.job_order_id} - {self.description} - {self.amount} {self.currency}"
+
+
+class JobOrderShippingCostLine(models.Model):
+    """Itemized shipping/logistics cost entries for a job order."""
+    job_order = models.ForeignKey(
+        JobOrder,
+        on_delete=models.CASCADE,
+        related_name='shipping_cost_lines'
+    )
+    description = models.CharField(max_length=500)
+    amount = models.DecimalField(max_digits=16, decimal_places=2)
+    currency = models.CharField(max_length=3, choices=CURRENCY_CHOICES, default='EUR')
+    amount_eur = models.DecimalField(
+        max_digits=16, decimal_places=2, default=Decimal('0.00'),
+        help_text='EUR equivalent (user-provided; server validates if currency=EUR)'
+    )
+    date = models.DateField(null=True, blank=True)
+    notes = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='shipping_cost_lines_created'
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['job_order', '-date', 'id']
+        indexes = [models.Index(fields=['job_order'])]
+        verbose_name = 'Nakliye Maliyet Kalemi'
+        verbose_name_plural = 'Nakliye Maliyet Kalemleri'
+
+    def __str__(self):
+        return f"{self.job_order_id} - {self.description} - {self.amount} {self.currency}"

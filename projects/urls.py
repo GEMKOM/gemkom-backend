@@ -4,7 +4,9 @@ from .views import (
     CustomerViewSet, JobOrderViewSet,
     DepartmentTaskTemplateViewSet, JobOrderDepartmentTaskViewSet,
     JobOrderDiscussionTopicViewSet, JobOrderDiscussionCommentViewSet,
-    DiscussionNotificationViewSet, TechnicalDrawingReleaseViewSet
+    DiscussionNotificationViewSet, TechnicalDrawingReleaseViewSet,
+    JobOrderProcurementLineViewSet, JobOrderQCCostLineViewSet,
+    JobOrderShippingCostLineViewSet,
 )
 
 router = DefaultRouter()
@@ -16,6 +18,9 @@ router.register(r'discussion-topics', JobOrderDiscussionTopicViewSet)
 router.register(r'discussion-comments', JobOrderDiscussionCommentViewSet)
 router.register(r'discussion-notifications', DiscussionNotificationViewSet)
 router.register(r'drawing-releases', TechnicalDrawingReleaseViewSet)
+router.register(r'procurement-lines', JobOrderProcurementLineViewSet, basename='procurement-line')
+router.register(r'qc-cost-lines', JobOrderQCCostLineViewSet, basename='qc-cost-line')
+router.register(r'shipping-cost-lines', JobOrderShippingCostLineViewSet, basename='shipping-cost-line')
 
 urlpatterns = [
     path('', include(router.urls)),

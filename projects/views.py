@@ -378,11 +378,6 @@ class JobOrderViewSet(viewsets.ModelViewSet):
             'started_at': job_order.started_at,
             'completed_at': job_order.completed_at,
             'estimated_cost': job_order.estimated_cost,
-            'labor_cost': job_order.labor_cost,
-            'material_cost': job_order.material_cost,
-            'subcontractor_cost': job_order.subcontractor_cost,
-            'total_cost': job_order.total_cost,
-            'cost_currency': job_order.cost_currency,
             'completion_percentage': job_order.completion_percentage,
             'parent': job_order.parent_id,
             'parent_title': job_order.parent.title if job_order.parent else None,
@@ -610,6 +605,63 @@ class JobOrderViewSet(viewsets.ModelViewSet):
             {'value': choice[0], 'label': choice[1]}
             for choice in JobOrderFile.FILE_TYPE_CHOICES
         ])
+
+    # -------------------------------------------------------------------------
+    # Cost actions
+    # -------------------------------------------------------------------------
+
+    @action(detail=False, methods=['get'], url_path='cost_table')
+    def cost_table(self, request):
+        """
+        Returns all job orders with their full cost breakdown.
+
+        Supports the same filter/search/ordering backends as the list view.
+        Each row includes: welding, machining, subcontracting, paint, material,
+        QC, shipping costs plus estimated cost, selling price and margin.
+        """
+        from .serializers import CostTableRowSerializer
+        from .models import JobOrderCostSummary
+
+        qs = JobOrder.objects.select_related(
+            'cost_summary', 'customer'
+        ).exclude(job_no='LEGACY-ARCHIVE')
+
+        qs = self.filter_queryset(qs)
+        page = self.paginate_queryset(qs)
+        if page is not None:
+            serializer = CostTableRowSerializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        serializer = CostTableRowSerializer(qs, many=True)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['get', 'patch'], url_path='cost_summary')
+    def cost_summary(self, request, job_no=None):
+        """
+        GET  → return cost summary for this job order (creates empty one if none exists).
+        PATCH → update selling_price / selling_price_currency.
+        """
+        from .serializers import JobOrderCostSummarySerializer
+        from .models import JobOrderCostSummary
+
+        job_order = self.get_object()
+
+        if request.method == 'GET':
+            summary, _ = JobOrderCostSummary.objects.get_or_create(
+                job_order=job_order
+            )
+            return Response(JobOrderCostSummarySerializer(summary).data)
+
+        # PATCH
+        summary, _ = JobOrderCostSummary.objects.get_or_create(
+            job_order=job_order
+        )
+        serializer = JobOrderCostSummarySerializer(
+            summary, data=request.data, partial=True
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
 
 
 # =============================================================================
@@ -2030,3 +2082,207 @@ class TechnicalDrawingReleaseViewSet(viewsets.ModelViewSet):
             {'value': choice[0], 'label': choice[1]}
             for choice in TechnicalDrawingRelease.STATUS_CHOICES
         ])
+
+
+# =============================================================================
+# Cost ViewSets
+# =============================================================================
+
+class JobOrderProcurementLineViewSet(viewsets.ModelViewSet):
+    """
+    CRUD for procurement cost lines.
+
+    Extra actions:
+      GET  /procurement-lines/preview/?job_order={job_no}
+           Pre-populate lines from PlanningRequestItem + purchase prices (no save).
+
+      POST /procurement-lines/submit/
+           Atomically replace all lines for a job order.
+    """
+    from .serializers import JobOrderProcurementLineSerializer as _Ser
+    serializer_class = _Ser
+    filter_backends = [DjangoFilterBackend, OrderingFilter]
+    filterset_fields = {'job_order': ['exact']}
+    ordering = ['order']
+    http_method_names = ['get', 'post', 'delete', 'head', 'options']
+
+    def get_queryset(self):
+        from .models import JobOrderProcurementLine
+        return JobOrderProcurementLine.objects.select_related('item', 'planning_request_item')
+
+    def get_serializer_class(self):
+        from .serializers import JobOrderProcurementLineSerializer
+        return JobOrderProcurementLineSerializer
+
+    @action(detail=False, methods=['get'], url_path='preview')
+    def preview(self, request):
+        """
+        Returns pre-populated procurement lines from PlanningRequestItem records.
+        Uses the price lookup cascade: PurchaseOrderLine → recommended ItemOffer → any ItemOffer.
+        Does NOT save anything.
+        """
+        from .serializers import ProcurementPreviewLineSerializer
+        from planning.models import PlanningRequestItem
+        from projects.services.costing import convert_to_eur
+
+        job_no = request.query_params.get('job_order')
+        if not job_no:
+            return Response({'detail': 'job_order query param is required.'}, status=400)
+
+        pr_items = (
+            PlanningRequestItem.objects
+            .filter(job_no=job_no)
+            .select_related('item')
+            .prefetch_related(
+                'purchase_request_items__offers__supplier_offer',
+                'purchase_request_items__po_lines__po',
+            )
+            .order_by('id')
+        )
+
+        results = []
+        for idx, pri in enumerate(pr_items):
+            unit_price_eur = None
+            original_unit_price = None
+            original_currency = None
+            price_source = 'none'
+
+            # --- Tier 1: PurchaseOrderLine ---
+            po_line = None
+            for pri_item in pri.purchase_request_items.all():
+                for line in pri_item.po_lines.all():
+                    po_line = line
+                    break
+                if po_line:
+                    break
+            if po_line:
+                price_source = 'po_line'
+                original_unit_price = po_line.unit_price
+                original_currency = po_line.po.currency
+                ref_date = (
+                    po_line.po.ordered_at.date() if po_line.po.ordered_at
+                    else po_line.po.created_at.date()
+                )
+                unit_price_eur = convert_to_eur(po_line.unit_price, original_currency, ref_date)
+
+            # --- Tier 2: Recommended ItemOffer ---
+            if price_source == 'none':
+                offer = None
+                for pri_item in pri.purchase_request_items.all():
+                    for o in pri_item.offers.filter(is_recommended=True).order_by('-id'):
+                        offer = o
+                        break
+                    if offer:
+                        break
+                if offer:
+                    price_source = 'recommended_offer'
+                    original_unit_price = offer.unit_price
+                    original_currency = offer.supplier_offer.currency
+                    ref_date = offer.supplier_offer.created_at.date()
+                    unit_price_eur = convert_to_eur(offer.unit_price, original_currency, ref_date)
+
+            # --- Tier 3: Any ItemOffer ---
+            if price_source == 'none':
+                offer = None
+                for pri_item in pri.purchase_request_items.all():
+                    for o in pri_item.offers.order_by('-id'):
+                        offer = o
+                        break
+                    if offer:
+                        break
+                if offer:
+                    price_source = 'any_offer'
+                    original_unit_price = offer.unit_price
+                    original_currency = offer.supplier_offer.currency
+                    ref_date = offer.supplier_offer.created_at.date()
+                    unit_price_eur = convert_to_eur(offer.unit_price, original_currency, ref_date)
+
+            results.append({
+                'planning_request_item': pri.pk,
+                'item': pri.item_id,
+                'item_code': pri.item.code if pri.item else None,
+                'item_name': pri.item.name if pri.item else None,
+                'item_unit': pri.item.unit if pri.item else None,
+                'item_description': pri.item_description or (pri.item.name if pri.item else ''),
+                'quantity': pri.quantity,
+                'unit_price_eur': unit_price_eur,
+                'original_unit_price': original_unit_price,
+                'original_currency': original_currency,
+                'price_source': price_source,
+                'order': idx,
+            })
+
+        serializer = ProcurementPreviewLineSerializer(results, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['post'], url_path='submit')
+    def submit(self, request):
+        """
+        Atomically replace all procurement cost lines for a job order.
+        Computes amount_eur = quantity × unit_price server-side.
+        """
+        from .serializers import ProcurementLinesSubmitSerializer, JobOrderProcurementLineSerializer
+        from .models import JobOrderProcurementLine
+        from decimal import Decimal
+
+        serializer = ProcurementLinesSubmitSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        job_order = serializer.validated_data['job_order']
+        lines_data = serializer.validated_data.get('lines', [])
+
+        with transaction.atomic():
+            JobOrderProcurementLine.objects.filter(job_order=job_order).delete()
+            new_lines = [
+                JobOrderProcurementLine(
+                    job_order=job_order,
+                    item=line.get('item'),
+                    item_description=line.get('item_description', ''),
+                    quantity=line['quantity'],
+                    unit_price=line['unit_price'],
+                    amount_eur=Decimal(str(line['quantity'])) * Decimal(str(line['unit_price'])),
+                    planning_request_item=line.get('planning_request_item'),
+                    order=line.get('order', 0),
+                )
+                for line in lines_data
+            ]
+            created = JobOrderProcurementLine.objects.bulk_create(new_lines)
+
+        result_serializer = JobOrderProcurementLineSerializer(created, many=True)
+        return Response(result_serializer.data, status=status.HTTP_201_CREATED)
+
+
+class JobOrderQCCostLineViewSet(viewsets.ModelViewSet):
+    """CRUD for QC cost lines per job order."""
+    filter_backends = [DjangoFilterBackend, OrderingFilter]
+    filterset_fields = {'job_order': ['exact']}
+    ordering = ['-date', 'id']
+
+    def get_queryset(self):
+        from .models import JobOrderQCCostLine
+        return JobOrderQCCostLine.objects.select_related('created_by')
+
+    def get_serializer_class(self):
+        from .serializers import JobOrderQCCostLineSerializer
+        return JobOrderQCCostLineSerializer
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
+
+
+class JobOrderShippingCostLineViewSet(viewsets.ModelViewSet):
+    """CRUD for shipping/logistics cost lines per job order."""
+    filter_backends = [DjangoFilterBackend, OrderingFilter]
+    filterset_fields = {'job_order': ['exact']}
+    ordering = ['-date', 'id']
+
+    def get_queryset(self):
+        from .models import JobOrderShippingCostLine
+        return JobOrderShippingCostLine.objects.select_related('created_by')
+
+    def get_serializer_class(self):
+        from .serializers import JobOrderShippingCostLineSerializer
+        return JobOrderShippingCostLineSerializer
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)

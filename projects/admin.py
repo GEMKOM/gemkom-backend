@@ -52,12 +52,11 @@ class JobOrderAdmin(admin.ModelAdmin):
         'job_no', 'title', 'customer', 'status', 'priority',
         'completion_percentage', 'target_completion_date', 'created_at'
     ]
-    list_filter = ['status', 'priority', 'customer', 'cost_currency']
+    list_filter = ['status', 'priority', 'customer']
     search_fields = ['job_no', 'title', 'description', 'customer__name', 'customer__code']
     ordering = ['-created_at']
     readonly_fields = [
-        'started_at', 'completed_at', 'labor_cost', 'material_cost',
-        'subcontractor_cost', 'total_cost', 'last_cost_calculation',
+        'started_at', 'completed_at',
         'completion_percentage', 'created_at', 'created_by',
         'updated_at', 'completed_by'
     ]
@@ -80,11 +79,7 @@ class JobOrderAdmin(admin.ModelAdmin):
             'fields': ('target_completion_date', 'started_at', 'completed_at')
         }),
         ('Maliyet', {
-            'fields': (
-                'estimated_cost', 'cost_currency',
-                ('labor_cost', 'material_cost', 'subcontractor_cost'),
-                'total_cost', 'last_cost_calculation'
-            ),
+            'fields': ('estimated_cost', 'total_weight_kg'),
             'classes': ('collapse',)
         }),
         ('İlerleme', {

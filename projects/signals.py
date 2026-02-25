@@ -1,7 +1,27 @@
 import threading
+from django.db.models.signals import post_save, post_delete
+from django.dispatch import receiver
 from django.utils import timezone
-from .models import DiscussionNotification
+from .models import (
+    DiscussionNotification,
+    JobOrderProcurementLine,
+    JobOrderQCCostLine,
+    JobOrderShippingCostLine,
+)
 from core.emails import send_plain_email
+
+
+# ============================================================================
+# Cost Summary Signals
+# ============================================================================
+
+@receiver([post_save, post_delete], sender=JobOrderProcurementLine)
+@receiver([post_save, post_delete], sender=JobOrderQCCostLine)
+@receiver([post_save, post_delete], sender=JobOrderShippingCostLine)
+def update_job_cost_summary(sender, instance, **kwargs):
+    """Recompute the job order cost summary whenever a cost line is saved or deleted."""
+    from projects.services.costing import recompute_job_cost_summary
+    recompute_job_cost_summary(instance.job_order_id)
 
 
 def send_topic_notifications(topic):
