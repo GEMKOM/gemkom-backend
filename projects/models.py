@@ -147,6 +147,12 @@ class JobOrder(models.Model):
         blank=True,
         help_text='Total weight in kg (set by planning for subcontracting cost calculation)'
     )
+    general_expenses_rate = models.DecimalField(
+        max_digits=10,
+        decimal_places=4,
+        default=Decimal('0.70'),
+        help_text='General expenses rate in TRY per kg (multiplied by total_weight_kg to get general expenses cost)'
+    )
 
     # Progress tracking (auto-calculated from department tasks)
     completion_percentage = models.DecimalField(
@@ -1806,6 +1812,26 @@ class JobOrderCostSummary(models.Model):
     shipping_cost = models.DecimalField(
         max_digits=16, decimal_places=2, default=Decimal('0.00'),
         help_text='Sum of shipping cost lines (EUR)'
+    )
+    paint_material_rate = models.DecimalField(
+        max_digits=10, decimal_places=4, default=Decimal('4.00'),
+        help_text='Paint material rate in TRY per kg (default 4.00)'
+    )
+    paint_material_cost = models.DecimalField(
+        max_digits=16, decimal_places=2, default=Decimal('0.00'),
+        help_text='Paint material cost: paint_material_rate (TRY/kg) × total_weight_kg → EUR (only if painting task not skipped)'
+    )
+    general_expenses_cost = models.DecimalField(
+        max_digits=16, decimal_places=2, default=Decimal('0.00'),
+        help_text='General expenses: general_expenses_rate (TRY/kg) × total_weight_kg → EUR'
+    )
+    employee_overhead_rate = models.DecimalField(
+        max_digits=6, decimal_places=4, default=Decimal('0.65'),
+        help_text='Multiplier applied to labor_cost to estimate employee overhead (default 0.65)'
+    )
+    employee_overhead_cost = models.DecimalField(
+        max_digits=16, decimal_places=2, default=Decimal('0.00'),
+        help_text='employee_overhead_rate × own labor_cost (EUR)'
     )
     actual_total_cost = models.DecimalField(
         max_digits=16, decimal_places=2, default=Decimal('0.00'),

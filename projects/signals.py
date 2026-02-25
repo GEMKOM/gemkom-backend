@@ -1,14 +1,85 @@
 import threading
-from django.db.models.signals import post_save, post_delete
+from django.db import transaction
+from django.db.models.signals import pre_save, post_save, post_delete
 from django.dispatch import receiver
 from django.utils import timezone
 from .models import (
     DiscussionNotification,
+    JobOrder,
     JobOrderProcurementLine,
     JobOrderQCCostLine,
     JobOrderShippingCostLine,
 )
 from core.emails import send_plain_email
+
+
+# ============================================================================
+# General Expenses Rate Propagation
+# ============================================================================
+
+@receiver(pre_save, sender=JobOrder)
+def capture_job_order_cost_fields(sender, instance, **kwargs):
+    """Capture fields that affect cost summary before saving."""
+    if instance.pk:
+        try:
+            old = JobOrder.objects.values(
+                'general_expenses_rate', 'total_weight_kg'
+            ).get(pk=instance.pk)
+            instance._old_general_expenses_rate = old['general_expenses_rate']
+            instance._old_total_weight_kg = old['total_weight_kg']
+        except JobOrder.DoesNotExist:
+            instance._old_general_expenses_rate = None
+            instance._old_total_weight_kg = None
+    else:
+        instance._old_general_expenses_rate = None
+        instance._old_total_weight_kg = None
+
+
+@receiver(post_save, sender=JobOrder)
+def on_job_order_cost_fields_changed(sender, instance, created, **kwargs):
+    """
+    - If general_expenses_rate changed: cascade to descendants, recompute all.
+    - If total_weight_kg changed: recompute this job's cost summary.
+    Both trigger recompute of the job itself (which chains up to parent).
+    """
+    if created:
+        return
+
+    rate_changed = (
+        getattr(instance, '_old_general_expenses_rate', None) is not None
+        and instance._old_general_expenses_rate != instance.general_expenses_rate
+    )
+    weight_changed = (
+        getattr(instance, '_old_total_weight_kg', None) != instance.total_weight_kg
+    )
+
+    if not rate_changed and not weight_changed:
+        return
+
+    new_rate = instance.general_expenses_rate
+    job_no = instance.job_no
+
+    def _run():
+        from projects.services.costing import recompute_job_cost_summary
+
+        if rate_changed:
+            def _collect(jno):
+                children = list(JobOrder.objects.filter(parent_id=jno).values_list('job_no', flat=True))
+                result = list(children)
+                for c in children:
+                    result.extend(_collect(c))
+                return result
+
+            descendants = _collect(job_no)
+            if descendants:
+                JobOrder.objects.filter(job_no__in=descendants).update(general_expenses_rate=new_rate)
+                for djob_no in sorted(descendants):  # children before parents
+                    recompute_job_cost_summary(djob_no)
+
+        # Always recompute this job itself (chains up to parent automatically)
+        recompute_job_cost_summary(job_no)
+
+    transaction.on_commit(_run)
 
 
 # ============================================================================

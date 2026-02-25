@@ -124,6 +124,7 @@ class JobOrderListSerializer(serializers.ModelSerializer):
             'target_completion_date', 'completion_percentage',
             'parent', 'children_count', 'hierarchy_level',
             'ncr_count',
+            'general_expenses_rate',
             'created_at'
         ]
 
@@ -192,7 +193,7 @@ class JobOrderDetailSerializer(serializers.ModelSerializer):
             'customer', 'customer_name', 'customer_short_name', 'customer_code', 'customer_order_no',
             'status', 'status_display', 'priority', 'priority_display',
             'target_completion_date', 'started_at', 'completed_at', 'incoterms',
-            'estimated_cost', 'total_weight_kg', 'completion_percentage',
+            'estimated_cost', 'total_weight_kg', 'general_expenses_rate', 'completion_percentage',
             'parent', 'parent_title', 'children', 'children_count', 'hierarchy_level',
             'files_count', 'topics_count',
             'created_at', 'created_by', 'created_by_name',
@@ -279,7 +280,7 @@ class JobOrderUpdateSerializer(serializers.ModelSerializer):
         fields = [
             'title', 'quantity', 'description', 'customer_order_no',
             'priority', 'target_completion_date', 'incoterms',
-            'estimated_cost', 'total_weight_kg'
+            'estimated_cost', 'total_weight_kg', 'general_expenses_rate'
         ]
 
     def validate(self, attrs):
@@ -1499,21 +1500,98 @@ from planning.models import PlanningRequestItem
 
 class JobOrderCostSummarySerializer(serializers.ModelSerializer):
     """Read/write serializer for JobOrderCostSummary. Cost fields are read-only."""
+    general_expenses_rate = serializers.DecimalField(
+        source='job_order.general_expenses_rate', max_digits=10, decimal_places=4, read_only=True
+    )
+    total_weight_kg = serializers.DecimalField(
+        source='job_order.total_weight_kg', max_digits=12, decimal_places=2,
+        read_only=True, allow_null=True
+    )
+    subcontractor_cost_at_100 = serializers.SerializerMethodField()
+    paint_cost_at_100 = serializers.SerializerMethodField()
+    paint_material_cost_at_100 = serializers.SerializerMethodField()
+
     class Meta:
         model = JobOrderCostSummary
         fields = [
             'job_order',
+            'total_weight_kg',
             'labor_cost', 'material_cost', 'subcontractor_cost',
-            'paint_cost', 'qc_cost', 'shipping_cost', 'actual_total_cost',
+            'paint_cost', 'qc_cost', 'shipping_cost',
+            'paint_material_rate', 'paint_material_cost',
+            'general_expenses_rate', 'general_expenses_cost',
+            'employee_overhead_rate', 'employee_overhead_cost',
+            'actual_total_cost',
+            'subcontractor_cost_at_100', 'paint_cost_at_100', 'paint_material_cost_at_100',
             'selling_price', 'selling_price_currency',
             'last_updated',
         ]
         read_only_fields = [
             'job_order',
+            'total_weight_kg',
             'labor_cost', 'material_cost', 'subcontractor_cost',
-            'paint_cost', 'qc_cost', 'shipping_cost', 'actual_total_cost',
+            'paint_cost', 'qc_cost', 'shipping_cost',
+            'paint_material_cost',
+            'general_expenses_rate', 'general_expenses_cost',
+            'employee_overhead_cost',
+            'actual_total_cost',
             'last_updated',
         ]
+
+    def get_subcontractor_cost_at_100(self, obj):
+        from subcontracting.models import SubcontractingAssignment
+        from projects.services.costing import convert_to_eur
+        from datetime import date
+        from decimal import Decimal
+        today = date.today()
+        assignments = (
+            SubcontractingAssignment.objects
+            .filter(
+                department_task__job_order_id=obj.job_order_id,
+                price_tier__isnull=False,
+                allocated_weight_kg__gt=0,
+            )
+            .exclude(department_task__task_type='painting')
+            .select_related('price_tier')
+        )
+        total = sum(
+            convert_to_eur(a.allocated_weight_kg * a.price_tier.price_per_kg, a.price_tier.currency, today)
+            for a in assignments
+        )
+        return str(Decimal(total).quantize(Decimal('0.01')))
+
+    def get_paint_cost_at_100(self, obj):
+        from subcontracting.models import SubcontractingAssignment
+        from projects.services.costing import convert_to_eur
+        from datetime import date
+        from decimal import Decimal
+        today = date.today()
+        assignments = (
+            SubcontractingAssignment.objects
+            .filter(
+                department_task__job_order_id=obj.job_order_id,
+                department_task__task_type='painting',
+                price_tier__isnull=False,
+                allocated_weight_kg__gt=0,
+            )
+            .select_related('price_tier')
+        )
+        total = sum(
+            convert_to_eur(a.allocated_weight_kg * a.price_tier.price_per_kg, a.price_tier.currency, today)
+            for a in assignments
+        )
+        return str(Decimal(total).quantize(Decimal('0.01')))
+
+    def get_paint_material_cost_at_100(self, obj):
+        from projects.services.costing import convert_to_eur
+        from datetime import date
+        from decimal import Decimal
+        weight = obj.job_order.total_weight_kg
+        if not weight:
+            return '0.00'
+        today = date.today()
+        total = convert_to_eur(obj.paint_material_rate * Decimal(str(weight)), 'TRY', today)
+        return str(total)
 
 
 class JobOrderProcurementLineSerializer(serializers.ModelSerializer):
@@ -1662,14 +1740,21 @@ class CostTableRowSerializer(serializers.Serializer):
     paint_cost = serializers.SerializerMethodField()
     qc_cost = serializers.SerializerMethodField()
     shipping_cost = serializers.SerializerMethodField()
+    paint_material_cost = serializers.SerializerMethodField()
+    general_expenses_cost = serializers.SerializerMethodField()
+    employee_overhead_rate = serializers.SerializerMethodField()
+    employee_overhead_cost = serializers.SerializerMethodField()
     actual_total_cost = serializers.SerializerMethodField()
 
     # From JobOrder
     estimated_cost = serializers.DecimalField(max_digits=16, decimal_places=2)
+    general_expenses_rate = serializers.DecimalField(max_digits=10, decimal_places=4)
+    total_weight_kg = serializers.DecimalField(max_digits=12, decimal_places=2, allow_null=True)
 
     # From JobOrderCostSummary
     selling_price = serializers.SerializerMethodField()
     selling_price_currency = serializers.SerializerMethodField()
+    price_per_kg = serializers.SerializerMethodField()
     margin_eur = serializers.SerializerMethodField()
     margin_pct = serializers.SerializerMethodField()
     last_updated = serializers.SerializerMethodField()
@@ -1679,6 +1764,95 @@ class CostTableRowSerializer(serializers.Serializer):
             return obj.cost_summary
         except JobOrderCostSummary.DoesNotExist:
             return None
+
+    def _at100(self, obj):
+        """
+        Compute at-100% projected costs for this job and all its descendants.
+
+        Returns a dict with 'sc' (subcontractor), 'paint', 'pm' (paint_material).
+        Results are cached per job_no on this serializer instance to avoid
+        redundant queries when multiple fields are rendered.
+        """
+        if not hasattr(self, '_at100_cache'):
+            self._at100_cache = {}
+        if obj.job_no in self._at100_cache:
+            return self._at100_cache[obj.job_no]
+
+        from subcontracting.models import SubcontractingAssignment
+        from projects.services.costing import convert_to_eur
+        from projects.models import JobOrder as _JO
+        from django.db.models import Q
+        from datetime import date
+        from decimal import Decimal
+
+        today = date.today()
+        prefix = f'{obj.job_no}-'
+
+        # --- subcontractor at 100%: allocated_weight_kg × price_per_kg → EUR ---
+        sc_assignments = (
+            SubcontractingAssignment.objects
+            .filter(
+                Q(department_task__job_order__job_no=obj.job_no) |
+                Q(department_task__job_order__job_no__startswith=prefix),
+                price_tier__isnull=False,
+                allocated_weight_kg__gt=0,
+            )
+            .exclude(department_task__task_type='painting')
+            .select_related('price_tier')
+        )
+        sc_total = sum(
+            convert_to_eur(a.allocated_weight_kg * a.price_tier.price_per_kg, a.price_tier.currency, today)
+            for a in sc_assignments
+        ) or Decimal('0')
+
+        # --- paint at 100%: allocated_weight_kg × price_per_kg → EUR ---
+        paint_assignments = (
+            SubcontractingAssignment.objects
+            .filter(
+                Q(department_task__job_order__job_no=obj.job_no) |
+                Q(department_task__job_order__job_no__startswith=prefix),
+                department_task__task_type='painting',
+                price_tier__isnull=False,
+                allocated_weight_kg__gt=0,
+            )
+            .select_related('price_tier')
+        )
+        paint_total = sum(
+            convert_to_eur(a.allocated_weight_kg * a.price_tier.price_per_kg, a.price_tier.currency, today)
+            for a in paint_assignments
+        ) or Decimal('0')
+
+        # --- paint material at 100%: paint_material_rate × total_weight_kg → EUR ---
+        # Sum across every job in the subtree using their own rate and weight.
+        job_rows = list(
+            _JO.objects
+            .filter(Q(job_no=obj.job_no) | Q(job_no__startswith=prefix))
+            .values('job_no', 'total_weight_kg')
+        )
+        job_nos = [r['job_no'] for r in job_rows]
+        weight_map = {r['job_no']: r['total_weight_kg'] for r in job_rows}
+
+        rate_map = dict(
+            JobOrderCostSummary.objects
+            .filter(job_order_id__in=job_nos)
+            .values_list('job_order_id', 'paint_material_rate')
+        )
+
+        pm_total = Decimal('0')
+        for jno in job_nos:
+            weight = weight_map.get(jno)
+            if not weight:
+                continue
+            rate = Decimal(str(rate_map.get(jno, '4.00')))
+            pm_total += convert_to_eur(rate * Decimal(str(weight)), 'TRY', today)
+
+        result = {
+            'sc':    Decimal(sc_total).quantize(Decimal('0.01')),
+            'paint': Decimal(paint_total).quantize(Decimal('0.01')),
+            'pm':    pm_total.quantize(Decimal('0.01')),
+        }
+        self._at100_cache[obj.job_no] = result
+        return result
 
     def get_customer_name(self, obj):
         if not obj.customer:
@@ -1694,12 +1868,10 @@ class CostTableRowSerializer(serializers.Serializer):
         return str(s.material_cost) if s else '0.00'
 
     def get_subcontractor_cost(self, obj):
-        s = self._summary(obj)
-        return str(s.subcontractor_cost) if s else '0.00'
+        return str(self._at100(obj)['sc'])
 
     def get_paint_cost(self, obj):
-        s = self._summary(obj)
-        return str(s.paint_cost) if s else '0.00'
+        return str(self._at100(obj)['paint'])
 
     def get_qc_cost(self, obj):
         s = self._summary(obj)
@@ -1709,9 +1881,36 @@ class CostTableRowSerializer(serializers.Serializer):
         s = self._summary(obj)
         return str(s.shipping_cost) if s else '0.00'
 
-    def get_actual_total_cost(self, obj):
+    def get_paint_material_cost(self, obj):
+        return str(self._at100(obj)['pm'])
+
+    def get_general_expenses_cost(self, obj):
         s = self._summary(obj)
-        return str(s.actual_total_cost) if s else '0.00'
+        return str(s.general_expenses_cost) if s else '0.00'
+
+    def get_employee_overhead_rate(self, obj):
+        s = self._summary(obj)
+        return str(s.employee_overhead_rate) if s else '0.65'
+
+    def get_employee_overhead_cost(self, obj):
+        s = self._summary(obj)
+        return str(s.employee_overhead_cost) if s else '0.00'
+
+    def get_actual_total_cost(self, obj):
+        from decimal import Decimal
+        s = self._summary(obj)
+        at100 = self._at100(obj)
+        # Use stored actual values for non-progress-based components;
+        # substitute at-100% projections for the three progress-based ones.
+        labor      = s.labor_cost if s else Decimal('0')
+        material   = s.material_cost if s else Decimal('0')
+        qc         = s.qc_cost if s else Decimal('0')
+        shipping   = s.shipping_cost if s else Decimal('0')
+        gen_exp    = s.general_expenses_cost if s else Decimal('0')
+        emp_oh     = s.employee_overhead_cost if s else Decimal('0')
+        total = (labor + material + at100['sc'] + at100['paint']
+                 + qc + shipping + at100['pm'] + gen_exp + emp_oh)
+        return str(total.quantize(Decimal('0.01')))
 
     def get_selling_price(self, obj):
         s = self._summary(obj)
@@ -1721,21 +1920,32 @@ class CostTableRowSerializer(serializers.Serializer):
         s = self._summary(obj)
         return s.selling_price_currency if s else 'EUR'
 
-    def get_margin_eur(self, obj):
-        s = self._summary(obj)
-        if not s:
-            return None
-        if s.selling_price_currency != 'EUR' or s.selling_price == 0:
-            return None
+    def get_price_per_kg(self, obj):
+        """selling_price ÷ total_weight_kg (null if weight is zero or missing)."""
         from decimal import Decimal
-        return str(s.selling_price - s.actual_total_cost)
+        s = self._summary(obj)
+        if not s or not s.selling_price:
+            return None
+        weight = obj.total_weight_kg
+        if not weight:
+            return None
+        return str((s.selling_price / Decimal(str(weight))).quantize(Decimal('0.01')))
+
+    def get_margin_eur(self, obj):
+        from decimal import Decimal
+        s = self._summary(obj)
+        if not s or s.selling_price_currency != 'EUR' or s.selling_price == 0:
+            return None
+        total_at100 = Decimal(self.get_actual_total_cost(obj))
+        return str(s.selling_price - total_at100)
 
     def get_margin_pct(self, obj):
+        from decimal import Decimal
         s = self._summary(obj)
         if not s or s.selling_price == 0 or s.selling_price_currency != 'EUR':
             return None
-        from decimal import Decimal
-        pct = (s.selling_price - s.actual_total_cost) / s.selling_price * 100
+        total_at100 = Decimal(self.get_actual_total_cost(obj))
+        pct = (s.selling_price - total_at100) / s.selling_price * 100
         return str(pct.quantize(Decimal('0.01')))
 
     def get_last_updated(self, obj):

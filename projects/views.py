@@ -610,30 +610,86 @@ class JobOrderViewSet(viewsets.ModelViewSet):
     # Cost actions
     # -------------------------------------------------------------------------
 
+    @staticmethod
+    def _serialize_cost_rows(jobs, jobs_with_children, context):
+        """
+        Serialize a list of JobOrder instances with CostTableRowSerializer and
+        inject the has_children flag from the provided set.
+        """
+        from .serializers import CostTableRowSerializer
+        serializer = CostTableRowSerializer(jobs, many=True, context=context)
+        return [
+            {**item, 'has_children': item['job_no'] in jobs_with_children}
+            for item in serializer.data
+        ]
+
     @action(detail=False, methods=['get'], url_path='cost_table')
     def cost_table(self, request):
         """
-        Returns all job orders with their full cost breakdown.
+        Returns paginated root-level job orders with cost breakdown.
 
-        Supports the same filter/search/ordering backends as the list view.
-        Each row includes: welding, machining, subcontracting, paint, material,
-        QC, shipping costs plus estimated cost, selling price and margin.
+        Each row includes has_children=true/false. When true, call
+        GET /projects/job-orders/{job_no}/cost_children/ to load that job's
+        direct children on demand.
+
+        'count' in the pagination envelope is the total number of roots.
+        Filters promote jobs to roots when their parent is excluded.
         """
-        from .serializers import CostTableRowSerializer
-        from .models import JobOrderCostSummary
+        base_qs = (
+            JobOrder.objects
+            .select_related('cost_summary', 'customer')
+            .exclude(job_no='LEGACY-ARCHIVE')
+            .order_by('job_no')
+        )
+        filtered_qs = self.filter_queryset(base_qs)
 
-        qs = JobOrder.objects.select_related(
-            'cost_summary', 'customer'
-        ).exclude(job_no='LEGACY-ARCHIVE')
+        # One lightweight query to learn the full parent/child structure.
+        job_meta = list(filtered_qs.values('job_no', 'parent_id'))
+        job_no_set = {m['job_no'] for m in job_meta}
+        jobs_with_children = {m['parent_id'] for m in job_meta if m['parent_id'] in job_no_set}
+        root_nos = [
+            m['job_no'] for m in job_meta
+            if not m['parent_id'] or m['parent_id'] not in job_no_set
+        ]
 
-        qs = self.filter_queryset(qs)
-        page = self.paginate_queryset(qs)
+        # Paginate the root list (DRF paginators accept Python lists).
+        page = self.paginate_queryset(root_nos)
+        root_page_nos = page if page is not None else root_nos
+
+        root_jobs = list(filtered_qs.filter(job_no__in=root_page_nos)) if root_page_nos else []
+        # Restore the paginated order (filter(in=) doesn't guarantee it).
+        order_map = {no: i for i, no in enumerate(root_page_nos)}
+        root_jobs.sort(key=lambda j: order_map[j.job_no])
+
+        data = self._serialize_cost_rows(root_jobs, jobs_with_children, self.get_serializer_context())
+
         if page is not None:
-            serializer = CostTableRowSerializer(page, many=True)
-            return self.get_paginated_response(serializer.data)
+            return self.get_paginated_response(data)
+        return Response(data)
 
-        serializer = CostTableRowSerializer(qs, many=True)
-        return Response(serializer.data)
+    @action(detail=True, methods=['get'], url_path='cost_children')
+    def cost_children(self, request, job_no=None):
+        """
+        Returns direct children of the given job order with cost breakdown.
+        Each row includes has_children so the frontend knows whether to show
+        a further expand button.
+        """
+        children = list(
+            JobOrder.objects
+            .select_related('cost_summary', 'customer')
+            .filter(parent_id=job_no)
+            .order_by('job_no')
+        )
+        child_nos = {c.job_no for c in children}
+        # Determine which children themselves have children.
+        grandchild_parent_nos = set(
+            JobOrder.objects
+            .filter(parent_id__in=child_nos)
+            .values_list('parent_id', flat=True)
+            .distinct()
+        )
+        data = self._serialize_cost_rows(children, grandchild_parent_nos, self.get_serializer_context())
+        return Response(data)
 
     @action(detail=True, methods=['get', 'patch'], url_path='cost_summary')
     def cost_summary(self, request, job_no=None):
@@ -650,6 +706,7 @@ class JobOrderViewSet(viewsets.ModelViewSet):
             summary, _ = JobOrderCostSummary.objects.get_or_create(
                 job_order=job_order
             )
+            summary.job_order = job_order  # avoids extra query for general_expenses_rate
             return Response(JobOrderCostSummarySerializer(summary).data)
 
         # PATCH
@@ -661,7 +718,16 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         )
         serializer.is_valid(raise_exception=True)
         serializer.save()
-        return Response(serializer.data)
+
+        # Recompute if any rate that affects computed costs was patched
+        rate_fields = {'paint_material_rate', 'employee_overhead_rate'}
+        if rate_fields & set(request.data.keys()):
+            from projects.services.costing import recompute_job_cost_summary
+            recompute_job_cost_summary(job_order.job_no)
+            summary.refresh_from_db()
+            summary.job_order = job_order
+
+        return Response(JobOrderCostSummarySerializer(summary).data)
 
     @action(detail=False, methods=['get'], url_path='procurement_pending')
     def procurement_pending(self, request):

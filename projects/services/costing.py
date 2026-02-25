@@ -59,14 +59,17 @@ def recompute_job_cost_summary(job_no: str) -> None:
     Recompute and persist JobOrderCostSummary for the given job_no.
 
     Cost components (all in EUR):
-      labor_cost        = WeldingJobCostAgg.total_cost + sum(PartCostAgg.total_cost)
-      material_cost     = sum(JobOrderProcurementLine.amount_eur)
-      subcontractor_cost = non-paint SubcontractingAssignment costs converted to EUR
-      paint_cost        = paint SubcontractingAssignment costs (approved statement lines
-                          use statement.approved_at date for FX; unbilled portion uses today)
-      qc_cost           = sum(JobOrderQCCostLine.amount_eur)
-      shipping_cost     = sum(JobOrderShippingCostLine.amount_eur)
-      actual_total_cost = sum of all above
+      labor_cost          = WeldingJobCostAgg.total_cost + sum(PartCostAgg.total_cost)
+      material_cost       = sum(JobOrderProcurementLine.amount_eur)
+      subcontractor_cost  = non-paint SubcontractingAssignment costs converted to EUR
+      paint_cost          = paint SubcontractingAssignment costs (approved statement lines
+                            use statement.approved_at date for FX; unbilled portion uses today)
+      qc_cost             = sum(JobOrderQCCostLine.amount_eur)
+      shipping_cost       = sum(JobOrderShippingCostLine.amount_eur)
+      paint_material_cost = 4.00 TRY × total_weight_kg → EUR (only if painting task not skipped)
+      general_expenses_cost = general_expenses_rate (TRY/kg) × total_weight_kg → EUR
+      employee_overhead_cost = employee_overhead_rate × own labor_cost
+      actual_total_cost   = sum of all above
     """
     from welding.models import WeldingJobCostAgg
     from tasks.models import PartCostAgg
@@ -74,9 +77,21 @@ def recompute_job_cost_summary(job_no: str) -> None:
     from projects.models import (
         JobOrder, JobOrderCostSummary,
         JobOrderProcurementLine, JobOrderQCCostLine, JobOrderShippingCostLine,
+        JobOrderDepartmentTask,
     )
 
     today = date.today()
+
+    # ------------------------------------------------------------------
+    # 0. Fetch job order fields needed for new cost components
+    # ------------------------------------------------------------------
+    job_fields = (
+        JobOrder.objects
+        .values('total_weight_kg', 'general_expenses_rate')
+        .get(job_no=job_no)
+    )
+    total_weight_kg = Decimal(str(job_fields['total_weight_kg'] or 0))
+    general_expenses_rate = Decimal(str(job_fields['general_expenses_rate'] or 0))
 
     # ------------------------------------------------------------------
     # 1. Labor = welding + machining (both already stored in EUR)
@@ -94,7 +109,8 @@ def recompute_job_cost_summary(job_no: str) -> None:
         .aggregate(s=Sum('total_cost'))['s']
     ) or Decimal('0')
 
-    labor = q2(Decimal(welding) + Decimal(machining))
+    own_labor = q2(Decimal(welding) + Decimal(machining))
+    labor = own_labor
 
     # ------------------------------------------------------------------
     # 2. Material = sum of saved procurement lines (unit_price is EUR)
@@ -183,7 +199,52 @@ def recompute_job_cost_summary(job_no: str) -> None:
     )
 
     # ------------------------------------------------------------------
-    # 6. Add direct children's rolled-up costs
+    # 6. Paint material cost = paint_material_rate (TRY/kg) × total_weight_kg → EUR
+    #    Only if job has at least one non-skipped painting task
+    #    Preserve user-customized rate; fall back to default 4.00
+    # ------------------------------------------------------------------
+    existing = JobOrderCostSummary.objects.filter(job_order_id=job_no).values(
+        'paint_material_rate', 'employee_overhead_rate'
+    ).first()
+
+    paint_material_rate = (
+        Decimal(str(existing['paint_material_rate']))
+        if existing else Decimal('4.00')
+    )
+
+    painting_task = (
+        JobOrderDepartmentTask.objects
+        .filter(job_order_id=job_no, task_type='painting')
+        .exclude(status='skipped')
+        .values('manual_progress')
+        .first()
+    )
+    painting_progress = Decimal(str(painting_task['manual_progress'] or 0)) if painting_task else Decimal('0')
+    paint_material = q2(
+        convert_to_eur(paint_material_rate * total_weight_kg * (painting_progress / Decimal('100')), 'TRY', today)
+        if (total_weight_kg > 0 and painting_progress > 0) else Decimal('0')
+    )
+
+    # ------------------------------------------------------------------
+    # 7. General expenses = general_expenses_rate (TRY/kg) × total_weight_kg → EUR
+    # ------------------------------------------------------------------
+    general_expenses = q2(
+        convert_to_eur(general_expenses_rate * total_weight_kg, 'TRY', today)
+        if (general_expenses_rate > 0 and total_weight_kg > 0) else Decimal('0')
+    )
+
+    # ------------------------------------------------------------------
+    # 8. Employee overhead = employee_overhead_rate × own labor_cost
+    #    Preserve user-customized rate; fall back to default 0.65
+    # ------------------------------------------------------------------
+    employee_overhead_rate = (
+        Decimal(str(existing['employee_overhead_rate']))
+        if existing else Decimal('0.65')
+    )
+    employee_overhead = q2(employee_overhead_rate * own_labor)
+
+    # ------------------------------------------------------------------
+    # 9. Add direct children's rolled-up costs
     #    Each child's summary already includes its own descendants, so
     #    summing direct children avoids double-counting.
     # ------------------------------------------------------------------
@@ -191,17 +252,23 @@ def recompute_job_cost_summary(job_no: str) -> None:
         JobOrderCostSummary.objects.filter(job_order__parent_id=job_no)
     )
     if children_summaries:
-        labor         += sum(s.labor_cost          for s in children_summaries)
-        material      += sum(s.material_cost       for s in children_summaries)
-        subcontractor += sum(s.subcontractor_cost  for s in children_summaries)
-        paint         += sum(s.paint_cost          for s in children_summaries)
-        qc            += sum(s.qc_cost             for s in children_summaries)
-        shipping      += sum(s.shipping_cost       for s in children_summaries)
+        labor             += sum(s.labor_cost             for s in children_summaries)
+        material          += sum(s.material_cost          for s in children_summaries)
+        subcontractor     += sum(s.subcontractor_cost     for s in children_summaries)
+        paint             += sum(s.paint_cost             for s in children_summaries)
+        qc                += sum(s.qc_cost               for s in children_summaries)
+        shipping          += sum(s.shipping_cost          for s in children_summaries)
+        paint_material    += sum(s.paint_material_cost    for s in children_summaries)
+        general_expenses  += sum(s.general_expenses_cost  for s in children_summaries)
+        employee_overhead += sum(s.employee_overhead_cost for s in children_summaries)
 
     # ------------------------------------------------------------------
-    # 7. Total and upsert
+    # 10. Total and upsert
     # ------------------------------------------------------------------
-    total = q2(labor + material + subcontractor + paint + qc + shipping)
+    total = q2(
+        labor + material + subcontractor + paint + qc + shipping
+        + paint_material + general_expenses + employee_overhead
+    )
 
     JobOrderCostSummary.objects.update_or_create(
         job_order_id=job_no,
@@ -212,12 +279,15 @@ def recompute_job_cost_summary(job_no: str) -> None:
             'paint_cost': q2(paint),
             'qc_cost': q2(qc),
             'shipping_cost': q2(shipping),
+            'paint_material_cost': q2(paint_material),
+            'general_expenses_cost': q2(general_expenses),
+            'employee_overhead_cost': q2(employee_overhead),
             'actual_total_cost': total,
         },
     )
 
     # ------------------------------------------------------------------
-    # 8. Chain up: if this job has a parent, recompute the parent too
+    # 11. Chain up: if this job has a parent, recompute the parent too
     # ------------------------------------------------------------------
     parent_id = (
         JobOrder.objects
