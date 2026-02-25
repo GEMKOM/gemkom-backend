@@ -687,6 +687,54 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         serializer = JobOrderListSerializer(qs, many=True)
         return Response(serializer.data)
 
+    @action(detail=False, methods=['get'], url_path='qc_pending')
+    def qc_pending(self, request):
+        """
+        Returns job orders that have no QC cost lines yet.
+        Excludes only cancelled jobs. Supports the same filters as the list view.
+        """
+        from django.db.models import Count
+
+        qs = (
+            JobOrder.objects
+            .select_related('customer')
+            .annotate(qc_line_count=Count('qc_cost_lines'))
+            .filter(qc_line_count=0)
+            .exclude(job_no='LEGACY-ARCHIVE')
+            .exclude(status='cancelled')
+        )
+        qs = self.filter_queryset(qs)
+        page = self.paginate_queryset(qs)
+        if page is not None:
+            serializer = JobOrderListSerializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        serializer = JobOrderListSerializer(qs, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['get'], url_path='shipping_pending')
+    def shipping_pending(self, request):
+        """
+        Returns job orders that have no shipping cost lines yet.
+        Excludes only cancelled jobs. Supports the same filters as the list view.
+        """
+        from django.db.models import Count
+
+        qs = (
+            JobOrder.objects
+            .select_related('customer')
+            .annotate(shipping_line_count=Count('shipping_cost_lines'))
+            .filter(shipping_line_count=0)
+            .exclude(job_no='LEGACY-ARCHIVE')
+            .exclude(status='cancelled')
+        )
+        qs = self.filter_queryset(qs)
+        page = self.paginate_queryset(qs)
+        if page is not None:
+            serializer = JobOrderListSerializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        serializer = JobOrderListSerializer(qs, many=True)
+        return Response(serializer.data)
+
 
 # =============================================================================
 # Department Task Template ViewSet
@@ -2142,11 +2190,16 @@ class JobOrderProcurementLineViewSet(viewsets.ModelViewSet):
     def preview(self, request):
         """
         Returns pre-populated procurement lines from PlanningRequestItem records.
-        Uses the price lookup cascade: PurchaseOrderLine → recommended ItemOffer → any ItemOffer.
+        Uses the price lookup cascade:
+          1. PurchaseOrderLine for this planning item
+          2. Recommended ItemOffer for this planning item
+          3. Any ItemOffer for this planning item
+          4. Latest historical PurchaseOrderLine for the same Item (any job)
         Does NOT save anything.
         """
         from .serializers import ProcurementPreviewLineSerializer
         from planning.models import PlanningRequestItem
+        from procurement.models import PurchaseOrderLine
         from projects.services.costing import convert_to_eur
 
         job_no = request.query_params.get('job_order')
@@ -2170,6 +2223,7 @@ class JobOrderProcurementLineViewSet(viewsets.ModelViewSet):
             original_unit_price = None
             original_currency = None
             price_source = 'none'
+            ref_date = None
 
             # --- Tier 1: PurchaseOrderLine ---
             po_line = None
@@ -2221,6 +2275,25 @@ class JobOrderProcurementLineViewSet(viewsets.ModelViewSet):
                     ref_date = offer.supplier_offer.created_at.date()
                     unit_price_eur = convert_to_eur(offer.unit_price, original_currency, ref_date)
 
+            # --- Tier 4: Latest historical PO line for this item (any job) ---
+            if price_source == 'none' and pri.item_id:
+                hist_line = (
+                    PurchaseOrderLine.objects
+                    .filter(purchase_request_item__item_id=pri.item_id)
+                    .select_related('po')
+                    .order_by('-po__ordered_at', '-po__created_at', '-id')
+                    .first()
+                )
+                if hist_line:
+                    price_source = 'historical_po'
+                    original_unit_price = hist_line.unit_price
+                    original_currency = hist_line.po.currency
+                    ref_date = (
+                        hist_line.po.ordered_at.date() if hist_line.po.ordered_at
+                        else hist_line.po.created_at.date()
+                    )
+                    unit_price_eur = convert_to_eur(hist_line.unit_price, original_currency, ref_date)
+
             results.append({
                 'planning_request_item': pri.pk,
                 'item': pri.item_id,
@@ -2233,6 +2306,7 @@ class JobOrderProcurementLineViewSet(viewsets.ModelViewSet):
                 'original_unit_price': original_unit_price,
                 'original_currency': original_currency,
                 'price_source': price_source,
+                'price_date': ref_date,
                 'order': idx,
             })
 

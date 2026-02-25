@@ -1585,8 +1585,9 @@ class ProcurementPreviewLineSerializer(serializers.Serializer):
     original_unit_price = serializers.DecimalField(max_digits=16, decimal_places=2, allow_null=True)
     original_currency = serializers.CharField(allow_null=True)
     price_source = serializers.ChoiceField(
-        choices=['po_line', 'recommended_offer', 'any_offer', 'none']
+        choices=['po_line', 'recommended_offer', 'any_offer', 'historical_po', 'none']
     )
+    price_date = serializers.DateField(allow_null=True)
     order = serializers.IntegerField()
 
 
