@@ -1726,6 +1726,32 @@ class JobOrderShippingCostLineSerializer(serializers.ModelSerializer):
         return attrs
 
 
+class CostLineInputSerializer(serializers.Serializer):
+    """Single line input for QC or shipping submit requests. Always EUR."""
+    description = serializers.CharField(max_length=500)
+    amount_eur = serializers.DecimalField(max_digits=16, decimal_places=2)
+    date = serializers.DateField(required=False, allow_null=True)
+    notes = serializers.CharField(max_length=2000, default='', allow_blank=True)
+
+
+class QCLinesSubmitSerializer(serializers.Serializer):
+    """Replace all QC cost lines for a job order atomically."""
+    job_order = serializers.SlugRelatedField(slug_field='job_no', queryset=JobOrder.objects.all())
+    lines = CostLineInputSerializer(many=True)
+
+    def validate_lines(self, value):
+        return value if value is not None else []
+
+
+class ShippingLinesSubmitSerializer(serializers.Serializer):
+    """Replace all shipping cost lines for a job order atomically."""
+    job_order = serializers.SlugRelatedField(slug_field='job_no', queryset=JobOrder.objects.all())
+    lines = CostLineInputSerializer(many=True)
+
+    def validate_lines(self, value):
+        return value if value is not None else []
+
+
 class CostTableRowSerializer(serializers.Serializer):
     """Read-only row in the cost table view."""
     job_no = serializers.CharField()

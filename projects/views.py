@@ -55,7 +55,10 @@ from .serializers import (
     RejectRevisionSerializer,
     BulkCreateSubtasksSerializer,
 )
-from .permissions import IsOfficeUser, IsTopicOwnerOrReadOnly, IsCommentAuthorOrReadOnly
+from .permissions import (
+    IsOfficeUser, IsTopicOwnerOrReadOnly, IsCommentAuthorOrReadOnly,
+    IsCostAuthorized, IsProcurementCostAuthorized, IsQCCostAuthorized, IsShippingCostAuthorized,
+)
 
 
 class CustomerViewSet(viewsets.ModelViewSet):
@@ -623,7 +626,7 @@ class JobOrderViewSet(viewsets.ModelViewSet):
             for item in serializer.data
         ]
 
-    @action(detail=False, methods=['get'], url_path='cost_table')
+    @action(detail=False, methods=['get'], url_path='cost_table', permission_classes=[IsCostAuthorized])
     def cost_table(self, request):
         """
         Returns paginated root-level job orders with cost breakdown.
@@ -667,7 +670,7 @@ class JobOrderViewSet(viewsets.ModelViewSet):
             return self.get_paginated_response(data)
         return Response(data)
 
-    @action(detail=True, methods=['get'], url_path='cost_children')
+    @action(detail=True, methods=['get'], url_path='cost_children', permission_classes=[IsCostAuthorized])
     def cost_children(self, request, job_no=None):
         """
         Returns direct children of the given job order with cost breakdown.
@@ -691,7 +694,7 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         data = self._serialize_cost_rows(children, grandchild_parent_nos, self.get_serializer_context())
         return Response(data)
 
-    @action(detail=True, methods=['get', 'patch'], url_path='cost_summary')
+    @action(detail=True, methods=['get', 'patch'], url_path='cost_summary', permission_classes=[IsCostAuthorized])
     def cost_summary(self, request, job_no=None):
         """
         GET  → return cost summary for this job order (creates empty one if none exists).
@@ -729,7 +732,7 @@ class JobOrderViewSet(viewsets.ModelViewSet):
 
         return Response(JobOrderCostSummarySerializer(summary).data)
 
-    @action(detail=False, methods=['get'], url_path='procurement_pending')
+    @action(detail=False, methods=['get'], url_path='procurement_pending', permission_classes=[IsProcurementCostAuthorized])
     def procurement_pending(self, request):
         """
         Returns job orders that have no saved procurement cost lines yet.
@@ -741,7 +744,7 @@ class JobOrderViewSet(viewsets.ModelViewSet):
             JobOrder.objects
             .select_related('customer')
             .annotate(procurement_line_count=Count('procurement_lines'))
-            .filter(procurement_line_count=0)
+            .filter(procurement_line_count=0, children__isnull=True)
             .exclude(job_no='LEGACY-ARCHIVE')
             .exclude(status='cancelled')
         )
@@ -753,7 +756,7 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         serializer = JobOrderListSerializer(qs, many=True)
         return Response(serializer.data)
 
-    @action(detail=False, methods=['get'], url_path='qc_pending')
+    @action(detail=False, methods=['get'], url_path='qc_pending', permission_classes=[IsQCCostAuthorized])
     def qc_pending(self, request):
         """
         Returns job orders that have no QC cost lines yet.
@@ -765,7 +768,7 @@ class JobOrderViewSet(viewsets.ModelViewSet):
             JobOrder.objects
             .select_related('customer')
             .annotate(qc_line_count=Count('qc_cost_lines'))
-            .filter(qc_line_count=0)
+            .filter(qc_line_count=0, children__isnull=True)
             .exclude(job_no='LEGACY-ARCHIVE')
             .exclude(status='cancelled')
         )
@@ -777,7 +780,7 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         serializer = JobOrderListSerializer(qs, many=True)
         return Response(serializer.data)
 
-    @action(detail=False, methods=['get'], url_path='shipping_pending')
+    @action(detail=False, methods=['get'], url_path='shipping_pending', permission_classes=[IsShippingCostAuthorized])
     def shipping_pending(self, request):
         """
         Returns job orders that have no shipping cost lines yet.
@@ -789,9 +792,78 @@ class JobOrderViewSet(viewsets.ModelViewSet):
             JobOrder.objects
             .select_related('customer')
             .annotate(shipping_line_count=Count('shipping_cost_lines'))
-            .filter(shipping_line_count=0)
+            .filter(shipping_line_count=0, children__isnull=True)
             .exclude(job_no='LEGACY-ARCHIVE')
             .exclude(status='cancelled')
+        )
+        qs = self.filter_queryset(qs)
+        page = self.paginate_queryset(qs)
+        if page is not None:
+            serializer = JobOrderListSerializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        serializer = JobOrderListSerializer(qs, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['get'], url_path='has_procurement', permission_classes=[IsProcurementCostAuthorized])
+    def has_procurement(self, request):
+        """
+        Returns job orders that have at least one saved procurement cost line.
+        Supports the same filters as the list view.
+        """
+        from django.db.models import Count
+
+        qs = (
+            JobOrder.objects
+            .select_related('customer')
+            .annotate(procurement_line_count=Count('procurement_lines'))
+            .filter(procurement_line_count__gt=0, children__isnull=True)
+            .exclude(job_no='LEGACY-ARCHIVE')
+        )
+        qs = self.filter_queryset(qs)
+        page = self.paginate_queryset(qs)
+        if page is not None:
+            serializer = JobOrderListSerializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        serializer = JobOrderListSerializer(qs, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['get'], url_path='has_qc', permission_classes=[IsQCCostAuthorized])
+    def has_qc(self, request):
+        """
+        Returns job orders that have at least one QC cost line.
+        Supports the same filters as the list view.
+        """
+        from django.db.models import Count
+
+        qs = (
+            JobOrder.objects
+            .select_related('customer')
+            .annotate(qc_line_count=Count('qc_cost_lines'))
+            .filter(qc_line_count__gt=0, children__isnull=True)
+            .exclude(job_no='LEGACY-ARCHIVE')
+        )
+        qs = self.filter_queryset(qs)
+        page = self.paginate_queryset(qs)
+        if page is not None:
+            serializer = JobOrderListSerializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        serializer = JobOrderListSerializer(qs, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['get'], url_path='has_shipping', permission_classes=[IsShippingCostAuthorized])
+    def has_shipping(self, request):
+        """
+        Returns job orders that have at least one shipping cost line.
+        Supports the same filters as the list view.
+        """
+        from django.db.models import Count
+
+        qs = (
+            JobOrder.objects
+            .select_related('customer')
+            .annotate(shipping_line_count=Count('shipping_cost_lines'))
+            .filter(shipping_line_count__gt=0, children__isnull=True)
+            .exclude(job_no='LEGACY-ARCHIVE')
         )
         qs = self.filter_queryset(qs)
         page = self.paginate_queryset(qs)
@@ -2237,6 +2309,7 @@ class JobOrderProcurementLineViewSet(viewsets.ModelViewSet):
       POST /procurement-lines/submit/
            Atomically replace all lines for a job order.
     """
+    permission_classes = [IsProcurementCostAuthorized]
     from .serializers import JobOrderProcurementLineSerializer as _Ser
     serializer_class = _Ser
     filter_backends = [DjangoFilterBackend, OrderingFilter]
@@ -2419,10 +2492,17 @@ class JobOrderProcurementLineViewSet(viewsets.ModelViewSet):
 
 
 class JobOrderQCCostLineViewSet(viewsets.ModelViewSet):
-    """CRUD for QC cost lines per job order."""
+    """
+    QC cost lines per job order.
+
+    POST /qc-cost-lines/submit/
+         Atomically replace all QC lines for a job order.
+    """
+    permission_classes = [IsQCCostAuthorized]
     filter_backends = [DjangoFilterBackend, OrderingFilter]
     filterset_fields = {'job_order': ['exact']}
     ordering = ['-date', 'id']
+    http_method_names = ['get', 'post', 'delete', 'head', 'options']
 
     def get_queryset(self):
         from .models import JobOrderQCCostLine
@@ -2432,15 +2512,55 @@ class JobOrderQCCostLineViewSet(viewsets.ModelViewSet):
         from .serializers import JobOrderQCCostLineSerializer
         return JobOrderQCCostLineSerializer
 
-    def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user)
+    @action(detail=False, methods=['post'], url_path='submit')
+    def submit(self, request):
+        """Atomically replace all QC cost lines for a job order."""
+        from .serializers import QCLinesSubmitSerializer, JobOrderQCCostLineSerializer
+        from .models import JobOrderQCCostLine
+
+        serializer = QCLinesSubmitSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        job_order = serializer.validated_data['job_order']
+        lines_data = serializer.validated_data.get('lines', [])
+
+        with transaction.atomic():
+            JobOrderQCCostLine.objects.filter(job_order=job_order).delete()
+            new_lines = [
+                JobOrderQCCostLine(
+                    job_order=job_order,
+                    created_by=request.user,
+                    description=line['description'],
+                    amount=line['amount_eur'],
+                    currency='EUR',
+                    amount_eur=line['amount_eur'],
+                    date=line.get('date'),
+                    notes=line.get('notes', ''),
+                )
+                for line in lines_data
+            ]
+            created = JobOrderQCCostLine.objects.bulk_create(new_lines)
+            from projects.services.costing import recompute_job_cost_summary
+            recompute_job_cost_summary(job_order.job_no)
+
+        return Response(
+            JobOrderQCCostLineSerializer(created, many=True).data,
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class JobOrderShippingCostLineViewSet(viewsets.ModelViewSet):
-    """CRUD for shipping/logistics cost lines per job order."""
+    """
+    Shipping cost lines per job order.
+
+    POST /shipping-cost-lines/submit/
+         Atomically replace all shipping lines for a job order.
+    """
+    permission_classes = [IsShippingCostAuthorized]
     filter_backends = [DjangoFilterBackend, OrderingFilter]
     filterset_fields = {'job_order': ['exact']}
     ordering = ['-date', 'id']
+    http_method_names = ['get', 'post', 'delete', 'head', 'options']
 
     def get_queryset(self):
         from .models import JobOrderShippingCostLine
@@ -2450,5 +2570,38 @@ class JobOrderShippingCostLineViewSet(viewsets.ModelViewSet):
         from .serializers import JobOrderShippingCostLineSerializer
         return JobOrderShippingCostLineSerializer
 
-    def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user)
+    @action(detail=False, methods=['post'], url_path='submit')
+    def submit(self, request):
+        """Atomically replace all shipping cost lines for a job order."""
+        from .serializers import ShippingLinesSubmitSerializer, JobOrderShippingCostLineSerializer
+        from .models import JobOrderShippingCostLine
+
+        serializer = ShippingLinesSubmitSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        job_order = serializer.validated_data['job_order']
+        lines_data = serializer.validated_data.get('lines', [])
+
+        with transaction.atomic():
+            JobOrderShippingCostLine.objects.filter(job_order=job_order).delete()
+            new_lines = [
+                JobOrderShippingCostLine(
+                    job_order=job_order,
+                    created_by=request.user,
+                    description=line['description'],
+                    amount=line['amount_eur'],
+                    currency='EUR',
+                    amount_eur=line['amount_eur'],
+                    date=line.get('date'),
+                    notes=line.get('notes', ''),
+                )
+                for line in lines_data
+            ]
+            created = JobOrderShippingCostLine.objects.bulk_create(new_lines)
+            from projects.services.costing import recompute_job_cost_summary
+            recompute_job_cost_summary(job_order.job_no)
+
+        return Response(
+            JobOrderShippingCostLineSerializer(created, many=True).data,
+            status=status.HTTP_201_CREATED,
+        )
