@@ -91,7 +91,13 @@ class SubcontractingAssignmentViewSet(viewsets.ModelViewSet):
         if job_no:
             qs = qs.filter(department_task__job_order_id=job_no)
         if department_task:
-            qs = qs.filter(department_task_id=department_task)
+            from projects.models import JobOrderDepartmentTask
+            subtask_ids = list(
+                JobOrderDepartmentTask.objects
+                .filter(parent_id=department_task)
+                .values_list('pk', flat=True)
+            )
+            qs = qs.filter(department_task_id__in=[int(department_task)] + subtask_ids)
         return qs
 
     @action(detail=False, methods=['post'], url_path='create-with-subtask')
@@ -167,7 +173,7 @@ class SubcontractingAssignmentViewSet(viewsets.ModelViewSet):
                     department=kaynak_task.department,
                     parent=kaynak_task,
                     title=subtask_title,
-                    status='pending',
+                    status='in_progress',
                     weight=subtask_weight,
                     sequence=next_sequence,
                     created_by=request.user,
