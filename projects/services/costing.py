@@ -2,12 +2,34 @@ from __future__ import annotations
 
 from datetime import date
 from decimal import Decimal
+from functools import lru_cache
 
 from django.db import transaction
 from django.db.models import Sum
 
 
 q2 = lambda x: Decimal(x).quantize(Decimal('0.01'))  # noqa: E731
+
+
+@lru_cache(maxsize=128)
+def _fetch_rates(on_date: date) -> dict:
+    """
+    Return the rates dict from the CurrencyRateSnapshot nearest to on_date.
+    Cached per date — historical rates never change, and 'today' becomes a
+    different cache key each calendar day so it always fetches fresh data.
+    """
+    from core.models import CurrencyRateSnapshot
+
+    snap = (
+        CurrencyRateSnapshot.objects
+        .filter(date__lte=on_date)
+        .order_by('-date')
+        .values('rates')
+        .first()
+    )
+    if snap is None:
+        snap = CurrencyRateSnapshot.objects.order_by('date').values('rates').first()
+    return snap['rates'] if snap else {}
 
 
 def convert_to_eur(amount: Decimal, currency: str, on_date: date) -> Decimal:
@@ -22,22 +44,9 @@ def convert_to_eur(amount: Decimal, currency: str, on_date: date) -> Decimal:
     if currency == 'EUR':
         return amount
 
-    from core.models import CurrencyRateSnapshot
-
-    snap = (
-        CurrencyRateSnapshot.objects
-        .filter(date__lte=on_date)
-        .order_by('-date')
-        .values('rates')
-        .first()
-    )
-    if snap is None:
-        # Fallback to earliest snapshot
-        snap = CurrencyRateSnapshot.objects.order_by('date').values('rates').first()
-    if snap is None:
+    rates = _fetch_rates(on_date)  # single DB hit per date, then cached
+    if not rates:
         return Decimal('0.00')
-
-    rates = snap['rates']  # {"EUR": X, "USD": Y, "GBP": Z} – all relative to TRY base
 
     if currency == 'TRY':
         eur_rate = Decimal(str(rates.get('EUR', 0)))
