@@ -2345,6 +2345,8 @@ class JobOrderProcurementLineViewSet(viewsets.ModelViewSet):
                 for line in lines_data
             ]
             created = JobOrderProcurementLine.objects.bulk_create(new_lines)
+            from projects.services.costing import recompute_job_cost_summary
+            recompute_job_cost_summary(job_order.job_no)
 
         result_serializer = JobOrderProcurementLineSerializer(created, many=True)
         return Response(result_serializer.data, status=status.HTTP_201_CREATED)
