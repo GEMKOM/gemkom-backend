@@ -183,19 +183,46 @@ def recompute_job_cost_summary(job_no: str) -> None:
     )
 
     # ------------------------------------------------------------------
-    # 6. Total and upsert
+    # 6. Add direct children's rolled-up costs
+    #    Each child's summary already includes its own descendants, so
+    #    summing direct children avoids double-counting.
+    # ------------------------------------------------------------------
+    children_summaries = list(
+        JobOrderCostSummary.objects.filter(job_order__parent_id=job_no)
+    )
+    if children_summaries:
+        labor         += sum(s.labor_cost          for s in children_summaries)
+        material      += sum(s.material_cost       for s in children_summaries)
+        subcontractor += sum(s.subcontractor_cost  for s in children_summaries)
+        paint         += sum(s.paint_cost          for s in children_summaries)
+        qc            += sum(s.qc_cost             for s in children_summaries)
+        shipping      += sum(s.shipping_cost       for s in children_summaries)
+
+    # ------------------------------------------------------------------
+    # 7. Total and upsert
     # ------------------------------------------------------------------
     total = q2(labor + material + subcontractor + paint + qc + shipping)
 
     JobOrderCostSummary.objects.update_or_create(
         job_order_id=job_no,
         defaults={
-            'labor_cost': labor,
-            'material_cost': material,
-            'subcontractor_cost': subcontractor,
-            'paint_cost': paint,
-            'qc_cost': qc,
-            'shipping_cost': shipping,
+            'labor_cost': q2(labor),
+            'material_cost': q2(material),
+            'subcontractor_cost': q2(subcontractor),
+            'paint_cost': q2(paint),
+            'qc_cost': q2(qc),
+            'shipping_cost': q2(shipping),
             'actual_total_cost': total,
         },
     )
+
+    # ------------------------------------------------------------------
+    # 8. Chain up: if this job has a parent, recompute the parent too
+    # ------------------------------------------------------------------
+    parent_id = (
+        JobOrder.objects
+        .values_list('parent_id', flat=True)
+        .get(job_no=job_no)
+    )
+    if parent_id:
+        recompute_job_cost_summary(parent_id)

@@ -663,6 +663,30 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         serializer.save()
         return Response(serializer.data)
 
+    @action(detail=False, methods=['get'], url_path='procurement_pending')
+    def procurement_pending(self, request):
+        """
+        Returns job orders that have no saved procurement cost lines yet.
+        Excludes only cancelled jobs. Supports the same filters as the list view.
+        """
+        from django.db.models import Count
+
+        qs = (
+            JobOrder.objects
+            .select_related('customer')
+            .annotate(procurement_line_count=Count('procurement_lines'))
+            .filter(procurement_line_count=0)
+            .exclude(job_no='LEGACY-ARCHIVE')
+            .exclude(status='cancelled')
+        )
+        qs = self.filter_queryset(qs)
+        page = self.paginate_queryset(qs)
+        if page is not None:
+            serializer = JobOrderListSerializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        serializer = JobOrderListSerializer(qs, many=True)
+        return Response(serializer.data)
+
 
 # =============================================================================
 # Department Task Template ViewSet
