@@ -16,7 +16,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Provide a dummy SECRET_KEY for collectstatic — real key is injected at runtime by Cloud Run
-RUN SECRET_KEY=build-time-placeholder python manage.py collectstatic --noinput
+ARG SECRET_KEY=build-time-placeholder
+RUN python manage.py collectstatic --noinput
 
 # Set PORT for Cloud Run
 ENV PORT=8080
