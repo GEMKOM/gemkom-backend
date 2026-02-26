@@ -354,11 +354,24 @@ class JobOrderFileUploadSerializer(serializers.ModelSerializer):
         model = JobOrderFile
         fields = ['file', 'file_type', 'name', 'description']
 
+    ALLOWED_EXTENSIONS = {
+        '.pdf', '.dwg', '.dxf', '.step', '.stp', '.iges', '.igs',
+        '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff', '.tif', '.webp',
+        '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.txt', '.csv',
+        '.zip', '.rar', '.7z',
+    }
+
     def validate_file(self, value):
-        # Optional: Add file size/type validation
+        import os
         max_size = 50 * 1024 * 1024  # 50MB
         if value.size > max_size:
             raise serializers.ValidationError("Dosya boyutu 50MB'dan büyük olamaz.")
+
+        ext = os.path.splitext(value.name)[1].lower()
+        if ext not in self.ALLOWED_EXTENSIONS:
+            raise serializers.ValidationError(
+                f"Bu dosya türüne izin verilmiyor. İzin verilen türler: {', '.join(sorted(self.ALLOWED_EXTENSIONS))}"
+            )
         return value
 
 
@@ -480,7 +493,7 @@ class DepartmentTaskListSerializer(serializers.ModelSerializer):
     """Lightweight serializer for task list views."""
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     department_display = serializers.CharField(source='get_department_display', read_only=True)
-    job_order_title = serializers.CharField(source='job_order.title', read_only=True)
+    job_order_title = serializers.CharField(source='job_order.title', read_only=True, default=None)
     customer_name = serializers.SerializerMethodField()
     assigned_to_name = serializers.CharField(
         source='assigned_to.get_full_name',
@@ -497,6 +510,8 @@ class DepartmentTaskListSerializer(serializers.ModelSerializer):
     qc_required = serializers.BooleanField(read_only=True)
     has_qc_approval = serializers.BooleanField(read_only=True)
     qc_status = serializers.CharField(read_only=True)
+    is_consultation = serializers.SerializerMethodField()
+    offer_summary = serializers.SerializerMethodField()
 
     class Meta:
         model = JobOrderDepartmentTask
@@ -512,15 +527,35 @@ class DepartmentTaskListSerializer(serializers.ModelSerializer):
             'is_under_revision', 'active_revision_release_id', 'current_release_id',
             'pending_revision_request',
             'qc_required', 'has_qc_approval', 'qc_status',
+            'is_consultation', 'offer_summary',
             'created_at'
         ]
 
     def get_customer_name(self, obj):
+        if not obj.job_order_id:
+            return None
         customer = obj.job_order.customer
         return customer.short_name or customer.name
 
+    def get_is_consultation(self, obj):
+        return bool(obj.sales_offer_id)
+
+    def get_offer_summary(self, obj):
+        if not obj.sales_offer_id:
+            return None
+        offer = obj.sales_offer
+        return {
+            'id': offer.id,
+            'offer_no': offer.offer_no,
+            'title': offer.title,
+            'description': offer.description,
+            'delivery_date_requested': offer.delivery_date_requested,
+        }
+
     def get_subtasks_count(self, obj):
         """Return count of subtasks, or parts/items/requests count for special tasks."""
+        if not obj.job_order_id:
+            return obj.subtasks.count()
         if obj.task_type == 'cnc_cutting':
             from cnc_cutting.models import CncPart
             return CncPart.objects.filter(job_no=obj.job_order.job_no).count()
@@ -542,7 +577,7 @@ class DepartmentTaskListSerializer(serializers.ModelSerializer):
 
     def _get_all_releases(self, obj):
         """Return all releases for top-level design tasks, cached per object."""
-        if obj.department != 'design' or obj.parent is not None:
+        if obj.department != 'design' or obj.parent is not None or not obj.job_order_id:
             return []
         if not hasattr(obj, '_cached_releases'):
             obj._cached_releases = list(obj.job_order.technical_drawing_releases.order_by('-revision_number'))
@@ -595,7 +630,7 @@ class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
     """Full serializer for task detail views."""
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     department_display = serializers.CharField(source='get_department_display', read_only=True)
-    job_order_title = serializers.CharField(source='job_order.title', read_only=True)
+    job_order_title = serializers.CharField(source='job_order.title', read_only=True, default=None)
     assigned_to_name = serializers.CharField(
         source='assigned_to.get_full_name',
         read_only=True,
@@ -626,6 +661,9 @@ class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
     qc_required = serializers.BooleanField(read_only=True)
     has_qc_approval = serializers.BooleanField(read_only=True)
     qc_status = serializers.CharField(read_only=True)
+    is_consultation = serializers.SerializerMethodField()
+    offer_summary = serializers.SerializerMethodField()
+    shared_files = serializers.SerializerMethodField()
 
     class Meta:
         model = JobOrderDepartmentTask
@@ -643,6 +681,7 @@ class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
             'is_under_revision', 'active_revision_release_id',
             'pending_revision_request',
             'qc_required', 'has_qc_approval', 'qc_status',
+            'is_consultation', 'offer_summary', 'shared_files',
             'notes',
             'created_at', 'created_by', 'created_by_name',
             'updated_at', 'completed_by', 'completed_by_name'
@@ -652,8 +691,43 @@ class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
             'created_at', 'created_by', 'updated_at', 'completed_by'
         ]
 
+    def get_is_consultation(self, obj):
+        return bool(obj.sales_offer_id)
+
+    def get_offer_summary(self, obj):
+        if not obj.sales_offer_id:
+            return None
+        offer = obj.sales_offer
+        return {
+            'id': offer.id,
+            'offer_no': offer.offer_no,
+            'title': offer.title,
+            'description': offer.description,
+            'delivery_date_requested': offer.delivery_date_requested,
+        }
+
+    def get_shared_files(self, obj):
+        if not obj.sales_offer_id:
+            return []
+        request = self.context.get('request')
+        result = []
+        for f in obj.shared_files.all():
+            file_url = request.build_absolute_uri(f.file.url) if f.file and request else None
+            result.append({
+                'id': f.id,
+                'file_url': file_url,
+                'filename': f.filename,
+                'file_size': f.file_size,
+                'file_type': f.file_type,
+                'name': f.name,
+                'uploaded_at': f.uploaded_at,
+            })
+        return result
+
     def get_subtasks_count(self, obj):
         """Return count of subtasks, or parts/items/requests count for special tasks."""
+        if not obj.job_order_id:
+            return obj.subtasks.count()
         if obj.task_type == 'cnc_cutting':
             from cnc_cutting.models import CncPart
             return CncPart.objects.filter(job_no=obj.job_order.job_no).count()
@@ -672,7 +746,7 @@ class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
 
     def get_procurement_progress(self, obj):
         """Return procurement progress details for procurement tasks."""
-        if obj.department != 'procurement':
+        if obj.department != 'procurement' or not obj.job_order_id:
             return None
 
         from decimal import Decimal
@@ -727,7 +801,7 @@ class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
 
     def get_cnc_progress(self, obj):
         """Return CNC cutting progress details for CNC Kesim subtasks."""
-        if obj.title != 'CNC Kesim':
+        if obj.title != 'CNC Kesim' or not obj.job_order_id:
             return None
 
         from decimal import Decimal
@@ -769,7 +843,7 @@ class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
 
     def get_machining_progress(self, obj):
         """Return machining progress details for Talaşlı İmalat subtasks."""
-        if obj.title != 'Talaşlı İmalat':
+        if obj.title != 'Talaşlı İmalat' or not obj.job_order_id:
             return None
 
         from decimal import Decimal
@@ -841,8 +915,8 @@ class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
 
     def _get_design_releases(self, obj):
         """Return releases for top-level design tasks, or empty queryset."""
-        if obj.department != 'design' or obj.parent is not None:
-            return obj.job_order.technical_drawing_releases.none()
+        if obj.department != 'design' or obj.parent is not None or not obj.job_order_id:
+            return TechnicalDrawingRelease.objects.none()
         return obj.job_order.technical_drawing_releases.all()
 
     def _get_revision_release(self, obj):
@@ -962,7 +1036,7 @@ class DepartmentTaskUpdateSerializer(serializers.ModelSerializer):
             task.update_status_from_dependencies()
 
         # If manual progress or weight changed, update job order completion
-        if progress_changed or weight_changed:
+        if (progress_changed or weight_changed) and task.job_order_id:
             task.job_order.update_completion_percentage()
 
         return task

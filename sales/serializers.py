@@ -1,0 +1,329 @@
+from rest_framework import serializers
+
+from projects.models import Customer
+
+from .models import (
+    OfferTemplate,
+    OfferTemplateNode,
+    SalesOffer,
+    SalesOfferItem,
+    SalesOfferFile,
+    SalesOfferPriceRevision,
+)
+
+
+# =============================================================================
+# Catalog serializers
+# =============================================================================
+
+class OfferTemplateNodeSerializer(serializers.ModelSerializer):
+    """Recursive node serializer — children are nested."""
+    children = serializers.SerializerMethodField()
+
+    class Meta:
+        model = OfferTemplateNode
+        fields = [
+            'id', 'template', 'parent', 'title', 'description',
+            'sequence', 'is_active', 'children',
+        ]
+        read_only_fields = ['children']
+
+    def get_children(self, obj):
+        children = obj.children.filter(is_active=True).order_by('sequence')
+        return OfferTemplateNodeSerializer(children, many=True).data
+
+
+class OfferTemplateNodeCreateUpdateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = OfferTemplateNode
+        fields = ['id', 'template', 'parent', 'title', 'description', 'sequence', 'is_active']
+
+
+class OfferTemplateListSerializer(serializers.ModelSerializer):
+    node_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = OfferTemplate
+        fields = ['id', 'name', 'description', 'is_active', 'node_count', 'created_at']
+
+    def get_node_count(self, obj):
+        return obj.nodes.filter(is_active=True).count()
+
+
+class OfferTemplateDetailSerializer(serializers.ModelSerializer):
+    root_nodes = serializers.SerializerMethodField()
+
+    class Meta:
+        model = OfferTemplate
+        fields = [
+            'id', 'name', 'description', 'is_active',
+            'root_nodes', 'created_by', 'created_at', 'updated_at',
+        ]
+
+    def get_root_nodes(self, obj):
+        roots = obj.nodes.filter(parent__isnull=True, is_active=True).order_by('sequence')
+        return OfferTemplateNodeSerializer(roots, many=True).data
+
+
+class OfferTemplateCreateUpdateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = OfferTemplate
+        fields = ['id', 'name', 'description', 'is_active']
+
+
+# =============================================================================
+# File serializers
+# =============================================================================
+
+class SalesOfferFileSerializer(serializers.ModelSerializer):
+    file_url = serializers.SerializerMethodField()
+    file_type_display = serializers.CharField(source='get_file_type_display', read_only=True)
+    filename = serializers.CharField(read_only=True)
+    file_size = serializers.IntegerField(read_only=True)
+    uploaded_by_name = serializers.CharField(
+        source='uploaded_by.get_full_name', read_only=True, default=''
+    )
+
+    class Meta:
+        model = SalesOfferFile
+        fields = [
+            'id', 'offer', 'file', 'file_url', 'filename', 'file_size',
+            'file_type', 'file_type_display',
+            'name', 'description',
+            'uploaded_at', 'uploaded_by', 'uploaded_by_name',
+        ]
+        read_only_fields = ['uploaded_at', 'uploaded_by', 'offer']
+
+    def get_file_url(self, obj):
+        request = self.context.get('request')
+        if obj.file and request:
+            return request.build_absolute_uri(obj.file.url)
+        return None
+
+
+class SalesOfferFileUploadSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SalesOfferFile
+        fields = ['file', 'file_type', 'name', 'description']
+
+
+# =============================================================================
+# Price revision serializers
+# =============================================================================
+
+class SalesOfferPriceRevisionSerializer(serializers.ModelSerializer):
+    revision_type_display = serializers.CharField(
+        source='get_revision_type_display', read_only=True
+    )
+    currency_display = serializers.CharField(source='get_currency_display', read_only=True)
+    created_by_name = serializers.CharField(
+        source='created_by.get_full_name', read_only=True, default=''
+    )
+
+    class Meta:
+        model = SalesOfferPriceRevision
+        fields = [
+            'id', 'offer', 'revision_type', 'revision_type_display',
+            'amount', 'currency', 'currency_display',
+            'approval_round',
+            'counter_amount', 'counter_currency',
+            'notes', 'is_current',
+            'created_by', 'created_by_name', 'created_at',
+        ]
+        read_only_fields = [
+            'offer', 'revision_type', 'approval_round', 'is_current',
+            'created_by', 'created_at',
+        ]
+
+
+# =============================================================================
+# Item serializers
+# =============================================================================
+
+class SalesOfferItemNodeSummarySerializer(serializers.ModelSerializer):
+    """Lightweight node summary embedded in item."""
+    class Meta:
+        model = OfferTemplateNode
+        fields = ['id', 'title', 'description', 'sequence']
+
+
+class SalesOfferItemSerializer(serializers.ModelSerializer):
+    template_node_detail = SalesOfferItemNodeSummarySerializer(
+        source='template_node', read_only=True
+    )
+    resolved_title = serializers.CharField(read_only=True)
+
+    class Meta:
+        model = SalesOfferItem
+        fields = [
+            'id', 'offer', 'template_node', 'template_node_detail',
+            'quantity', 'title_override', 'notes', 'sequence',
+            'resolved_title', 'created_at',
+        ]
+        read_only_fields = ['offer', 'created_at']
+
+
+class SalesOfferItemCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SalesOfferItem
+        fields = ['template_node', 'quantity', 'title_override', 'notes', 'sequence']
+
+    def validate(self, attrs):
+        if not attrs.get('template_node') and not attrs.get('title_override'):
+            raise serializers.ValidationError(
+                "Either template_node or title_override must be provided."
+            )
+        return attrs
+
+
+# =============================================================================
+# Main offer serializers
+# =============================================================================
+
+class SalesOfferCurrentPriceSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SalesOfferPriceRevision
+        fields = ['id', 'amount', 'currency', 'revision_type', 'approval_round']
+
+
+class SalesOfferListSerializer(serializers.ModelSerializer):
+    customer_name = serializers.CharField(source='customer.name', read_only=True)
+    customer_code = serializers.CharField(source='customer.code', read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    current_price = SalesOfferCurrentPriceSerializer(read_only=True)
+    item_count = serializers.SerializerMethodField()
+    created_by_name = serializers.CharField(
+        source='created_by.get_full_name', read_only=True, default=''
+    )
+
+    class Meta:
+        model = SalesOffer
+        fields = [
+            'id', 'offer_no', 'title', 'status', 'status_display',
+            'customer', 'customer_name', 'customer_code',
+            'delivery_date_requested',
+            'current_price', 'item_count',
+            'approval_round',
+            'created_by', 'created_by_name', 'created_at', 'updated_at',
+        ]
+
+    def get_item_count(self, obj):
+        return obj.items.count()
+
+
+class SalesOfferDetailSerializer(serializers.ModelSerializer):
+    customer_name = serializers.CharField(source='customer.name', read_only=True)
+    customer_code = serializers.CharField(source='customer.code', read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    current_price = SalesOfferCurrentPriceSerializer(read_only=True)
+    price_revisions = SalesOfferPriceRevisionSerializer(many=True, read_only=True)
+    items = SalesOfferItemSerializer(many=True, read_only=True)
+    files = SalesOfferFileSerializer(many=True, read_only=True)
+    created_by_name = serializers.CharField(
+        source='created_by.get_full_name', read_only=True, default=''
+    )
+    converted_job_order_no = serializers.CharField(
+        source='converted_job_order.job_no', read_only=True, default=None
+    )
+
+    class Meta:
+        model = SalesOffer
+        fields = [
+            'id', 'offer_no', 'title', 'description',
+            'status', 'status_display',
+            'customer', 'customer_name', 'customer_code',
+            'customer_inquiry_ref', 'delivery_date_requested',
+            'approval_round',
+            'current_price', 'price_revisions',
+            'items', 'files',
+            'converted_job_order', 'converted_job_order_no',
+            'submitted_to_customer_at', 'won_at', 'lost_at', 'cancelled_at',
+            'created_by', 'created_by_name', 'created_at', 'updated_at',
+        ]
+
+
+class SalesOfferCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SalesOffer
+        fields = [
+            'customer', 'title', 'description',
+            'customer_inquiry_ref', 'delivery_date_requested',
+        ]
+
+
+class SalesOfferUpdateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SalesOffer
+        fields = [
+            'title', 'description',
+            'customer_inquiry_ref', 'delivery_date_requested',
+        ]
+
+    def validate(self, attrs):
+        instance = self.instance
+        if instance and instance.status in ('won', 'cancelled'):
+            raise serializers.ValidationError(
+                "Kazanılmış veya iptal edilmiş teklifler güncellenemez."
+            )
+        return attrs
+
+
+# =============================================================================
+# Action serializers
+# =============================================================================
+
+class SendConsultationDeptSerializer(serializers.Serializer):
+    department = serializers.ChoiceField(choices=[
+        'design', 'planning', 'procurement', 'manufacturing', 'painting', 'logistics'
+    ])
+    assigned_to = serializers.IntegerField(required=False, allow_null=True)
+    title = serializers.CharField(required=False, allow_blank=True, default='')
+    notes = serializers.CharField(required=False, allow_blank=True, default='')
+    deadline = serializers.DateField(required=False, allow_null=True)
+    file_ids = serializers.ListField(
+        child=serializers.IntegerField(), required=False, default=list
+    )
+
+
+class SendConsultationsSerializer(serializers.Serializer):
+    departments = SendConsultationDeptSerializer(many=True)
+
+    def validate_departments(self, value):
+        if not value:
+            raise serializers.ValidationError("En az bir departman seçilmelidir.")
+        return value
+
+
+class ProposePriceSerializer(serializers.Serializer):
+    amount = serializers.DecimalField(max_digits=16, decimal_places=2)
+    currency = serializers.ChoiceField(choices=['TRY', 'USD', 'EUR', 'GBP'], default='EUR')
+    notes = serializers.CharField(required=False, allow_blank=True, default='')
+
+
+class SubmitForApprovalSerializer(serializers.Serializer):
+    from approvals.models import ApprovalPolicy
+    policy = serializers.PrimaryKeyRelatedField(
+        queryset=ApprovalPolicy.objects.filter(is_active=True)
+    )
+
+
+class RecordApprovalDecisionSerializer(serializers.Serializer):
+    approve = serializers.BooleanField()
+    comment = serializers.CharField(required=False, allow_blank=True, default='')
+    counter_amount = serializers.DecimalField(
+        max_digits=16, decimal_places=2, required=False, allow_null=True
+    )
+    counter_currency = serializers.ChoiceField(
+        choices=['TRY', 'USD', 'EUR', 'GBP'],
+        required=False,
+        default='EUR'
+    )
+
+
+class AddItemsSerializer(serializers.Serializer):
+    items = SalesOfferItemCreateSerializer(many=True)
+
+    def validate_items(self, value):
+        if not value:
+            raise serializers.ValidationError("En az bir kalem girilmelidir.")
+        return value

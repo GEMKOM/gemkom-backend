@@ -3,6 +3,7 @@ from django.db import models
 from django.contrib.auth.models import User
 from django.utils import timezone
 from django.core.validators import MinValueValidator, MaxValueValidator
+from django.core.exceptions import ValidationError
 from decimal import Decimal
 from core.storages import PrivateMediaStorage
 
@@ -160,6 +161,16 @@ class JobOrder(models.Model):
         decimal_places=2,
         default=Decimal('0.00'),
         validators=[MinValueValidator(0), MaxValueValidator(100)]
+    )
+
+    # Set to True when created from a sales offer with no catalog items selected.
+    # Indicates that the job order hierarchy must still be configured manually.
+    hierarchy_setup_pending = models.BooleanField(
+        default=False,
+        help_text=(
+            'True when created from a sales offer without catalog items. '
+            'Hierarchy must be configured manually.'
+        )
     )
 
     # Audit
@@ -694,7 +705,23 @@ class JobOrderDepartmentTask(models.Model):
     job_order = models.ForeignKey(
         JobOrder,
         on_delete=models.CASCADE,
+        null=True,
+        blank=True,
         related_name='department_tasks'
+    )
+    # Set for offer consultation tasks (mutually exclusive with job_order)
+    sales_offer = models.ForeignKey(
+        'sales.SalesOffer',
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='department_tasks'
+    )
+    # Files shared from the sales offer (no file duplication — reference only)
+    shared_files = models.ManyToManyField(
+        'sales.SalesOfferFile',
+        blank=True,
+        related_name='shared_in_tasks'
     )
     department = models.CharField(
         max_length=50,
@@ -831,19 +858,29 @@ class JobOrderDepartmentTask(models.Model):
         return 'waiting'
 
     class Meta:
-        ordering = ['job_order', 'sequence']
+        ordering = ['sequence']
         indexes = [
             models.Index(fields=['department', 'status']),
             models.Index(fields=['assigned_to', 'status']),
             models.Index(fields=['job_order', 'parent']),
+            models.Index(fields=['sales_offer', 'department']),
         ]
         verbose_name = 'Departman Görevi'
         verbose_name_plural = 'Departman Görevleri'
 
+    def clean(self):
+        if not self.job_order_id and not self.sales_offer_id:
+            raise ValidationError("Either job_order or sales_offer must be set.")
+        if self.job_order_id and self.sales_offer_id:
+            raise ValidationError("Cannot set both job_order and sales_offer.")
+
     def __str__(self):
+        ref = self.job_order.job_no if self.job_order_id else (
+            getattr(self, '_sales_offer_no_cache', None) or 'Offer'
+        )
         if self.parent:
-            return f"{self.job_order.job_no} - {self.parent.title} - {self.title}"
-        return f"{self.job_order.job_no} - {self.title}"
+            return f"{ref} - {self.parent.title} - {self.title}"
+        return f"{ref} - {self.title}"
 
     def save(self, *args, **kwargs):
         # Auto-fill title from job order if not provided
@@ -912,8 +949,8 @@ class JobOrderDepartmentTask(models.Model):
         self.started_at = timezone.now()
         self.save(update_fields=['status', 'started_at'])
 
-        # Update job order status to active if still draft
-        if self.job_order.status == 'draft':
+        # Update job order status to active if still draft (not applicable for consultation tasks)
+        if self.job_order_id and self.job_order.status == 'draft':
             self.job_order.start(user=user)
 
     def complete(self, user=None):
@@ -953,8 +990,9 @@ class JobOrderDepartmentTask(models.Model):
         if self.parent:
             self.parent._check_subtask_completion(user)
 
-        # Update job order completion percentage
-        self.job_order.update_completion_percentage()
+        # Update job order completion percentage (not applicable for consultation tasks)
+        if self.job_order_id:
+            self.job_order.update_completion_percentage()
 
         # Check if all main tasks are complete -> auto-complete job order
         self._check_job_order_completion(user)
@@ -970,8 +1008,8 @@ class JobOrderDepartmentTask(models.Model):
 
     def _check_job_order_completion(self, user):
         """Check if all main department tasks are complete and auto-complete job order."""
-        # Only check for main tasks (no parent)
-        if self.parent:
+        # Only check for main tasks (no parent); not applicable for consultation tasks
+        if self.parent or not self.job_order_id:
             return
 
         # Check if all main tasks are complete
@@ -1004,8 +1042,9 @@ class JobOrderDepartmentTask(models.Model):
         for dependent_task in self.dependents.all():
             dependent_task.update_status_from_dependencies()
 
-        # Update job order completion percentage
-        self.job_order.update_completion_percentage()
+        # Update job order completion percentage (not applicable for consultation tasks)
+        if self.job_order_id:
+            self.job_order.update_completion_percentage()
 
         # Check if all main tasks are complete -> auto-complete job order
         self._check_job_order_completion(user)
@@ -1027,8 +1066,9 @@ class JobOrderDepartmentTask(models.Model):
         for dependent_task in self.dependents.filter(status='in_progress'):
             dependent_task.update_status_from_dependencies()
 
-        # Update job order completion percentage
-        self.job_order.update_completion_percentage()
+        # Update job order completion percentage (not applicable for consultation tasks)
+        if self.job_order_id:
+            self.job_order.update_completion_percentage()
 
     def uncomplete(self):
         """Revert a completed task back to in_progress."""
@@ -1048,15 +1088,16 @@ class JobOrderDepartmentTask(models.Model):
         for dependent_task in self.dependents.filter(status='in_progress'):
             dependent_task.update_status_from_dependencies()
 
-        # Revert job order if it was auto-completed
-        if self.job_order.status == 'completed':
+        # Revert job order if it was auto-completed (not applicable for consultation tasks)
+        if self.job_order_id and self.job_order.status == 'completed':
             self.job_order.status = 'active'
             self.job_order.completed_at = None
             self.job_order.completed_by = None
             self.job_order.save(update_fields=['status', 'completed_at', 'completed_by'])
 
-        # Update job order completion percentage
-        self.job_order.update_completion_percentage()
+        # Update job order completion percentage (not applicable for consultation tasks)
+        if self.job_order_id:
+            self.job_order.update_completion_percentage()
 
     def get_procurement_progress(self):
         """

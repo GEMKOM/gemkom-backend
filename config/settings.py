@@ -21,9 +21,9 @@ load_dotenv(find_dotenv(str(BASE_DIR / ".env")), override=False)
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-z^bajcf(fei!$y9cny6pttc0+o&n981_@ur0(0af6390ionx-n'
+SECRET_KEY = os.environ['SECRET_KEY']
 
-JIRA_EMAIL = 'ocalik@gemkom.com.tr'
+JIRA_EMAIL = os.getenv('JIRA_EMAIL', 'ocalik@gemkom.com.tr')
 JIRA_API_TOKEN = os.getenv('JIRA_API_TOKEN')
 
 JIRA_AUTOMATION_TOKEN = os.getenv('JIRA_AUTOMATION_TOKEN')
@@ -86,6 +86,7 @@ INSTALLED_APPS = [
     'planning',
     'welding',
     'projects',
+    'sales.apps.SalesConfig',
     'subcontracting.apps.SubcontractingConfig',
     'quality_control',
 ]
@@ -103,13 +104,17 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
+_CORS_DEV_ORIGINS = [
+    "http://127.0.0.1:8080",
+    "http://127.0.0.1:8081",
+    "http://localhost:8080",
+]
+
 CORS_ALLOWED_ORIGINS = [
     "https://gemkom-dev.github.io",
     "https://gemkom.github.io",
     "https://gemcore.com.tr",
-    "http://127.0.0.1:8080",
-    "http://127.0.0.1:8081",
-    "http://localhost:8080",
+    *((_CORS_DEV_ORIGINS) if os.getenv("DJANGO_ENV", "production") == "development" else []),
 ]
 
 CORS_ALLOWED_ORIGIN_REGEXES = [
@@ -124,7 +129,14 @@ CORS_ALLOW_HEADERS = list(default_headers) + [
 CSRF_TRUSTED_ORIGINS = ['https://gemkom-backend-716746493353.europe-west3.run.app']
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 SESSION_COOKIE_SECURE = True
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SAMESITE = 'Lax'
 CSRF_COOKIE_SECURE = True
+CSRF_COOKIE_SAMESITE = 'Lax'
+SECURE_CONTENT_TYPE_NOSNIFF = True
+SECURE_HSTS_SECONDS = 31536000  # 1 year; browsers skip this for localhost
+SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+SECURE_HSTS_PRELOAD = True
 
 ROOT_URLCONF = 'config.urls'
 
