@@ -21,7 +21,7 @@ load_dotenv(find_dotenv(str(BASE_DIR / ".env")), override=False)
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.environ['SECRET_KEY']
+SECRET_KEY = os.getenv('SECRET_KEY', 'build-time-placeholder')
 
 JIRA_EMAIL = os.getenv('JIRA_EMAIL', 'ocalik@gemkom.com.tr')
 JIRA_API_TOKEN = os.getenv('JIRA_API_TOKEN')

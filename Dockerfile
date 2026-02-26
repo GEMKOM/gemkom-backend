@@ -15,8 +15,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy project
 COPY . .
 
-# Provide a dummy SECRET_KEY for collectstatic — real key is injected at runtime by Cloud Run
-ARG SECRET_KEY=build-time-placeholder
+# Collect static files for Whitenoise (SECRET_KEY falls back to placeholder at build time)
 RUN python manage.py collectstatic --noinput
 
 # Set PORT for Cloud Run
