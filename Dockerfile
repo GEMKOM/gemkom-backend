@@ -15,8 +15,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy project
 COPY . .
 
-# Collect static files (optional: if you're doing whitenoise)
-RUN python manage.py collectstatic --noinput
+# Provide a dummy SECRET_KEY for collectstatic — real key is injected at runtime by Cloud Run
+RUN SECRET_KEY=build-time-placeholder python manage.py collectstatic --noinput
 
 # Set PORT for Cloud Run
 ENV PORT=8080

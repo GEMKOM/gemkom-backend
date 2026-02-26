@@ -348,10 +348,7 @@ class ProposePriceSerializer(serializers.Serializer):
 
 
 class SubmitForApprovalSerializer(serializers.Serializer):
-    from approvals.models import ApprovalPolicy
-    policy = serializers.PrimaryKeyRelatedField(
-        queryset=ApprovalPolicy.objects.filter(is_active=True)
-    )
+    pass  # No fields needed — policy is auto-selected by name on the backend
 
 
 class RecordApprovalDecisionSerializer(serializers.Serializer):

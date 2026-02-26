@@ -347,7 +347,6 @@ class SalesOfferViewSet(viewsets.ModelViewSet):
         try:
             wf = services.submit_for_approval(
                 offer=offer,
-                policy=serializer.validated_data['policy'],
                 user=request.user,
             )
         except ValueError as exc:
@@ -399,9 +398,9 @@ class SalesOfferViewSet(viewsets.ModelViewSet):
     def mark_won(self, request, pk=None):
         """Mark the offer as won without converting to job order."""
         offer = self.get_object()
-        if offer.status in ('won', 'cancelled'):
+        if offer.status not in ('approved', 'submitted_customer'):
             return Response(
-                {'detail': 'Bu teklif zaten kapatılmış.'},
+                {'detail': 'Teklif ancak onaylandıktan veya müşteriye gönderildikten sonra kazanıldı olarak işaretlenebilir.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         offer.status = 'won'
@@ -412,9 +411,9 @@ class SalesOfferViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], url_path='mark-lost')
     def mark_lost(self, request, pk=None):
         offer = self.get_object()
-        if offer.status in ('won', 'cancelled'):
+        if offer.status not in ('approved', 'submitted_customer'):
             return Response(
-                {'detail': 'Bu teklif zaten kapatılmış.'},
+                {'detail': 'Teklif ancak onaylandıktan veya müşteriye gönderildikten sonra kaybedildi olarak işaretlenebilir.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         offer.status = 'lost'

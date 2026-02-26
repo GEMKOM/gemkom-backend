@@ -193,12 +193,31 @@ def propose_price(
 # Approval workflow
 # =============================================================================
 
-def submit_for_approval(offer: SalesOffer, policy, user):
+SALES_OFFER_POLICY_NAME = "Satış Teklif Onayı"
+
+
+def _get_sales_offer_policy():
+    from approvals.models import ApprovalPolicy
+    policy = (
+        ApprovalPolicy.objects
+        .filter(is_active=True, name=SALES_OFFER_POLICY_NAME)
+        .order_by('selection_priority')
+        .first()
+    )
+    if not policy:
+        raise ValueError(
+            f"'{SALES_OFFER_POLICY_NAME}' adlı aktif onay politikası bulunamadı. "
+            "Lütfen yönetici panelinden politikayı oluşturun."
+        )
+    return policy
+
+
+def submit_for_approval(offer: SalesOffer, user):
     """
     Submit the current price for internal approval.
+    Auto-selects the policy by name (consistent with overtime, QC, subcontracting).
     Increments offer.approval_round.
-    Creates a new ApprovalWorkflow via the approvals app.
-    Returns the created workflow.
+    Returns the created ApprovalWorkflow.
     """
     from approvals.services import create_workflow, auto_bypass_self_approver
 
@@ -208,6 +227,8 @@ def submit_for_approval(offer: SalesOffer, policy, user):
             raise ValueError(
                 "Onaya göndermeden önce bir fiyat belirlenmelidir."
             )
+
+        policy = _get_sales_offer_policy()
 
         offer.approval_round += 1
         offer.status = 'pending_approval'
