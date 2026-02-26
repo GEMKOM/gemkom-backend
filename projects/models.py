@@ -1833,6 +1833,10 @@ class JobOrderCostSummary(models.Model):
         max_digits=16, decimal_places=2, default=Decimal('0.00'),
         help_text='employee_overhead_rate × own labor_cost (EUR)'
     )
+    other_cost = models.DecimalField(
+        max_digits=16, decimal_places=2, default=Decimal('0.00'),
+        help_text='other expenses'
+    )
     actual_total_cost = models.DecimalField(
         max_digits=16, decimal_places=2, default=Decimal('0.00'),
         help_text='Sum of all cost components (EUR)'
@@ -1843,6 +1847,7 @@ class JobOrderCostSummary(models.Model):
     selling_price_currency = models.CharField(
         max_length=3, choices=CURRENCY_CHOICES, default='EUR'
     )
+    legacy = models.BooleanField(default=False)
     last_updated = models.DateTimeField(auto_now=True)
 
     class Meta:

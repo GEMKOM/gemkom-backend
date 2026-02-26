@@ -334,7 +334,7 @@ class OperationOperatorSerializer(serializers.ModelSerializer):
             'key', 'name', 'description',
             'part_key', 'part_name', 'part_job_no', 'part_image_no', 'part_position_no', 'part_task_key',
             'part_quantity', 'part_material', 'part_dimensions', 'part_weight_kg',
-            'order',
+            'order', 'plan_order',
             'machine_fk', 'machine_name',
             'estimated_hours', 'total_hours_spent',
             'completion_date',
