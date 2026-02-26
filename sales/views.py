@@ -451,6 +451,58 @@ class SalesOfferViewSet(viewsets.ModelViewSet):
 
     # ------------------------------------------------------------------ read-only extras
 
+    @action(detail=True, methods=['get'], url_path='consultations')
+    def consultations(self, request, pk=None):
+        """
+        Return consultation tasks for this offer, grouped by department.
+        Each entry includes the task's notes (department response) and completion files.
+        """
+        offer = self.get_object()
+        tasks = offer.department_tasks.select_related(
+            'assigned_to', 'created_by', 'completed_by'
+        ).prefetch_related('completion_files').order_by('department', 'created_at')
+
+        grouped = {}
+        for task in tasks:
+            dept = task.department
+            if dept not in grouped:
+                grouped[dept] = {
+                    'department': dept,
+                    'department_display': task.get_department_display(),
+                    'tasks': [],
+                }
+
+            completion_files = []
+            for f in task.completion_files.all():
+                file_url = request.build_absolute_uri(f.file.url) if f.file else None
+                completion_files.append({
+                    'id': f.id,
+                    'file_url': file_url,
+                    'filename': f.filename,
+                    'file_size': f.file_size,
+                    'file_type': f.file_type,
+                    'name': f.name,
+                    'uploaded_at': f.uploaded_at,
+                    'uploaded_by_name': f.uploaded_by.get_full_name() if f.uploaded_by else '',
+                })
+
+            grouped[dept]['tasks'].append({
+                'id': task.id,
+                'title': task.title,
+                'status': task.status,
+                'status_display': task.get_status_display(),
+                'assigned_to': task.assigned_to_id,
+                'assigned_to_name': task.assigned_to.get_full_name() if task.assigned_to else '',
+                'notes': task.notes or '',
+                'target_completion_date': task.target_completion_date,
+                'started_at': task.started_at,
+                'completed_at': task.completed_at,
+                'completed_by_name': task.completed_by.get_full_name() if task.completed_by else '',
+                'completion_files': completion_files,
+            })
+
+        return Response(list(grouped.values()))
+
     @action(detail=True, methods=['get'], url_path='price-history')
     def price_history(self, request, pk=None):
         offer = self.get_object()

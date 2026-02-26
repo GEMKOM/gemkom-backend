@@ -5,7 +5,7 @@ from django.contrib.auth import get_user_model
 from .models import (
     Customer, JobOrder, JobOrderFile,
     DepartmentTaskTemplate, DepartmentTaskTemplateItem,
-    JobOrderDepartmentTask, DEPARTMENT_CHOICES,
+    JobOrderDepartmentTask, JobOrderDepartmentTaskFile, DEPARTMENT_CHOICES,
     JobOrderDiscussionTopic, JobOrderDiscussionComment,
     DiscussionAttachment, DiscussionNotification,
     TechnicalDrawingRelease
@@ -469,6 +469,37 @@ class DepartmentTaskTemplateItemUpdateSerializer(serializers.ModelSerializer):
 # Job Order Department Task Serializers
 # ============================================================================
 
+class DepartmentTaskFileSerializer(serializers.ModelSerializer):
+    file_url = serializers.SerializerMethodField()
+    filename = serializers.CharField(read_only=True)
+    file_size = serializers.IntegerField(read_only=True)
+    file_type_display = serializers.CharField(source='get_file_type_display', read_only=True)
+    uploaded_by_name = serializers.CharField(
+        source='uploaded_by.get_full_name', read_only=True, default=''
+    )
+
+    class Meta:
+        model = JobOrderDepartmentTaskFile
+        fields = [
+            'id', 'task', 'file', 'file_url', 'filename', 'file_size',
+            'file_type', 'file_type_display', 'name', 'description',
+            'uploaded_by', 'uploaded_by_name', 'uploaded_at',
+        ]
+        read_only_fields = ['task', 'uploaded_by', 'uploaded_at']
+
+    def get_file_url(self, obj):
+        request = self.context.get('request')
+        if obj.file and request:
+            return request.build_absolute_uri(obj.file.url)
+        return None
+
+
+class DepartmentTaskFileUploadSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = JobOrderDepartmentTaskFile
+        fields = ['file', 'file_type', 'name', 'description']
+
+
 class DepartmentTaskSubtaskSerializer(serializers.ModelSerializer):
     """Lightweight serializer for subtasks."""
     status_display = serializers.CharField(source='get_status_display', read_only=True)
@@ -664,6 +695,7 @@ class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
     is_consultation = serializers.SerializerMethodField()
     offer_summary = serializers.SerializerMethodField()
     shared_files = serializers.SerializerMethodField()
+    completion_files = serializers.SerializerMethodField()
 
     class Meta:
         model = JobOrderDepartmentTask
@@ -682,7 +714,7 @@ class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
             'pending_revision_request',
             'qc_required', 'has_qc_approval', 'qc_status',
             'is_consultation', 'offer_summary', 'shared_files',
-            'notes',
+            'notes', 'completion_files',
             'created_at', 'created_by', 'created_by_name',
             'updated_at', 'completed_by', 'completed_by_name'
         ]
@@ -690,6 +722,10 @@ class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
             'started_at', 'completed_at',
             'created_at', 'created_by', 'updated_at', 'completed_by'
         ]
+
+    def get_completion_files(self, obj):
+        files = obj.completion_files.all()
+        return DepartmentTaskFileSerializer(files, many=True, context=self.context).data
 
     def get_is_consultation(self, obj):
         return bool(obj.sales_offer_id)

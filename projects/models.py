@@ -797,7 +797,7 @@ class JobOrderDepartmentTask(models.Model):
     # Order/sequence within job (for main tasks)
     sequence = models.PositiveIntegerField(default=1)
 
-    # Notes
+    # Notes / completion response
     notes = models.TextField(blank=True, null=True)
 
     # Audit
@@ -953,7 +953,7 @@ class JobOrderDepartmentTask(models.Model):
         if self.job_order_id and self.job_order.status == 'draft':
             self.job_order.start(user=user)
 
-    def complete(self, user=None):
+    def complete(self, user=None, notes=None):
         """Mark task as completed."""
         if self.status != 'in_progress':
             raise ValueError("Sadece devam eden görevler tamamlanabilir.")
@@ -980,7 +980,9 @@ class JobOrderDepartmentTask(models.Model):
         self.status = 'completed'
         self.completed_at = timezone.now()
         self.completed_by = user
-        self.save(update_fields=['status', 'completed_at', 'completed_by'])
+        if notes is not None:
+            self.notes = notes
+        self.save(update_fields=['status', 'completed_at', 'completed_by', 'notes'])
 
         # Update all dependent tasks - check if they can now start
         for dependent_task in self.dependents.all():
@@ -1417,6 +1419,71 @@ class JobOrderDepartmentTask(models.Model):
 
         # Simple tasks without subtasks - use manual_progress
         return min(self.manual_progress, MAX_IN_PROGRESS)
+
+
+# =============================================================================
+# Department Task Completion Files
+# =============================================================================
+
+def department_task_file_upload_path(instance, filename):
+    return f'department_task_files/{instance.task_id}/{filename}'
+
+
+class JobOrderDepartmentTaskFile(models.Model):
+    """
+    File uploaded by a department when completing a consultation task.
+    Visible in the associated sales offer's consultation panel.
+    """
+    FILE_TYPE_CHOICES = [
+        ('drawing',       'Çizim'),
+        ('specification', 'Şartname'),
+        ('report',        'Rapor'),
+        ('photo',         'Fotoğraf'),
+        ('other',         'Diğer'),
+    ]
+
+    task = models.ForeignKey(
+        JobOrderDepartmentTask,
+        on_delete=models.CASCADE,
+        related_name='completion_files',
+    )
+    file = models.FileField(
+        upload_to=department_task_file_upload_path,
+        storage=PrivateMediaStorage(),
+    )
+    file_type = models.CharField(max_length=20, choices=FILE_TYPE_CHOICES, default='other')
+    name = models.CharField(max_length=255, blank=True)
+    description = models.TextField(blank=True)
+
+    uploaded_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='department_task_files_uploaded',
+    )
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-uploaded_at']
+        verbose_name = 'Görev Tamamlama Dosyası'
+        verbose_name_plural = 'Görev Tamamlama Dosyaları'
+
+    def __str__(self):
+        return f"{self.task_id} – {self.name or self.filename}"
+
+    def save(self, *args, **kwargs):
+        if not self.name and self.file:
+            self.name = os.path.basename(self.file.name)
+        super().save(*args, **kwargs)
+
+    @property
+    def filename(self):
+        return os.path.basename(self.file.name) if self.file else ''
+
+    @property
+    def file_size(self):
+        try:
+            return self.file.size
+        except Exception:
+            return None
 
 
 def discussion_attachment_upload_path(instance, filename):

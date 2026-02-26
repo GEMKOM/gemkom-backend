@@ -1393,20 +1393,46 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def complete(self, request, pk=None):
-        """Complete the department task."""
+        """Complete the department task, optionally saving a notes/response comment."""
         task = self.get_object()
+        notes = request.data.get('notes', None)
         try:
-            task.complete(user=request.user)
+            task.complete(user=request.user, notes=notes)
             return Response({
                 'status': 'success',
                 'message': 'Görev tamamlandı.',
-                'task': DepartmentTaskDetailSerializer(task).data
+                'task': DepartmentTaskDetailSerializer(task, context={'request': request}).data
             })
         except ValueError as e:
             return Response(
                 {'status': 'error', 'message': str(e)},
                 status=status.HTTP_400_BAD_REQUEST
             )
+
+    @action(detail=True, methods=['post'], url_path='upload-file',
+            parser_classes=[MultiPartParser, FormParser])
+    def upload_file(self, request, pk=None):
+        """Upload a completion file to a department task."""
+        from .serializers import DepartmentTaskFileUploadSerializer, DepartmentTaskFileSerializer
+        task = self.get_object()
+        serializer = DepartmentTaskFileUploadSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        file_obj = serializer.save(task=task, uploaded_by=request.user)
+        return Response(
+            DepartmentTaskFileSerializer(file_obj, context={'request': request}).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+    @action(detail=True, methods=['delete'], url_path=r'files/(?P<file_pk>\d+)')
+    def delete_file(self, request, pk=None, file_pk=None):
+        """Delete a completion file from a department task."""
+        task = self.get_object()
+        try:
+            file_obj = task.completion_files.get(pk=file_pk)
+        except task.completion_files.model.DoesNotExist:
+            return Response({'detail': 'Dosya bulunamadı.'}, status=status.HTTP_404_NOT_FOUND)
+        file_obj.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     @action(detail=True, methods=['post'])
     def skip(self, request, pk=None):
@@ -2330,16 +2356,25 @@ class JobOrderProcurementLineViewSet(viewsets.ModelViewSet):
         """
         Returns pre-populated procurement lines from PlanningRequestItem records.
         Uses the price lookup cascade:
-          1. PurchaseOrderLine for this planning item
-          2. Recommended ItemOffer for this planning item
-          3. Any ItemOffer for this planning item
-          4. Latest historical PurchaseOrderLine for the same Item (any job)
+          1. PurchaseOrderLine via FK (PurchaseRequestItem.planning_request_item = pri)
+          2. PurchaseOrderLine via M2M (PurchaseRequest.planning_request_items ∋ pri, same item)
+          3. Recommended ItemOffer for this planning item (FK path)
+          4. Any ItemOffer for this planning item (FK path)
+          5. Latest historical PurchaseOrderLine for the same Item (any job)
         Does NOT save anything.
         """
         from .serializers import ProcurementPreviewLineSerializer
         from planning.models import PlanningRequestItem
         from procurement.models import PurchaseOrderLine
         from projects.services.costing import convert_to_eur
+        from decimal import Decimal
+
+        def ex_tax(gross, tax_rate):
+            """Return the ex-tax (net) price given a gross price and a tax rate in %."""
+            rate = tax_rate or Decimal('0')
+            if rate == 0:
+                return gross
+            return gross / (1 + rate / Decimal('100'))
 
         job_no = request.query_params.get('job_order')
         if not job_no:
@@ -2374,15 +2409,41 @@ class JobOrderProcurementLineViewSet(viewsets.ModelViewSet):
                     break
             if po_line:
                 price_source = 'po_line'
-                original_unit_price = po_line.unit_price
+                net = ex_tax(po_line.unit_price, po_line.po.tax_rate)
+                original_unit_price = net
                 original_currency = po_line.po.currency
                 ref_date = (
                     po_line.po.ordered_at.date() if po_line.po.ordered_at
                     else po_line.po.created_at.date()
                 )
-                unit_price_eur = convert_to_eur(po_line.unit_price, original_currency, ref_date)
+                unit_price_eur = convert_to_eur(net, original_currency, ref_date)
 
-            # --- Tier 2: Recommended ItemOffer ---
+            # --- Tier 2: PurchaseOrderLine via M2M path ---
+            # Covers cases where PurchaseRequestItem.planning_request_item is NULL but the
+            # PurchaseRequest has this PlanningRequestItem in its planning_request_items M2M.
+            if price_source == 'none' and pri.item_id:
+                m2m_po_line = (
+                    PurchaseOrderLine.objects
+                    .filter(
+                        purchase_request_item__purchase_request__planning_request_items=pri,
+                        purchase_request_item__item_id=pri.item_id,
+                    )
+                    .select_related('po')
+                    .order_by('-po__ordered_at', '-po__created_at', '-id')
+                    .first()
+                )
+                if m2m_po_line:
+                    price_source = 'po_line'
+                    net = ex_tax(m2m_po_line.unit_price, m2m_po_line.po.tax_rate)
+                    original_unit_price = net
+                    original_currency = m2m_po_line.po.currency
+                    ref_date = (
+                        m2m_po_line.po.ordered_at.date() if m2m_po_line.po.ordered_at
+                        else m2m_po_line.po.created_at.date()
+                    )
+                    unit_price_eur = convert_to_eur(net, original_currency, ref_date)
+
+            # --- Tier 3: Recommended ItemOffer (FK path) ---
             if price_source == 'none':
                 offer = None
                 for pri_item in pri.purchase_request_items.all():
@@ -2393,12 +2454,13 @@ class JobOrderProcurementLineViewSet(viewsets.ModelViewSet):
                         break
                 if offer:
                     price_source = 'recommended_offer'
-                    original_unit_price = offer.unit_price
+                    net = ex_tax(offer.unit_price, offer.supplier_offer.tax_rate)
+                    original_unit_price = net
                     original_currency = offer.supplier_offer.currency
                     ref_date = offer.supplier_offer.created_at.date()
-                    unit_price_eur = convert_to_eur(offer.unit_price, original_currency, ref_date)
+                    unit_price_eur = convert_to_eur(net, original_currency, ref_date)
 
-            # --- Tier 3: Any ItemOffer ---
+            # --- Tier 4: Any ItemOffer (FK path) ---
             if price_source == 'none':
                 offer = None
                 for pri_item in pri.purchase_request_items.all():
@@ -2409,12 +2471,13 @@ class JobOrderProcurementLineViewSet(viewsets.ModelViewSet):
                         break
                 if offer:
                     price_source = 'any_offer'
-                    original_unit_price = offer.unit_price
+                    net = ex_tax(offer.unit_price, offer.supplier_offer.tax_rate)
+                    original_unit_price = net
                     original_currency = offer.supplier_offer.currency
                     ref_date = offer.supplier_offer.created_at.date()
-                    unit_price_eur = convert_to_eur(offer.unit_price, original_currency, ref_date)
+                    unit_price_eur = convert_to_eur(net, original_currency, ref_date)
 
-            # --- Tier 4: Latest historical PO line for this item (any job) ---
+            # --- Tier 5: Latest historical PO line for this item (any job) ---
             if price_source == 'none' and pri.item_id:
                 hist_line = (
                     PurchaseOrderLine.objects
@@ -2425,13 +2488,14 @@ class JobOrderProcurementLineViewSet(viewsets.ModelViewSet):
                 )
                 if hist_line:
                     price_source = 'historical_po'
-                    original_unit_price = hist_line.unit_price
+                    net = ex_tax(hist_line.unit_price, hist_line.po.tax_rate)
+                    original_unit_price = net
                     original_currency = hist_line.po.currency
                     ref_date = (
                         hist_line.po.ordered_at.date() if hist_line.po.ordered_at
                         else hist_line.po.created_at.date()
                     )
-                    unit_price_eur = convert_to_eur(hist_line.unit_price, original_currency, ref_date)
+                    unit_price_eur = convert_to_eur(net, original_currency, ref_date)
 
             results.append({
                 'planning_request_item': pri.pk,

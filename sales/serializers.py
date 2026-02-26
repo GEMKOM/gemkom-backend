@@ -37,6 +37,7 @@ class OfferTemplateNodeCreateUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = OfferTemplateNode
         fields = ['id', 'template', 'parent', 'title', 'description', 'sequence', 'is_active']
+        read_only_fields = ['template']
 
 
 class OfferTemplateListSerializer(serializers.ModelSerializer):
@@ -225,6 +226,7 @@ class SalesOfferDetailSerializer(serializers.ModelSerializer):
     converted_job_order_no = serializers.CharField(
         source='converted_job_order.job_no', read_only=True, default=None
     )
+    consultations = serializers.SerializerMethodField()
 
     class Meta:
         model = SalesOffer
@@ -236,10 +238,55 @@ class SalesOfferDetailSerializer(serializers.ModelSerializer):
             'approval_round',
             'current_price', 'price_revisions',
             'items', 'files',
+            'consultations',
             'converted_job_order', 'converted_job_order_no',
             'submitted_to_customer_at', 'won_at', 'lost_at', 'cancelled_at',
             'created_by', 'created_by_name', 'created_at', 'updated_at',
         ]
+
+    def get_consultations(self, obj):
+        tasks = obj.department_tasks.select_related(
+            'assigned_to', 'completed_by'
+        ).prefetch_related('completion_files__uploaded_by').order_by('department', 'created_at')
+
+        grouped = {}
+        for task in tasks:
+            dept = task.department
+            if dept not in grouped:
+                grouped[dept] = {
+                    'department': dept,
+                    'department_display': task.get_department_display(),
+                    'tasks': [],
+                }
+            request = self.context.get('request')
+            completion_files = []
+            for f in task.completion_files.all():
+                file_url = request.build_absolute_uri(f.file.url) if (f.file and request) else None
+                completion_files.append({
+                    'id': f.id,
+                    'file_url': file_url,
+                    'filename': f.filename,
+                    'file_size': f.file_size,
+                    'file_type': f.file_type,
+                    'name': f.name,
+                    'uploaded_at': f.uploaded_at,
+                    'uploaded_by_name': f.uploaded_by.get_full_name() if f.uploaded_by else '',
+                })
+            grouped[dept]['tasks'].append({
+                'id': task.id,
+                'title': task.title,
+                'status': task.status,
+                'status_display': task.get_status_display(),
+                'assigned_to': task.assigned_to_id,
+                'assigned_to_name': task.assigned_to.get_full_name() if task.assigned_to else '',
+                'notes': task.notes or '',
+                'target_completion_date': task.target_completion_date,
+                'started_at': task.started_at,
+                'completed_at': task.completed_at,
+                'completed_by_name': task.completed_by.get_full_name() if task.completed_by else '',
+                'completion_files': completion_files,
+            })
+        return list(grouped.values())
 
 
 class SalesOfferCreateSerializer(serializers.ModelSerializer):
