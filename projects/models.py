@@ -700,6 +700,7 @@ class JobOrderDepartmentTask(models.Model):
         ('welding', 'Kaynaklı İmalat'),
         ('painting', 'Boya'),
         ('part', 'Parça'),
+        ('sales_consult', 'Satış Destek')
     ]
 
     job_order = models.ForeignKey(
@@ -1028,6 +1029,8 @@ class JobOrderDepartmentTask(models.Model):
 
     def skip(self, user=None):
         """Mark task as skipped (not applicable)."""
+        if self.task_type == 'sales_consult':
+            raise ValueError("Satış danışma görevleri atlanamaz.")
         if self.status == 'completed':
             raise ValueError("Tamamlanmış görevler atlanamaz.")
 

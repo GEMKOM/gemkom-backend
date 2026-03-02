@@ -124,6 +124,7 @@ class SalesOffer(models.Model):
         help_text="Customer's own PO or reference number"
     )
     delivery_date_requested = models.DateField(null=True, blank=True)
+    offer_expiry_date = models.DateField(null=True, blank=True)
 
     status = models.CharField(
         max_length=30,

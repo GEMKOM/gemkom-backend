@@ -112,10 +112,22 @@ def send_consultations(offer: SalesOffer, departments_data: list[dict], user) ->
         }
 
     Returns list of created JobOrderDepartmentTask instances.
+    Raises ValueError if any requested department already has a consultation task (any status).
     """
     with transaction.atomic():
-        # Cancel existing pending consultation tasks for this offer
-        offer.department_tasks.filter(status='pending').update(status='cancelled')
+        requested_departments = [dept['department'] for dept in departments_data]
+
+        conflicts = (
+            offer.department_tasks
+            .filter(department__in=requested_departments)
+            .values_list('department', flat=True)
+        )
+        if conflicts:
+            dept_labels = ', '.join(sorted(set(conflicts)))
+            raise ValueError(
+                f"Bu departmanlar için zaten bir danışma görevi mevcut: {dept_labels}. "
+                "Mevcut görevi güncelleyin veya iptal edin."
+            )
 
         created = []
         for dept in departments_data:
@@ -123,10 +135,11 @@ def send_consultations(offer: SalesOffer, departments_data: list[dict], user) ->
                 sales_offer=offer,
                 job_order=None,
                 department=dept['department'],
+                task_type='sales_consult',
                 title=dept.get('title') or f"Danışma: {offer.offer_no}",
                 description=dept.get('notes', ''),
                 assigned_to_id=dept.get('assigned_to'),
-                target_completion_date=dept.get('deadline'),
+                target_completion_date=dept.get('deadline') or offer.offer_expiry_date,
                 status='pending',
                 created_by=user,
             )

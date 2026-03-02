@@ -35,6 +35,7 @@ from .serializers import (
     SubmitForApprovalSerializer,
     RecordApprovalDecisionSerializer,
     AddItemsSerializer,
+    UpdateConsultationSerializer,
 )
 from . import services
 
@@ -221,6 +222,11 @@ class SalesOfferViewSet(viewsets.ModelViewSet):
 
     # ------------------------------------------------------------------ items
 
+    @action(detail=True, methods=['get'], url_path='items')
+    def items(self, request, pk=None):
+        offer = self.get_object()
+        return Response(SalesOfferItemSerializer(offer.items.all(), many=True).data)
+
     @action(detail=True, methods=['post'], url_path='add-items')
     def add_items(self, request, pk=None):
         offer = self.get_object()
@@ -247,13 +253,16 @@ class SalesOfferViewSet(viewsets.ModelViewSet):
             status=status.HTTP_201_CREATED,
         )
 
-    @action(detail=True, methods=['patch', 'delete'], url_path=r'items/(?P<item_pk>\d+)')
+    @action(detail=True, methods=['get', 'patch', 'delete'], url_path=r'items/(?P<item_pk>\d+)')
     def item_detail(self, request, pk=None, item_pk=None):
         offer = self.get_object()
         try:
             item = offer.items.get(pk=item_pk)
         except SalesOfferItem.DoesNotExist:
             return Response({'detail': 'Kalem bulunamadı.'}, status=status.HTTP_404_NOT_FOUND)
+
+        if request.method == 'GET':
+            return Response(SalesOfferItemSerializer(item).data)
 
         if request.method == 'PATCH':
             serializer = SalesOfferItemCreateSerializer(item, data=request.data, partial=True)
@@ -304,11 +313,15 @@ class SalesOfferViewSet(viewsets.ModelViewSet):
         serializer = SendConsultationsSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        tasks = services.send_consultations(
-            offer=offer,
-            departments_data=serializer.validated_data['departments'],
-            user=request.user,
-        )
+        try:
+            tasks = services.send_consultations(
+                offer=offer,
+                departments_data=serializer.validated_data['departments'],
+                user=request.user,
+            )
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
         return Response(
             {'created': len(tasks), 'detail': 'Danışma görevleri oluşturuldu.'},
             status=status.HTTP_201_CREATED,
@@ -501,6 +514,46 @@ class SalesOfferViewSet(viewsets.ModelViewSet):
             })
 
         return Response(list(grouped.values()))
+
+    @action(detail=True, methods=['get', 'patch'], url_path=r'consultations/(?P<task_pk>\d+)')
+    def consultation_detail(self, request, pk=None, task_pk=None):
+        """
+        GET  /sales/offers/{id}/consultations/{task_pk}/  — retrieve consultation detail
+        PATCH /sales/offers/{id}/consultations/{task_pk}/ — update consultation
+        """
+        offer = self.get_object()
+        try:
+            task = offer.department_tasks.get(pk=task_pk)
+        except offer.department_tasks.model.DoesNotExist:
+            return Response({'detail': 'Danışma görevi bulunamadı.'}, status=status.HTTP_404_NOT_FOUND)
+
+        if request.method == 'GET':
+            from projects.serializers import DepartmentTaskDetailSerializer
+            return Response(DepartmentTaskDetailSerializer(task, context={'request': request}).data)
+
+        serializer = UpdateConsultationSerializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        if 'title' in data:
+            task.title = data['title']
+        if 'notes' in data:
+            task.description = data['notes']
+        if 'deadline' in data:
+            task.target_completion_date = data['deadline']
+        task.status = 'pending'
+        task.completed_at = None
+        task.completed_by = None
+        task.save(update_fields=[
+            'title', 'description', 'target_completion_date',
+            'status', 'completed_at', 'completed_by', 'updated_at',
+        ])
+
+        if 'file_ids' in data and data['file_ids'] is not None:
+            task.shared_files.set(offer.files.filter(id__in=data['file_ids']))
+
+        from projects.serializers import DepartmentTaskDetailSerializer
+        return Response(DepartmentTaskDetailSerializer(task, context={'request': request}).data)
 
     @action(detail=True, methods=['get'], url_path='price-history')
     def price_history(self, request, pk=None):

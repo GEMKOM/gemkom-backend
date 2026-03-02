@@ -202,7 +202,7 @@ class SalesOfferListSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'offer_no', 'title', 'status', 'status_display',
             'customer', 'customer_name', 'customer_code',
-            'delivery_date_requested',
+            'delivery_date_requested', 'offer_expiry_date',
             'current_price', 'item_count',
             'approval_round',
             'created_by', 'created_by_name', 'created_at', 'updated_at',
@@ -217,16 +217,12 @@ class SalesOfferDetailSerializer(serializers.ModelSerializer):
     customer_code = serializers.CharField(source='customer.code', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     current_price = SalesOfferCurrentPriceSerializer(read_only=True)
-    price_revisions = SalesOfferPriceRevisionSerializer(many=True, read_only=True)
-    items = SalesOfferItemSerializer(many=True, read_only=True)
-    files = SalesOfferFileSerializer(many=True, read_only=True)
     created_by_name = serializers.CharField(
         source='created_by.get_full_name', read_only=True, default=''
     )
     converted_job_order_no = serializers.CharField(
         source='converted_job_order.job_no', read_only=True, default=None
     )
-    consultations = serializers.SerializerMethodField()
 
     class Meta:
         model = SalesOffer
@@ -234,59 +230,13 @@ class SalesOfferDetailSerializer(serializers.ModelSerializer):
             'id', 'offer_no', 'title', 'description',
             'status', 'status_display',
             'customer', 'customer_name', 'customer_code',
-            'customer_inquiry_ref', 'delivery_date_requested',
+            'customer_inquiry_ref', 'delivery_date_requested', 'offer_expiry_date',
             'approval_round',
-            'current_price', 'price_revisions',
-            'items', 'files',
-            'consultations',
+            'current_price',
             'converted_job_order', 'converted_job_order_no',
             'submitted_to_customer_at', 'won_at', 'lost_at', 'cancelled_at',
             'created_by', 'created_by_name', 'created_at', 'updated_at',
         ]
-
-    def get_consultations(self, obj):
-        tasks = obj.department_tasks.select_related(
-            'assigned_to', 'completed_by'
-        ).prefetch_related('completion_files__uploaded_by').order_by('department', 'created_at')
-
-        grouped = {}
-        for task in tasks:
-            dept = task.department
-            if dept not in grouped:
-                grouped[dept] = {
-                    'department': dept,
-                    'department_display': task.get_department_display(),
-                    'tasks': [],
-                }
-            request = self.context.get('request')
-            completion_files = []
-            for f in task.completion_files.all():
-                file_url = request.build_absolute_uri(f.file.url) if (f.file and request) else None
-                completion_files.append({
-                    'id': f.id,
-                    'file_url': file_url,
-                    'filename': f.filename,
-                    'file_size': f.file_size,
-                    'file_type': f.file_type,
-                    'name': f.name,
-                    'uploaded_at': f.uploaded_at,
-                    'uploaded_by_name': f.uploaded_by.get_full_name() if f.uploaded_by else '',
-                })
-            grouped[dept]['tasks'].append({
-                'id': task.id,
-                'title': task.title,
-                'status': task.status,
-                'status_display': task.get_status_display(),
-                'assigned_to': task.assigned_to_id,
-                'assigned_to_name': task.assigned_to.get_full_name() if task.assigned_to else '',
-                'notes': task.notes or '',
-                'target_completion_date': task.target_completion_date,
-                'started_at': task.started_at,
-                'completed_at': task.completed_at,
-                'completed_by_name': task.completed_by.get_full_name() if task.completed_by else '',
-                'completion_files': completion_files,
-            })
-        return list(grouped.values())
 
 
 class SalesOfferCreateSerializer(serializers.ModelSerializer):
@@ -294,7 +244,7 @@ class SalesOfferCreateSerializer(serializers.ModelSerializer):
         model = SalesOffer
         fields = [
             'customer', 'title', 'description',
-            'customer_inquiry_ref', 'delivery_date_requested',
+            'customer_inquiry_ref', 'delivery_date_requested', 'offer_expiry_date',
         ]
 
 
@@ -303,7 +253,7 @@ class SalesOfferUpdateSerializer(serializers.ModelSerializer):
         model = SalesOffer
         fields = [
             'title', 'description',
-            'customer_inquiry_ref', 'delivery_date_requested',
+            'customer_inquiry_ref', 'delivery_date_requested', 'offer_expiry_date',
         ]
 
     def validate(self, attrs):
@@ -371,3 +321,12 @@ class AddItemsSerializer(serializers.Serializer):
         if not value:
             raise serializers.ValidationError("En az bir kalem girilmelidir.")
         return value
+
+
+class UpdateConsultationSerializer(serializers.Serializer):
+    title = serializers.CharField(required=False, allow_blank=True)
+    notes = serializers.CharField(required=False, allow_blank=True)
+    deadline = serializers.DateField(required=False, allow_null=True)
+    file_ids = serializers.ListField(
+        child=serializers.IntegerField(), required=False, allow_null=True
+    )
