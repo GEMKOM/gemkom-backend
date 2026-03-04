@@ -274,7 +274,8 @@ class JobOrder(models.Model):
                             subtask_total_weight += subtask_weight
 
                             # Handle CNC Kesim subtask specially
-                            if subtask.task_type == 'cnc_cutting':
+                            is_cnc_task = subtask.task_type == 'cnc_cutting' or subtask.title == 'CNC Kesim'
+                            if is_cnc_task:
                                 cnc_earned, cnc_total = subtask.get_cnc_progress()
                                 if cnc_total > 0:
                                     subtask_progress = cnc_earned / cnc_total
@@ -282,17 +283,19 @@ class JobOrder(models.Model):
                                 elif subtask.status == 'completed':
                                     subtask_earned_weight += subtask_weight
                             # Handle Talaşlı İmalat subtask specially
-                            elif subtask.task_type == 'machining':
-                                machining_earned, machining_total = subtask.get_machining_progress()
-                                if machining_total > 0:
-                                    subtask_progress = machining_earned / machining_total
-                                    subtask_earned_weight += subtask_progress * subtask_weight
+                            else:
+                                is_machining_task = subtask.task_type == 'machining' or subtask.title == 'Talaşlı İmalat'
+                                if is_machining_task:
+                                    machining_earned, machining_total = subtask.get_machining_progress()
+                                    if machining_total > 0:
+                                        subtask_progress = machining_earned / machining_total
+                                        subtask_earned_weight += subtask_progress * subtask_weight
+                                    elif subtask.status == 'completed':
+                                        subtask_earned_weight += subtask_weight
                                 elif subtask.status == 'completed':
                                     subtask_earned_weight += subtask_weight
-                            elif subtask.status == 'completed':
-                                subtask_earned_weight += subtask_weight
-                            elif subtask.manual_progress > 0:
-                                subtask_earned_weight += (subtask.manual_progress / Decimal('100')) * subtask_weight
+                                elif subtask.manual_progress > 0:
+                                    subtask_earned_weight += (subtask.manual_progress / Decimal('100')) * subtask_weight
 
                         if subtask_total_weight > 0:
                             # Proportional contribution based on subtask completion
@@ -1172,7 +1175,9 @@ class JobOrderDepartmentTask(models.Model):
         - 0%: No CncPart for this job, OR CncTask not complete
         - 100%: CncPart exists AND CncTask.completion_date is set
         """
-        if self.task_type != 'cnc_cutting':
+        # Check both task_type and title for CNC tasks
+        is_cnc_task = self.task_type == 'cnc_cutting' or self.title == 'CNC Kesim'
+        if not is_cnc_task:
             return (Decimal('0.00'), Decimal('0.00'))
 
         from cnc_cutting.models import CncPart
@@ -1203,7 +1208,9 @@ class JobOrderDepartmentTask(models.Model):
         Check if CNC Kesim subtask should auto-complete.
         Returns True if auto-completed, False otherwise.
         """
-        if self.task_type != 'cnc_cutting':
+        # Check both task_type and title for CNC tasks
+        is_cnc_task = self.task_type == 'cnc_cutting' or self.title == 'CNC Kesim'
+        if not is_cnc_task:
             return False
 
         if self.status != 'in_progress':
@@ -1228,7 +1235,9 @@ class JobOrderDepartmentTask(models.Model):
         Progress per Operation = min(total_hours_spent / estimated_hours, 1.0)
         Aggregate: sum all operation progress weighted by estimated_hours
         """
-        if self.task_type != 'machining':
+        # Check both task_type and title for machining tasks
+        is_machining_task = self.task_type == 'machining' or self.title == 'Talaşlı İmalat'
+        if not is_machining_task:
             return (Decimal('0.00'), Decimal('0.00'))
 
         from tasks.models import Operation
@@ -1281,7 +1290,9 @@ class JobOrderDepartmentTask(models.Model):
         Auto-completes only when ALL parts for this job order have completion_date set.
         Returns True if auto-completed, False otherwise.
         """
-        if self.task_type != 'machining':
+        # Check both task_type and title for machining tasks
+        is_machining_task = self.task_type == 'machining' or self.title == 'Talaşlı İmalat'
+        if not is_machining_task:
             return False
 
         if self.status != 'in_progress':
@@ -1326,8 +1337,11 @@ class JobOrderDepartmentTask(models.Model):
 
         # Special tasks (CNC, Machining, Procurement) calculate real progress
         # even when blocked/pending, since underlying work happens independently
+        is_cnc_task = self.task_type == 'cnc_cutting' or self.title == 'CNC Kesim'
+        is_machining_task = self.task_type == 'machining' or self.title == 'Talaşlı İmalat'
         is_special_task = (
-            self.task_type in ('cnc_cutting', 'machining')
+            is_cnc_task
+            or is_machining_task
             or self.department == 'procurement'
         )
 
@@ -1335,14 +1349,14 @@ class JobOrderDepartmentTask(models.Model):
             if skip_expensive_calculations:
                 return Decimal('50.00')
 
-            if self.task_type == 'cnc_cutting':
+            if is_cnc_task:
                 earned, total = self.get_cnc_progress()
                 if total > 0:
                     pct = ((earned / total) * 100).quantize(Decimal('0.01'))
                     return min(pct, MAX_IN_PROGRESS)
                 return Decimal('0.00')
 
-            if self.task_type == 'machining':
+            if is_machining_task:
                 earned, total = self.get_machining_progress()
                 if total > 0:
                     pct = ((earned / total) * 100).quantize(Decimal('0.01'))

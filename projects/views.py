@@ -1068,7 +1068,7 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
     ).prefetch_related('subtasks', 'depends_on', 'qc_reviews', 'qc_reviews__ncr')
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     search_fields = ['title', 'description', 'job_order__job_no', 'job_order__title']
-    ordering_fields = ['sequence', 'status', 'created_at', 'target_completion_date', 'job_order', 'job_order__created_at']
+    ordering_fields = ['sequence', 'status', 'created_at', 'target_completion_date', 'job_order', 'job_order__created_at', 'job_order__job_no']
     ordering = ['job_order__created_at', 'sequence']
     filterset_fields = {
         'job_order': ['exact'],
@@ -1118,7 +1118,9 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
         if parent_id:
             try:
                 parent_task = JobOrderDepartmentTask.objects.get(id=parent_id)
-                if parent_task.task_type == 'cnc_cutting':
+                # Check both task_type and title for CNC tasks
+                is_cnc_task = parent_task.task_type == 'cnc_cutting' or parent_task.title == 'CNC Kesim'
+                if is_cnc_task:
                     # Return CNC parts instead of subtasks
                     from cnc_cutting.models import CncPart
                     from decimal import Decimal
@@ -1177,7 +1179,9 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
                     })
 
                 # Check if this is a "Talaşlı İmalat" task
-                if parent_task.task_type == 'machining':
+                # Check both task_type and title for machining tasks
+                is_machining_task = parent_task.task_type == 'machining' or parent_task.title == 'Talaşlı İmalat'
+                if is_machining_task:
                     # Return machining Parts instead of subtasks
                     from tasks.models import Part, Operation
                     from django.db.models import Sum, Q, ExpressionWrapper, FloatField, Value
@@ -1621,7 +1625,9 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
             )
 
         # Block if this is a 'CNC Kesim' task that has CNC parts
-        if task.task_type == 'cnc_cutting':
+        # Check both task_type and title for CNC tasks
+        is_cnc_task = task.task_type == 'cnc_cutting' or task.title == 'CNC Kesim'
+        if is_cnc_task:
             from cnc_cutting.models import CncPart
             if CncPart.objects.filter(job_no=task.job_order.job_no).exists():
                 return Response(
@@ -1630,7 +1636,9 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
                 )
 
         # Block if this is a 'Talaşlı İmalat' task that has machining parts
-        if task.task_type == 'machining':
+        # Check both task_type and title for machining tasks
+        is_machining_task = task.task_type == 'machining' or task.title == 'Talaşlı İmalat'
+        if is_machining_task:
             from tasks.models import Part
             if Part.objects.filter(job_no=task.job_order.job_no).exists():
                 return Response(

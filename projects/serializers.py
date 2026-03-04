@@ -587,10 +587,14 @@ class DepartmentTaskListSerializer(serializers.ModelSerializer):
         """Return count of subtasks, or parts/items/requests count for special tasks."""
         if not obj.job_order_id:
             return obj.subtasks.count()
-        if obj.task_type == 'cnc_cutting':
+        # Check both task_type and title for CNC tasks
+        is_cnc_task = obj.task_type == 'cnc_cutting' or obj.title == 'CNC Kesim'
+        if is_cnc_task:
             from cnc_cutting.models import CncPart
             return CncPart.objects.filter(job_no=obj.job_order.job_no).count()
-        if obj.task_type == 'machining':
+        # Check both task_type and title for machining tasks
+        is_machining_task = obj.task_type == 'machining' or obj.title == 'Talaşlı İmalat'
+        if is_machining_task:
             from tasks.models import Part
             return Part.objects.filter(job_no=obj.job_order.job_no).count()
         if obj.department == 'procurement':
@@ -764,10 +768,14 @@ class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
         """Return count of subtasks, or parts/items/requests count for special tasks."""
         if not obj.job_order_id:
             return obj.subtasks.count()
-        if obj.task_type == 'cnc_cutting':
+        # Check both task_type and title for CNC tasks
+        is_cnc_task = obj.task_type == 'cnc_cutting' or obj.title == 'CNC Kesim'
+        if is_cnc_task:
             from cnc_cutting.models import CncPart
             return CncPart.objects.filter(job_no=obj.job_order.job_no).count()
-        if obj.task_type == 'machining':
+        # Check both task_type and title for machining tasks
+        is_machining_task = obj.task_type == 'machining' or obj.title == 'Talaşlı İmalat'
+        if is_machining_task:
             from tasks.models import Part
             return Part.objects.filter(job_no=obj.job_order.job_no).count()
         if obj.department == 'procurement':
