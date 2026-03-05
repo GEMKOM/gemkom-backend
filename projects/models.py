@@ -110,6 +110,12 @@ class JobOrder(models.Model):
         blank=True,
         related_name='job_orders',
     )
+    # Files shared from the source offer (reference only — no file duplication)
+    offer_files = models.ManyToManyField(
+        'sales.SalesOfferFile',
+        blank=True,
+        related_name='attached_job_orders',
+    )
 
     # Basic info
     title = models.CharField(max_length=255)
@@ -168,16 +174,6 @@ class JobOrder(models.Model):
         decimal_places=2,
         default=Decimal('0.00'),
         validators=[MinValueValidator(0), MaxValueValidator(100)]
-    )
-
-    # Set to True when created from a sales offer with no catalog items selected.
-    # Indicates that the job order hierarchy must still be configured manually.
-    hierarchy_setup_pending = models.BooleanField(
-        default=False,
-        help_text=(
-            'True when created from a sales offer without catalog items. '
-            'Hierarchy must be configured manually.'
-        )
     )
 
     # Audit

@@ -253,6 +253,7 @@ class SalesOfferDetailSerializer(serializers.ModelSerializer):
             'status', 'status_display',
             'customer', 'customer_name', 'customer_code',
             'customer_inquiry_ref', 'delivery_date_requested', 'offer_expiry_date',
+            'incoterms',
             'approval_round',
             'current_price',
             'total_price', 'total_weight_kg',
@@ -275,6 +276,7 @@ class SalesOfferCreateSerializer(serializers.ModelSerializer):
         fields = [
             'customer', 'title', 'description',
             'customer_inquiry_ref', 'delivery_date_requested', 'offer_expiry_date',
+            'incoterms',
         ]
 
 
@@ -284,6 +286,7 @@ class SalesOfferUpdateSerializer(serializers.ModelSerializer):
         fields = [
             'title', 'description',
             'customer_inquiry_ref', 'delivery_date_requested', 'offer_expiry_date',
+            'incoterms',
         ]
 
     def validate(self, attrs):

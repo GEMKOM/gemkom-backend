@@ -280,10 +280,11 @@ def record_approval_decision(
 # Offer → Job Order conversion
 # =============================================================================
 
-def _create_job_from_item(item: SalesOfferItem, parent_job, children_map: dict, offer: SalesOffer, user) -> JobOrder:
+def _create_job_from_item(item: SalesOfferItem, parent_job, children_map: dict, offer: SalesOffer, user, incoterms: str, file_ids: list) -> JobOrder:
     """
     Recursively create a JobOrder for the given SalesOfferItem.
     children_map: {template_node_id -> [child SalesOfferItem, ...]}
+    file_ids: SalesOfferFile PKs to attach (reference only) to root-level jobs.
     """
     title = item.resolved_title or offer.title
 
@@ -300,14 +301,19 @@ def _create_job_from_item(item: SalesOfferItem, parent_job, children_map: dict, 
         description=offer.description if not parent_job else '',
         customer_order_no=offer.customer_inquiry_ref or '',
         target_completion_date=offer.delivery_date_requested,
+        incoterms=incoterms or '',
         status='draft',
         created_by=user,
     )
 
+    # Attach offer files to root-level jobs only
+    if not parent_job and file_ids:
+        job.offer_files.set(offer.files.filter(id__in=file_ids))
+
     # Recurse into selected children
     node_id = item.template_node_id
     for child_item in sorted(children_map.get(node_id, []), key=lambda i: i.sequence):
-        _create_job_from_item(child_item, job, children_map, offer, user)
+        _create_job_from_item(child_item, job, children_map, offer, user, incoterms, file_ids)
 
     return job
 
@@ -327,18 +333,17 @@ def _get_effective_parent_item(node: OfferTemplateNode, selected_node_ids: set, 
 
 
 @transaction.atomic
-def convert_offer_to_job_order(offer: SalesOffer, user) -> JobOrder:
+def convert_offer_to_job_order(offer: SalesOffer, user, incoterms: str = '', file_ids: list = None) -> JobOrder:
     """
     Convert a SalesOffer into one or more JobOrders.
 
-    If the offer has catalog items (SalesOfferItem with template_node):
-        - Uses the "effective parent" algorithm to reconstruct job order hierarchy
-          from only the selected nodes (gaps in the template tree are skipped).
-        - Each root item (no selected ancestor) → top-level job order.
-        - Each non-root item → child of its nearest selected ancestor's job order.
+    Uses the "effective parent" algorithm to reconstruct job order hierarchy
+    from the selected items (gaps in the template tree are skipped).
+    Each root item (no selected ancestor) → top-level job order.
+    Each non-root item → child of its nearest selected ancestor's job order.
 
-    If the offer has no catalog items:
-        - Creates a single draft JobOrder with hierarchy_setup_pending=True.
+    incoterms: teslim şekli — required, provided by sales at conversion time.
+    file_ids: SalesOfferFile PKs to attach (by reference) to root job orders.
 
     Sets offer.status='won', offer.converted_job_order, offer.won_at.
     Returns the first/primary root job order.
@@ -351,6 +356,9 @@ def convert_offer_to_job_order(offer: SalesOffer, user) -> JobOrder:
     if offer.converted_job_order_id:
         raise ValueError("Bu teklif zaten bir iş emrine dönüştürülmüştür.")
 
+    if not incoterms:
+        raise ValueError("Teslim şekli (incoterms) belirtilmeden iş emri oluşturulamaz.")
+
     # Load all items, pre-fetching the full parent chain for effective-parent traversal
     items = list(
         offer.items
@@ -360,58 +368,47 @@ def convert_offer_to_job_order(offer: SalesOffer, user) -> JobOrder:
         .order_by('sequence')
     )
 
-    first_root_job = None
-
     if not items:
-        # No items — single job order with hierarchy flag
-        job_no = generate_job_no(offer.customer.code)
-        first_root_job = JobOrder.objects.create(
-            job_no=job_no,
-            title=offer.title,
-            customer=offer.customer,
-            quantity=1,
-            source_offer=offer,
-            description=offer.description,
-            customer_order_no=offer.customer_inquiry_ref or '',
-            target_completion_date=offer.delivery_date_requested,
-            hierarchy_setup_pending=True,
-            status='draft',
-            created_by=user,
+        raise ValueError(
+            "İş emri oluşturmak için teklifte en az bir kalem bulunmalıdır."
         )
-    else:
-        # Build effective parent map
-        selected_node_ids = {
-            item.template_node_id
-            for item in items
-            if item.template_node_id
-        }
-        item_by_node_id = {
-            item.template_node_id: item
-            for item in items
-            if item.template_node_id
-        }
 
-        roots = []
-        children_map = defaultdict(list)  # parent_node_id → [child SalesOfferItems]
+    file_ids = file_ids or []
 
-        for item in items:
-            if not item.template_node_id:
-                # Custom item (no catalog node) → always a root job order
-                roots.append(item)
-                continue
+    # Build effective parent map
+    selected_node_ids = {
+        item.template_node_id
+        for item in items
+        if item.template_node_id
+    }
+    item_by_node_id = {
+        item.template_node_id: item
+        for item in items
+        if item.template_node_id
+    }
 
-            eff_parent = _get_effective_parent_item(
-                item.template_node, selected_node_ids, item_by_node_id
-            )
-            if eff_parent is None:
-                roots.append(item)
-            else:
-                children_map[eff_parent.template_node_id].append(item)
+    roots = []
+    children_map = defaultdict(list)  # parent_node_id → [child SalesOfferItems]
 
-        for root_item in roots:
-            job = _create_job_from_item(root_item, None, children_map, offer, user)
-            if first_root_job is None:
-                first_root_job = job
+    for item in items:
+        if not item.template_node_id:
+            # Custom item (no catalog node) → always a root job order
+            roots.append(item)
+            continue
+
+        eff_parent = _get_effective_parent_item(
+            item.template_node, selected_node_ids, item_by_node_id
+        )
+        if eff_parent is None:
+            roots.append(item)
+        else:
+            children_map[eff_parent.template_node_id].append(item)
+
+    first_root_job = None
+    for root_item in roots:
+        job = _create_job_from_item(root_item, None, children_map, offer, user, incoterms, file_ids)
+        if first_root_job is None:
+            first_root_job = job
 
     # Update offer
     offer.status = 'won'

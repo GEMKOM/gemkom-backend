@@ -125,6 +125,7 @@ class SalesOffer(models.Model):
     )
     delivery_date_requested = models.DateField(null=True, blank=True)
     offer_expiry_date = models.DateField(null=True, blank=True)
+    incoterms = models.CharField(max_length=100, blank=True, help_text="Teslim şekli (e.g. EXW, FOB, CIF)")
 
     status = models.CharField(
         max_length=30,

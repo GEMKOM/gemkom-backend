@@ -431,8 +431,15 @@ class SalesOfferViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], url_path='convert')
     def convert(self, request, pk=None):
         offer = self.get_object()
+        incoterms = request.data.get('incoterms', '').strip()
+        file_ids = request.data.get('file_ids', [])
+        if not isinstance(file_ids, list):
+            return Response({'detail': 'file_ids must be a list.'}, status=status.HTTP_400_BAD_REQUEST)
         try:
-            job = services.convert_offer_to_job_order(offer=offer, user=request.user)
+            job = services.convert_offer_to_job_order(
+                offer=offer, user=request.user,
+                incoterms=incoterms, file_ids=file_ids,
+            )
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
