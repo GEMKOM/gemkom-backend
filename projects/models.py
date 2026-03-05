@@ -103,6 +103,13 @@ class JobOrder(models.Model):
         blank=True,
         related_name='children'
     )
+    source_offer = models.ForeignKey(
+        'sales.SalesOffer',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='job_orders',
+    )
 
     # Basic info
     title = models.CharField(max_length=255)

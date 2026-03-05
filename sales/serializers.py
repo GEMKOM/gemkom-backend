@@ -153,12 +153,14 @@ class SalesOfferItemSerializer(serializers.ModelSerializer):
         source='template_node', read_only=True
     )
     resolved_title = serializers.CharField(read_only=True)
+    subtotal = serializers.DecimalField(max_digits=16, decimal_places=2, read_only=True)
 
     class Meta:
         model = SalesOfferItem
         fields = [
             'id', 'offer', 'template_node', 'template_node_detail',
             'quantity', 'title_override', 'notes', 'sequence',
+            'unit_price', 'weight_kg', 'subtotal',
             'resolved_title', 'created_at',
         ]
         read_only_fields = ['offer', 'created_at']
@@ -167,13 +169,14 @@ class SalesOfferItemSerializer(serializers.ModelSerializer):
 class SalesOfferItemCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = SalesOfferItem
-        fields = ['template_node', 'quantity', 'title_override', 'notes', 'sequence']
+        fields = ['template_node', 'quantity', 'title_override', 'notes', 'sequence', 'unit_price', 'weight_kg']
 
     def validate(self, attrs):
-        if not attrs.get('template_node') and not attrs.get('title_override'):
-            raise serializers.ValidationError(
-                "Either template_node or title_override must be provided."
-            )
+        if self.instance is None:
+            if not attrs.get('template_node') and not attrs.get('title_override'):
+                raise serializers.ValidationError(
+                    "Either template_node or title_override must be provided."
+                )
         return attrs
 
 
@@ -193,6 +196,8 @@ class SalesOfferListSerializer(serializers.ModelSerializer):
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     current_price = SalesOfferCurrentPriceSerializer(read_only=True)
     item_count = serializers.SerializerMethodField()
+    total_price = serializers.SerializerMethodField()
+    total_weight_kg = serializers.SerializerMethodField()
     created_by_name = serializers.CharField(
         source='created_by.get_full_name', read_only=True, default=''
     )
@@ -204,12 +209,26 @@ class SalesOfferListSerializer(serializers.ModelSerializer):
             'customer', 'customer_name', 'customer_code',
             'delivery_date_requested', 'offer_expiry_date',
             'current_price', 'item_count',
+            'total_price', 'total_weight_kg',
             'approval_round',
             'created_by', 'created_by_name', 'created_at', 'updated_at',
         ]
 
     def get_item_count(self, obj):
         return obj.items.count()
+
+    def get_total_price(self, obj):
+        return obj.total_price
+
+    def get_total_weight_kg(self, obj):
+        return obj.total_weight_kg
+
+
+class SalesOfferJobOrderSummarySerializer(serializers.Serializer):
+    job_no = serializers.CharField()
+    title = serializers.CharField()
+    status = serializers.CharField()
+    parent = serializers.CharField(allow_null=True)
 
 
 class SalesOfferDetailSerializer(serializers.ModelSerializer):
@@ -223,6 +242,9 @@ class SalesOfferDetailSerializer(serializers.ModelSerializer):
     converted_job_order_no = serializers.CharField(
         source='converted_job_order.job_no', read_only=True, default=None
     )
+    job_orders = SalesOfferJobOrderSummarySerializer(many=True, read_only=True)
+    total_price = serializers.SerializerMethodField()
+    total_weight_kg = serializers.SerializerMethodField()
 
     class Meta:
         model = SalesOffer
@@ -233,10 +255,18 @@ class SalesOfferDetailSerializer(serializers.ModelSerializer):
             'customer_inquiry_ref', 'delivery_date_requested', 'offer_expiry_date',
             'approval_round',
             'current_price',
+            'total_price', 'total_weight_kg',
             'converted_job_order', 'converted_job_order_no',
+            'job_orders',
             'submitted_to_customer_at', 'won_at', 'lost_at', 'cancelled_at',
             'created_by', 'created_by_name', 'created_at', 'updated_at',
         ]
+
+    def get_total_price(self, obj):
+        return obj.total_price
+
+    def get_total_weight_kg(self, obj):
+        return obj.total_weight_kg
 
 
 class SalesOfferCreateSerializer(serializers.ModelSerializer):
@@ -289,12 +319,6 @@ class SendConsultationsSerializer(serializers.Serializer):
         if not value:
             raise serializers.ValidationError("En az bir departman seçilmelidir.")
         return value
-
-
-class ProposePriceSerializer(serializers.Serializer):
-    amount = serializers.DecimalField(max_digits=16, decimal_places=2)
-    currency = serializers.ChoiceField(choices=['TRY', 'USD', 'EUR', 'GBP'], default='EUR')
-    notes = serializers.CharField(required=False, allow_blank=True, default='')
 
 
 class SubmitForApprovalSerializer(serializers.Serializer):

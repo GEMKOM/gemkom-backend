@@ -160,49 +160,6 @@ def send_consultations(offer: SalesOffer, departments_data: list[dict], user) ->
 
 
 # =============================================================================
-# Price management
-# =============================================================================
-
-def propose_price(
-    offer: SalesOffer,
-    amount,
-    currency: str,
-    notes: str,
-    user,
-) -> SalesOfferPriceRevision:
-    """
-    Propose or revise a price for the offer.
-    Creates a new SalesOfferPriceRevision with is_current=True.
-    Determines revision_type automatically (initial vs sales_revision).
-    Transitions offer to 'pricing' if still in draft/consultation.
-    """
-    with transaction.atomic():
-        is_initial = not offer.price_revisions.exists()
-        revision_type = 'initial' if is_initial else 'sales_revision'
-
-        # Deactivate existing current revision (save() override also does this,
-        # but doing it explicitly avoids a race if two requests arrive simultaneously)
-        offer.price_revisions.filter(is_current=True).update(is_current=False)
-
-        revision = SalesOfferPriceRevision.objects.create(
-            offer=offer,
-            revision_type=revision_type,
-            amount=amount,
-            currency=currency,
-            notes=notes,
-            approval_round=offer.approval_round + 1,
-            is_current=True,
-            created_by=user,
-        )
-
-        if offer.status in ('draft', 'consultation'):
-            offer.status = 'pricing'
-            offer.save(update_fields=['status', 'updated_at'])
-
-        return revision
-
-
-# =============================================================================
 # Approval workflow
 # =============================================================================
 
@@ -227,19 +184,35 @@ def _get_sales_offer_policy():
 
 def submit_for_approval(offer: SalesOffer, user):
     """
-    Submit the current price for internal approval.
-    Auto-selects the policy by name (consistent with overtime, QC, subcontracting).
+    Submit the offer for internal approval.
+    Auto-calculates total price from item unit_prices (EUR).
+    Auto-selects the policy by name.
     Increments offer.approval_round.
     Returns the created ApprovalWorkflow.
     """
+    from decimal import Decimal
     from approvals.services import create_workflow, auto_bypass_self_approver
 
     with transaction.atomic():
-        current = offer.price_revisions.filter(is_current=True).first()
-        if not current:
+        total = offer.total_price
+        if total == Decimal('0.00'):
             raise ValueError(
-                "Onaya göndermeden önce bir fiyat belirlenmelidir."
+                "Onaya göndermeden önce en az bir kaleme fiyat girilmelidir."
             )
+
+        is_initial = not offer.price_revisions.exists()
+        revision_type = 'initial' if is_initial else 'sales_revision'
+
+        offer.price_revisions.filter(is_current=True).update(is_current=False)
+        SalesOfferPriceRevision.objects.create(
+            offer=offer,
+            revision_type=revision_type,
+            amount=total,
+            currency='EUR',
+            approval_round=offer.approval_round + 1,
+            is_current=True,
+            created_by=user,
+        )
 
         policy = _get_sales_offer_policy()
 
@@ -249,8 +222,8 @@ def submit_for_approval(offer: SalesOffer, user):
 
         snapshot = {
             'offer_no': offer.offer_no,
-            'amount': str(current.amount),
-            'currency': current.currency,
+            'amount': str(total),
+            'currency': 'EUR',
             'round': offer.approval_round,
         }
 
@@ -323,6 +296,7 @@ def _create_job_from_item(item: SalesOfferItem, parent_job, children_map: dict, 
         customer=offer.customer,
         quantity=item.quantity,
         parent=parent_job,
+        source_offer=offer,
         description=offer.description if not parent_job else '',
         customer_order_no=offer.customer_inquiry_ref or '',
         target_completion_date=offer.delivery_date_requested,
@@ -396,6 +370,7 @@ def convert_offer_to_job_order(offer: SalesOffer, user) -> JobOrder:
             title=offer.title,
             customer=offer.customer,
             quantity=1,
+            source_offer=offer,
             description=offer.description,
             customer_order_no=offer.customer_inquiry_ref or '',
             target_completion_date=offer.delivery_date_requested,

@@ -235,10 +235,10 @@ def recompute_job_cost_summary(job_no: str) -> None:
     )
 
     # ------------------------------------------------------------------
-    # 7. General expenses = general_expenses_rate (TRY/kg) × total_weight_kg → EUR
+    # 7. General expenses = general_expenses_rate (EUR/kg) × total_weight_kg
     # ------------------------------------------------------------------
     general_expenses = q2(
-        convert_to_eur(general_expenses_rate * total_weight_kg, 'TRY', today)
+        general_expenses_rate * total_weight_kg
         if (general_expenses_rate > 0 and total_weight_kg > 0) else Decimal('0')
     )
 

@@ -125,6 +125,7 @@ class JobOrderListSerializer(serializers.ModelSerializer):
             'parent', 'children_count', 'hierarchy_level',
             'ncr_count',
             'general_expenses_rate',
+            'source_offer',
             'created_at'
         ]
 
@@ -180,6 +181,7 @@ class JobOrderDetailSerializer(serializers.ModelSerializer):
         default=''
     )
     parent_title = serializers.CharField(source='parent.title', read_only=True, default=None)
+    source_offer_no = serializers.CharField(source='source_offer.offer_no', read_only=True, default=None)
     children = serializers.SerializerMethodField()
     children_count = serializers.SerializerMethodField()
     hierarchy_level = serializers.SerializerMethodField()
@@ -195,6 +197,7 @@ class JobOrderDetailSerializer(serializers.ModelSerializer):
             'target_completion_date', 'started_at', 'completed_at', 'incoterms',
             'estimated_cost', 'total_weight_kg', 'general_expenses_rate', 'completion_percentage',
             'parent', 'parent_title', 'children', 'children_count', 'hierarchy_level',
+            'source_offer', 'source_offer_no',
             'files_count', 'topics_count',
             'created_at', 'created_by', 'created_by_name',
             'updated_at', 'completed_by', 'completed_by_name'
@@ -2065,15 +2068,15 @@ class CostTableRowSerializer(serializers.Serializer):
         return s.selling_price_currency if s else 'EUR'
 
     def get_price_per_kg(self, obj):
-        """selling_price ÷ total_weight_kg (null if weight is zero or missing)."""
+        """actual_total_cost ÷ total_weight_kg (null if weight is zero or missing)."""
         from decimal import Decimal
         s = self._summary(obj)
-        if not s or not s.selling_price:
+        if not s or not s.actual_total_cost:
             return None
         weight = obj.total_weight_kg
         if not weight:
             return None
-        return str((s.selling_price / Decimal(str(weight))).quantize(Decimal('0.01')))
+        return str((s.actual_total_cost / Decimal(str(weight))).quantize(Decimal('0.01')))
 
     def get_margin_eur(self, obj):
         from decimal import Decimal

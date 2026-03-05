@@ -31,7 +31,6 @@ from .serializers import (
     SalesOfferFileUploadSerializer,
     SalesOfferPriceRevisionSerializer,
     SendConsultationsSerializer,
-    ProposePriceSerializer,
     SubmitForApprovalSerializer,
     RecordApprovalDecisionSerializer,
     AddItemsSerializer,
@@ -185,7 +184,7 @@ class SalesOfferViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         return SalesOffer.objects.select_related(
             'customer', 'created_by', 'converted_job_order'
-        ).prefetch_related('items', 'price_revisions')
+        ).prefetch_related('items', 'price_revisions', 'job_orders')
 
     def get_serializer_class(self):
         if self.action == 'list':
@@ -268,6 +267,12 @@ class SalesOfferViewSet(viewsets.ModelViewSet):
             serializer = SalesOfferItemCreateSerializer(item, data=request.data, partial=True)
             serializer.is_valid(raise_exception=True)
             serializer.save()
+            if (
+                item.unit_price is not None
+                and offer.status in ('draft', 'consultation')
+            ):
+                offer.status = 'pricing'
+                offer.save(update_fields=['status', 'updated_at'])
             return Response(SalesOfferItemSerializer(item).data)
 
         # DELETE
@@ -324,30 +329,6 @@ class SalesOfferViewSet(viewsets.ModelViewSet):
 
         return Response(
             {'created': len(tasks), 'detail': 'Danışma görevleri oluşturuldu.'},
-            status=status.HTTP_201_CREATED,
-        )
-
-    @action(detail=True, methods=['post'], url_path='propose-price')
-    def propose_price(self, request, pk=None):
-        offer = self.get_object()
-        if offer.status in ('won', 'cancelled'):
-            return Response(
-                {'detail': 'Kazanılmış veya iptal edilmiş tekliflere fiyat önerilemez.'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        serializer = ProposePriceSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-
-        revision = services.propose_price(
-            offer=offer,
-            amount=serializer.validated_data['amount'],
-            currency=serializer.validated_data['currency'],
-            notes=serializer.validated_data.get('notes', ''),
-            user=request.user,
-        )
-        return Response(
-            SalesOfferPriceRevisionSerializer(revision).data,
             status=status.HTTP_201_CREATED,
         )
 

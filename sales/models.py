@@ -139,7 +139,7 @@ class SalesOffer(models.Model):
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name='source_offer'
+        related_name='primary_offer'
     )
 
     # Increments on each submit-for-approval call (tracks revision cycles)
@@ -189,6 +189,24 @@ class SalesOffer(models.Model):
         return self.price_revisions.filter(is_current=True).first()
 
     @property
+    def total_price(self):
+        from decimal import Decimal
+        total = Decimal('0.00')
+        for item in self.items.all():
+            if item.unit_price is not None:
+                total += item.unit_price * item.quantity
+        return total
+
+    @property
+    def total_weight_kg(self):
+        from decimal import Decimal
+        total = Decimal('0.00')
+        for item in self.items.all():
+            if item.weight_kg is not None:
+                total += item.weight_kg * item.quantity
+        return total
+
+    @property
     def has_catalog_items(self):
         return self.items.filter(template_node__isnull=False).exists()
 
@@ -222,6 +240,8 @@ class SalesOfferItem(models.Model):
     )
     notes = models.TextField(blank=True)
     sequence = models.PositiveIntegerField(default=1)
+    unit_price = models.DecimalField(max_digits=16, decimal_places=2, null=True, blank=True)
+    weight_kg = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
 
     created_by = models.ForeignKey(
         User,
@@ -254,6 +274,12 @@ class SalesOfferItem(models.Model):
         if self.template_node:
             return self.template_node.title
         return ''
+
+    @property
+    def subtotal(self):
+        if self.unit_price is not None:
+            return self.unit_price * self.quantity
+        return None
 
 
 # =============================================================================

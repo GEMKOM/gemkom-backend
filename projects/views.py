@@ -162,7 +162,7 @@ class JobOrderViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         from django.db.models import Count
         queryset = JobOrder.objects.select_related(
-            'customer', 'parent', 'created_by', 'completed_by'
+            'customer', 'parent', 'created_by', 'completed_by', 'source_offer'
         ).annotate(
             ncr_count=Count('ncrs', distinct=True),
             children_count=Count('children', distinct=True),
