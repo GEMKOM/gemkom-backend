@@ -195,7 +195,7 @@ class JobOrderDetailSerializer(serializers.ModelSerializer):
             'customer', 'customer_name', 'customer_short_name', 'customer_code', 'customer_order_no',
             'status', 'status_display', 'priority', 'priority_display',
             'target_completion_date', 'started_at', 'completed_at', 'incoterms',
-            'estimated_cost', 'total_weight_kg', 'general_expenses_rate', 'completion_percentage',
+            'total_weight_kg', 'general_expenses_rate', 'completion_percentage',
             'parent', 'parent_title', 'children', 'children_count', 'hierarchy_level',
             'source_offer', 'source_offer_no',
             'files_count', 'topics_count',
