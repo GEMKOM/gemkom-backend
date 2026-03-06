@@ -101,6 +101,25 @@ class IsShippingCostAuthorized(BasePermission):
         return self.has_permission(request, view)
 
 
+class IsPlanning(BasePermission):
+    """
+    Any planning team member.
+    Used to gate actions like marking a job order cost as not applicable.
+    """
+
+    def has_permission(self, request, view):
+        u = request.user
+        if not u or not u.is_authenticated:
+            return False
+        if u.is_superuser:
+            return True
+        prof = getattr(u, 'profile', None)
+        return bool(prof and prof.team == 'planning')
+
+    def has_object_permission(self, request, view, obj):
+        return self.has_permission(request, view)
+
+
 # ---------------------------------------------------------------------------
 # Legacy / general
 # ---------------------------------------------------------------------------

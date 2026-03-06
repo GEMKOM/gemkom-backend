@@ -1645,6 +1645,7 @@ class JobOrderCostSummarySerializer(serializers.ModelSerializer):
             'actual_total_cost',
             'subcontractor_cost_at_100', 'paint_cost_at_100', 'paint_material_cost_at_100',
             'selling_price', 'selling_price_currency',
+            'cost_not_applicable',
             'last_updated',
         ]
         read_only_fields = [

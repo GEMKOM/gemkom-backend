@@ -1976,6 +1976,10 @@ class JobOrderCostSummary(models.Model):
         max_length=3, choices=CURRENCY_CHOICES, default='EUR'
     )
     legacy = models.BooleanField(default=False)
+    cost_not_applicable = models.BooleanField(
+        default=False,
+        help_text='When True, this job order is excluded from all department cost pending lists. Set by planning.'
+    )
     last_updated = models.DateTimeField(auto_now=True)
 
     class Meta:

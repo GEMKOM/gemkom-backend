@@ -57,7 +57,7 @@ from .serializers import (
 )
 from .permissions import (
     IsOfficeUser, IsTopicOwnerOrReadOnly, IsCommentAuthorOrReadOnly,
-    IsCostAuthorized, IsProcurementCostAuthorized, IsQCCostAuthorized, IsShippingCostAuthorized,
+    IsCostAuthorized, IsProcurementCostAuthorized, IsQCCostAuthorized, IsShippingCostAuthorized, IsPlanning,
 )
 
 
@@ -642,6 +642,7 @@ class JobOrderViewSet(viewsets.ModelViewSet):
             JobOrder.objects
             .select_related('cost_summary', 'customer')
             .exclude(job_no='LEGACY-ARCHIVE')
+            .exclude(cost_summary__cost_not_applicable=True)
             .order_by('job_no')
         )
         filtered_qs = self.filter_queryset(base_qs)
@@ -716,6 +717,12 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         summary, _ = JobOrderCostSummary.objects.get_or_create(
             job_order=job_order
         )
+
+        # Only planning team (or superusers) may set cost_not_applicable
+        if 'cost_not_applicable' in request.data and not IsPlanning().has_permission(request, self):
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied("Only planning team members can mark a job order as cost not applicable.")
+
         serializer = JobOrderCostSummarySerializer(
             summary, data=request.data, partial=True
         )
@@ -747,6 +754,7 @@ class JobOrderViewSet(viewsets.ModelViewSet):
             .filter(procurement_line_count=0, children__isnull=True)
             .exclude(job_no='LEGACY-ARCHIVE')
             .exclude(status='cancelled')
+            .exclude(cost_summary__cost_not_applicable=True)
         )
         qs = self.filter_queryset(qs)
         page = self.paginate_queryset(qs)
@@ -771,6 +779,7 @@ class JobOrderViewSet(viewsets.ModelViewSet):
             .filter(qc_line_count=0, children__isnull=True)
             .exclude(job_no='LEGACY-ARCHIVE')
             .exclude(status='cancelled')
+            .exclude(cost_summary__cost_not_applicable=True)
         )
         qs = self.filter_queryset(qs)
         page = self.paginate_queryset(qs)
@@ -795,6 +804,7 @@ class JobOrderViewSet(viewsets.ModelViewSet):
             .filter(shipping_line_count=0, children__isnull=True)
             .exclude(job_no='LEGACY-ARCHIVE')
             .exclude(status='cancelled')
+            .exclude(cost_summary__cost_not_applicable=True)
         )
         qs = self.filter_queryset(qs)
         page = self.paginate_queryset(qs)
