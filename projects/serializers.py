@@ -601,10 +601,11 @@ class DepartmentTaskListSerializer(serializers.ModelSerializer):
             from tasks.models import Part
             return Part.objects.filter(job_no=obj.job_order.job_no).count()
         if obj.department == 'procurement':
-            from procurement.models import PurchaseRequest
-            return PurchaseRequest.objects.filter(
-                planning_request_items__job_no=obj.job_order.job_no
-            ).exclude(status='cancelled').distinct().count()
+            from planning.models import PlanningRequestItem
+            return PlanningRequestItem.objects.filter(
+                job_no=obj.job_order.job_no,
+                quantity_to_purchase__gt=0,
+            ).count()
         return obj.subtasks.count()
 
     def get_can_start(self, obj):
@@ -782,10 +783,11 @@ class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
             from tasks.models import Part
             return Part.objects.filter(job_no=obj.job_order.job_no).count()
         if obj.department == 'procurement':
-            from procurement.models import PurchaseRequest
-            return PurchaseRequest.objects.filter(
-                planning_request_items__job_no=obj.job_order.job_no
-            ).exclude(status='cancelled').distinct().count()
+            from planning.models import PlanningRequestItem
+            return PlanningRequestItem.objects.filter(
+                job_no=obj.job_order.job_no,
+                quantity_to_purchase__gt=0,
+            ).count()
         return obj.subtasks.count()
 
     def get_can_start(self, obj):

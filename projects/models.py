@@ -1127,14 +1127,11 @@ class JobOrderDepartmentTask(models.Model):
         if self.department != 'procurement':
             return (Decimal('0.00'), Decimal('0.00'))
 
-        from django.db.models import Q
         from planning.models import PlanningRequestItem
 
-        # Include items that need purchasing OR were sourced from stock
         pr_items = PlanningRequestItem.objects.filter(
-            job_no=self.job_order.job_no
-        ).filter(
-            Q(quantity_to_purchase__gt=0) | Q(quantity_from_inventory__gt=0)
+            job_no=self.job_order.job_no,
+            quantity_to_purchase__gt=0,
         ).select_related('item')
 
         if not pr_items.exists():
@@ -1371,7 +1368,7 @@ class JobOrderDepartmentTask(models.Model):
                 if total > 0:
                     pct = ((earned / total) * 100).quantize(Decimal('0.01'))
                     return min(pct, MAX_IN_PROGRESS)
-                return Decimal('0.00')
+                # No purchaseable items — fall through to manual_progress below
 
         # Pending/blocked tasks (non-special) are 0%
         if self.status in ['pending', 'blocked']:
