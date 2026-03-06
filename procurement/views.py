@@ -30,7 +30,7 @@ from django.db.models import OuterRef, Subquery, Exists
 from approvals.models import ApprovalWorkflow, ApprovalStageInstance, ApprovalDecision
 
 from procurement.approval_service import create_pos_from_recommended, submit_purchase_request, decide
-from .services import cancel_purchase_request, compute_vat_carry_map, recompute_payment_schedule_due_dates
+from .services import cancel_purchase_request, compute_vat_carry_map, recompute_payment_schedule_due_dates, revise_purchase_request
 
 from django.db.models import Count, Prefetch
 from .models import PurchaseOrder
@@ -427,6 +427,22 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
         except Exception as e:
             return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
         return Response({"detail": "Purchase request cancelled."}, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["POST"], permission_classes=[IsFinanceAuthorized])
+    def revise(self, request, pk=None):
+        pr = self.get_object()
+        reason = request.data.get("reason", "")
+        try:
+            draft = revise_purchase_request(pr, request.user, reason=reason)
+        except PermissionDenied as e:
+            return Response({"detail": str(e)}, status=status.HTTP_403_FORBIDDEN)
+        except Exception as e:
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        from .serializers import PurchaseRequestDraftDetailSerializer
+        return Response(
+            {"detail": "Purchase request cancelled and revision draft created.", "draft": PurchaseRequestDraftDetailSerializer(draft).data},
+            status=status.HTTP_201_CREATED,
+        )
 
     @action(detail=True, methods=["GET"])
     def all_files(self, request, pk=None):

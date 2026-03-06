@@ -178,16 +178,47 @@ def create_pos_from_recommended(pr):
 
     return pos
 
+def _reverse_dbs_usage(pr):
+    """Reverse dbs_used increments made when this PR was approved for DBS suppliers."""
+    from .models import ItemOffer
+    from decimal import Decimal
+    from .reports.common import extract_rates, get_fallback_rates, to_eur
+
+    rec_offers = (
+        ItemOffer.objects
+        .select_related('purchase_request_item', 'supplier_offer', 'supplier_offer__supplier')
+        .filter(purchase_request_item__purchase_request=pr, is_recommended=True)
+    )
+    dbs_totals = {}
+    for io in rec_offers:
+        supplier = io.supplier_offer.supplier
+        if not getattr(supplier, 'has_dbs', False):
+            continue
+        so = io.supplier_offer
+        total_net = Q2(io.purchase_request_item.quantity * io.unit_price)
+        rate = (so.tax_rate or getattr(supplier, 'default_tax_rate', Decimal('0'))) / Decimal('100')
+        total_gross = Q2(total_net * (Decimal('1') + rate))
+        dbs_ccy = getattr(supplier, 'dbs_currency', None) or (so.currency or 'TRY')
+        pr_rates = extract_rates(getattr(pr, 'currency_rates_snapshot', {}) or {})
+        if dbs_ccy == 'EUR':
+            amount = to_eur(total_gross, (so.currency or 'TRY'), pr_rates, get_fallback_rates()) or Decimal('0.00')
+        else:
+            amount = total_gross
+        dbs_totals[supplier.pk] = dbs_totals.get(supplier.pk, Decimal('0.00')) + amount
+
+    for supplier_pk, amount in dbs_totals.items():
+        from .models import Supplier
+        Supplier.objects.filter(pk=supplier_pk).update(dbs_used=F('dbs_used') - amount)
+
+
 def _all_pos_cancellable(pr):
-    # define your own rule; for now: POs exist AND all are in a cancellable state
-    pos = list(pr.purchase_orders.all())
+    pos = list(pr.purchase_orders.exclude(status='cancelled'))
     if not pos:
         return True
-    return all(po.status in ('awaiting_invoice', 'open') and not _po_has_payments(po) for po in pos)
+    return all(po.status == 'awaiting_payment' and not _po_has_payments(po) for po in pos)
 
 def _po_has_payments(po):
-    # if you add payments later; for now return False
-    return False
+    return po.payment_schedules.filter(is_paid=True).exists()
 
 @transaction.atomic
 def cancel_purchase_request(pr, by_user, reason:str=''):
@@ -204,10 +235,10 @@ def cancel_purchase_request(pr, by_user, reason:str=''):
         if not (is_owner or is_admin):
             raise PermissionDenied("You can’t cancel this request.")
     elif pr.status == 'approved':
-        if not is_admin:
-            raise PermissionDenied("Only admin can cancel an approved request.")
+        if not (is_owner or is_admin):
+            raise PermissionDenied("You can't cancel this request.")
         if not _all_pos_cancellable(pr):
-            raise ValidationError("Cancel all related POs (or reverse payments) before cancelling this request.")
+            raise ValidationError("Cannot cancel: PO has payments recorded or is in a non-cancellable state.")
     elif pr.status == 'rejected':
         if not (is_owner or is_admin):
             raise PermissionDenied("You can’t cancel this request.")
@@ -224,23 +255,92 @@ def cancel_purchase_request(pr, by_user, reason:str=''):
             wf.cancelled_at = timezone.now()
         wf.save(update_fields=[f for f in ['is_cancelled','cancelled_at'] if hasattr(wf, f)])
 
-    # 2) Cancel POs if any (and if your rule allows)
+    # 2) Reverse DBS usage for any DBS-supplier items on this PR
+    _reverse_dbs_usage(pr)
+
+    # 3) Cancel POs if any (and if your rule allows)
     for po in pr.purchase_orders.all():
         # Guard: if PO has payments/shipments, you should block earlier
         po.status = 'cancelled'
         po.save(update_fields=['status'])
 
-    # 3) Finally cancel PR
+    # 4) Finally cancel PR
     pr.status = 'cancelled'
     pr.cancelled_at = timezone.now()
     pr.cancelled_by = by_user
     pr.cancellation_reason = (reason or '').strip()
     pr.save(update_fields=['status','cancelled_at','cancelled_by','cancellation_reason'])
 
-    # 4) Restore planning request status if applicable
+    # 5) Restore planning request status if applicable
     restore_planning_request_status(pr)
 
     return pr
+
+@transaction.atomic
+def revise_purchase_request(pr, by_user, reason=''):
+    """
+    Cancel an approved PR (and its POs) and create a PurchaseRequestDraft
+    pre-filled with the same items, so the user can edit and resubmit.
+    """
+    from .models import PurchaseRequestDraft
+
+    if pr.status != 'approved':
+        raise ValidationError("Only approved purchase requests can be revised.")
+
+    is_admin = getattr(by_user, 'is_staff', False) or by_user.is_superuser
+    is_owner = (pr.requestor_id == by_user.id)
+    if not (is_owner or is_admin):
+        raise PermissionDenied("You don't have permission to revise this request.")
+
+    if not _all_pos_cancellable(pr):
+        raise ValidationError("Cannot revise: PO has payments recorded or is in a non-cancellable state.")
+
+    # Build items data from old PR's request items
+    items_data = []
+    for pri in pr.request_items.prefetch_related('allocations').select_related('item', 'planning_request_item').all():
+        item_entry = {
+            "code": pri.item.code if pri.item else "",
+            "name": pri.item.name if pri.item else pri.item_description,
+            "unit": pri.item.unit if pri.item else "",
+            "quantity": str(pri.quantity),
+            "item_description": pri.item_description or "",
+            "specifications": pri.specifications or "",
+            "allocations": [
+                {"job_no": a.job_no, "quantity": str(a.quantity)}
+                for a in pri.allocations.all()
+            ],
+            "file_asset_ids": [],
+            "planning_request_item_id": pri.planning_request_item_id,
+        }
+        items_data.append(item_entry)
+
+    planning_item_ids = list(pr.planning_request_items.values_list('id', flat=True))
+
+    draft_data = {
+        "title": f"[REVİZYON] {pr.title}",
+        "description": pr.description or "",
+        "priority": pr.priority,
+        "needed_date": str(pr.needed_date) if pr.needed_date else None,
+        "is_rolling_mill": pr.is_rolling_mill,
+        "items": items_data,
+        "planning_request_item_ids": planning_item_ids,
+        "original_pr_id": pr.id,
+    }
+
+    # Cancel old PR (cancels POs, reverses DBS usage, restores planning items)
+    cancel_purchase_request(pr, by_user, reason=reason or "Revize edildi.")
+
+    draft = PurchaseRequestDraft.objects.create(
+        title=draft_data["title"],
+        description=draft_data["description"],
+        priority=draft_data["priority"],
+        needed_date=draft_data["needed_date"],
+        requestor=by_user,
+        data=draft_data,
+    )
+
+    return draft
+
 
 def _q(x: Decimal) -> Decimal:
     return x.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
