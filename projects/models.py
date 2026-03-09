@@ -635,6 +635,7 @@ class DepartmentTaskTemplateItem(models.Model):
         ('welding', 'Kaynaklı İmalat'),
         ('painting', 'Boya'),
         ('part', 'Parça'),
+        ('subcontracting', 'Taşeron'),
     ]
     task_type = models.CharField(
         max_length=20,
@@ -706,7 +707,8 @@ class JobOrderDepartmentTask(models.Model):
         ('welding', 'Kaynaklı İmalat'),
         ('painting', 'Boya'),
         ('part', 'Parça'),
-        ('sales_consult', 'Satış Destek')
+        ('sales_consult', 'Satış Destek'),
+        ('subcontracting', 'Taşeron'),
     ]
 
     job_order = models.ForeignKey(

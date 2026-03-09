@@ -173,6 +173,7 @@ class SubcontractingAssignmentViewSet(viewsets.ModelViewSet):
                     department=kaynak_task.department,
                     parent=kaynak_task,
                     title=subtask_title,
+                    task_type='subcontracting',
                     status='in_progress',
                     weight=subtask_weight,
                     sequence=next_sequence,
@@ -201,6 +202,108 @@ class SubcontractingAssignmentViewSet(viewsets.ModelViewSet):
         return Response(
             SubcontractingAssignmentSerializer(assignment, context={'request': request}).data,
             status=status.HTTP_201_CREATED,
+        )
+
+    @action(detail=True, methods=['patch'], url_path='update-assignment')
+    def update_assignment(self, request, pk=None):
+        """
+        Update a subcontracting assignment and its linked subtask.
+        Blocked if any billing has already been issued (last_billed_progress > 0).
+
+        PATCH /subcontracting/assignments/{id}/update-assignment/
+        Body (all optional):
+          subcontractor       – new Subcontractor ID
+          price_tier          – new SubcontractingPriceTier ID
+          allocated_weight_kg – new weight allocation
+          title               – new subtask title
+          weight              – new subtask weight (1-100)
+        """
+        from decimal import Decimal
+        from projects.models import JobOrderDepartmentTask
+
+        assignment = self.get_object()
+
+        if assignment.last_billed_progress > Decimal('0'):
+            return Response(
+                {'detail': 'Bu atama için hakediş kesilmiş olduğundan güncelleme yapılamaz.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        subcontractor_id    = request.data.get('subcontractor')
+        price_tier_id       = request.data.get('price_tier')
+        allocated_weight_kg = request.data.get('allocated_weight_kg')
+        new_title           = request.data.get('title', '').strip() or None
+        new_weight          = request.data.get('weight')
+
+        try:
+            with db_transaction.atomic():
+                # Resolve new foreign keys if provided
+                if subcontractor_id:
+                    try:
+                        new_subcontractor = Subcontractor.objects.get(pk=subcontractor_id)
+                    except Subcontractor.DoesNotExist:
+                        return Response(
+                            {'detail': 'Taşeron bulunamadı.'},
+                            status=status.HTTP_404_NOT_FOUND,
+                        )
+                    assignment.subcontractor = new_subcontractor
+
+                if price_tier_id:
+                    try:
+                        new_tier = SubcontractingPriceTier.objects.select_for_update().get(
+                            pk=price_tier_id
+                        )
+                    except SubcontractingPriceTier.DoesNotExist:
+                        return Response(
+                            {'detail': 'Fiyat kademesi bulunamadı.'},
+                            status=status.HTTP_404_NOT_FOUND,
+                        )
+                    if new_tier.job_order_id != assignment.department_task.job_order_id:
+                        return Response(
+                            {'detail': 'Fiyat kademesi, görevin iş emriyle aynı iş emrine ait olmalıdır.'},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+                    assignment.price_tier = new_tier
+
+                if allocated_weight_kg is not None:
+                    allocated_weight_kg = Decimal(str(allocated_weight_kg))
+                    # Lock the tier to check remaining capacity
+                    locked_tier = SubcontractingPriceTier.objects.select_for_update().get(
+                        pk=assignment.price_tier_id
+                    )
+                    remaining = locked_tier.remaining_weight_kg + assignment.allocated_weight_kg
+                    if allocated_weight_kg > remaining:
+                        return Response(
+                            {
+                                'detail': (
+                                    f"Atanan ağırlık ({allocated_weight_kg} kg), "
+                                    f"kademede kalan ağırlığı ({remaining} kg) aşıyor."
+                                )
+                            },
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+                    assignment.allocated_weight_kg = allocated_weight_kg
+
+                assignment.recalculate_cost()
+                assignment.save()
+
+                # Update subtask fields if requested
+                subtask = assignment.department_task
+                subtask_fields = []
+                if new_title:
+                    subtask.title = new_title
+                    subtask_fields.append('title')
+                if new_weight is not None:
+                    subtask.weight = max(1, min(int(new_weight), 100))
+                    subtask_fields.append('weight')
+                if subtask_fields:
+                    subtask.save(update_fields=subtask_fields)
+
+        except Exception as e:
+            return Response({'detail': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(
+            SubcontractingAssignmentSerializer(assignment, context={'request': request}).data,
         )
 
 
