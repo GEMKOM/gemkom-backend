@@ -61,7 +61,8 @@ class OfferTemplateViewSet(viewsets.ModelViewSet):
 
     def get_permissions(self):
         if self.action in ['create', 'update', 'partial_update', 'destroy',
-                           'add_node', 'update_node', 'delete_node']:
+                           'add_node', 'update_node', 'delete_node',
+                           ] or (self.action == 'node_detail' and self.request.method in ['PATCH', 'DELETE']):
             return [IsSalesUser()]
         return [permissions.IsAuthenticated()]
 
@@ -112,13 +113,17 @@ class OfferTemplateViewSet(viewsets.ModelViewSet):
             status=status.HTTP_201_CREATED,
         )
 
-    @action(detail=True, methods=['patch', 'delete'], url_path=r'nodes/(?P<node_pk>\d+)')
+    @action(detail=True, methods=['get', 'patch', 'delete'], url_path=r'nodes/(?P<node_pk>\d+)')
     def node_detail(self, request, pk=None, node_pk=None):
         template = self.get_object()
         try:
             node = template.nodes.get(pk=node_pk)
         except OfferTemplateNode.DoesNotExist:
             return Response({'detail': 'Node bulunamadı.'}, status=status.HTTP_404_NOT_FOUND)
+
+        if request.method == 'GET':
+            children = node.children.filter(is_active=True).order_by('sequence')
+            return Response(OfferTemplateNodeSerializer(children, many=True).data)
 
         if request.method == 'PATCH':
             serializer = OfferTemplateNodeCreateUpdateSerializer(node, data=request.data, partial=True)

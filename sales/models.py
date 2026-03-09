@@ -62,6 +62,7 @@ class OfferTemplateNode(models.Model):
         blank=True,
         related_name='children'
     )
+    code = models.CharField(max_length=10, null=True, blank=True)
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True)
     sequence = models.PositiveIntegerField(default=1)

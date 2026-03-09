@@ -17,20 +17,15 @@ from .models import (
 # =============================================================================
 
 class OfferTemplateNodeSerializer(serializers.ModelSerializer):
-    """Recursive node serializer — children are nested."""
-    children = serializers.SerializerMethodField()
+    """Flat node serializer — children are loaded on demand."""
+    children_count = serializers.IntegerField(source='children.count', read_only=True)
 
     class Meta:
         model = OfferTemplateNode
         fields = [
             'id', 'template', 'parent', 'title', 'description',
-            'sequence', 'is_active', 'children',
+            'sequence', 'is_active', 'children_count',
         ]
-        read_only_fields = ['children']
-
-    def get_children(self, obj):
-        children = obj.children.filter(is_active=True).order_by('sequence')
-        return OfferTemplateNodeSerializer(children, many=True).data
 
 
 class OfferTemplateNodeCreateUpdateSerializer(serializers.ModelSerializer):
