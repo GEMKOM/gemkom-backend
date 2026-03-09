@@ -989,9 +989,10 @@ class JobOrderDepartmentTask(models.Model):
         self.status = 'completed'
         self.completed_at = timezone.now()
         self.completed_by = user
+        self.manual_progress = Decimal('100.00')
         if notes is not None:
             self.notes = notes
-        self.save(update_fields=['status', 'completed_at', 'completed_by', 'notes'])
+        self.save(update_fields=['status', 'completed_at', 'completed_by', 'notes', 'manual_progress'])
 
         # Update all dependent tasks - check if they can now start
         for dependent_task in self.dependents.all():
