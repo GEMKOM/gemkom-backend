@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 
-from .models import QCReview, NCR
+from .models import QCReview, NCR, NCRFile
 
 User = get_user_model()
 
@@ -227,3 +227,25 @@ class NCRDecisionSerializer(serializers.Serializer):
     """Input for a QC team member to approve or reject an NCR."""
     approve = serializers.BooleanField()
     comment = serializers.CharField(required=False, allow_blank=True, default='')
+
+
+class NCRFileSerializer(serializers.ModelSerializer):
+    uploaded_by_name = serializers.CharField(source='uploaded_by.get_full_name', read_only=True, default=None)
+    file_type_display = serializers.CharField(source='get_file_type_display', read_only=True)
+    url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = NCRFile
+        fields = [
+            'id', 'ncr', 'file', 'url',
+            'file_type', 'file_type_display',
+            'name', 'description',
+            'uploaded_by', 'uploaded_by_name', 'uploaded_at',
+        ]
+        read_only_fields = ['ncr', 'uploaded_by', 'uploaded_at', 'url']
+
+    def get_url(self, obj):
+        try:
+            return obj.file.url
+        except Exception:
+            return None

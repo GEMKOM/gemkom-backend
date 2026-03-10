@@ -3,7 +3,12 @@ from django.contrib.auth.models import User
 from django.contrib.contenttypes.fields import GenericRelation
 
 from approvals.models import ApprovalWorkflow
+from core.storages import PrivateMediaStorage
 from projects.models import JobOrder, JobOrderDepartmentTask
+
+
+def ncr_file_upload_path(instance, filename):
+    return f'ncr_files/{instance.ncr_id}/{filename}'
 
 
 # =============================================================================
@@ -263,3 +268,52 @@ class NCR(models.Model):
             _on_ncr_approved(self)
         elif event == 'rejected':
             _on_ncr_rejected(self, comment=payload.get('comment', ''))
+
+
+# =============================================================================
+# NCRFile — files attached to an NCR
+# =============================================================================
+
+class NCRFile(models.Model):
+    FILE_TYPE_CHOICES = [
+        ('photo',         'Fotoğraf'),
+        ('drawing',       'Çizim'),
+        ('report',        'Rapor'),
+        ('specification', 'Şartname'),
+        ('other',         'Diğer'),
+    ]
+
+    ncr = models.ForeignKey(
+        NCR,
+        on_delete=models.CASCADE,
+        related_name='files'
+    )
+    file = models.FileField(
+        upload_to=ncr_file_upload_path,
+        storage=PrivateMediaStorage(),
+    )
+    file_type = models.CharField(max_length=20, choices=FILE_TYPE_CHOICES, default='other')
+    name = models.CharField(max_length=255, blank=True)
+    description = models.TextField(blank=True)
+    uploaded_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='ncr_files_uploaded',
+    )
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['uploaded_at']
+        verbose_name = 'NCR Dosyası'
+        verbose_name_plural = 'NCR Dosyaları'
+
+    def __str__(self):
+        return f"{self.ncr.ncr_number} — {self.name or self.file.name}"
+
+    def save(self, *args, **kwargs):
+        if not self.name and self.file:
+            import os
+            self.name = os.path.basename(self.file.name)
+        super().save(*args, **kwargs)

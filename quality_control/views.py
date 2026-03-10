@@ -4,12 +4,13 @@ from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter, OrderingFilter
 
-from .models import QCReview, NCR
+from .models import QCReview, NCR, NCRFile
 from .serializers import (
     QCReviewListSerializer, QCReviewDetailSerializer,
     QCReviewSubmitSerializer, QCReviewBulkSubmitSerializer, QCDecisionSerializer,
     NCRListSerializer, NCRDetailSerializer,
     NCRCreateSerializer, NCRUpdateSerializer, NCRSubmitSerializer, NCRDecisionSerializer,
+    NCRFileSerializer,
 )
 from .approval_service import (
     submit_for_qc_review, bulk_submit_for_qc_review, decide_qc_review,
@@ -252,3 +253,31 @@ class NCRViewSet(viewsets.ModelViewSet):
                 task.status = 'in_progress'
                 task.save(update_fields=['status'])
         return Response(NCRDetailSerializer(ncr).data)
+
+    @action(detail=True, methods=['get'], url_path='files')
+    def list_files(self, request, pk=None):
+        """List all files attached to this NCR."""
+        ncr = self.get_object()
+        files = NCRFile.objects.filter(ncr=ncr).select_related('uploaded_by')
+        return Response(NCRFileSerializer(files, many=True).data)
+
+    @action(detail=True, methods=['post'], url_path='files/upload')
+    def upload_file(self, request, pk=None):
+        """Upload a file and attach it to this NCR."""
+        ncr = self.get_object()
+        serializer = NCRFileSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save(ncr=ncr, uploaded_by=request.user)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['delete'], url_path=r'files/(?P<file_id>\d+)')
+    def delete_file(self, request, pk=None, file_id=None):
+        """Delete a file attached to this NCR."""
+        ncr = self.get_object()
+        try:
+            ncr_file = NCRFile.objects.get(pk=file_id, ncr=ncr)
+        except NCRFile.DoesNotExist:
+            return Response({'status': 'error', 'message': 'Dosya bulunamadı.'}, status=status.HTTP_404_NOT_FOUND)
+        ncr_file.file.delete(save=False)
+        ncr_file.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
