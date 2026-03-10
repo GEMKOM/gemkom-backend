@@ -7,9 +7,11 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 
+from django.contrib.auth.models import User
 from django.db import transaction
 from django.utils import timezone
 
+from core.emails import send_plain_email
 from projects.models import JobOrder, JobOrderDepartmentTask
 
 from .models import (
@@ -160,6 +162,71 @@ def send_consultations(offer: SalesOffer, departments_data: list[dict], user) ->
 
 
 # =============================================================================
+# Email notifications
+# =============================================================================
+
+_CONVERSION_NOTIFY_TEAMS = ['design', 'planning', 'manufacturing', 'procurement', 'logistics']
+
+
+def _email_approvers_on_submission(offer: SalesOffer, wf):
+    """Email all approvers in the first stage when an offer is submitted for approval."""
+    from approvals.models import ApprovalStageInstance
+    try:
+        stage = ApprovalStageInstance.objects.filter(workflow=wf, order=wf.current_stage_order).first()
+        if not stage:
+            return
+        approver_ids = list(stage.approver_user_ids or [])
+        emails = list(
+            User.objects.filter(id__in=approver_ids, is_active=True)
+            .exclude(email='')
+            .values_list('email', flat=True)
+        )
+        if not emails:
+            return
+        subject = f"[GEMKOM] Satış Teklifi Onay Bekliyor: {offer.offer_no}"
+        body = (
+            f"Sayın Onaylayıcı,\n\n"
+            f"{offer.offer_no} numaralı \"{offer.title}\" teklifi onayınızı bekliyor.\n\n"
+            f"Müşteri: {offer.customer.name}\n"
+            f"Tutar: {offer.total_price} EUR\n"
+            f"Teklif No: {offer.offer_no}\n\n"
+            f"GEMKOM Sistemi"
+        )
+        send_plain_email(subject, body, emails)
+    except Exception:
+        pass
+
+
+def _email_departments_on_conversion(offer: SalesOffer, root_job):
+    """Email department managers when an offer is converted to a job order."""
+    try:
+        emails = list(
+            User.objects.filter(
+                is_active=True,
+                profile__team__in=_CONVERSION_NOTIFY_TEAMS,
+                profile__occupation='manager',
+            )
+            .exclude(email='')
+            .values_list('email', flat=True)
+            .distinct()
+        )
+        if not emails:
+            return
+        subject = f"[GEMKOM] Yeni İş Emri Oluşturuldu: {root_job.job_no}"
+        body = (
+            f"Sayın Departman Yöneticisi,\n\n"
+            f"{offer.offer_no} numaralı \"{offer.title}\" teklifi iş emrine dönüştürüldü.\n\n"
+            f"Müşteri: {offer.customer.name}\n"
+            f"İş Emri No: {root_job.job_no}\n"
+            f"İş Emri Başlığı: {root_job.title}\n\n"
+            f"GEMKOM Sistemi"
+        )
+        send_plain_email(subject, body, emails)
+    except Exception:
+        pass
+
+
+# =============================================================================
 # Approval workflow
 # =============================================================================
 
@@ -229,6 +296,8 @@ def submit_for_approval(offer: SalesOffer, user):
 
         wf = create_workflow(subject=offer, policy=policy, snapshot=snapshot)
         auto_bypass_self_approver(wf, user.id)
+
+        transaction.on_commit(lambda: _email_approvers_on_submission(offer, wf))
         return wf
 
 
@@ -333,7 +402,7 @@ def _get_effective_parent_item(node: OfferTemplateNode, selected_node_ids: set, 
 
 
 @transaction.atomic
-def convert_offer_to_job_order(offer: SalesOffer, user, incoterms: str = '', file_ids: list = None) -> JobOrder:
+def convert_offer_to_job_order(offer: SalesOffer, user, file_ids: list = None) -> JobOrder:
     """
     Convert a SalesOffer into one or more JobOrders.
 
@@ -342,7 +411,6 @@ def convert_offer_to_job_order(offer: SalesOffer, user, incoterms: str = '', fil
     Each root item (no selected ancestor) → top-level job order.
     Each non-root item → child of its nearest selected ancestor's job order.
 
-    incoterms: teslim şekli — required, provided by sales at conversion time.
     file_ids: SalesOfferFile PKs to attach (by reference) to root job orders.
 
     Sets offer.status='won', offer.converted_job_order, offer.won_at.
@@ -356,8 +424,7 @@ def convert_offer_to_job_order(offer: SalesOffer, user, incoterms: str = '', fil
     if offer.converted_job_order_id:
         raise ValueError("Bu teklif zaten bir iş emrine dönüştürülmüştür.")
 
-    if not incoterms:
-        raise ValueError("Teslim şekli (incoterms) belirtilmeden iş emri oluşturulamaz.")
+    incoterms = offer.incoterms or ''
 
     # Load all items, pre-fetching the full parent chain for effective-parent traversal
     items = list(
@@ -387,33 +454,71 @@ def convert_offer_to_job_order(offer: SalesOffer, user, incoterms: str = '', fil
         if item.template_node_id
     }
 
-    roots = []
+    roots = []          # true top-level catalog nodes (template_node.parent is None)
+    orphaned = []       # nested catalog nodes or custom items whose catalog parent was not selected
     children_map = defaultdict(list)  # parent_node_id → [child SalesOfferItems]
 
     for item in items:
         if not item.template_node_id:
-            # Custom item (no catalog node) → always a root job order
-            roots.append(item)
+            # Custom item (no catalog node) → group with orphaned
+            orphaned.append(item)
             continue
 
         eff_parent = _get_effective_parent_item(
             item.template_node, selected_node_ids, item_by_node_id
         )
         if eff_parent is None:
-            roots.append(item)
+            # No selected ancestor — check if this is a true top-level node
+            if item.template_node.parent_id is None:
+                roots.append(item)
+            else:
+                # Nested catalog item whose parent was not selected
+                orphaned.append(item)
         else:
             children_map[eff_parent.template_node_id].append(item)
 
+    # If there are multiple orphaned items (nested catalog nodes whose catalog parent
+    # was not selected, or custom items), group them under a single wrapper job
+    # named after the offer. A single orphaned item becomes its own top-level job.
     first_root_job = None
+
+    if len(orphaned) > 1:
+        wrapper_job_no = generate_job_no(offer.customer.code, None)
+        wrapper_job = JobOrder.objects.create(
+            job_no=wrapper_job_no,
+            title=offer.title,
+            customer=offer.customer,
+            quantity=1,
+            parent=None,
+            source_offer=offer,
+            description=offer.description,
+            customer_order_no=offer.customer_inquiry_ref or '',
+            target_completion_date=offer.delivery_date_requested,
+            incoterms=incoterms or '',
+            status='draft',
+            created_by=user,
+        )
+        if file_ids:
+            wrapper_job.offer_files.set(offer.files.filter(id__in=file_ids))
+        for orphan_item in orphaned:
+            _create_job_from_item(orphan_item, wrapper_job, children_map, offer, user, incoterms, [])
+        first_root_job = wrapper_job
+    else:
+        for orphan_item in orphaned:
+            job = _create_job_from_item(orphan_item, None, children_map, offer, user, incoterms, file_ids)
+            if first_root_job is None:
+                first_root_job = job
+
     for root_item in roots:
         job = _create_job_from_item(root_item, None, children_map, offer, user, incoterms, file_ids)
         if first_root_job is None:
             first_root_job = job
 
     # Update offer
-    offer.status = 'won'
+    offer.status = 'converted'
     offer.converted_job_order = first_root_job
     offer.won_at = timezone.now()
     offer.save(update_fields=['status', 'converted_job_order', 'won_at', 'updated_at'])
 
+    transaction.on_commit(lambda: _email_departments_on_conversion(offer, first_root_job))
     return first_root_job

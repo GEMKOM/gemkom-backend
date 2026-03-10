@@ -2419,8 +2419,8 @@ class JobOrderProcurementLineViewSet(viewsets.ModelViewSet):
 
             # --- Tier 1: PurchaseOrderLine ---
             po_line = None
-            for pri_item in pri.purchase_request_items.all():
-                for line in pri_item.po_lines.all():
+            for pri_item in pri.purchase_request_items.exclude(purchase_request__status='cancelled'):
+                for line in pri_item.po_lines.exclude(po__status='cancelled'):
                     po_line = line
                     break
                 if po_line:
@@ -2446,6 +2446,8 @@ class JobOrderProcurementLineViewSet(viewsets.ModelViewSet):
                         purchase_request_item__purchase_request__planning_request_items=pri,
                         purchase_request_item__item_id=pri.item_id,
                     )
+                    .exclude(purchase_request_item__purchase_request__status='cancelled')
+                    .exclude(po__status='cancelled')
                     .select_related('po')
                     .order_by('-po__ordered_at', '-po__created_at', '-id')
                     .first()
@@ -2464,7 +2466,7 @@ class JobOrderProcurementLineViewSet(viewsets.ModelViewSet):
             # --- Tier 3: Recommended ItemOffer (FK path) ---
             if price_source == 'none':
                 offer = None
-                for pri_item in pri.purchase_request_items.all():
+                for pri_item in pri.purchase_request_items.exclude(purchase_request__status='cancelled'):
                     for o in pri_item.offers.filter(is_recommended=True).order_by('-id'):
                         offer = o
                         break
@@ -2481,7 +2483,7 @@ class JobOrderProcurementLineViewSet(viewsets.ModelViewSet):
             # --- Tier 4: Any ItemOffer (FK path) ---
             if price_source == 'none':
                 offer = None
-                for pri_item in pri.purchase_request_items.all():
+                for pri_item in pri.purchase_request_items.exclude(purchase_request__status='cancelled'):
                     for o in pri_item.offers.order_by('-id'):
                         offer = o
                         break
@@ -2500,6 +2502,8 @@ class JobOrderProcurementLineViewSet(viewsets.ModelViewSet):
                 hist_line = (
                     PurchaseOrderLine.objects
                     .filter(purchase_request_item__item_id=pri.item_id)
+                    .exclude(purchase_request_item__purchase_request__status='cancelled')
+                    .exclude(po__status='cancelled')
                     .select_related('po')
                     .order_by('-po__ordered_at', '-po__created_at', '-id')
                     .first()

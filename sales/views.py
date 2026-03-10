@@ -433,17 +433,42 @@ class SalesOfferViewSet(viewsets.ModelViewSet):
         offer.save(update_fields=['status', 'cancelled_at', 'updated_at'])
         return Response(SalesOfferDetailSerializer(offer, context={'request': request}).data)
 
+    @action(detail=True, methods=['post'], url_path='revert-to-draft')
+    def revert_to_draft(self, request, pk=None):
+        offer = self.get_object()
+        if offer.converted_job_order_id:
+            return Response(
+                {'detail': 'Bu teklif bir iş emrine dönüştürülmüştür, taslağa geri alınamaz.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if offer.status == 'draft':
+            return Response(
+                {'detail': 'Teklif zaten taslak durumunda.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        offer.status = 'draft'
+        offer.approval_round = 0
+        offer.submitted_to_customer_at = None
+        offer.won_at = None
+        offer.lost_at = None
+        offer.cancelled_at = None
+        offer.save(update_fields=[
+            'status', 'approval_round',
+            'submitted_to_customer_at', 'won_at', 'lost_at', 'cancelled_at',
+            'updated_at',
+        ])
+        return Response(SalesOfferDetailSerializer(offer, context={'request': request}).data)
+
     @action(detail=True, methods=['post'], url_path='convert')
     def convert(self, request, pk=None):
         offer = self.get_object()
-        incoterms = request.data.get('incoterms', '').strip()
         file_ids = request.data.get('file_ids', [])
         if not isinstance(file_ids, list):
             return Response({'detail': 'file_ids must be a list.'}, status=status.HTTP_400_BAD_REQUEST)
         try:
             job = services.convert_offer_to_job_order(
                 offer=offer, user=request.user,
-                incoterms=incoterms, file_ids=file_ids,
+                file_ids=file_ids,
             )
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)

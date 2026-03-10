@@ -169,9 +169,10 @@ def decide_qc_review(review: QCReview, user, approve: bool, comment: str = "", n
 def _on_qc_review_approved(review: QCReview):
     """
     Called by QCReview.handle_approval_event on 'approved' event.
-    No extra DB work needed — qc_status is a computed property.
+    Notifies the submitter and the task's department team.
     """
-    pass
+    from django.db import transaction as db_transaction
+    db_transaction.on_commit(lambda: _email_review_approved(review))
 
 
 def _on_qc_review_rejected(review: QCReview, comment: str = ""):
@@ -211,9 +212,10 @@ def _on_qc_review_rejected(review: QCReview, comment: str = ""):
     review.ncr = ncr
     review.save(update_fields=['ncr'])
 
-    # Send email after transaction commits (avoid email on rollback)
+    # Send emails after transaction commits (avoid email on rollback)
     from django.db import transaction as db_transaction
     db_transaction.on_commit(lambda: _email_ncr_created_on_rejection(ncr))
+    db_transaction.on_commit(lambda: _email_review_rejected(review))
 
 
 # =============================================================================
@@ -290,10 +292,14 @@ def _on_ncr_approved(ncr: NCR):
         task.status = 'in_progress'
         task.save(update_fields=['status'])
 
+    from django.db import transaction as db_transaction
+    db_transaction.on_commit(lambda: _email_ncr_approved(ncr))
+
 
 def _on_ncr_rejected(ncr: NCR, comment: str = ""):
     """handle_approval_event callback — status already set by decide_ncr."""
-    pass
+    from django.db import transaction as db_transaction
+    db_transaction.on_commit(lambda: _email_ncr_rejected(ncr, comment))
 
 
 # =============================================================================
@@ -381,6 +387,104 @@ def _email_qc_team_bulk_reviews_submitted(reviews: list, task, submitted_by):
         f"Gönderen: {submitted_by.get_full_name()}\n"
         f"İnceleme ID'leri: {review_ids}\n\n"
         f"Lütfen incelemeleri gerçekleştirin.\n\n"
+        f"GEMKOM Sistemi"
+    )
+    send_plain_email(subject, body, to)
+
+
+def _email_review_approved(review: QCReview):
+    """Notify the submitter and the task's department team when a QC review is approved."""
+    task = review.task
+    to = set()
+    if getattr(review.submitted_by, 'email', ''):
+        to.add(review.submitted_by.email)
+    dept_emails = (
+        User.objects.filter(is_active=True, profile__team=task.department)
+        .exclude(email='').exclude(email__isnull=True)
+        .values_list('email', flat=True)
+    )
+    to.update(dept_emails)
+    if not to:
+        return
+    subject = f"[KK Onaylandı] {task.job_order_id} — {task.title}"
+    body = (
+        f"Merhaba,\n\n"
+        f"Aşağıdaki görevin KK incelemesi onaylandı:\n\n"
+        f"İş Emri: {task.job_order_id}\n"
+        f"Görev: {task.title}\n"
+        f"Departman: {task.get_department_display()}\n"
+        f"İnceleme ID: #{review.id}\n\n"
+        f"GEMKOM Sistemi"
+    )
+    send_plain_email(subject, body, list(to))
+
+
+def _email_review_rejected(review: QCReview):
+    """Notify the submitter when a QC review is rejected."""
+    to = getattr(review.submitted_by, 'email', '')
+    if not to:
+        return
+    task = review.task
+    subject = f"[KK Reddedildi] {task.job_order_id} — {task.title}"
+    body = (
+        f"Merhaba {review.submitted_by.get_full_name()},\n\n"
+        f"Gönderdiğiniz KK incelemesi reddedildi:\n\n"
+        f"İş Emri: {task.job_order_id}\n"
+        f"Görev: {task.title}\n"
+        f"İnceleme ID: #{review.id}\n"
+        f"Yorum: {review.comment or '—'}\n\n"
+        f"Otomatik olarak bir NCR oluşturuldu. Lütfen NCR'ı inceleyip gerekli düzeltici işlemleri gerçekleştirin.\n\n"
+        f"GEMKOM Sistemi"
+    )
+    send_plain_email(subject, body, to)
+
+
+def _email_ncr_approved(ncr: NCR):
+    """Notify created_by, assigned_members, and the task's department team when an NCR is approved."""
+    to = set()
+    if getattr(ncr.created_by, 'email', ''):
+        to.add(ncr.created_by.email)
+    assigned_emails = (
+        ncr.assigned_members.exclude(email='').exclude(email__isnull=True)
+        .values_list('email', flat=True)
+    )
+    to.update(assigned_emails)
+    if ncr.department_task:
+        dept_emails = (
+            User.objects.filter(is_active=True, profile__team=ncr.department_task.department)
+            .exclude(email='').exclude(email__isnull=True)
+            .values_list('email', flat=True)
+        )
+        to.update(dept_emails)
+    if not to:
+        return
+    subject = f"[NCR Onaylandı] {ncr.ncr_number} — {ncr.title}"
+    body = (
+        f"Merhaba,\n\n"
+        f"Aşağıdaki NCR onaylandı:\n\n"
+        f"NCR No: {ncr.ncr_number}\n"
+        f"Başlık: {ncr.title}\n"
+        f"İş Emri: {ncr.job_order_id}\n"
+        f"Önem: {ncr.get_severity_display()}\n\n"
+        f"GEMKOM Sistemi"
+    )
+    send_plain_email(subject, body, list(to))
+
+
+def _email_ncr_rejected(ncr: NCR, comment: str = ""):
+    """Notify created_by when an NCR is rejected."""
+    to = getattr(ncr.created_by, 'email', '')
+    if not to:
+        return
+    subject = f"[NCR Reddedildi] {ncr.ncr_number} — {ncr.title}"
+    body = (
+        f"Merhaba {ncr.created_by.get_full_name()},\n\n"
+        f"Aşağıdaki NCR reddedildi:\n\n"
+        f"NCR No: {ncr.ncr_number}\n"
+        f"Başlık: {ncr.title}\n"
+        f"İş Emri: {ncr.job_order_id}\n"
+        f"Yorum: {comment or '—'}\n\n"
+        f"Lütfen NCR'ı güncelleyip yeniden gönderin.\n\n"
         f"GEMKOM Sistemi"
     )
     send_plain_email(subject, body, to)

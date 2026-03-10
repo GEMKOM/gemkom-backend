@@ -286,9 +286,9 @@ class SalesOfferUpdateSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         instance = self.instance
-        if instance and instance.status in ('won', 'cancelled'):
+        if instance and instance.converted_job_order_id:
             raise serializers.ValidationError(
-                "Kazanılmış veya iptal edilmiş teklifler güncellenemez."
+                "İş emrine dönüştürülmüş teklifler güncellenemez."
             )
         return attrs
 
