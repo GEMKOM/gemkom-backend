@@ -10,6 +10,7 @@ from config import settings
 import requests
 from rest_framework.decorators import permission_classes
 from rest_framework.permissions import IsAuthenticated
+from users.permissions import can_see_job_costs
 import logging
 
 from django.contrib.auth.models import User
@@ -176,6 +177,7 @@ class CombinedJobCostListView(APIView):
         from tasks.models import PartCostAgg
         from welding.models import WeldingJobCostAgg
 
+        show_costs = can_see_job_costs(request.user)
         job_no = (request.query_params.get("job_no") or "").strip()
         ordering = (request.query_params.get("ordering") or "-combined_total_cost").strip()
 
@@ -281,39 +283,46 @@ class CombinedJobCostListView(APIView):
             updated_dates = [d for d in [m_data['updated_at'], w_data['updated_at']] if d is not None]
             most_recent = max(updated_dates) if updated_dates else None
 
-            item = {
-                "job_no": j,
-                "machining": {
-                    "hours": {
-                        "weekday_work": round(m_data["weekday_work"], 2),
-                        "after_hours": round(m_data["after_hours"], 2),
-                        "sunday": round(m_data["sunday"], 2),
-                    },
-                    "costs": {
+            machining_hours = {
+                "weekday_work": round(m_data["weekday_work"], 2),
+                "after_hours": round(m_data["after_hours"], 2),
+                "sunday": round(m_data["sunday"], 2),
+            }
+            welding_hours = {
+                "regular": round(w_data['regular'], 2),
+                "after_hours": round(w_data['after_hours'], 2),
+                "holiday": round(w_data['holiday'], 2),
+            }
+
+            machining_block = {"hours": machining_hours} if m_data['total_cost'] > 0 else None
+            welding_block = {"hours": welding_hours} if w_data['total_cost'] > 0 else None
+
+            if show_costs:
+                if machining_block is not None:
+                    machining_block["costs"] = {
                         "weekday_work": round(m_data["cost_ww"], 2),
                         "after_hours": round(m_data["cost_ah"], 2),
                         "sunday": round(m_data["cost_su"], 2),
-                    },
-                    "total_cost": round(m_data["total_cost"], 2)
-                } if m_data['total_cost'] > 0 else None,
-                "welding": {
-                    "hours": {
-                        "regular": round(w_data['regular'], 2),
-                        "after_hours": round(w_data['after_hours'], 2),
-                        "holiday": round(w_data['holiday'], 2),
-                    },
-                    "costs": {
+                    }
+                    machining_block["total_cost"] = round(m_data["total_cost"], 2)
+                if welding_block is not None:
+                    welding_block["costs"] = {
                         "regular": round(w_data['cost_regular'], 2),
                         "after_hours": round(w_data['cost_after_hours'], 2),
                         "holiday": round(w_data['cost_holiday'], 2),
-                    },
-                    "total_cost": round(w_data['total_cost'], 2)
-                } if w_data['total_cost'] > 0 else None,
-                "combined_total_cost": round(combined_total_cost, 2),
+                    }
+                    welding_block["total_cost"] = round(w_data['total_cost'], 2)
+
+            item = {
+                "job_no": j,
+                "machining": machining_block,
+                "welding": welding_block,
                 "combined_total_hours": round(combined_total_hours, 2),
-                "currency": "EUR",
                 "updated_at": most_recent,
             }
+            if show_costs:
+                item["combined_total_cost"] = round(combined_total_cost, 2)
+                item["currency"] = "EUR"
             results.append(item)
 
         # Sort results
@@ -321,13 +330,15 @@ class CombinedJobCostListView(APIView):
             results.sort(key=lambda x: x['job_no'])
         elif ordering == "-job_no":
             results.sort(key=lambda x: x['job_no'], reverse=True)
-        elif ordering == "combined_total_cost":
+        elif ordering == "combined_total_cost" and show_costs:
             results.sort(key=lambda x: x['combined_total_cost'])
         elif ordering == "combined_total_hours":
             results.sort(key=lambda x: x['combined_total_hours'])
         elif ordering == "-combined_total_hours":
             results.sort(key=lambda x: x['combined_total_hours'], reverse=True)
-        else:  # Default: -combined_total_cost
+        elif show_costs:  # Default: -combined_total_cost (only meaningful with costs)
             results.sort(key=lambda x: x['combined_total_cost'], reverse=True)
+        else:
+            results.sort(key=lambda x: x['combined_total_hours'], reverse=True)
 
         return Response({"count": len(results), "results": results}, status=200)

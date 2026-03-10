@@ -662,6 +662,127 @@ class DailyEfficiencyReportView(APIView):
         }, status=200)
 
 
+class MachiningJobEntriesReportView(APIView):
+    """
+    GET /machining/reports/job-entries/?job_no=283
+
+    Lightweight report endpoint for machining timer entries for a specific job.
+    Returns all finished timers for operations linked to the given job_no,
+    with minimal fields and summary totals.
+
+    Query params:
+    - job_no: Required. Exact job number match (not partial)
+
+    Response:
+    {
+        "job_no": "283",
+        "summary": {
+            "total_hours": 45.5,
+            "total_entries": 12,
+            "breakdown_by_type": {
+                "weekday_work": 32.0,
+                "after_hours": 10.5,
+                "sunday": 3.0
+            }
+        },
+        "entries": [
+            {
+                "id": 1,
+                "employee_id": 5,
+                "employee_username": "john.doe",
+                "employee_full_name": "John Doe",
+                "operation_key": "TI-001",
+                "operation_name": "Turn shaft",
+                "start_time": 1700000000000,
+                "finish_time": 1700028800000,
+                "hours": 8.0,
+                "work_type": "weekday_work",
+                "manual_entry": false
+            },
+            ...
+        ]
+    }
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from tasks.models import Operation
+        from django.contrib.contenttypes.models import ContentType
+
+        job_no = request.query_params.get('job_no')
+        if not job_no:
+            return Response(
+                {'error': 'job_no query parameter is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Find operations whose part has this exact job_no
+        operation_keys = list(
+            Operation.objects
+            .filter(part__job_no=job_no)
+            .values_list('key', flat=True)
+        )
+
+        if not operation_keys:
+            return Response({
+                'job_no': job_no,
+                'summary': {'total_hours': 0.0, 'total_entries': 0, 'breakdown_by_type': {}},
+                'entries': [],
+            })
+
+        operation_ct = ContentType.objects.get_for_model(Operation)
+        timers = (
+            Timer.objects
+            .select_related('user')
+            .prefetch_related('issue_key')
+            .filter(
+                content_type=operation_ct,
+                object_id__in=operation_keys,
+                finish_time__isnull=False,
+            )
+            .order_by('start_time', 'user__username')
+        )
+
+        total_hours = 0.0
+        breakdown_by_type = defaultdict(float)
+        formatted_entries = []
+
+        for timer in timers:
+            duration_hours = (timer.finish_time - timer.start_time) / 3600000.0
+
+            buckets = categorize_timer_segments(timer.start_time, timer.finish_time)
+            # Determine dominant work_type by largest bucket
+            work_type = max(buckets, key=buckets.get) if buckets else 'weekday_work'
+
+            total_hours += duration_hours
+            breakdown_by_type[work_type] += duration_hours
+
+            task = timer.issue_key
+            formatted_entries.append({
+                'id': timer.id,
+                'employee_id': timer.user_id,
+                'employee_username': timer.user.username,
+                'employee_full_name': f"{timer.user.first_name} {timer.user.last_name}".strip() or timer.user.username,
+                'operation_key': getattr(task, 'key', None),
+                'operation_name': getattr(task, 'name', None),
+                'start_time': timer.start_time,
+                'finish_time': timer.finish_time,
+                'hours': round(duration_hours, 4),
+                'work_type': work_type,
+                'manual_entry': timer.manual_entry,
+            })
+
+        return Response({
+            'job_no': job_no,
+            'summary': {
+                'total_hours': round(total_hours, 4),
+                'total_entries': len(formatted_entries),
+                'breakdown_by_type': {k: round(v, 4) for k, v in breakdown_by_type.items()},
+            },
+            'entries': formatted_entries,
+        })
+
+
 class DailyUserReportView(APIView):
     """
     GET /machining/reports/daily-user-report/?date=2024-01-15

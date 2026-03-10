@@ -58,7 +58,30 @@ class IsAdmin(BasePermission):
                 or user.is_admin
             )
         )
-    
+
+
+def can_see_job_costs(user) -> bool:
+    """
+    Returns True if the user may see price/cost data in job reports.
+    Allowed:
+    - Superusers
+    - team='management' (any occupation)
+    - team='planning' AND occupation='manager'
+    """
+    if not user or not getattr(user, 'is_authenticated', False):
+        return False
+    if getattr(user, 'is_superuser', False):
+        return True
+    profile = getattr(user, 'profile', None)
+    team = getattr(profile, 'team', '') or ''
+    occupation = getattr(profile, 'occupation', '') or ''
+    if team == 'management':
+        return True
+    if team == 'planning' and occupation == 'manager':
+        return True
+    return False
+
+
 
 HR_GROUPS = {"HR", "Management"}
 HR_TEAMS  = {"human_resouces", "management"}  # note: your enum uses 'human_resouces'

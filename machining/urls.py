@@ -4,6 +4,7 @@ from .views import (
     DailyUserReportView,
     JobHoursReportView,
     MachineTimelineView,
+    MachiningJobEntriesReportView,
     PlanningAggregateView,
     TimerDetailView,
     TimerListView,
@@ -30,6 +31,7 @@ urlpatterns = [
 
     # Reports (now using Operation/Part)
     path("reports/job-hours/", JobHoursReportView.as_view(), name="job-hours-report"),
+    path('reports/job-entries/', MachiningJobEntriesReportView.as_view(), name='machining-job-entries-report'),
     path('reports/daily-user-report/', DailyUserReportView.as_view(), name='daily-user-report'),
     path('reports/daily-efficiency/', DailyEfficiencyReportView.as_view(), name='daily-efficiency-report'),
 ]
