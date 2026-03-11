@@ -49,6 +49,17 @@ EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD")  # that user's passw
 
 QUEUE_SECRET = os.getenv("QUEUE_SECRET", "")
 
+# -------------------------------------------------------------------------
+# Google Cloud Tasks — async email delivery
+# -------------------------------------------------------------------------
+GCP_PROJECT_ID               = os.getenv('GCP_PROJECT_ID', 'gemkom-backend-463510')
+GCP_LOCATION                 = os.getenv('GCP_LOCATION', 'europe-west3')
+CLOUD_TASKS_QUEUE            = os.getenv('CLOUD_TASKS_QUEUE', 'email-notifications')
+CLOUD_RUN_SERVICE_URL        = os.getenv('CLOUD_RUN_SERVICE_URL', 'https://gemkom-backend-716746493353.europe-west3.run.app')
+CLOUD_TASKS_SERVICE_ACCOUNT  = os.getenv('CLOUD_TASKS_SERVICE_ACCOUNT', '')
+# Set to False in local .env to send emails synchronously (no Cloud Tasks needed)
+USE_CLOUD_TASKS = os.getenv('USE_CLOUD_TASKS', 'true').lower() == 'true'
+
 
 ALLOWED_HOSTS = ['gemkom-backend-716746493353.europe-west3.run.app',
                  '127.0.0.1', 'localhost']  # for now
@@ -89,6 +100,7 @@ INSTALLED_APPS = [
     'sales.apps.SalesConfig',
     'subcontracting.apps.SubcontractingConfig',
     'quality_control',
+    'notifications',
 ]
 
 MIDDLEWARE = [

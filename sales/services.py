@@ -11,7 +11,8 @@ from django.contrib.auth.models import User
 from django.db import transaction
 from django.utils import timezone
 
-from core.emails import send_plain_email
+from notifications.service import notify, bulk_notify
+from notifications.models import Notification
 from projects.models import JobOrder, JobOrderDepartmentTask
 
 from .models import (
@@ -159,7 +160,7 @@ def send_consultations(offer: SalesOffer, departments_data: list[dict], user) ->
             offer.save(update_fields=['status', 'updated_at'])
 
         notified_teams = list({dept['department'] for dept in departments_data})
-        transaction.on_commit(lambda: _email_dept_heads_on_consultation(offer, notified_teams))
+        transaction.on_commit(lambda: _notify_dept_heads_on_consultation(offer, notified_teams))
 
         return created
 
@@ -171,88 +172,87 @@ def send_consultations(offer: SalesOffer, departments_data: list[dict], user) ->
 _CONVERSION_NOTIFY_TEAMS = ['design', 'planning', 'manufacturing', 'procurement', 'logistics']
 
 
-def _email_approvers_on_submission(offer: SalesOffer, wf):
-    """Email all approvers in the first stage when an offer is submitted for approval."""
+def _notify_approvers_on_submission(offer: SalesOffer, wf):
+    """Notify all approvers in the first stage when an offer is submitted for approval."""
     from approvals.models import ApprovalStageInstance
     try:
         stage = ApprovalStageInstance.objects.filter(workflow=wf, order=wf.current_stage_order).first()
         if not stage:
             return
         approver_ids = list(stage.approver_user_ids or [])
-        emails = list(
-            User.objects.filter(id__in=approver_ids, is_active=True)
-            .exclude(email='')
-            .values_list('email', flat=True)
-        )
-        if not emails:
+        approvers = User.objects.filter(id__in=approver_ids, is_active=True)
+        if not approvers.exists():
             return
-        subject = f"[GEMKOM] Satış Teklifi Onay Bekliyor: {offer.offer_no}"
+        title = f"[Onay Gerekli] Satış Teklifi: {offer.offer_no}"
         body = (
-            f"Sayın Onaylayıcı,\n\n"
-            f"{offer.offer_no} numaralı \"{offer.title}\" teklifi onayınızı bekliyor.\n\n"
+            f"{offer.offer_no} numaralı \"{offer.title}\" teklifi onayınızı bekliyor.\n"
             f"Müşteri: {offer.customer.name}\n"
-            f"Tutar: {offer.total_price} EUR\n"
-            f"Teklif No: {offer.offer_no}\n\n"
-            f"GEMKOM Sistemi"
+            f"Tutar: {offer.total_price} EUR"
         )
-        send_plain_email(subject, body, emails)
+        bulk_notify(
+            users=approvers,
+            notification_type=Notification.SALES_APPROVAL_REQUESTED,
+            title=title,
+            body=body,
+            source_type='sales_offer',
+            source_id=offer.id,
+        )
     except Exception:
         pass
 
 
-def _email_departments_on_conversion(offer: SalesOffer, root_job):
-    """Email department managers when an offer is converted to a job order."""
+def _notify_departments_on_conversion(offer: SalesOffer, root_job):
+    """Notify department managers when an offer is converted to a job order."""
     try:
-        emails = list(
-            User.objects.filter(
-                is_active=True,
-                profile__team__in=_CONVERSION_NOTIFY_TEAMS,
-                profile__occupation='manager',
-            )
-            .exclude(email='')
-            .values_list('email', flat=True)
-            .distinct()
-        )
-        if not emails:
+        dept_users = User.objects.filter(
+            is_active=True,
+            profile__team__in=_CONVERSION_NOTIFY_TEAMS,
+            profile__occupation='manager',
+        ).distinct()
+        if not dept_users.exists():
             return
-        subject = f"[GEMKOM] Yeni İş Emri Oluşturuldu: {root_job.job_no}"
+        title = f"[Yeni İş Emri] {root_job.job_no}"
         body = (
-            f"Sayın Departman Yöneticisi,\n\n"
-            f"{offer.offer_no} numaralı \"{offer.title}\" teklifi iş emrine dönüştürüldü.\n\n"
+            f"{offer.offer_no} numaralı \"{offer.title}\" teklifi iş emrine dönüştürüldü.\n"
             f"Müşteri: {offer.customer.name}\n"
             f"İş Emri No: {root_job.job_no}\n"
-            f"İş Emri Başlığı: {root_job.title}\n\n"
-            f"GEMKOM Sistemi"
+            f"İş Emri Başlığı: {root_job.title}"
         )
-        send_plain_email(subject, body, emails)
+        bulk_notify(
+            users=dept_users,
+            notification_type=Notification.SALES_APPROVED,
+            title=title,
+            body=body,
+            source_type='sales_offer',
+            source_id=offer.id,
+        )
     except Exception:
         pass
 
 
-def _email_dept_heads_on_consultation(offer: SalesOffer, teams: list[str]):
-    """Email department heads (occupation=manager) for each consulted team."""
+def _notify_dept_heads_on_consultation(offer: SalesOffer, teams: list[str]):
+    """Notify department heads (occupation=manager) for each consulted team."""
     try:
-        emails = list(
-            User.objects.filter(
-                is_active=True,
-                profile__team__in=teams,
-                profile__occupation='manager',
-            )
-            .exclude(email='')
-            .values_list('email', flat=True)
-            .distinct()
-        )
-        if not emails:
+        dept_users = User.objects.filter(
+            is_active=True,
+            profile__team__in=teams,
+            profile__occupation='manager',
+        ).distinct()
+        if not dept_users.exists():
             return
-        subject = f"[GEMKOM] Yeni Danışma Talebi: {offer.offer_no}"
+        title = f"[Danışma Talebi] {offer.offer_no}"
         body = (
-            f"Sayın Departman Yöneticisi,\n\n"
-            f"{offer.offer_no} numaralı \"{offer.title}\" teklifi için departmanınıza danışma talebi oluşturuldu.\n\n"
-            f"Müşteri: {offer.customer.name}\n"
-            f"Teklif No: {offer.offer_no}\n\n"
-            f"GEMKOM Sistemi"
+            f"{offer.offer_no} numaralı \"{offer.title}\" teklifi için departmanınıza danışma talebi oluşturuldu.\n"
+            f"Müşteri: {offer.customer.name}"
         )
-        send_plain_email(subject, body, emails)
+        bulk_notify(
+            users=dept_users,
+            notification_type=Notification.SALES_APPROVAL_REQUESTED,
+            title=title,
+            body=body,
+            source_type='sales_offer',
+            source_id=offer.id,
+        )
     except Exception:
         pass
 
@@ -328,7 +328,7 @@ def submit_for_approval(offer: SalesOffer, user):
         wf = create_workflow(subject=offer, policy=policy, snapshot=snapshot)
         auto_bypass_self_approver(wf, user.id)
 
-        transaction.on_commit(lambda: _email_approvers_on_submission(offer, wf))
+        transaction.on_commit(lambda: _notify_approvers_on_submission(offer, wf))
         return wf
 
 
@@ -551,5 +551,5 @@ def convert_offer_to_job_order(offer: SalesOffer, user, file_ids: list = None) -
     offer.won_at = timezone.now()
     offer.save(update_fields=['status', 'converted_job_order', 'won_at', 'updated_at'])
 
-    transaction.on_commit(lambda: _email_departments_on_conversion(offer, first_root_job))
+    transaction.on_commit(lambda: _notify_departments_on_conversion(offer, first_root_job))
     return first_root_job

@@ -7,7 +7,8 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
 
-from core.emails import send_plain_email
+from notifications.service import bulk_notify
+from notifications.models import Notification
 from machines.serializers import SimpleUserSerializer
 from users.filters import UserFilter, WageOrderingFilter
 from users.helpers import _team_manager_user_ids
@@ -212,26 +213,19 @@ class PasswordResetRequestView(APIView):
             profile.save(update_fields=["reset_password_request"])
             # (Optional) notify admins via email/telegram here
 
-            # build recipient list: superusers + team managers (deduped, no empty emails)
-            superuser_emails = list(
-                User.objects.filter(is_active=True, is_superuser=True)
-                .exclude(email="")
-                .values_list("email", flat=True)
-            )
+            # build recipient list: superusers + team managers (deduped)
             manager_ids = _team_manager_user_ids(getattr(profile, "team", "") or "")
-            manager_emails = list(
-                User.objects.filter(id__in=manager_ids, is_active=True)
-                .exclude(email="")
-                .values_list("email", flat=True)
+            recipient_ids = set(
+                list(User.objects.filter(is_active=True, is_superuser=True).values_list("id", flat=True))
+                + list(User.objects.filter(id__in=manager_ids, is_active=True).values_list("id", flat=True))
             )
+            recipients = User.objects.filter(id__in=recipient_ids, is_active=True)
 
-            recipients = list({*superuser_emails, *manager_emails})
-
-            if recipients:
-                # compose a concise notification (Turkish)
+            if recipients.exists():
                 requested_at = timezone.localtime().strftime("%d.%m.%Y %H:%M")
                 full_name = user.get_full_name() or user.username
                 team = getattr(profile, "team", "") or "—"
+                title = f"[Parola Sıfırlama Talebi] {user.username}"
                 body = (
                     f"Parola sıfırlama talebi gönderildi.\n\n"
                     f"Kullanıcı: {full_name} (username: {user.username})\n"
@@ -239,13 +233,16 @@ class PasswordResetRequestView(APIView):
                     f"Tarih: {requested_at}\n\n"
                     f"Lütfen sistemden onaylayın."
                 )
-                subject = f"[GEMKOM] Parola sıfırlama talebi: {user.username}"
-
                 try:
-                    send_plain_email(subject=subject, body=body, to=recipients)
-                except Exception as e:
-                    # don't leak errors to the client; log if you have logging set up
-                    # logger.exception("Failed to send reset-password notification email")
+                    bulk_notify(
+                        users=recipients,
+                        notification_type=Notification.PASSWORD_RESET,
+                        title=title,
+                        body=body,
+                        source_type='user',
+                        source_id=user.id,
+                    )
+                except Exception:
                     pass
         except User.DoesNotExist:
             pass

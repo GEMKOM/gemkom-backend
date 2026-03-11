@@ -10,16 +10,17 @@ from approvals.services import (
     auto_bypass_self_approver,
     resolve_group_user_ids,
 )
-from core.emails import send_plain_email
 from users.helpers import _team_manager_user_ids
 from .models import OvertimeRequest
 
+from notifications.service import notify, bulk_notify
+from notifications.models import Notification
+
 
 # ------- Config -------
-         # your UserProfile.occupation value for managers
-OVERTIME_POLICY_NAME    = "Overtime – Default"  # pick policy explicitly by name
-TEAM_MANAGER_STAGE_ORDER = 1                    # Stage #1 = Team Manager; Stage #2+ = policy-configured approvers
-TEAM_HR_CODE = "human_resources" 
+OVERTIME_POLICY_NAME    = "Overtime – Default"
+TEAM_MANAGER_STAGE_ORDER = 1
+TEAM_HR_CODE = "human_resources"
 
 def _dedupe_ordered(ids: list[int]) -> list[int]:
     seen, ordered = set(), []
@@ -38,25 +39,11 @@ def pick_policy_for_overtime(_ot: OvertimeRequest):
             .first())
 
 
-# --------- Emails ---------
+# --------- Helpers ---------
 def _users_from_ids(user_ids):
     if not user_ids:
         return User.objects.none()
     return User.objects.filter(id__in=user_ids, is_active=True)
-
-def _emails_from_queryset(qs):
-    return list(qs.exclude(email__isnull=True).exclude(email="").values_list("email", flat=True))
-
-def _hr_recipient_emails():
-    """
-    All active users in the Human Resources team.
-    """
-    qs = User.objects.filter(is_active=True, profile__team=TEAM_HR_CODE)
-    return _emails_from_queryset(qs)
-
-def _approver_emails_for_stage(stage: ApprovalStageInstance):
-    qs = _users_from_ids(stage.approver_user_ids or [])
-    return list(qs.exclude(email__isnull=True).exclude(email="").values_list("email", flat=True))
 
 def _ot_title(ot: OvertimeRequest):
     s = ot.start_at.strftime("%Y-%m-%d %H:%M"); e = ot.end_at.strftime("%Y-%m-%d %H:%M")
@@ -65,7 +52,8 @@ def _ot_title(ot: OvertimeRequest):
 def _ot_frontend_url(ot: OvertimeRequest):
     return f"https://ofis.gemcore.com.tr/general/overtime/pending/?request={ot.id}"
 
-def _email_approvers_for_current_stage(wf: ApprovalWorkflow, reason: str = "pending"):
+
+def _notify_approvers_for_current_stage(wf: ApprovalWorkflow, reason: str = "pending"):
     if wf.is_complete or wf.is_rejected:
         return
     stage = wf.stage_instances.filter(order=wf.current_stage_order).first()
@@ -75,43 +63,51 @@ def _email_approvers_for_current_stage(wf: ApprovalWorkflow, reason: str = "pend
         ot = OvertimeRequest.objects.get(id=wf.object_id)
     except OvertimeRequest.DoesNotExist:
         return
-    to_list = _approver_emails_for_stage(stage)
-    if not to_list:
+    approvers = _users_from_ids(stage.approver_user_ids or [])
+    if not approvers.exists():
         return
-    subject = f"[Onay Gerekli] Mesai Talebi #{ot.id} – {_ot_title(ot)}"
+    title = f"[Onay Gerekli] Mesai Talebi #{ot.id} – {_ot_title(ot)}"
     body = (
-        f"Merhaba,\n\n"
         f"Mesai talebi (#{ot.id}) için onayınız bekleniyor.\n"
         f"Aşama: {stage.name} (Gerekli onay sayısı: {stage.required_approvals})\n"
         f"Talep Eden: {getattr(ot.requester, 'get_full_name', lambda: ot.requester.username)()}\n"
         f"Takım: {ot.team or '—'}\n"
         f"Neden: {ot.reason or '—'}\n\n"
-        f"İncelemek için: {_ot_frontend_url(ot)}\n\n"
         f"Not: Bildirim nedeni: {reason}."
     )
-    send_plain_email(subject, body, to_list)
-
-def _email_requester(ot: OvertimeRequest, status_str: str, comment: str = ""):
-    to = [ot.requester.email] if getattr(ot.requester, "email", "") else []
-    if not to:
-        return
-    subject = f"[Mesai Talebi {status_str}] OT #{ot.id} – {_ot_title(ot)}"
-    body = (
-        f"Merhaba,\n\n"
-        f"Mesai talebiniz (#{ot.id}) {status_str.lower()}.\n"
-        f"{('Not: ' + comment) if comment else ''}\n\n"
-        f"Detay: {_ot_frontend_url(ot)}"
+    bulk_notify(
+        users=approvers,
+        notification_type=Notification.OT_APPROVAL_REQUESTED,
+        title=title,
+        body=body,
+        link=_ot_frontend_url(ot),
+        source_type='overtime_request',
+        source_id=ot.id,
     )
-    send_plain_email(subject, body, to)
 
-def _email_hr_on_approved(ot: OvertimeRequest):
-    """
-    Notify HR when an overtime request is fully approved.
-    """
-    to_list = _hr_recipient_emails()
-    if not to_list:
+
+def _notify_requester(ot: OvertimeRequest, status_str: str, comment: str = ""):
+    notification_type = Notification.OT_APPROVED if status_str == "Onaylandı" else Notification.OT_REJECTED
+    title = f"[Mesai Talebi {status_str}] OT #{ot.id} – {_ot_title(ot)}"
+    body = (
+        f"Mesai talebiniz (#{ot.id}) {status_str.lower()}.\n"
+        f"{('Not: ' + comment) if comment else ''}"
+    )
+    notify(
+        user=ot.requester,
+        notification_type=notification_type,
+        title=title,
+        body=body,
+        link=_ot_frontend_url(ot),
+        source_type='overtime_request',
+        source_id=ot.id,
+    )
+
+
+def _notify_hr_on_approved(ot: OvertimeRequest):
+    hr_users = User.objects.filter(is_active=True, profile__team=TEAM_HR_CODE)
+    if not hr_users.exists():
         return
-    subject = f"[Bilgi] Onaylanan Mesai Talebi #{ot.id} – {_ot_title(ot)}"
     lines = [
         f"Talep No: #{ot.id}",
         f"Talep Eden: {getattr(ot.requester, 'get_full_name', lambda: ot.requester.username)()}",
@@ -124,20 +120,23 @@ def _email_hr_on_approved(ot: OvertimeRequest):
         "Kişi/Dönem Kalemleri:",
     ]
     for e in ot.entries.all():
-        # You can enrich this if you have names via select_related('user') on entries
         uname = getattr(e.user, "get_full_name", lambda: getattr(e.user, "username", str(e.user_id)))()
         lines.append(f" - {uname} | İş No: {e.job_no or '—'} | Açıklama: {e.description or '—'}")
+    title = f"[Bilgi] Onaylanan Mesai Talebi #{ot.id} – {_ot_title(ot)}"
+    body = "\n".join(lines)
+    bulk_notify(
+        users=hr_users,
+        notification_type=Notification.OT_APPROVED,
+        title=title,
+        body=body,
+        link=_ot_frontend_url(ot),
+        source_type='overtime_request',
+        source_id=ot.id,
+    )
 
-    lines += ["", f"Detay: {_ot_frontend_url(ot)}"]
-    body = " \n".join(lines)
-    send_plain_email(subject, body, to_list)
 
 # --------- Skip stages that have no approvers ---------
 def _skip_empty_stages(wf: ApprovalWorkflow) -> bool:
-    """
-    Auto-complete any leading stages that have zero approvers.
-    Returns True if workflow finished; otherwise False.
-    """
     changed = False
     while True:
         stage = wf.stage_instances.filter(order=wf.current_stage_order).first()
@@ -146,7 +145,6 @@ def _skip_empty_stages(wf: ApprovalWorkflow) -> bool:
         approvers = stage.approver_user_ids or []
         if approvers:
             break
-        # no approvers -> mark complete and advance
         stage.is_complete = True
         stage.save(update_fields=["is_complete"])
         wf.current_stage_order += 1
@@ -162,7 +160,7 @@ def _skip_empty_stages(wf: ApprovalWorkflow) -> bool:
     return False
 
 
-# --------- Submit OT (order-based routing) ---------
+# --------- Submit OT ---------
 @transaction.atomic
 def submit_overtime_request(ot: OvertimeRequest, by_user):
     policy = pick_policy_for_overtime(ot)
@@ -193,48 +191,34 @@ def submit_overtime_request(ot: OvertimeRequest, by_user):
     }
 
     def _builder(stage, _subject):
-        """
-        Stage 1 (order == TEAM_MANAGER_STAGE_ORDER):
-            - Resolve team manager(s) for ot.team.
-            - If none → return [] (stage will be auto-skipped).
-        Stage 2+:
-            - Use the policy-configured users/groups on the stage (e.g., your "Overtime Approvers" group).
-        """
         if stage.order == TEAM_MANAGER_STAGE_ORDER:
-            u_ids = _team_manager_user_ids(ot.team)  # may be empty → will be skipped by _skip_empty_stages
+            u_ids = _team_manager_user_ids(ot.team)
             return _dedupe_ordered(u_ids), []
-
-        # For all later stages, use the configured assignments
         u_ids = list(stage.approver_users.values_list("id", flat=True))
         g_ids = list(stage.approver_groups.values_list("id", flat=True))
         u_ids += resolve_group_user_ids(g_ids)
-
-        # Safety fallback (shouldn't trigger if policy is set correctly)
         if not u_ids:
             u_ids = list(User.objects.filter(is_active=True, is_superuser=True).values_list("id", flat=True))
-
         return _dedupe_ordered(u_ids), []
 
     wf = create_workflow(ot, policy, snapshot=snapshot, approver_user_ids_builder=_builder)
 
-    # 1) Skip any initial stages with no approvers (e.g., teams without a manager)
     finished = _skip_empty_stages(wf)
     if finished:
         ot.status = "approved"
         ot.save(update_fields=["status"])
-        _email_requester(ot, "Onaylandı", "(Otomatik geçiş – boş aşamalar)")
+        _notify_requester(ot, "Onaylandı", "(Otomatik geçiş – boş aşamalar)")
         return wf
 
-    # 2) If requester is among approvers, auto-bypass them
     changed, finished = auto_bypass_self_approver(wf, ot.requester_id)
     if finished:
         ot.status = "approved"
         ot.save(update_fields=["status"])
-        _email_requester(ot, "Onaylandı", "(Otomatik geçiş – self-bypass)")
+        _notify_requester(ot, "Onaylandı", "(Otomatik geçiş – self-bypass)")
         return wf
 
     if changed or wf.current_stage_order == 1:
-        _email_approvers_for_current_stage(wf, reason="Talep gönderildi")
+        _notify_approvers_for_current_stage(wf, reason="Talep gönderildi")
     return wf
 
 
@@ -246,17 +230,18 @@ def decide(ot: OvertimeRequest, user, approve: bool, comment: str = ""):
     if outcome == "rejected":
         ot.status = "rejected"
         ot.save(update_fields=["status"])
-        _email_requester(ot, "Reddedildi", comment or "")
+        _notify_requester(ot, "Reddedildi", comment or "")
         return wf
 
     if outcome == "moved":
-        _email_approvers_for_current_stage(wf, reason=f"Önceki aşama onaylandı (#{stage.order})")
+        _notify_approvers_for_current_stage(wf, reason=f"Önceki aşama onaylandı (#{stage.order})")
         return wf
 
     if outcome == "completed":
         ot.status = "approved"
         ot.save(update_fields=["status"])
-        _email_requester(ot, "Onaylandı", "")
+        _notify_requester(ot, "Onaylandı", "")
+        _notify_hr_on_approved(ot)
         return wf
 
     return wf

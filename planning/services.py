@@ -15,7 +15,8 @@ from approvals.services import (
     auto_bypass_self_approver,
 )
 from approvals.models import ApprovalPolicy, ApprovalStageInstance, ApprovalWorkflow
-from core.emails import send_plain_email
+from notifications.service import notify, bulk_notify
+from notifications.models import Notification
 from users.helpers import _team_manager_user_ids
 
 
@@ -302,11 +303,6 @@ def _users_from_ids(user_ids):
     return User.objects.filter(id__in=user_ids, is_active=True)
 
 
-def _approver_emails_for_stage(stage: ApprovalStageInstance):
-    qs = _users_from_ids(stage.approver_user_ids or [])
-    return list(qs.exclude(email__isnull=True).exclude(email="").values_list("email", flat=True))
-
-
 def _dr_title(dr: DepartmentRequest):
     return getattr(dr, "title", f"DR-{dr.id}")
 
@@ -315,71 +311,77 @@ def _dr_frontend_url(dr: DepartmentRequest):
     return f"https://ofis.gemcore.com.tr/general/department-requests/?request={dr.request_number}"
 
 
-def _email_approvers_for_current_stage(wf: ApprovalWorkflow, reason: str = "pending"):
+def _notify_approvers_for_current_stage(wf: ApprovalWorkflow, reason: str = "pending"):
     if wf.is_complete or wf.is_rejected:
         return
     stage = wf.stage_instances.filter(order=wf.current_stage_order).first()
     if not stage or stage.is_complete or stage.is_rejected:
         return
     dr = DepartmentRequest.objects.get(id=wf.object_id)
-    to_list = _approver_emails_for_stage(stage)
-    if not to_list:
+    approvers = _users_from_ids(stage.approver_user_ids or [])
+    if not approvers.exists():
         return
-    subject = f"[Onay Gerekli] Departman Talebi #{dr.id} – {_dr_title(dr)}"
+    title = f"[Onay Gerekli] Departman Talebi #{dr.id} – {_dr_title(dr)}"
     body = (
-        f"Merhaba,\n\n"
         f"Departman talebi (#{dr.id} – {_dr_title(dr)}) için onayınız bekleniyor.\n"
         f"Aşama: {stage.name} (Gerekli onay sayısı: {stage.required_approvals})\n"
         f"Öncelik: {getattr(dr, 'priority', '—')}\n"
         f"Talep Eden: {getattr(dr.requestor, 'get_full_name', lambda: dr.requestor.username)() if getattr(dr, 'requestor', None) else '—'}\n\n"
-        f"İncelemek için: {_dr_frontend_url(dr)}\n\n"
-        f"Not: Bu bildirim nedeni: {reason}."
+        f"Not: Bildirim nedeni: {reason}."
     )
-    send_plain_email(subject, body, to_list)
+    bulk_notify(
+        users=approvers,
+        notification_type=Notification.PLAN_APPROVAL_REQUESTED,
+        title=title,
+        body=body,
+        link=_dr_frontend_url(dr),
+        source_type='department_request',
+        source_id=dr.id,
+    )
 
 
-def _email_requestor_on_final(dr: DepartmentRequest, status_str: str, comment: str = ""):
+def _notify_requestor_on_final(dr: DepartmentRequest, status_str: str, comment: str = ""):
     if not getattr(dr, "requestor", None):
         return
-    to = [dr.requestor.email] if getattr(dr.requestor, "email", "") else []
-    if not to:
-        return
-    subject = f"[Departman Talebi {status_str}] DR #{dr.id} – {_dr_title(dr)}"
+    notification_type = Notification.PLAN_APPROVED if status_str == "Onaylandı" else Notification.PLAN_REJECTED
+    title = f"[Departman Talebi {status_str}] DR #{dr.id} – {_dr_title(dr)}"
     body = (
-        f"Merhaba,\n\n"
         f"Departman talebiniz (#{dr.id} – {_dr_title(dr)}) {status_str.lower()}.\n"
-        f"{('Not: ' + comment) if comment else ''}\n\n"
-        f"Detay: {_dr_frontend_url(dr)}"
+        f"{('Not: ' + comment) if comment else ''}"
     )
-    send_plain_email(subject, body, to)
-
-
-def _planning_emails():
-    """Get emails of planning department users"""
-    return list(
-        User.objects.filter(is_active=True, profile__team="planning")
-        .exclude(email__isnull=True)
-        .exclude(email="")
-        .values_list("email", flat=True)
+    notify(
+        user=dr.requestor,
+        notification_type=notification_type,
+        title=title,
+        body=body,
+        link=_dr_frontend_url(dr),
+        source_type='department_request',
+        source_id=dr.id,
     )
 
 
-def _email_planning_on_approval(dr: DepartmentRequest):
-    """Notify planning department when a department request is approved"""
-    to = _planning_emails()
-    if not to:
+def _notify_planning_on_approval(dr: DepartmentRequest):
+    """Notify planning department when a department request is approved."""
+    planning_users = User.objects.filter(is_active=True, profile__team="planning")
+    if not planning_users.exists():
         return
-    subject = f"[Yeni Departman Talebi Onaylandı] DR #{dr.id} – {_dr_title(dr)}"
+    title = f"[Yeni Departman Talebi Onaylandı] DR #{dr.id} – {_dr_title(dr)}"
     body = (
-        f"Merhaba Planlama,\n\n"
         f"Departman talebi (DR #{dr.id} – {_dr_title(dr)}) onaylandı ve ERP'ye aktarılmayı bekliyor.\n"
         f"Departman: {dr.department}\n"
         f"Talep Eden: {dr.requestor.get_full_name() if dr.requestor else '—'}\n"
         f"Öncelik: {dr.get_priority_display()}\n\n"
-        f"Detay: {_dr_frontend_url(dr)}\n\n"
         f"Lütfen bu talebi ERP'ye aktararak satınalma sürecini başlatın."
     )
-    send_plain_email(subject, body, to)
+    bulk_notify(
+        users=planning_users,
+        notification_type=Notification.PLAN_APPROVED,
+        title=title,
+        body=body,
+        link=_dr_frontend_url(dr),
+        source_type='department_request',
+        source_id=dr.id,
+    )
 
 
 # --------- Skip stages that have no approvers ---------
@@ -487,8 +489,8 @@ def submit_department_request(dr: DepartmentRequest, by_user):
     if finished:
         dr.status = "approved"
         dr.save(update_fields=["status"])
-        _email_requestor_on_final(dr, "Onaylandı", "(Otomatik geçiş – boş aşamalar)")
-        _email_planning_on_approval(dr)
+        _notify_requestor_on_final(dr, "Onaylandı", "(Otomatik geçiş – boş aşamalar)")
+        _notify_planning_on_approval(dr)
         return wf
 
     # 2) If requester is among approvers, auto-bypass them
@@ -496,12 +498,12 @@ def submit_department_request(dr: DepartmentRequest, by_user):
     if finished:
         dr.status = "approved"
         dr.save(update_fields=["status"])
-        _email_requestor_on_final(dr, "Onaylandı", "(Otomatik geçiş – self-bypass)")
-        _email_planning_on_approval(dr)
+        _notify_requestor_on_final(dr, "Onaylandı", "(Otomatik geçiş – self-bypass)")
+        _notify_planning_on_approval(dr)
         return wf
 
     if changed or wf.current_stage_order == 1:
-        _email_approvers_for_current_stage(wf, reason="Talep gönderildi")
+        _notify_approvers_for_current_stage(wf, reason="Talep gönderildi")
 
     return wf
 
@@ -518,12 +520,12 @@ def decide_department_request(dr: DepartmentRequest, user, approve: bool, commen
         dr.status = "rejected"
         dr.rejection_reason = comment
         dr.save(update_fields=["status", "rejection_reason"])
-        _email_requestor_on_final(dr, status_str="Reddedildi", comment=comment)
+        _notify_requestor_on_final(dr, status_str="Reddedildi", comment=comment)
         return wf
 
     if outcome == "moved":
         # Moved to next stage
-        _email_approvers_for_current_stage(wf, reason=f"Önceki aşama onaylandı (#{stage.order})")
+        _notify_approvers_for_current_stage(wf, reason=f"Önceki aşama onaylandı (#{stage.order})")
         return wf
 
     if outcome == "completed":
@@ -533,8 +535,8 @@ def decide_department_request(dr: DepartmentRequest, user, approve: bool, commen
         dr.approved_at = timezone.now()
         dr.save(update_fields=["status", "approved_by", "approved_at"])
 
-        _email_requestor_on_final(dr, status_str="Onaylandı", comment="")
-        _email_planning_on_approval(dr)
+        _notify_requestor_on_final(dr, status_str="Onaylandı", comment="")
+        _notify_planning_on_approval(dr)
         return wf
 
     # "pending" → quorum not yet reached

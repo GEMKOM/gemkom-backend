@@ -12,7 +12,7 @@ from .models import (
     DepartmentTaskTemplate, DepartmentTaskTemplateItem,
     JobOrderDepartmentTask, DEPARTMENT_CHOICES,
     JobOrderDiscussionTopic, JobOrderDiscussionComment,
-    DiscussionAttachment, DiscussionNotification,
+    DiscussionAttachment,
     TechnicalDrawingRelease
 )
 from .serializers import (
@@ -44,7 +44,6 @@ from .serializers import (
     JobOrderDiscussionCommentCreateSerializer,
     JobOrderDiscussionCommentUpdateSerializer,
     DiscussionAttachmentSerializer,
-    DiscussionNotificationSerializer,
     TechnicalDrawingReleaseListSerializer,
     TechnicalDrawingReleaseDetailSerializer,
     TechnicalDrawingReleaseCreateSerializer,
@@ -1857,47 +1856,6 @@ class JobOrderDiscussionCommentViewSet(viewsets.ModelViewSet):
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
-class DiscussionNotificationViewSet(viewsets.ReadOnlyModelViewSet):
-    """ViewSet for notifications (read-only + mark as read)."""
-
-    queryset = DiscussionNotification.objects.all()
-    serializer_class = DiscussionNotificationSerializer
-    permission_classes = [permissions.IsAuthenticated]
-
-    filter_backends = [DjangoFilterBackend, OrderingFilter]
-    ordering_fields = ['created_at']
-    ordering = ['-created_at']
-    filterset_fields = {
-        'is_read': ['exact'],
-        'notification_type': ['exact'],
-    }
-
-    def get_queryset(self):
-        return DiscussionNotification.objects.filter(
-            user=self.request.user
-        ).select_related('topic', 'topic__job_order', 'comment')
-
-    @action(detail=True, methods=['post'])
-    def mark_read(self, request, pk=None):
-        notification = self.get_object()
-        notification.mark_as_read()
-        serializer = self.get_serializer(notification)
-        return Response(serializer.data)
-
-    @action(detail=False, methods=['post'])
-    def mark_all_read(self, request):
-        updated = DiscussionNotification.objects.filter(
-            user=request.user,
-            is_read=False
-        ).update(is_read=True, read_at=timezone.now())
-        return Response({'status': 'success', 'message': f'{updated} bildirim okundu olarak işaretlendi.'})
-
-    @action(detail=False, methods=['get'])
-    def unread_count(self, request):
-        count = DiscussionNotification.objects.filter(user=request.user, is_read=False).count()
-        return Response({'count': count})
-
-
 # ============================================================================
 # Technical Drawing Release ViewSet
 # ============================================================================
@@ -2127,27 +2085,9 @@ class TechnicalDrawingReleaseViewSet(viewsets.ModelViewSet):
         release.status = 'in_revision'
         release.save(update_fields=['status', 'updated_at'])
 
-        # Create revision topic (directly in_progress since self-initiated)
-        topic = JobOrderDiscussionTopic.objects.create(
-            job_order=release.job_order,
-            title=f"Revizyon Başlatıldı - Rev.{release.revision_code or release.revision_number}",
-            content=reason,
-            priority='high',
-            topic_type='revision_request',
-            revision_status='in_progress',
-            revision_assigned_to=request.user,
-            related_release=release,
-            created_by=request.user
-        )
-
-        # Extract and set mentions
-        mentioned_users = topic.extract_mentions()
-        if mentioned_users.exists():
-            topic.mentioned_users.set(mentioned_users)
-
         # Put job order on hold
         job_order = release.job_order
-        job_order.hold(reason=f"Revizyon: {topic.title}")
+        job_order.hold(reason=f"Revizyon: Rev.{release.revision_code or release.revision_number}")
 
         # Uncomplete design department task
         design_task = job_order.department_tasks.filter(
@@ -2159,13 +2099,12 @@ class TechnicalDrawingReleaseViewSet(viewsets.ModelViewSet):
 
         # Send notifications
         from .signals import send_self_revision_notifications
-        send_self_revision_notifications(release, topic, request.user)
+        send_self_revision_notifications(release, reason, request.user)
 
         return Response({
             'status': 'success',
             'message': 'Revizyon başlatıldı. İş emri beklemeye alındı.',
             'release': TechnicalDrawingReleaseDetailSerializer(release, context={'request': request}).data,
-            'topic': JobOrderDiscussionTopicDetailSerializer(topic, context={'request': request}).data
         }, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=['post'])

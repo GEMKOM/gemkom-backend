@@ -9,7 +9,8 @@ from approvals.models import ApprovalPolicy, ApprovalWorkflow
 
 from .models import SubcontractorStatement
 from .services.statements import advance_billed_progress
-from core.emails import send_plain_email
+from notifications.service import notify, bulk_notify
+from notifications.models import Notification
 
 
 # ---------------------------------------------------------------------------
@@ -30,57 +31,66 @@ def pick_policy_for_statement(statement: SubcontractorStatement) -> ApprovalPoli
 
 
 # ---------------------------------------------------------------------------
-# Email helpers
+# Notification helpers
 # ---------------------------------------------------------------------------
 
-def _approver_emails_for_current_stage(wf: ApprovalWorkflow) -> list[str]:
+def _users_from_ids(user_ids):
+    if not user_ids:
+        return User.objects.none()
+    return User.objects.filter(id__in=user_ids, is_active=True)
+
+
+def _notify_approvers(wf: ApprovalWorkflow, statement: SubcontractorStatement, reason: str = ''):
     if wf.is_complete or wf.is_rejected:
-        return []
+        return
     stage = wf.stage_instances.filter(order=wf.current_stage_order).first()
     if not stage or stage.is_complete or stage.is_rejected:
-        return []
-    user_ids = stage.approver_user_ids or []
-    return list(
-        User.objects.filter(id__in=user_ids, is_active=True)
-        .exclude(email='').exclude(email__isnull=True)
-        .values_list('email', flat=True)
-    )
-
-
-def _email_approvers(wf: ApprovalWorkflow, statement: SubcontractorStatement, reason: str = ''):
-    to = _approver_emails_for_current_stage(wf)
-    if not to:
         return
-    subject = (
+    approvers = _users_from_ids(stage.approver_user_ids or [])
+    if not approvers.exists():
+        return
+    title = (
         f"[Onay Gerekli] Taşeron Hakedişi – "
         f"{statement.subcontractor.name} {statement.year}/{statement.month:02d}"
     )
     body = (
-        f"Merhaba,\n\n"
         f"{statement.subcontractor.name} taşeronuna ait "
         f"{statement.year}/{statement.month:02d} dönemi hakedişi onayınızı bekliyor.\n"
         f"Toplam Tutar: {statement.currency} {statement.grand_total}\n"
-        f"{('Neden: ' + reason) if reason else ''}\n\n"
-        f"Lütfen sisteme girerek inceleyiniz."
+        f"{('Neden: ' + reason) if reason else ''}"
     )
-    send_plain_email(subject, body, to)
+    bulk_notify(
+        users=approvers,
+        notification_type=Notification.SUB_APPROVAL_REQUESTED,
+        title=title,
+        body=body,
+        source_type='subcontractor_statement',
+        source_id=statement.id,
+    )
 
 
-def _email_on_final(statement: SubcontractorStatement, status_str: str, comment: str = ''):
-    if not statement.created_by or not getattr(statement.created_by, 'email', ''):
+def _notify_on_final(statement: SubcontractorStatement, status_str: str, comment: str = ''):
+    if not statement.created_by:
         return
-    subject = (
+    notification_type = Notification.SUB_APPROVED if status_str == 'Onaylandı' else Notification.SUB_REJECTED
+    title = (
         f"[Taşeron Hakedişi {status_str}] "
         f"{statement.subcontractor.name} {statement.year}/{statement.month:02d}"
     )
     body = (
-        f"Merhaba,\n\n"
         f"Taşeron hakedişi ({statement.subcontractor.name} – "
         f"{statement.year}/{statement.month:02d}) {status_str.lower()}.\n"
         f"Toplam Tutar: {statement.currency} {statement.grand_total}\n"
         f"{('Not: ' + comment) if comment else ''}"
     )
-    send_plain_email(subject, body, [statement.created_by.email])
+    notify(
+        user=statement.created_by,
+        notification_type=notification_type,
+        title=title,
+        body=body,
+        source_type='subcontractor_statement',
+        source_id=statement.id,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -137,8 +147,7 @@ def submit_statement(statement: SubcontractorStatement, by_user: User) -> Approv
         statement.submitted_at = timezone.now()
         statement.save(update_fields=['status', 'submitted_at'])
 
-    # Emails outside transaction
-    _email_approvers(wf, statement, reason='Hakediş gönderildi')
+    _notify_approvers(wf, statement, reason='Hakediş gönderildi')
     return wf
 
 
@@ -175,12 +184,11 @@ def decide_statement(
 
         # outcome == 'pending' or 'moved': status stays 'submitted'
 
-    # Emails outside transaction
     if outcome == 'moved':
-        _email_approvers(wf, statement, reason=f'Önceki aşama onaylandı (#{stage.order})')
+        _notify_approvers(wf, statement, reason=f'Önceki aşama onaylandı (#{stage.order})')
     elif outcome == 'completed':
-        _email_on_final(statement, status_str='Onaylandı', comment=comment)
+        _notify_on_final(statement, status_str='Onaylandı', comment=comment)
     elif outcome == 'rejected':
-        _email_on_final(statement, status_str='Reddedildi', comment=comment)
+        _notify_on_final(statement, status_str='Reddedildi', comment=comment)
 
     return wf

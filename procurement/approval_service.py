@@ -16,8 +16,10 @@ from approvals.models import ApprovalStageInstance, ApprovalWorkflow, ApprovalDe
 
 from .models import PurchaseRequest
 from procurement.services import create_pos_from_recommended
-from core.emails import send_plain_email
 from django.db.models import Max, Q
+
+from notifications.service import notify, bulk_notify
+from notifications.models import Notification
 
 
 SYSTEM_USERNAME = "system"
@@ -40,15 +42,11 @@ def pick_policy_for_purchase_request(pr: PurchaseRequest):
     return qs.order_by("selection_priority").first()
 
 
-# --------- Helpers (PR-specific emails/urls) ---------
+# --------- Helpers ---------
 def _users_from_ids(user_ids):
     if not user_ids:
         return User.objects.none()
     return User.objects.filter(id__in=user_ids, is_active=True)
-
-def _approver_emails_for_stage(stage: ApprovalStageInstance):
-    qs = _users_from_ids(stage.approver_user_ids or [])
-    return list(qs.exclude(email__isnull=True).exclude(email="").values_list("email", flat=True))
 
 def _pr_title(pr: PurchaseRequest):
     return getattr(pr, "title", f"PR-{pr.id}")
@@ -59,56 +57,61 @@ def _pr_frontend_url(pr: PurchaseRequest):
 def _po_frontend_url(po):
     return f"https://ofis.gemcore.com.tr/finance/purchase-orders/?order={po.id}"
 
-def _email_approvers_for_current_stage(wf: ApprovalWorkflow, reason: str = "pending"):
+
+def _notify_approvers_for_current_stage(wf: ApprovalWorkflow, reason: str = "pending"):
     if wf.is_complete or wf.is_rejected:
         return
     stage = wf.stage_instances.filter(order=wf.current_stage_order).first()
     if not stage or stage.is_complete or stage.is_rejected:
         return
     pr = PurchaseRequest.objects.get(id=wf.object_id)
-    to_list = _approver_emails_for_stage(stage)
-    if not to_list:
+    approvers = _users_from_ids(stage.approver_user_ids or [])
+    if not approvers.exists():
         return
-    subject = f"[Onay Gerekli] Satınalma Talebi #{pr.id} – {_pr_title(pr)}"
+    title = f"[Onay Gerekli] Satınalma Talebi #{pr.id} – {_pr_title(pr)}"
     body = (
-        f"Merhaba,\n\n"
         f"Satınalma talebi (#{pr.id} – {_pr_title(pr)}) için onayınız bekleniyor.\n"
         f"Aşama: {stage.name} (Gerekli onay sayısı: {stage.required_approvals})\n"
         f"Öncelik: {getattr(pr, 'priority', '—')}\n"
         f"Talep Eden: {getattr(pr.requestor, 'get_full_name', lambda: pr.requestor.username)() if getattr(pr, 'requestor', None) else '—'}\n\n"
-        f"İncelemek için: {_pr_frontend_url(pr)}\n\n"
         f"Not: Bu bildirim nedeni: {reason}."
     )
-    send_plain_email(subject, body, to_list)
+    bulk_notify(
+        users=approvers,
+        notification_type=Notification.PR_APPROVAL_REQUESTED,
+        title=title,
+        body=body,
+        link=_pr_frontend_url(pr),
+        source_type='purchase_request',
+        source_id=pr.id,
+    )
 
-def _email_requestor_on_final(pr: PurchaseRequest, status_str: str, comment: str = ""):
+
+def _notify_requestor_on_final(pr: PurchaseRequest, status_str: str, comment: str = ""):
     if not getattr(pr, "requestor", None):
         return
-    to = [pr.requestor.email] if getattr(pr.requestor, "email", "") else []
-    if not to:
-        return
-    subject = f"[Satınalma Talebi {status_str}] PR #{pr.id} – {_pr_title(pr)}"
+    notification_type = Notification.PR_APPROVED if status_str == "Onaylandı" else Notification.PR_REJECTED
+    title = f"[Satınalma Talebi {status_str}] PR #{pr.id} – {_pr_title(pr)}"
     body = (
-        f"Merhaba,\n\n"
         f"Satınalma talebiniz (#{pr.id} – {_pr_title(pr)}) {status_str.lower()}.\n"
-        f"{('Not: ' + comment) if comment else ''}\n\n"
-        f"Detay: {_pr_frontend_url(pr)}"
+        f"{('Not: ' + comment) if comment else ''}"
     )
-    send_plain_email(subject, body, to)
-
-def _finance_emails():
-    return list(
-        User.objects.filter(is_active=True, profile__team="finance")
-        .exclude(email__isnull=True)
-        .exclude(email="")
-        .values_list("email", flat=True)
+    notify(
+        user=pr.requestor,
+        notification_type=notification_type,
+        title=title,
+        body=body,
+        link=_pr_frontend_url(pr),
+        source_type='purchase_request',
+        source_id=pr.id,
     )
 
-def _email_finance_pos_created(pr: PurchaseRequest, pos_list):
+
+def _notify_finance_pos_created(pr: PurchaseRequest, pos_list):
     if not pos_list:
         return
-    to = _finance_emails()
-    if not to:
+    finance_users = User.objects.filter(is_active=True, profile__team="finance")
+    if not finance_users.exists():
         return
     pr_title = getattr(pr, "title", f"PR-{pr.id}")
     lines = []
@@ -116,20 +119,25 @@ def _email_finance_pos_created(pr: PurchaseRequest, pos_list):
         supplier_name = getattr(getattr(po, "supplier", None), "name", "—")
         currency = getattr(po, "currency", "")
         total = getattr(po, "total_amount", "")
-        status = getattr(po, "status", "")
-        po_url = _po_frontend_url(po)
         try:
-            status = po.get_status_display()
+            status_display = po.get_status_display()
         except Exception:
-            pass
-        lines.append(f"- PO #{po.id} | Tedarikçi: {supplier_name} | Tutar: {currency} {total} | Durum: {status} | URL: {po_url}")
-    subject = f"[PO Oluşturuldu] PR #{pr.id} – {pr_title}"
+            status_display = getattr(po, "status", "")
+        lines.append(f"- PO #{po.id} | Tedarikçi: {supplier_name} | Tutar: {currency} {total} | Durum: {status_display}")
+    title = f"[PO Oluşturuldu] PR #{pr.id} – {pr_title}"
     body = (
-        f"Merhaba Finans,\n\n"
         f"Satınalma talebi (PR #{pr.id} – {pr_title}) onaylandı ve aşağıdaki satınalma siparişleri oluşturuldu:\n\n"
         + "\n".join(lines)
     )
-    send_plain_email(subject, body, to)
+    bulk_notify(
+        users=finance_users,
+        notification_type=Notification.PR_PO_CREATED,
+        title=title,
+        body=body,
+        link=_pr_frontend_url(pr),
+        source_type='purchase_request',
+        source_id=pr.id,
+    )
 
 
 # --------- Submit PR (uses core engine) ---------
@@ -185,20 +193,20 @@ def submit_purchase_request(pr: PurchaseRequest, by_user):
             pr.save(update_fields=["status"])
             created_pos = create_pos_from_recommended(pr)
 
-    # Emails sent outside the transaction
+    # Notifications sent outside the transaction
     if finished:
-        _email_requestor_on_final(pr, status_str="Onaylandı", comment="(Otomatik geçiş)")
+        _notify_requestor_on_final(pr, status_str="Onaylandı", comment="(Otomatik geçiş)")
         return wf
 
     if moved:
-        _email_approvers_for_current_stage(wf, reason="Talep gönderildi")
+        _notify_approvers_for_current_stage(wf, reason="Talep gönderildi")
 
     return wf
 
 
 # --------- Decide on PR (uses core engine) ---------
 def decide(pr: PurchaseRequest, user, approve: bool, comment: str = ""):
-    # DB writes in a transaction; emails and PO creation run after commit.
+    # DB writes in a transaction; notifications run after commit.
     with transaction.atomic():
         wf, stage, outcome = record_decision(pr, user, approve, comment)
 
@@ -215,12 +223,14 @@ def decide(pr: PurchaseRequest, user, approve: bool, comment: str = ""):
         if outcome == "pending":
             return wf
 
-    # Emails sent outside the transaction — won't hold DB locks
+    # Notifications sent outside the transaction
     if outcome == "moved":
-        _email_approvers_for_current_stage(wf, reason=f"Önceki aşama onaylandı (#{stage.order})")
+        _notify_approvers_for_current_stage(wf, reason=f"Önceki aşama onaylandı (#{stage.order})")
     elif outcome == "completed":
-        _email_requestor_on_final(pr, status_str="Onaylandı", comment="")
-        _email_finance_pos_created(pr, created_pos)
+        _notify_requestor_on_final(pr, status_str="Onaylandı", comment="")
+        _notify_finance_pos_created(pr, created_pos)
+    elif outcome == "rejected":
+        _notify_requestor_on_final(pr, status_str="Reddedildi", comment=comment)
 
     return wf
 

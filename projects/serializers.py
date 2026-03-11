@@ -7,7 +7,7 @@ from .models import (
     DepartmentTaskTemplate, DepartmentTaskTemplateItem,
     JobOrderDepartmentTask, JobOrderDepartmentTaskFile, DEPARTMENT_CHOICES,
     JobOrderDiscussionTopic, JobOrderDiscussionComment,
-    DiscussionAttachment, DiscussionNotification,
+    DiscussionAttachment,
     TechnicalDrawingRelease
 )
 
@@ -1360,28 +1360,6 @@ class DiscussionAttachmentSerializer(serializers.ModelSerializer):
         read_only_fields = ['name', 'size', 'uploaded_by', 'uploaded_at']
 
 
-class DiscussionNotificationSerializer(serializers.ModelSerializer):
-    notification_type_display = serializers.CharField(source='get_notification_type_display', read_only=True)
-    topic_title = serializers.CharField(source='topic.title', read_only=True)
-    topic_job_order = serializers.CharField(source='topic.job_order.job_no', read_only=True)
-    comment_preview = serializers.SerializerMethodField()
-
-    class Meta:
-        model = DiscussionNotification
-        fields = [
-            'id', 'notification_type', 'notification_type_display',
-            'topic', 'topic_title', 'topic_job_order',
-            'comment', 'comment_preview',
-            'is_read', 'created_at', 'read_at'
-        ]
-        read_only_fields = ['created_at', 'read_at']
-
-    def get_comment_preview(self, obj):
-        if obj.comment and obj.comment.content:
-            return obj.comment.content[:100] + ('...' if len(obj.comment.content) > 100 else '')
-        return None
-
-
 # ============================================================================
 # Technical Drawing Release Serializers
 # ============================================================================
@@ -1465,7 +1443,6 @@ class TechnicalDrawingReleaseCreateSerializer(serializers.ModelSerializer):
         # Create release topic
         topic_title = f"Teknik Çizim Yayını - Rev.{release.revision_code or release.revision_number}"
 
-        # Build topic content in the same format as the notification email
         if topic_content:
             content = topic_content
         else:
@@ -1495,20 +1472,17 @@ Değişiklikler:
         mentioned_users_from_content = topic.extract_mentions()
         stakeholder_users = get_drawing_release_stakeholders()
 
-        # Combine mentioned users and stakeholders (excluding the releaser)
         all_mentioned_ids = set()
         if mentioned_users_from_content.exists():
             all_mentioned_ids.update(mentioned_users_from_content.values_list('id', flat=True))
         all_mentioned_ids.update(stakeholder_users.values_list('id', flat=True))
 
-        # Exclude the person who released
         if release.released_by_id:
             all_mentioned_ids.discard(release.released_by_id)
 
         if all_mentioned_ids:
             topic.mentioned_users.set(all_mentioned_ids)
 
-        # Link topic to release
         release.release_topic = topic
         release.save(update_fields=['release_topic'])
 
