@@ -158,6 +158,9 @@ def send_consultations(offer: SalesOffer, departments_data: list[dict], user) ->
             offer.status = 'consultation'
             offer.save(update_fields=['status', 'updated_at'])
 
+        notified_teams = list({dept['department'] for dept in departments_data})
+        transaction.on_commit(lambda: _email_dept_heads_on_consultation(offer, notified_teams))
+
         return created
 
 
@@ -219,6 +222,34 @@ def _email_departments_on_conversion(offer: SalesOffer, root_job):
             f"Müşteri: {offer.customer.name}\n"
             f"İş Emri No: {root_job.job_no}\n"
             f"İş Emri Başlığı: {root_job.title}\n\n"
+            f"GEMKOM Sistemi"
+        )
+        send_plain_email(subject, body, emails)
+    except Exception:
+        pass
+
+
+def _email_dept_heads_on_consultation(offer: SalesOffer, teams: list[str]):
+    """Email department heads (occupation=manager) for each consulted team."""
+    try:
+        emails = list(
+            User.objects.filter(
+                is_active=True,
+                profile__team__in=teams,
+                profile__occupation='manager',
+            )
+            .exclude(email='')
+            .values_list('email', flat=True)
+            .distinct()
+        )
+        if not emails:
+            return
+        subject = f"[GEMKOM] Yeni Danışma Talebi: {offer.offer_no}"
+        body = (
+            f"Sayın Departman Yöneticisi,\n\n"
+            f"{offer.offer_no} numaralı \"{offer.title}\" teklifi için departmanınıza danışma talebi oluşturuldu.\n\n"
+            f"Müşteri: {offer.customer.name}\n"
+            f"Teklif No: {offer.offer_no}\n\n"
             f"GEMKOM Sistemi"
         )
         send_plain_email(subject, body, emails)

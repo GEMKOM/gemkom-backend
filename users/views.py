@@ -324,6 +324,13 @@ class WageRateListCreateView(ListCreateAPIView):
             )
         )
 
+        # active filter (default: true)
+        active_param = self.request.query_params.get("active", "true").lower()
+        if active_param in ("true", "1", "yes"):
+            qs = qs.filter(is_active=True)
+        elif active_param in ("false", "0", "no"):
+            qs = qs.filter(is_active=False)
+
         # optional filters
         team = (self.request.query_params.get("team") or "").strip()
         if team:

@@ -566,10 +566,13 @@ class DepartmentTaskListSerializer(serializers.ModelSerializer):
         ]
 
     def get_customer_name(self, obj):
-        if not obj.job_order_id:
-            return None
-        customer = obj.job_order.customer
-        return customer.short_name or customer.name
+        if obj.job_order_id:
+            customer = obj.job_order.customer
+            return customer.short_name or customer.name
+        if obj.sales_offer_id:
+            customer = obj.sales_offer.customer
+            return customer.short_name or customer.name
+        return None
 
     def get_is_consultation(self, obj):
         return bool(obj.sales_offer_id)

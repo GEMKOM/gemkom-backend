@@ -1074,7 +1074,8 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
     - POST /department-tasks/{id}/uncomplete/ - Revert completed task to in_progress
     """
     queryset = JobOrderDepartmentTask.objects.select_related(
-        'job_order', 'job_order__customer', 'assigned_to', 'parent', 'created_by', 'completed_by'
+        'job_order', 'job_order__customer', 'sales_offer', 'sales_offer__customer',
+        'assigned_to', 'parent', 'created_by', 'completed_by'
     ).prefetch_related('subtasks', 'depends_on', 'qc_reviews', 'qc_reviews__ncr')
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     search_fields = ['title', 'description', 'job_order__job_no', 'job_order__title']
@@ -1118,6 +1119,24 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
                 job_order__technical_drawing_releases__revision_topics__is_deleted=False,
             ).distinct()
 
+        # Annotate consultation flag for ordering (applied after filter_queryset)
+        from django.db.models import Case, When, Value, IntegerField
+        queryset = queryset.annotate(
+            _is_consultation=Case(
+                When(sales_offer__isnull=False, then=Value(0)),
+                default=Value(1),
+                output_field=IntegerField(),
+            )
+        )
+
+        return queryset
+
+    def filter_queryset(self, queryset):
+        # Let DRF apply filters + ordering first
+        queryset = super().filter_queryset(queryset)
+        # Only prepend consultation sort when no explicit ordering is requested
+        if not self.request.query_params.get('ordering'):
+            return queryset.order_by('_is_consultation', 'job_order__job_no')
         return queryset
 
     def list(self, request, *args, **kwargs):

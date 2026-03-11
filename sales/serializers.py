@@ -279,7 +279,7 @@ class SalesOfferUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = SalesOffer
         fields = [
-            'title', 'description',
+            'customer', 'title', 'description',
             'customer_inquiry_ref', 'delivery_date_requested', 'offer_expiry_date',
             'incoterms',
         ]
