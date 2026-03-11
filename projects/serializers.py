@@ -1248,11 +1248,6 @@ class JobOrderDiscussionTopicCreateSerializer(serializers.ModelSerializer):
         model = JobOrderDiscussionTopic
         fields = ['job_order', 'title', 'content', 'priority']
 
-    def validate_job_order(self, value):
-        if value.parent is not None:
-            raise serializers.ValidationError("Tartışma konuları sadece ana iş emirleri için oluşturulabilir.")
-        return value
-
     def create(self, validated_data):
         topic = super().create(validated_data)
         mentioned_users = topic.extract_mentions()

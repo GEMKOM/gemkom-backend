@@ -1542,7 +1542,6 @@ class JobOrderDiscussionTopic(models.Model):
         JobOrder,
         on_delete=models.CASCADE,
         related_name='discussion_topics',
-        limit_choices_to={'parent__isnull': True}
     )
     title = models.CharField(max_length=255)
     content = models.TextField()

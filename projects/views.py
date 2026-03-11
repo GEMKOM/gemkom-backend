@@ -1726,6 +1726,7 @@ class JobOrderDiscussionTopicViewSet(viewsets.ModelViewSet):
     ordering = ['-created_at']
     filterset_fields = {
         'job_order': ['exact'],
+        'job_order__job_no': ['exact'],
         'priority': ['exact', 'in'],
         'created_by': ['exact'],
     }

@@ -296,12 +296,19 @@ class SalesOfferViewSet(viewsets.ModelViewSet):
             serializer = SalesOfferFileSerializer(qs, many=True, context={'request': request})
             return Response(serializer.data)
 
-        # POST — upload a file
-        serializer = SalesOfferFileUploadSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        file_obj = serializer.save(offer=offer, uploaded_by=request.user)
+        # POST — upload one or more files
+        files = request.FILES.getlist('file')
+        if not files:
+            return Response({'detail': 'En az bir dosya gereklidir.'}, status=status.HTTP_400_BAD_REQUEST)
+        created = []
+        for f in files:
+            data = request.data.copy()
+            data['file'] = f
+            serializer = SalesOfferFileUploadSerializer(data=data)
+            serializer.is_valid(raise_exception=True)
+            created.append(serializer.save(offer=offer, uploaded_by=request.user))
         return Response(
-            SalesOfferFileSerializer(file_obj, context={'request': request}).data,
+            SalesOfferFileSerializer(created, many=True, context={'request': request}).data,
             status=status.HTTP_201_CREATED,
         )
 

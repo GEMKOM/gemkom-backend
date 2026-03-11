@@ -16,6 +16,7 @@ from .approval_service import (
     submit_for_qc_review, bulk_submit_for_qc_review, decide_qc_review,
     submit_ncr, decide_ncr,
     email_ncr_assigned_members,
+    email_ncr_assigned_team,
 )
 
 
@@ -24,6 +25,17 @@ def _is_qc_member(user):
         user.is_superuser
         or getattr(getattr(user, 'profile', None), 'team', None) == 'qualitycontrol'
     )
+
+
+def _can_submit_ncr(user, ncr):
+    if user.is_superuser:
+        return True
+    user_team = getattr(getattr(user, 'profile', None), 'team', None)
+    if user_team and user_team == ncr.assigned_team:
+        return True
+    if ncr.assigned_members.filter(pk=user.pk).exists():
+        return True
+    return False
 
 
 # =============================================================================
@@ -190,6 +202,7 @@ class NCRViewSet(viewsets.ModelViewSet):
             if task and task.status not in ('completed', 'skipped', 'cancelled', 'blocked'):
                 task.status = 'blocked'
                 task.save(update_fields=['status'])
+        email_ncr_assigned_team(ncr)
         if ncr.assigned_members.exists():
             email_ncr_assigned_members(ncr)
         return Response(NCRDetailSerializer(ncr).data, status=status.HTTP_201_CREATED)
@@ -198,6 +211,11 @@ class NCRViewSet(viewsets.ModelViewSet):
     def submit(self, request, pk=None):
         """Submit NCR for QC approval. Optionally update fields (root_cause, corrective_action, etc.) in the same request."""
         ncr = self.get_object()
+        if not _can_submit_ncr(request.user, ncr):
+            return Response(
+                {'status': 'error', 'message': 'Sadece atanan departman veya atanan üyeler NCR gönderebilir.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         serializer = NCRSubmitSerializer(ncr, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         try:
@@ -263,12 +281,19 @@ class NCRViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'], url_path='files/upload')
     def upload_file(self, request, pk=None):
-        """Upload a file and attach it to this NCR."""
+        """Upload one or more files and attach them to this NCR."""
         ncr = self.get_object()
-        serializer = NCRFileSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        serializer.save(ncr=ncr, uploaded_by=request.user)
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
+        files = request.FILES.getlist('file')
+        if not files:
+            return Response({'status': 'error', 'message': 'En az bir dosya gereklidir.'}, status=status.HTTP_400_BAD_REQUEST)
+        created = []
+        for f in files:
+            data = request.data.copy()
+            data['file'] = f
+            serializer = NCRFileSerializer(data=data)
+            serializer.is_valid(raise_exception=True)
+            created.append(serializer.save(ncr=ncr, uploaded_by=request.user))
+        return Response(NCRFileSerializer(created, many=True).data, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=['delete'], url_path=r'files/(?P<file_id>\d+)')
     def delete_file(self, request, pk=None, file_id=None):

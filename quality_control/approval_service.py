@@ -490,6 +490,32 @@ def _email_ncr_rejected(ncr: NCR, comment: str = ""):
     send_plain_email(subject, body, to)
 
 
+def email_ncr_assigned_team(ncr: NCR):
+    """Notify the assigned_team department members when a manual NCR is created."""
+    if not ncr.assigned_team:
+        return
+    members = list(
+        User.objects.filter(is_active=True, profile__team=ncr.assigned_team)
+        .exclude(email='').exclude(email__isnull=True)
+        .values_list('email', flat=True)
+    )
+    if not members:
+        return
+    subject = f"[Yeni NCR] {ncr.ncr_number} — {ncr.title}"
+    body = (
+        f"Merhaba,\n\n"
+        f"Departmanınız için yeni bir Uygunsuzluk Raporu oluşturuldu:\n\n"
+        f"NCR No: {ncr.ncr_number}\n"
+        f"Başlık: {ncr.title}\n"
+        f"İş Emri: {ncr.job_order_id}\n"
+        f"Önem Derecesi: {ncr.get_severity_display()}\n"
+        f"Açıklama: {ncr.description}\n\n"
+        f"Lütfen NCR'ı inceleyin ve gerekli işlemleri gerçekleştirin.\n\n"
+        f"GEMKOM Sistemi"
+    )
+    send_plain_email(subject, body, members)
+
+
 def email_ncr_assigned_members(ncr: NCR):
     """Notify specific members when a manual NCR is created with assignments."""
     members_qs = ncr.assigned_members.exclude(email='').exclude(email__isnull=True)
