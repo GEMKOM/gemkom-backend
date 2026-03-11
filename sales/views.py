@@ -301,9 +301,13 @@ class SalesOfferViewSet(viewsets.ModelViewSet):
         if not files:
             return Response({'detail': 'En az bir dosya gereklidir.'}, status=status.HTTP_400_BAD_REQUEST)
         created = []
+        upload_data = {
+            'file_type': request.data.get('file_type', 'other'),
+            'name': request.data.get('name', ''),
+            'description': request.data.get('description', ''),
+        }
         for f in files:
-            data = request.data.copy()
-            data['file'] = f
+            data = {**upload_data, 'file': f}
             serializer = SalesOfferFileUploadSerializer(data=data)
             serializer.is_valid(raise_exception=True)
             created.append(serializer.save(offer=offer, uploaded_by=request.user))
