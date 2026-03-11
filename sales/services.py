@@ -11,7 +11,7 @@ from django.contrib.auth.models import User
 from django.db import transaction
 from django.utils import timezone
 
-from notifications.service import notify, bulk_notify
+from notifications.service import notify, bulk_notify, get_route_users
 from notifications.models import Notification
 from projects.models import JobOrder, JobOrderDepartmentTask
 
@@ -160,7 +160,8 @@ def send_consultations(offer: SalesOffer, departments_data: list[dict], user) ->
             offer.save(update_fields=['status', 'updated_at'])
 
         notified_teams = list({dept['department'] for dept in departments_data})
-        transaction.on_commit(lambda: _notify_dept_heads_on_consultation(offer, notified_teams))
+        assigned_users = [t.assigned_to for t in created if t.assigned_to_id]
+        transaction.on_commit(lambda: _notify_dept_heads_on_consultation(offer, assigned_users, notified_teams))
 
         return created
 
@@ -168,9 +169,6 @@ def send_consultations(offer: SalesOffer, departments_data: list[dict], user) ->
 # =============================================================================
 # Email notifications
 # =============================================================================
-
-_CONVERSION_NOTIFY_TEAMS = ['design', 'planning', 'manufacturing', 'procurement', 'logistics']
-
 
 def _notify_approvers_on_submission(offer: SalesOffer, wf):
     """Notify all approvers in the first stage when an offer is submitted for approval."""
@@ -202,14 +200,10 @@ def _notify_approvers_on_submission(offer: SalesOffer, wf):
 
 
 def _notify_departments_on_conversion(offer: SalesOffer, root_job):
-    """Notify department managers when an offer is converted to a job order."""
+    """Notify route-configured users when an offer is converted to a job order."""
     try:
-        dept_users = User.objects.filter(
-            is_active=True,
-            profile__team__in=_CONVERSION_NOTIFY_TEAMS,
-            profile__occupation='manager',
-        ).distinct()
-        if not dept_users.exists():
+        users = get_route_users(Notification.SALES_CONVERTED)
+        if not users.exists():
             return
         title = f"[Yeni İş Emri] {root_job.job_no}"
         body = (
@@ -219,8 +213,8 @@ def _notify_departments_on_conversion(offer: SalesOffer, root_job):
             f"İş Emri Başlığı: {root_job.title}"
         )
         bulk_notify(
-            users=dept_users,
-            notification_type=Notification.SALES_APPROVED,
+            users=users,
+            notification_type=Notification.SALES_CONVERTED,
             title=title,
             body=body,
             source_type='sales_offer',
@@ -230,24 +224,26 @@ def _notify_departments_on_conversion(offer: SalesOffer, root_job):
         pass
 
 
-def _notify_dept_heads_on_consultation(offer: SalesOffer, teams: list[str]):
-    """Notify department heads (occupation=manager) for each consulted team."""
+def _notify_dept_heads_on_consultation(offer: SalesOffer, assigned_users, teams: list[str]):
+    """Notify consultation task assignees + route-configured users."""
     try:
-        dept_users = User.objects.filter(
-            is_active=True,
-            profile__team__in=teams,
-            profile__occupation='manager',
-        ).distinct()
-        if not dept_users.exists():
+        from django.contrib.auth.models import User as DjangoUser
+        assignee_ids = set(u.id for u in assigned_users if u is not None)
+        route_ids = set(
+            get_route_users(Notification.SALES_CONSULTATION).values_list('id', flat=True)
+        )
+        all_ids = assignee_ids | route_ids
+        if not all_ids:
             return
+        users = DjangoUser.objects.filter(id__in=all_ids, is_active=True)
         title = f"[Danışma Talebi] {offer.offer_no}"
         body = (
-            f"{offer.offer_no} numaralı \"{offer.title}\" teklifi için departmanınıza danışma talebi oluşturuldu.\n"
+            f"{offer.offer_no} numaralı \"{offer.title}\" teklifi için danışma talebi oluşturuldu.\n"
             f"Müşteri: {offer.customer.name}"
         )
         bulk_notify(
-            users=dept_users,
-            notification_type=Notification.SALES_APPROVAL_REQUESTED,
+            users=users,
+            notification_type=Notification.SALES_CONSULTATION,
             title=title,
             body=body,
             source_type='sales_offer',

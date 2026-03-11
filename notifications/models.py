@@ -147,6 +147,45 @@ class Notification(models.Model):
             self.save(update_fields=['is_read', 'read_at'])
 
 
+class NotificationRoute(models.Model):
+    """
+    Admin-configurable recipient list for specific event types.
+    One row per notification_type. Users in the M2M always receive
+    the notification in addition to any event-specific recipients
+    (e.g. task assignees still always get JOB_ON_HOLD).
+    """
+
+    ROUTABLE_TYPES = [
+        Notification.SALES_CONVERTED,
+        Notification.SALES_CONSULTATION,
+        Notification.JOB_ON_HOLD,
+        Notification.JOB_RESUMED,
+        Notification.DRAWING_RELEASED,
+        Notification.REVISION_REQUESTED,
+        Notification.REVISION_APPROVED,
+        Notification.REVISION_COMPLETED,
+        Notification.REVISION_REJECTED,
+    ]
+
+    notification_type = models.CharField(
+        max_length=60,
+        choices=Notification.NOTIFICATION_TYPE_CHOICES,
+        unique=True,
+    )
+    users = models.ManyToManyField(
+        User,
+        blank=True,
+        related_name='notification_routes',
+    )
+    enabled = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ['notification_type']
+
+    def __str__(self):
+        return self.notification_type
+
+
 class NotificationPreference(models.Model):
     """
     Per-user, per-type preference row.

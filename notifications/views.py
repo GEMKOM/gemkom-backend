@@ -9,15 +9,15 @@ from django.http import HttpResponse, JsonResponse
 from django.utils import timezone
 from django.views import View
 from django_filters.rest_framework import DjangoFilterBackend
-from rest_framework import permissions, status, viewsets
+from rest_framework import mixins, permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.filters import OrderingFilter
 from rest_framework.response import Response
 
 from core.emails import send_plain_email
 
-from .models import Notification, NotificationPreference
-from .serializers import NotificationPreferenceSerializer, NotificationSerializer
+from .models import Notification, NotificationPreference, NotificationRoute
+from .serializers import NotificationPreferenceSerializer, NotificationRouteSerializer, NotificationSerializer
 from .service import NOTIFICATION_DEFAULTS
 
 logger = logging.getLogger(__name__)
@@ -147,6 +147,61 @@ class NotificationPreferenceViewSet(viewsets.ModelViewSet):
             'status': 'success',
             'message': f'{deleted} tercih silindi. Varsayılan ayarlar geçerli.',
         })
+
+
+# =============================================================================
+# Notification routes (admin-configurable recipient lists)
+# =============================================================================
+
+class NotificationRouteViewSet(
+    mixins.ListModelMixin,
+    mixins.RetrieveModelMixin,
+    mixins.UpdateModelMixin,
+    viewsets.GenericViewSet,
+):
+    """
+    Admin-configurable recipient lists for specific event types.
+
+    GET  /notifications/routes/                     — list all routable event types
+    GET  /notifications/routes/{notification_type}/ — detail for one type
+    PATCH /notifications/routes/{notification_type}/ — update users/enabled
+    """
+    serializer_class   = NotificationRouteSerializer
+    permission_classes = [permissions.IsAdminUser]
+    lookup_field       = 'notification_type'
+
+    def get_queryset(self):
+        return NotificationRoute.objects.prefetch_related('users')
+
+    def _get_or_create(self, notification_type):
+        route, _ = NotificationRoute.objects.get_or_create(
+            notification_type=notification_type,
+            defaults={'enabled': True},
+        )
+        return route
+
+    def list(self, request):
+        choices = dict(Notification.NOTIFICATION_TYPE_CHOICES)
+        result = []
+        existing = {r.notification_type: r for r in self.get_queryset()}
+        for ntype in NotificationRoute.ROUTABLE_TYPES:
+            route = existing.get(ntype) or NotificationRoute(notification_type=ntype, enabled=True)
+            data = self.get_serializer(route).data
+            result.append(data)
+        return Response(result)
+
+    def retrieve(self, request, notification_type=None):
+        route = self._get_or_create(notification_type)
+        return Response(self.get_serializer(route).data)
+
+    def partial_update(self, request, notification_type=None):
+        if notification_type not in NotificationRoute.ROUTABLE_TYPES:
+            return Response({'detail': 'Not a routable notification type.'}, status=status.HTTP_400_BAD_REQUEST)
+        route = self._get_or_create(notification_type)
+        serializer = self.get_serializer(route, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(self.get_serializer(route).data)
 
 
 # =============================================================================

@@ -15,7 +15,7 @@ from typing import Iterable
 
 from django.conf import settings
 
-from .models import Notification, NotificationPreference
+from .models import Notification, NotificationPreference, NotificationRoute
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +64,21 @@ NOTIFICATION_DEFAULTS: dict[str, tuple[bool, bool]] = {
     Notification.NEW_COMMENT:              (False, True),   # in-app only
     Notification.PASSWORD_RESET:           (True,  False),  # email only, no in-app needed
 }
+
+
+def get_route_users(notification_type: str):
+    """
+    Return the configured extra User queryset for a routable notification type.
+    Returns an empty queryset if no route exists or the route is disabled.
+    """
+    from django.contrib.auth.models import User
+    try:
+        route = NotificationRoute.objects.get(notification_type=notification_type)
+        if not route.enabled:
+            return User.objects.none()
+        return route.users.filter(is_active=True)
+    except NotificationRoute.DoesNotExist:
+        return User.objects.none()
 
 
 def _get_user_prefs(user, notification_type: str) -> tuple[bool, bool]:
