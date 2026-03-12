@@ -97,8 +97,11 @@ def recompute_job_cost_summary(job_no: str) -> None:
     job_fields = (
         JobOrder.objects
         .values('total_weight_kg', 'general_expenses_rate')
-        .get(job_no=job_no)
+        .filter(job_no=job_no)
+        .first()
     )
+    if job_fields is None:
+        return
     total_weight_kg = Decimal(str(job_fields['total_weight_kg'] or 0))
     general_expenses_rate = Decimal(str(job_fields['general_expenses_rate'] or 0))
 
