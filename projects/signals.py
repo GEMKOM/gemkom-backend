@@ -379,7 +379,7 @@ def send_job_on_hold_notifications(job_order, release, reason):
         body=body,
         link=link,
         source_type='job_order',
-        source_id=job_order.id,
+        source_id=job_order.job_no,
     )
 
 
@@ -465,7 +465,7 @@ def send_job_resumed_notifications(job_order, topic, release):
         body=body,
         link=link,
         source_type='job_order',
-        source_id=job_order.id,
+        source_id=job_order.job_no,
     )
 
 

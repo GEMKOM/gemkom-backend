@@ -517,9 +517,11 @@ def _warm_config_cache() -> None:
         try:
             for cfg in NotificationConfig.objects.all():
                 _config_cache[cfg.notification_type] = {
-                    'title': cfg.title_template,
-                    'body':  cfg.body_template,
-                    'link':  cfg.link_template,
+                    'title':      cfg.title_template,
+                    'body':       cfg.body_template,
+                    'link':       cfg.link_template,
+                    'send_email': cfg.default_send_email,
+                    'send_inapp': cfg.default_send_in_app,
                 }
             _cache_populated = True
         except Exception:
@@ -623,13 +625,23 @@ def get_route_users(notification_type: str):
 # Core dispatch
 # ---------------------------------------------------------------------------
 
+def _get_system_defaults(notification_type: str) -> tuple[bool, bool]:
+    """Return system-level (send_email, send_in_app) from config cache, then hardcoded dict."""
+    if not _cache_populated:
+        _warm_config_cache()
+    cached = _config_cache.get(notification_type)
+    if cached and 'send_email' in cached:
+        return cached['send_email'], cached['send_inapp']
+    return NOTIFICATION_DEFAULTS.get(notification_type, (True, True))
+
+
 def _get_user_prefs(user, notification_type: str) -> tuple[bool, bool]:
-    """Return (send_email, send_in_app), falling back to NOTIFICATION_DEFAULTS."""
+    """Return (send_email, send_in_app) for a user, falling back to system defaults."""
     try:
         pref = NotificationPreference.objects.get(user=user, notification_type=notification_type)
         return pref.send_email, pref.send_in_app
     except NotificationPreference.DoesNotExist:
-        return NOTIFICATION_DEFAULTS.get(notification_type, (True, True))
+        return _get_system_defaults(notification_type)
 
 
 def notify(
@@ -706,7 +718,7 @@ def bulk_notify(
     ):
         pref_map[pref.user_id] = (pref.send_email, pref.send_in_app)
 
-    default_email, default_inapp = NOTIFICATION_DEFAULTS.get(notification_type, (True, True))
+    default_email, default_inapp = _get_system_defaults(notification_type)
 
     to_create = []
     email_recipients: list[tuple[str, int | None]] = []

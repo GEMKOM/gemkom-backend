@@ -123,6 +123,8 @@ class NotificationConfigSerializer(serializers.ModelSerializer):
             'body_template',
             'link_template',
             'available_vars',
+            'default_send_email',
+            'default_send_in_app',
             'updated_at',
             'always_notified',
             'is_routable',
@@ -135,11 +137,17 @@ class NotificationConfigSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         user_ids = validated_data.pop('user_ids', None)
-        for attr in ('title_template', 'body_template', 'link_template', 'teams', 'enabled'):
+        for attr in (
+            'title_template', 'body_template', 'link_template',
+            'default_send_email', 'default_send_in_app',
+            'teams', 'enabled',
+        ):
             if attr in validated_data:
                 setattr(instance, attr, validated_data[attr])
         instance.save()
         if user_ids is not None:
             from django.contrib.auth.models import User
             instance.users.set(User.objects.filter(id__in=user_ids, is_active=True))
+        from notifications.service import invalidate_config_cache
+        invalidate_config_cache()
         return instance

@@ -182,6 +182,11 @@ class NotificationConfig(models.Model):
     available_vars = models.JSONField(default=list, blank=True)  # read-only hint for frontend
     updated_at     = models.DateTimeField(auto_now=True)
 
+    # Delivery channel defaults — override NOTIFICATION_DEFAULTS; users can still
+    # override these per-user via NotificationPreference rows.
+    default_send_email  = models.BooleanField(default=True)
+    default_send_in_app = models.BooleanField(default=True)
+
     # Routing — only meaningful for ROUTABLE_TYPES
     users   = models.ManyToManyField(User, blank=True, related_name='notification_configs')
     teams   = models.JSONField(default=list, blank=True)
