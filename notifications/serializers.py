@@ -11,6 +11,9 @@ class NotificationSerializer(serializers.ModelSerializer):
     notification_type_display = serializers.CharField(
         source='get_notification_type_display', read_only=True
     )
+    category_display = serializers.CharField(
+        source='get_category_display', read_only=True
+    )
 
     class Meta:
         model = Notification
@@ -18,6 +21,8 @@ class NotificationSerializer(serializers.ModelSerializer):
             'id',
             'notification_type',
             'notification_type_display',
+            'category',
+            'category_display',
             'title',
             'body',
             'link',
@@ -112,6 +117,8 @@ class NotificationConfigUserSerializer(serializers.Serializer):
 
 class NotificationConfigSerializer(serializers.ModelSerializer):
     notification_type_display = serializers.SerializerMethodField()
+    category = serializers.SerializerMethodField()
+    category_display = serializers.SerializerMethodField()
     always_notified = serializers.SerializerMethodField()
     is_routable = serializers.SerializerMethodField()
     users = serializers.SerializerMethodField()
@@ -135,6 +142,15 @@ class NotificationConfigSerializer(serializers.ModelSerializer):
         choices = dict(Notification.NOTIFICATION_TYPE_CHOICES)
         return choices.get(ntype, ntype)
 
+    def get_category(self, obj):
+        ntype = obj.get('notification_type') if isinstance(obj, dict) else obj.notification_type
+        return Notification.CATEGORY_MAP.get(ntype, '')
+
+    def get_category_display(self, obj):
+        ntype = obj.get('notification_type') if isinstance(obj, dict) else obj.notification_type
+        cat = Notification.CATEGORY_MAP.get(ntype, '')
+        return dict(Notification.CATEGORY_CHOICES).get(cat, '')
+
     def get_always_notified(self, obj):
         ntype = obj.get('notification_type') if isinstance(obj, dict) else obj.notification_type
         return ALWAYS_NOTIFIED.get(ntype)
@@ -154,6 +170,8 @@ class NotificationConfigSerializer(serializers.ModelSerializer):
         fields = [
             'notification_type',
             'notification_type_display',
+            'category',
+            'category_display',
             'title_template',
             'body_template',
             'link_template',
@@ -168,7 +186,7 @@ class NotificationConfigSerializer(serializers.ModelSerializer):
             'teams',
             'enabled',
         ]
-        read_only_fields = ['notification_type', 'available_vars', 'updated_at']
+        read_only_fields = ['notification_type', 'category', 'category_display', 'available_vars', 'updated_at']
 
     def update(self, instance, validated_data):
         user_ids = validated_data.pop('user_ids', None)
