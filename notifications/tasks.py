@@ -46,12 +46,11 @@ def enqueue_send_email(
         'http_request': {
             'http_method': tasks_v2.HttpMethod.POST,
             'url': f'{service_url}/notifications/tasks/send-email/',
-            'headers': {'Content-Type': 'application/json'},
-            'body': payload,
-            'oidc_token': {
-                'service_account_email': sa_email,
-                'audience': service_url,
+            'headers': {
+                'Content-Type': 'application/json',
+                'X-Task-Secret': settings.QUEUE_SECRET,
             },
+            'body': payload,
         }
     }
 

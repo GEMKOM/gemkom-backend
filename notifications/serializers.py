@@ -1,6 +1,10 @@
 from rest_framework import serializers
 from .models import Notification, NotificationPreference, NotificationRoute
 from .service import NOTIFICATION_DEFAULTS
+from users.models import UserProfile
+
+_VALID_TEAMS = {v for v, _ in UserProfile.TEAM_CHOICES}
+TEAM_CHOICES = [{'value': v, 'label': l} for v, l in UserProfile.TEAM_CHOICES]
 
 
 class NotificationSerializer(serializers.ModelSerializer):
@@ -76,14 +80,23 @@ class NotificationRouteSerializer(serializers.ModelSerializer):
     notification_type_display = serializers.SerializerMethodField()
     always_notified = serializers.SerializerMethodField()
     users = serializers.SerializerMethodField()
+    user_ids = serializers.ListField(
+        child=serializers.IntegerField(), write_only=True, required=False
+    )
+    teams = serializers.ListField(
+        child=serializers.CharField(), required=False, default=list
+    )
 
     def get_users(self, obj):
         if not obj.pk:
             return []
         return NotificationRouteUserSerializer(obj.users.all(), many=True).data
-    user_ids = serializers.ListField(
-        child=serializers.IntegerField(), write_only=True, required=False
-    )
+
+    def validate_teams(self, value):
+        invalid = set(value) - _VALID_TEAMS
+        if invalid:
+            raise serializers.ValidationError(f"Geçersiz ekip(ler): {', '.join(invalid)}")
+        return value
 
     class Meta:
         model = NotificationRoute
@@ -91,6 +104,7 @@ class NotificationRouteSerializer(serializers.ModelSerializer):
             'notification_type', 'notification_type_display',
             'always_notified',
             'users', 'user_ids',
+            'teams',
             'link',
             'enabled',
         ]
@@ -106,7 +120,8 @@ class NotificationRouteSerializer(serializers.ModelSerializer):
         user_ids = validated_data.pop('user_ids', None)
         instance.enabled = validated_data.get('enabled', instance.enabled)
         instance.link = validated_data.get('link', instance.link)
-        instance.save(update_fields=['enabled', 'link'])
+        instance.teams = validated_data.get('teams', instance.teams)
+        instance.save(update_fields=['enabled', 'link', 'teams'])
         if user_ids is not None:
             from django.contrib.auth.models import User
             instance.users.set(User.objects.filter(id__in=user_ids, is_active=True))

@@ -178,6 +178,7 @@ class NotificationRoute(models.Model):
         related_name='notification_routes',
     )
     link = models.CharField(max_length=500, blank=True)
+    teams = models.JSONField(default=list, blank=True)
     enabled = models.BooleanField(default=True)
 
     class Meta:

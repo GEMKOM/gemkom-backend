@@ -69,6 +69,7 @@ NOTIFICATION_DEFAULTS: dict[str, tuple[bool, bool]] = {
 def get_route(notification_type: str) -> tuple:
     """
     Return (users_queryset, link) for a routable notification type.
+    Merges explicit users M2M with all active members of configured teams.
     Returns (empty queryset, '') if no route exists or the route is disabled.
     """
     from django.contrib.auth.models import User
@@ -76,7 +77,21 @@ def get_route(notification_type: str) -> tuple:
         route = NotificationRoute.objects.get(notification_type=notification_type)
         if not route.enabled:
             return User.objects.none(), ''
-        return route.users.filter(is_active=True), route.link or ''
+
+        explicit_ids = set(route.users.filter(is_active=True).values_list('id', flat=True))
+
+        team_ids = set()
+        if route.teams:
+            from users.models import UserProfile
+            team_ids = set(
+                UserProfile.objects.filter(team__in=route.teams)
+                .values_list('user_id', flat=True)
+            )
+
+        all_ids = explicit_ids | team_ids
+        if not all_ids:
+            return User.objects.none(), route.link or ''
+        return User.objects.filter(id__in=all_ids, is_active=True), route.link or ''
     except NotificationRoute.DoesNotExist:
         return User.objects.none(), ''
 

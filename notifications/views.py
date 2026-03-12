@@ -17,7 +17,7 @@ from rest_framework.response import Response
 from core.emails import send_plain_email
 
 from .models import Notification, NotificationPreference, NotificationRoute
-from .serializers import NotificationPreferenceSerializer, NotificationRouteSerializer, NotificationSerializer
+from .serializers import NotificationPreferenceSerializer, NotificationRouteSerializer, NotificationSerializer, TEAM_CHOICES
 from .service import NOTIFICATION_DEFAULTS
 
 logger = logging.getLogger(__name__)
@@ -182,14 +182,16 @@ class NotificationRouteViewSet(
         return route
 
     def list(self, request):
-        choices = dict(Notification.NOTIFICATION_TYPE_CHOICES)
         result = []
         existing = {r.notification_type: r for r in self.get_queryset()}
         for ntype in NotificationRoute.ROUTABLE_TYPES:
-            route = existing.get(ntype) or NotificationRoute(notification_type=ntype, enabled=True)
+            route = existing.get(ntype) or NotificationRoute(notification_type=ntype, enabled=True, teams=[])
             data = self.get_serializer(route).data
             result.append(data)
-        return Response(result)
+        return Response({
+            'team_choices': TEAM_CHOICES,
+            'routes': result,
+        })
 
     def retrieve(self, request, notification_type=None):
         route = self._get_or_create(notification_type)
@@ -209,33 +211,24 @@ class NotificationRouteViewSet(
 # Cloud Tasks callback — internal endpoint
 # =============================================================================
 
-def _verify_oidc_token(request):
+def _verify_task_secret(request):
     """
-    Verify the Google-signed OIDC token attached by Cloud Tasks.
-    Raises PermissionDenied if the token is missing or invalid.
+    Verify the shared secret sent by Cloud Tasks in the X-Task-Secret header.
+    Raises PermissionDenied if the secret is missing or incorrect.
 
-    Skipped when USE_CLOUD_TASKS=False (local dev) or when the token
-    belongs to the configured service account.
+    Skipped when USE_CLOUD_TASKS=False (local dev).
     """
     if not getattr(settings, 'USE_CLOUD_TASKS', True):
         return  # skip verification in local dev
 
-    auth_header = request.headers.get('Authorization', '')
-    if not auth_header.startswith('Bearer '):
-        raise PermissionDenied('Missing OIDC token')
+    secret = getattr(settings, 'QUEUE_SECRET', '')
+    if not secret:
+        logger.warning('QUEUE_SECRET is not set — task endpoint is unprotected')
+        return
 
-    token = auth_header[7:]
-    try:
-        from google.auth.transport import requests as google_requests
-        from google.oauth2 import id_token
-        id_token.verify_oauth2_token(
-            token,
-            google_requests.Request(),
-            settings.CLOUD_RUN_SERVICE_URL,
-        )
-    except Exception as exc:
-        logger.warning('OIDC token verification failed: %s', exc)
-        raise PermissionDenied('Invalid OIDC token')
+    incoming = request.headers.get('X-Task-Secret', '')
+    if incoming != secret:
+        raise PermissionDenied('Invalid task secret')
 
 
 class SendEmailTaskView(View):
@@ -247,7 +240,7 @@ class SendEmailTaskView(View):
     """
 
     def post(self, request):
-        _verify_oidc_token(request)
+        _verify_task_secret(request)
 
         try:
             data = json.loads(request.body)
