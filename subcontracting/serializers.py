@@ -98,8 +98,10 @@ class SubcontractingPriceTierSerializer(serializers.ModelSerializer):
 
 class SubcontractingAssignmentSerializer(serializers.ModelSerializer):
     unbilled_progress = serializers.DecimalField(max_digits=5, decimal_places=2, read_only=True)
-    unbilled_cost = serializers.DecimalField(max_digits=16, decimal_places=2, read_only=True)
     current_progress = serializers.DecimalField(max_digits=5, decimal_places=2, read_only=True)
+    current_cost_eur = serializers.SerializerMethodField()
+    unbilled_cost_eur = serializers.SerializerMethodField()
+    projected_cost = serializers.SerializerMethodField()
 
     # Convenient read-only summaries
     subcontractor_name = serializers.CharField(source='subcontractor.name', read_only=True)
@@ -109,15 +111,60 @@ class SubcontractingAssignmentSerializer(serializers.ModelSerializer):
     )
     job_no = serializers.CharField(source='department_task.job_order_id', read_only=True)
 
+    def _billed_date(self, obj):
+        """
+        Date to use for FX on the billed portion: approved_at of the most
+        recent approved statement line, falling back to assignment.updated_at
+        then created_at.
+        """
+        from datetime import date as date_type
+        last_line = (
+            obj.statement_lines
+            .filter(statement__approved_at__isnull=False)
+            .order_by('-statement__approved_at')
+            .select_related('statement')
+            .first()
+        )
+        if last_line and last_line.statement.approved_at:
+            return last_line.statement.approved_at.date()
+        return obj.updated_at.date() if obj.updated_at else obj.created_at.date()
+
+    def _unbilled_date(self, obj):
+        """Date to use for FX on the unbilled portion: assignment.updated_at or created_at."""
+        return obj.updated_at.date() if obj.updated_at else obj.created_at.date()
+
+    def get_current_cost_eur(self, obj):
+        """Billed cost in EUR using approved statement date for FX."""
+        from projects.services.costing import convert_to_eur
+        raw = obj.current_cost
+        if not raw:
+            return '0.00'
+        return str(convert_to_eur(raw, obj.cost_currency, self._billed_date(obj)))
+
+    def get_unbilled_cost_eur(self, obj):
+        """Unbilled cost in EUR using assignment updated_at for FX."""
+        from projects.services.costing import convert_to_eur
+        raw = obj.unbilled_cost
+        if not raw:
+            return '0.00'
+        return str(convert_to_eur(raw, obj.price_tier.currency, self._unbilled_date(obj)))
+
+    def get_projected_cost(self, obj):
+        """Full contract value at 100% completion in EUR using the assignment's created_at date for FX."""
+        from projects.services.costing import convert_to_eur
+        raw = (obj.allocated_weight_kg * obj.price_tier.price_per_kg).quantize(Decimal('0.01'))
+        return str(convert_to_eur(raw, obj.price_tier.currency, obj.created_at.date()))
+
     class Meta:
         model = SubcontractingAssignment
         fields = [
             'id', 'department_task', 'subcontractor', 'subcontractor_name',
             'price_tier', 'price_tier_name', 'price_per_kg', 'job_no',
             'allocated_weight_kg',
-            'current_cost', 'cost_currency',
+            'current_cost', 'cost_currency', 'current_cost_eur',
             'last_billed_progress', 'current_progress',
-            'unbilled_progress', 'unbilled_cost',
+            'unbilled_progress', 'unbilled_cost_eur',
+            'projected_cost',
             'created_at', 'created_by', 'updated_at',
         ]
         read_only_fields = [

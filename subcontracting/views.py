@@ -82,7 +82,7 @@ class SubcontractingAssignmentViewSet(viewsets.ModelViewSet):
             'department_task__job_order',
             'subcontractor',
             'price_tier',
-        )
+        ).prefetch_related('statement_lines__statement')
         subcontractor = self.request.query_params.get('subcontractor')
         job_no = self.request.query_params.get('job_no')
         department_task = self.request.query_params.get('department_task')

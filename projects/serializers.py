@@ -1904,13 +1904,12 @@ class CostTableRowSerializer(serializers.Serializer):
         from projects.services.costing import convert_to_eur
         from projects.models import JobOrder as _JO
         from django.db.models import Q
-        from datetime import date
         from decimal import Decimal
 
-        today = date.today()
         prefix = f'{obj.job_no}-'
 
         # --- subcontractor at 100%: allocated_weight_kg × price_per_kg → EUR ---
+        # Use each assignment's created_at date for FX (rate locked at contract time).
         sc_assignments = (
             SubcontractingAssignment.objects
             .filter(
@@ -1923,7 +1922,7 @@ class CostTableRowSerializer(serializers.Serializer):
             .select_related('price_tier')
         )
         sc_total = sum(
-            convert_to_eur(a.allocated_weight_kg * a.price_tier.price_per_kg, a.price_tier.currency, today)
+            convert_to_eur(a.allocated_weight_kg * a.price_tier.price_per_kg, a.price_tier.currency, a.created_at.date())
             for a in sc_assignments
         ) or Decimal('0')
 
@@ -1940,12 +1939,14 @@ class CostTableRowSerializer(serializers.Serializer):
             .select_related('price_tier')
         )
         paint_total = sum(
-            convert_to_eur(a.allocated_weight_kg * a.price_tier.price_per_kg, a.price_tier.currency, today)
+            convert_to_eur(a.allocated_weight_kg * a.price_tier.price_per_kg, a.price_tier.currency, a.created_at.date())
             for a in paint_assignments
         ) or Decimal('0')
 
         # --- paint material at 100%: paint_material_rate × total_weight_kg → EUR ---
         # Sum across every job in the subtree using their own rate and weight.
+        from datetime import date
+        today = date.today()
         job_rows = list(
             _JO.objects
             .filter(Q(job_no=obj.job_no) | Q(job_no__startswith=prefix))
@@ -2045,13 +2046,13 @@ class CostTableRowSerializer(serializers.Serializer):
     def get_price_per_kg(self, obj):
         """actual_total_cost ÷ total_weight_kg (null if weight is zero or missing)."""
         from decimal import Decimal
-        s = self._summary(obj)
-        if not s or not s.actual_total_cost:
-            return None
         weight = obj.total_weight_kg
         if not weight:
             return None
-        return str((s.actual_total_cost / Decimal(str(weight))).quantize(Decimal('0.01')))
+        total = Decimal(self.get_actual_total_cost(obj))
+        if not total:
+            return None
+        return str((total / Decimal(str(weight))).quantize(Decimal('0.01')))
 
     def get_margin_eur(self, obj):
         from decimal import Decimal
