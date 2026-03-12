@@ -240,6 +240,8 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         reason = request.data.get('reason', '')
         try:
             job_order.hold(reason=reason)
+            from .signals import send_job_on_hold_notifications
+            send_job_on_hold_notifications(job_order, reason)
             return Response({
                 'status': 'success',
                 'message': 'İş emri beklemeye alındı.',
@@ -257,6 +259,8 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         job_order = self.get_object()
         try:
             job_order.resume()
+            from .signals import send_job_resumed_notifications
+            send_job_resumed_notifications(job_order)
             return Response({
                 'status': 'success',
                 'message': 'İş emri devam ettirildi.',

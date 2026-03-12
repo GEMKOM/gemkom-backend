@@ -57,6 +57,68 @@ class Notification(models.Model):
     # Auth
     PASSWORD_RESET           = 'password_reset'
 
+    # -------------------------------------------------------------------------
+    # Category constants
+    # -------------------------------------------------------------------------
+    CATEGORY_DESIGN      = 'design'
+    CATEGORY_PROCUREMENT = 'procurement'
+    CATEGORY_QC          = 'quality_control'
+    CATEGORY_SALES       = 'sales'
+    CATEGORY_PLANNING    = 'planning'
+    CATEGORY_TOPICS      = 'topics'
+    CATEGORY_GENERAL     = 'general'
+
+    CATEGORY_MAP = {
+        PR_APPROVAL_REQUESTED:    CATEGORY_PROCUREMENT,
+        PR_APPROVED:              CATEGORY_PROCUREMENT,
+        PR_REJECTED:              CATEGORY_PROCUREMENT,
+        PR_PO_CREATED:            CATEGORY_PROCUREMENT,
+        SUB_APPROVAL_REQUESTED:   CATEGORY_PROCUREMENT,
+        SUB_APPROVED:             CATEGORY_PROCUREMENT,
+        SUB_REJECTED:             CATEGORY_PROCUREMENT,
+        QC_REVIEW_SUBMITTED:      CATEGORY_QC,
+        QC_REVIEW_APPROVED:       CATEGORY_QC,
+        QC_REVIEW_REJECTED:       CATEGORY_QC,
+        NCR_CREATED:              CATEGORY_QC,
+        NCR_SUBMITTED:            CATEGORY_QC,
+        NCR_APPROVED:             CATEGORY_QC,
+        NCR_REJECTED:             CATEGORY_QC,
+        NCR_ASSIGNED:             CATEGORY_QC,
+        SALES_APPROVAL_REQUESTED: CATEGORY_SALES,
+        SALES_APPROVED:           CATEGORY_SALES,
+        SALES_REJECTED:           CATEGORY_SALES,
+        SALES_CONSULTATION:       CATEGORY_SALES,
+        SALES_CONVERTED:          CATEGORY_SALES,
+        PLAN_APPROVAL_REQUESTED:  CATEGORY_PLANNING,
+        PLAN_APPROVED:            CATEGORY_PLANNING,
+        PLAN_REJECTED:            CATEGORY_PLANNING,
+        PLAN_DR_APPROVED:         CATEGORY_PLANNING,
+        DRAWING_RELEASED:         CATEGORY_DESIGN,
+        REVISION_REQUESTED:       CATEGORY_DESIGN,
+        REVISION_APPROVED:        CATEGORY_DESIGN,
+        REVISION_COMPLETED:       CATEGORY_DESIGN,
+        REVISION_REJECTED:        CATEGORY_DESIGN,
+        TOPIC_MENTION:            CATEGORY_TOPICS,
+        COMMENT_MENTION:          CATEGORY_TOPICS,
+        NEW_COMMENT:              CATEGORY_TOPICS,
+        OT_APPROVAL_REQUESTED:    CATEGORY_GENERAL,
+        OT_APPROVED:              CATEGORY_GENERAL,
+        OT_REJECTED:              CATEGORY_GENERAL,
+        JOB_ON_HOLD:              CATEGORY_GENERAL,
+        JOB_RESUMED:              CATEGORY_GENERAL,
+        PASSWORD_RESET:           CATEGORY_GENERAL,
+    }
+
+    CATEGORY_CHOICES = [
+        (CATEGORY_DESIGN,      'Tasarım'),
+        (CATEGORY_PROCUREMENT, 'Satınalma'),
+        (CATEGORY_QC,          'Kalite Kontrol'),
+        (CATEGORY_SALES,       'Satış'),
+        (CATEGORY_PLANNING,    'Planlama'),
+        (CATEGORY_TOPICS,      'Konular'),
+        (CATEGORY_GENERAL,     'Genel'),
+    ]
+
     NOTIFICATION_TYPE_CHOICES = [
         (PR_APPROVAL_REQUESTED,    'Satınalma Onayı Bekleniyor'),
         (PR_APPROVED,              'Satınalma Talebi Onaylandı'),
@@ -115,9 +177,16 @@ class Notification(models.Model):
     body  = models.TextField(blank=True)
     link  = models.CharField(max_length=500, blank=True)
 
+    category = models.CharField(
+        max_length=30,
+        choices=CATEGORY_CHOICES,
+        blank=True,
+        db_index=True,
+    )
+
     # Optional reference to the triggering object (no GenericFK overhead)
     source_type = models.CharField(max_length=50, blank=True)   # e.g. 'purchase_request'
-    source_id   = models.PositiveIntegerField(null=True, blank=True)
+    source_id   = models.CharField(max_length=100, blank=True, default='')  # supports string PKs (e.g. job_no)
 
     # Read status
     is_read  = models.BooleanField(default=False, db_index=True)

@@ -350,10 +350,10 @@ def send_self_revision_notifications(release, reason, initiator):
             )
 
     # Notify all department task assignees (job on hold)
-    send_job_on_hold_notifications(job_order, release, reason)
+    send_job_on_hold_notifications(job_order, reason, release=release)
 
 
-def send_job_on_hold_notifications(job_order, release, reason):
+def send_job_on_hold_notifications(job_order, reason, release=None):
     """Send notifications to department task assignees + route users when job is on hold."""
     from django.contrib.auth.models import User
     assignee_ids = set(
@@ -438,7 +438,7 @@ def send_revision_completed_notifications(new_release, new_topic, old_revision_t
     send_job_resumed_notifications(job_order, new_topic, new_release)
 
 
-def send_job_resumed_notifications(job_order, topic, release):
+def send_job_resumed_notifications(job_order, topic=None, release=None):
     """Send notifications to department task assignees + route users when job is resumed."""
     from django.contrib.auth.models import User
     assignee_ids = set(
@@ -452,10 +452,10 @@ def send_job_resumed_notifications(job_order, topic, release):
     if not all_ids:
         return
     users = User.objects.filter(id__in=all_ids, is_active=True)
-    rev = release.revision_code or release.revision_number
+    rev = (release.revision_code or release.revision_number) if release else None
     ctx = {
         'job_no':   job_order.job_no,
-        'revision': rev,
+        'revision': f'Yeni Revizyon: {rev}\n\n' if rev else '',
     }
     title, body, link = render_notification(Notification.JOB_RESUMED, ctx, route_link)
     bulk_notify(

@@ -173,8 +173,8 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
     Notification.JOB_ON_HOLD: {
         'title': '[İş Emri Beklemede] {job_no}',
         'body': (
-            '{job_no} numaralı iş emri revizyon nedeniyle bekletilmiştir.\n'
-            'Revizyon tamamlanana kadar bu iş emri üzerindeki çalışmalara devam etmeyiniz.\n\n'
+            '{job_no} numaralı iş emri beklemeye alınmıştır.\n'
+            'Tamamlanana kadar bu iş emri üzerindeki çalışmalara devam etmeyiniz.\n\n'
             'Neden: {reason}\n\n'
             '{link}'
         ),
@@ -184,9 +184,9 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
     Notification.JOB_RESUMED: {
         'title': '[İş Emri Devam Ediyor] {job_no}',
         'body': (
-            '{job_no} numaralı iş emri üzerindeki revizyon tamamlanmıştır.\n'
+            '{job_no} numaralı iş emri devam etmektedir.\n'
             'Çalışmalara devam edebilirsiniz.\n\n'
-            'Yeni Revizyon: {revision}\n\n'
+            '{revision}'
             '{link}'
         ),
         'link': f'{_BASE_URL}/projects/project-tracking/?job_no={{job_no}}',
@@ -654,7 +654,7 @@ def notify(
     body: str = '',
     link: str = '',
     source_type: str = '',
-    source_id: int | None = None,
+    source_id: str | int | None = None,
     email_subject: str | None = None,
     email_body: str | None = None,
 ) -> Notification | None:
@@ -673,11 +673,12 @@ def notify(
             notification = Notification.objects.create(
                 user=user,
                 notification_type=notification_type,
+                category=Notification.CATEGORY_MAP.get(notification_type, ''),
                 title=title,
                 body=body,
                 link=link,
                 source_type=source_type,
-                source_id=source_id,
+                source_id=str(source_id) if source_id is not None else '',
             )
         except Exception:
             logger.exception('Failed to create in-app notification for user %s type %s', user, notification_type)
@@ -700,7 +701,7 @@ def bulk_notify(
     body: str = '',
     link: str = '',
     source_type: str = '',
-    source_id: int | None = None,
+    source_id: str | int | None = None,
     email_subject: str | None = None,
     email_body: str | None = None,
 ) -> list[Notification]:
@@ -732,11 +733,12 @@ def bulk_notify(
             to_create.append(Notification(
                 user=user,
                 notification_type=notification_type,
+                category=Notification.CATEGORY_MAP.get(notification_type, ''),
                 title=title,
                 body=body,
                 link=link,
                 source_type=source_type,
-                source_id=source_id,
+                source_id=str(source_id) if source_id is not None else '',
             ))
         if send_email and getattr(user, 'email', ''):
             email_recipients.append((user.email, len(to_create) - 1 if send_in_app else None))
