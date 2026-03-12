@@ -147,12 +147,14 @@ class Notification(models.Model):
             self.save(update_fields=['is_read', 'read_at'])
 
 
-class NotificationRoute(models.Model):
+class NotificationConfig(models.Model):
     """
-    Admin-configurable recipient list for specific event types.
-    One row per notification_type. Users in the M2M always receive
-    the notification in addition to any event-specific recipients
-    (e.g. task assignees still always get JOB_ON_HOLD).
+    Unified per-type configuration: editable templates + routing.
+    One row per notification_type, seeded by migration with defaults.
+
+    All types have title/body/link templates.
+    Routable types (ROUTABLE_TYPES) additionally use users/teams/enabled
+    to determine who receives the notification.
     """
 
     ROUTABLE_TYPES = [
@@ -171,14 +173,18 @@ class NotificationRoute(models.Model):
         max_length=60,
         choices=Notification.NOTIFICATION_TYPE_CHOICES,
         unique=True,
+        db_index=True,
     )
-    users = models.ManyToManyField(
-        User,
-        blank=True,
-        related_name='notification_routes',
-    )
-    link = models.CharField(max_length=500, blank=True)
-    teams = models.JSONField(default=list, blank=True)
+    # Templates — use {variable} placeholders, rendered with format_map()
+    title_template = models.CharField(max_length=500)
+    body_template  = models.TextField(blank=True)
+    link_template  = models.CharField(max_length=500, blank=True)
+    available_vars = models.JSONField(default=list, blank=True)  # read-only hint for frontend
+    updated_at     = models.DateTimeField(auto_now=True)
+
+    # Routing — only meaningful for ROUTABLE_TYPES
+    users   = models.ManyToManyField(User, blank=True, related_name='notification_configs')
+    teams   = models.JSONField(default=list, blank=True)
     enabled = models.BooleanField(default=True)
 
     class Meta:

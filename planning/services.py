@@ -15,7 +15,7 @@ from approvals.services import (
     auto_bypass_self_approver,
 )
 from approvals.models import ApprovalPolicy, ApprovalStageInstance, ApprovalWorkflow
-from notifications.service import notify, bulk_notify
+from notifications.service import notify, bulk_notify, render_notification
 from notifications.models import Notification
 from users.helpers import _team_manager_user_ids
 
@@ -321,20 +321,22 @@ def _notify_approvers_for_current_stage(wf: ApprovalWorkflow, reason: str = "pen
     approvers = _users_from_ids(stage.approver_user_ids or [])
     if not approvers.exists():
         return
-    title = f"[Onay Gerekli] Departman Talebi #{dr.id} – {_dr_title(dr)}"
-    body = (
-        f"Departman talebi (#{dr.id} – {_dr_title(dr)}) için onayınız bekleniyor.\n"
-        f"Aşama: {stage.name} (Gerekli onay sayısı: {stage.required_approvals})\n"
-        f"Öncelik: {getattr(dr, 'priority', '—')}\n"
-        f"Talep Eden: {getattr(dr.requestor, 'get_full_name', lambda: dr.requestor.username)() if getattr(dr, 'requestor', None) else '—'}\n\n"
-        f"Not: Bildirim nedeni: {reason}."
-    )
+    ctx = {
+        'dr_id':              dr.id,
+        'dr_title':           _dr_title(dr),
+        'stage_name':         stage.name,
+        'required_approvals': stage.required_approvals,
+        'priority':           getattr(dr, 'priority', '—'),
+        'requestor':          getattr(dr.requestor, 'get_full_name', lambda: dr.requestor.username)() if getattr(dr, 'requestor', None) else '—',
+        'reason':             reason,
+    }
+    title, body, link = render_notification(Notification.PLAN_APPROVAL_REQUESTED, ctx)
     bulk_notify(
         users=approvers,
         notification_type=Notification.PLAN_APPROVAL_REQUESTED,
         title=title,
         body=body,
-        link=_dr_frontend_url(dr),
+        link=link,
         source_type='department_request',
         source_id=dr.id,
     )
@@ -344,17 +346,21 @@ def _notify_requestor_on_final(dr: DepartmentRequest, status_str: str, comment: 
     if not getattr(dr, "requestor", None):
         return
     notification_type = Notification.PLAN_APPROVED if status_str == "Onaylandı" else Notification.PLAN_REJECTED
-    title = f"[Departman Talebi {status_str}] DR #{dr.id} – {_dr_title(dr)}"
-    body = (
-        f"Departman talebiniz (#{dr.id} – {_dr_title(dr)}) {status_str.lower()}.\n"
-        f"{('Not: ' + comment) if comment else ''}"
-    )
+    ctx = {
+        'dr_id':    dr.id,
+        'dr_title': _dr_title(dr),
+        'comment':  comment,
+        'department': '',
+        'requestor':  '',
+        'priority':   '',
+    }
+    title, body, link = render_notification(notification_type, ctx)
     notify(
         user=dr.requestor,
         notification_type=notification_type,
         title=title,
         body=body,
-        link=_dr_frontend_url(dr),
+        link=link,
         source_type='department_request',
         source_id=dr.id,
     )
@@ -365,20 +371,21 @@ def _notify_planning_on_approval(dr: DepartmentRequest):
     planning_users = User.objects.filter(is_active=True, profile__team="planning")
     if not planning_users.exists():
         return
-    title = f"[Yeni Departman Talebi Onaylandı] DR #{dr.id} – {_dr_title(dr)}"
-    body = (
-        f"Departman talebi (DR #{dr.id} – {_dr_title(dr)}) onaylandı ve ERP'ye aktarılmayı bekliyor.\n"
-        f"Departman: {dr.department}\n"
-        f"Talep Eden: {dr.requestor.get_full_name() if dr.requestor else '—'}\n"
-        f"Öncelik: {dr.get_priority_display()}\n\n"
-        f"Lütfen bu talebi ERP'ye aktararak satınalma sürecini başlatın."
-    )
+    ctx = {
+        'dr_id':    dr.id,
+        'dr_title': _dr_title(dr),
+        'comment':  '',
+        'department': dr.department,
+        'requestor':  dr.requestor.get_full_name() if dr.requestor else '—',
+        'priority':   dr.get_priority_display(),
+    }
+    title, body, link = render_notification(Notification.PLAN_APPROVED, ctx)
     bulk_notify(
         users=planning_users,
         notification_type=Notification.PLAN_APPROVED,
         title=title,
         body=body,
-        link=_dr_frontend_url(dr),
+        link=link,
         source_type='department_request',
         source_id=dr.id,
     )

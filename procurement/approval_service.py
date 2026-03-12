@@ -18,7 +18,7 @@ from .models import PurchaseRequest
 from procurement.services import create_pos_from_recommended
 from django.db.models import Max, Q
 
-from notifications.service import notify, bulk_notify
+from notifications.service import notify, bulk_notify, render_notification
 from notifications.models import Notification
 
 
@@ -68,20 +68,22 @@ def _notify_approvers_for_current_stage(wf: ApprovalWorkflow, reason: str = "pen
     approvers = _users_from_ids(stage.approver_user_ids or [])
     if not approvers.exists():
         return
-    title = f"[Onay Gerekli] Satınalma Talebi #{pr.id} – {_pr_title(pr)}"
-    body = (
-        f"Satınalma talebi (#{pr.id} – {_pr_title(pr)}) için onayınız bekleniyor.\n"
-        f"Aşama: {stage.name} (Gerekli onay sayısı: {stage.required_approvals})\n"
-        f"Öncelik: {getattr(pr, 'priority', '—')}\n"
-        f"Talep Eden: {getattr(pr.requestor, 'get_full_name', lambda: pr.requestor.username)() if getattr(pr, 'requestor', None) else '—'}\n\n"
-        f"Not: Bu bildirim nedeni: {reason}."
-    )
+    ctx = {
+        'pr_id':               pr.id,
+        'pr_title':            _pr_title(pr),
+        'stage_name':          stage.name,
+        'required_approvals':  stage.required_approvals,
+        'priority':            getattr(pr, 'priority', '—'),
+        'requestor':           getattr(pr.requestor, 'get_full_name', lambda: pr.requestor.username)() if getattr(pr, 'requestor', None) else '—',
+        'reason':              reason,
+    }
+    title, body, link = render_notification(Notification.PR_APPROVAL_REQUESTED, ctx)
     bulk_notify(
         users=approvers,
         notification_type=Notification.PR_APPROVAL_REQUESTED,
         title=title,
         body=body,
-        link=_pr_frontend_url(pr),
+        link=link,
         source_type='purchase_request',
         source_id=pr.id,
     )
@@ -91,17 +93,18 @@ def _notify_requestor_on_final(pr: PurchaseRequest, status_str: str, comment: st
     if not getattr(pr, "requestor", None):
         return
     notification_type = Notification.PR_APPROVED if status_str == "Onaylandı" else Notification.PR_REJECTED
-    title = f"[Satınalma Talebi {status_str}] PR #{pr.id} – {_pr_title(pr)}"
-    body = (
-        f"Satınalma talebiniz (#{pr.id} – {_pr_title(pr)}) {status_str.lower()}.\n"
-        f"{('Not: ' + comment) if comment else ''}"
-    )
+    ctx = {
+        'pr_id':    pr.id,
+        'pr_title': _pr_title(pr),
+        'comment':  comment,
+    }
+    title, body, link = render_notification(notification_type, ctx)
     notify(
         user=pr.requestor,
         notification_type=notification_type,
         title=title,
         body=body,
-        link=_pr_frontend_url(pr),
+        link=link,
         source_type='purchase_request',
         source_id=pr.id,
     )
@@ -124,17 +127,18 @@ def _notify_finance_pos_created(pr: PurchaseRequest, pos_list):
         except Exception:
             status_display = getattr(po, "status", "")
         lines.append(f"- PO #{po.id} | Tedarikçi: {supplier_name} | Tutar: {currency} {total} | Durum: {status_display}")
-    title = f"[PO Oluşturuldu] PR #{pr.id} – {pr_title}"
-    body = (
-        f"Satınalma talebi (PR #{pr.id} – {pr_title}) onaylandı ve aşağıdaki satınalma siparişleri oluşturuldu:\n\n"
-        + "\n".join(lines)
-    )
+    ctx = {
+        'pr_id':    pr.id,
+        'pr_title': pr_title,
+        'po_list':  "\n".join(lines),
+    }
+    title, body, link = render_notification(Notification.PR_PO_CREATED, ctx)
     bulk_notify(
         users=finance_users,
         notification_type=Notification.PR_PO_CREATED,
         title=title,
         body=body,
-        link=_pr_frontend_url(pr),
+        link=link,
         source_type='purchase_request',
         source_id=pr.id,
     )

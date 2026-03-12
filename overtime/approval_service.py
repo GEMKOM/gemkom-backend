@@ -13,7 +13,7 @@ from approvals.services import (
 from users.helpers import _team_manager_user_ids
 from .models import OvertimeRequest
 
-from notifications.service import notify, bulk_notify
+from notifications.service import notify, bulk_notify, render_notification
 from notifications.models import Notification
 
 
@@ -66,21 +66,22 @@ def _notify_approvers_for_current_stage(wf: ApprovalWorkflow, reason: str = "pen
     approvers = _users_from_ids(stage.approver_user_ids or [])
     if not approvers.exists():
         return
-    title = f"[Onay Gerekli] Mesai Talebi #{ot.id} – {_ot_title(ot)}"
-    body = (
-        f"Mesai talebi (#{ot.id}) için onayınız bekleniyor.\n"
-        f"Aşama: {stage.name} (Gerekli onay sayısı: {stage.required_approvals})\n"
-        f"Talep Eden: {getattr(ot.requester, 'get_full_name', lambda: ot.requester.username)()}\n"
-        f"Takım: {ot.team or '—'}\n"
-        f"Neden: {ot.reason or '—'}\n\n"
-        f"Not: Bildirim nedeni: {reason}."
-    )
+    ctx = {
+        'ot_id':              ot.id,
+        'ot_title':           _ot_title(ot),
+        'stage_name':         stage.name,
+        'required_approvals': stage.required_approvals,
+        'requestor':          getattr(ot.requester, 'get_full_name', lambda: ot.requester.username)(),
+        'team':               ot.team or '—',
+        'reason':             ot.reason or '—',
+    }
+    title, body, link = render_notification(Notification.OT_APPROVAL_REQUESTED, ctx)
     bulk_notify(
         users=approvers,
         notification_type=Notification.OT_APPROVAL_REQUESTED,
         title=title,
         body=body,
-        link=_ot_frontend_url(ot),
+        link=link,
         source_type='overtime_request',
         source_id=ot.id,
     )
@@ -88,17 +89,21 @@ def _notify_approvers_for_current_stage(wf: ApprovalWorkflow, reason: str = "pen
 
 def _notify_requester(ot: OvertimeRequest, status_str: str, comment: str = ""):
     notification_type = Notification.OT_APPROVED if status_str == "Onaylandı" else Notification.OT_REJECTED
-    title = f"[Mesai Talebi {status_str}] OT #{ot.id} – {_ot_title(ot)}"
-    body = (
-        f"Mesai talebiniz (#{ot.id}) {status_str.lower()}.\n"
-        f"{('Not: ' + comment) if comment else ''}"
-    )
+    ctx = {
+        'ot_id':    ot.id,
+        'ot_title': _ot_title(ot),
+        'comment':  comment,
+        'requestor': getattr(ot.requester, 'get_full_name', lambda: ot.requester.username)(),
+        'team':     ot.team or '—',
+        'entries_summary': '',
+    }
+    title, body, link = render_notification(notification_type, ctx)
     notify(
         user=ot.requester,
         notification_type=notification_type,
         title=title,
         body=body,
-        link=_ot_frontend_url(ot),
+        link=link,
         source_type='overtime_request',
         source_id=ot.id,
     )
@@ -122,14 +127,21 @@ def _notify_hr_on_approved(ot: OvertimeRequest):
     for e in ot.entries.all():
         uname = getattr(e.user, "get_full_name", lambda: getattr(e.user, "username", str(e.user_id)))()
         lines.append(f" - {uname} | İş No: {e.job_no or '—'} | Açıklama: {e.description or '—'}")
-    title = f"[Bilgi] Onaylanan Mesai Talebi #{ot.id} – {_ot_title(ot)}"
-    body = "\n".join(lines)
+    ctx = {
+        'ot_id':           ot.id,
+        'ot_title':        _ot_title(ot),
+        'comment':         '',
+        'requestor':       getattr(ot.requester, 'get_full_name', lambda: ot.requester.username)(),
+        'team':            ot.team or '—',
+        'entries_summary': "\n".join(lines),
+    }
+    title, body, link = render_notification(Notification.OT_APPROVED, ctx)
     bulk_notify(
         users=hr_users,
         notification_type=Notification.OT_APPROVED,
         title=title,
         body=body,
-        link=_ot_frontend_url(ot),
+        link=link,
         source_type='overtime_request',
         source_id=ot.id,
     )

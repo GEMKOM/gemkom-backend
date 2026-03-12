@@ -9,7 +9,7 @@ from approvals.models import ApprovalPolicy, ApprovalWorkflow
 
 from .models import SubcontractorStatement
 from .services.statements import advance_billed_progress
-from notifications.service import notify, bulk_notify
+from notifications.service import notify, bulk_notify, render_notification
 from notifications.models import Notification
 
 
@@ -49,21 +49,21 @@ def _notify_approvers(wf: ApprovalWorkflow, statement: SubcontractorStatement, r
     approvers = _users_from_ids(stage.approver_user_ids or [])
     if not approvers.exists():
         return
-    title = (
-        f"[Onay Gerekli] Taşeron Hakedişi – "
-        f"{statement.subcontractor.name} {statement.year}/{statement.month:02d}"
-    )
-    body = (
-        f"{statement.subcontractor.name} taşeronuna ait "
-        f"{statement.year}/{statement.month:02d} dönemi hakedişi onayınızı bekliyor.\n"
-        f"Toplam Tutar: {statement.currency} {statement.grand_total}\n"
-        f"{('Neden: ' + reason) if reason else ''}"
-    )
+    ctx = {
+        'subcontractor': statement.subcontractor.name,
+        'year':          statement.year,
+        'month':         f"{statement.month:02d}",
+        'currency':      statement.currency,
+        'total':         str(statement.grand_total),
+        'reason':        reason,
+    }
+    title, body, link = render_notification(Notification.SUB_APPROVAL_REQUESTED, ctx)
     bulk_notify(
         users=approvers,
         notification_type=Notification.SUB_APPROVAL_REQUESTED,
         title=title,
         body=body,
+        link=link,
         source_type='subcontractor_statement',
         source_id=statement.id,
     )
@@ -73,21 +73,21 @@ def _notify_on_final(statement: SubcontractorStatement, status_str: str, comment
     if not statement.created_by:
         return
     notification_type = Notification.SUB_APPROVED if status_str == 'Onaylandı' else Notification.SUB_REJECTED
-    title = (
-        f"[Taşeron Hakedişi {status_str}] "
-        f"{statement.subcontractor.name} {statement.year}/{statement.month:02d}"
-    )
-    body = (
-        f"Taşeron hakedişi ({statement.subcontractor.name} – "
-        f"{statement.year}/{statement.month:02d}) {status_str.lower()}.\n"
-        f"Toplam Tutar: {statement.currency} {statement.grand_total}\n"
-        f"{('Not: ' + comment) if comment else ''}"
-    )
+    ctx = {
+        'subcontractor': statement.subcontractor.name,
+        'year':          statement.year,
+        'month':         f"{statement.month:02d}",
+        'currency':      statement.currency,
+        'total':         str(statement.grand_total),
+        'comment':       comment,
+    }
+    title, body, link = render_notification(notification_type, ctx)
     notify(
         user=statement.created_by,
         notification_type=notification_type,
         title=title,
         body=body,
+        link=link,
         source_type='subcontractor_statement',
         source_id=statement.id,
     )

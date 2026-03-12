@@ -11,7 +11,7 @@ from django.contrib.auth.models import User
 from django.db import transaction
 from django.utils import timezone
 
-from notifications.service import notify, bulk_notify, get_route_users, get_route
+from notifications.service import bulk_notify, get_route, render_notification
 from notifications.models import Notification
 from projects.models import JobOrder, JobOrderDepartmentTask
 
@@ -181,12 +181,13 @@ def _notify_approvers_on_submission(offer: SalesOffer, wf):
         approvers = User.objects.filter(id__in=approver_ids, is_active=True)
         if not approvers.exists():
             return
-        title = f"[Onay Gerekli] Satış Teklifi: {offer.offer_no}"
-        body = (
-            f"{offer.offer_no} numaralı \"{offer.title}\" teklifi onayınızı bekliyor.\n"
-            f"Müşteri: {offer.customer.name}\n"
-            f"Tutar: {offer.total_price} EUR"
-        )
+        ctx = {
+            'offer_no':    offer.offer_no,
+            'offer_title': offer.title,
+            'customer':    offer.customer.name,
+            'total_price': str(offer.total_price),
+        }
+        title, body, link = render_notification(Notification.SALES_APPROVAL_REQUESTED, ctx)
         bulk_notify(
             users=approvers,
             notification_type=Notification.SALES_APPROVAL_REQUESTED,
@@ -205,13 +206,14 @@ def _notify_departments_on_conversion(offer: SalesOffer, root_job):
         users, link = get_route(Notification.SALES_CONVERTED)
         if not users.exists():
             return
-        title = f"[Yeni İş Emri] {root_job.job_no}"
-        body = (
-            f"{offer.offer_no} numaralı \"{offer.title}\" teklifi iş emrine dönüştürüldü.\n"
-            f"Müşteri: {offer.customer.name}\n"
-            f"İş Emri No: {root_job.job_no}\n"
-            f"İş Emri Başlığı: {root_job.title}"
-        )
+        ctx = {
+            'offer_no':    offer.offer_no,
+            'offer_title': offer.title,
+            'customer':    offer.customer.name,
+            'job_no':      root_job.job_no,
+            'job_title':   root_job.title,
+        }
+        title, body, link = render_notification(Notification.SALES_CONVERTED, ctx, link)
         bulk_notify(
             users=users,
             notification_type=Notification.SALES_CONVERTED,
@@ -236,17 +238,18 @@ def _notify_dept_heads_on_consultation(offer: SalesOffer, assigned_users, teams:
         if not all_ids:
             return
         users = DjangoUser.objects.filter(id__in=all_ids, is_active=True)
-        title = f"[Danışma Talebi] {offer.offer_no}"
-        body = (
-            f"{offer.offer_no} numaralı \"{offer.title}\" teklifi için danışma talebi oluşturuldu.\n"
-            f"Müşteri: {offer.customer.name}"
-        )
+        ctx = {
+            'offer_no':    offer.offer_no,
+            'offer_title': offer.title,
+            'customer':    offer.customer.name,
+        }
+        title, body, link = render_notification(Notification.SALES_CONSULTATION, ctx, route_link)
         bulk_notify(
             users=users,
             notification_type=Notification.SALES_CONSULTATION,
             title=title,
             body=body,
-            link=route_link,
+            link=link,
             source_type='sales_offer',
             source_id=offer.id,
         )

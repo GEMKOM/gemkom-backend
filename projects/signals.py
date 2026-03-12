@@ -9,7 +9,7 @@ from .models import (
     JobOrderQCCostLine,
     JobOrderShippingCostLine,
 )
-from notifications.service import notify, bulk_notify, get_route_users, get_route
+from notifications.service import notify, bulk_notify, get_route, render_notification
 from notifications.models import Notification
 
 
@@ -99,31 +99,26 @@ def update_job_cost_summary(sender, instance, **kwargs):
 # Discussion Notification Helpers
 # ============================================================================
 
-def _topic_link(topic):
-    return f"https://ofis.gemcore.com.tr/projects/project-tracking/?job_no={topic.job_order.job_no}&topic_id={topic.id}"
-
-def _job_link(job_order):
-    return f"https://ofis.gemcore.com.tr/projects/project-tracking/?job_no={job_order.job_no}"
-
-
 def send_topic_notifications(topic):
     """Send notifications to @mentioned users in a topic."""
     mentioned_users = topic.mentioned_users.exclude(id=topic.created_by_id)
     if not mentioned_users.exists():
         return
-    title = f"[Etiketlendiniz] {topic.job_order.job_no} \u2013 {topic.title}"
-    body = (
-        f"{topic.created_by.get_full_name()} sizi bir tartisma konusunda etiketledi.\n"
-        f"Is Emri: {topic.job_order.job_no} - {topic.job_order.title}\n"
-        f"Konu: {topic.title}\n\n"
-        f"{topic.content}"
-    )
+    ctx = {
+        'actor':         topic.created_by.get_full_name(),
+        'job_no':        topic.job_order.job_no,
+        'job_title':     topic.job_order.title,
+        'topic_title':   topic.title,
+        'topic_content': topic.content,
+        'topic_id':      topic.id,
+    }
+    title, body, link = render_notification(Notification.TOPIC_MENTION, ctx)
     bulk_notify(
         users=mentioned_users,
         notification_type=Notification.TOPIC_MENTION,
         title=title,
         body=body,
-        link=_topic_link(topic),
+        link=link,
         source_type='discussion_topic',
         source_id=topic.id,
     )
@@ -135,17 +130,20 @@ def send_comment_notifications(comment):
 
     # Notify topic owner (if someone else commented)
     if topic.created_by and topic.created_by != comment.created_by:
-        title = f"[Yeni Yorum] {topic.job_order.job_no} \u2013 {topic.title}"
-        body = (
-            f"{comment.created_by.get_full_name()} tartisma konunuza yorum yapti.\n\n"
-            f"{comment.content}"
-        )
+        ctx = {
+            'actor':           comment.created_by.get_full_name(),
+            'job_no':          topic.job_order.job_no,
+            'topic_title':     topic.title,
+            'comment_content': comment.content,
+            'topic_id':        topic.id,
+        }
+        title, body, link = render_notification(Notification.NEW_COMMENT, ctx)
         notify(
             user=topic.created_by,
             notification_type=Notification.NEW_COMMENT,
             title=title,
             body=body,
-            link=_topic_link(topic),
+            link=link,
             source_type='discussion_topic',
             source_id=topic.id,
         )
@@ -157,17 +155,20 @@ def send_comment_notifications(comment):
     mentioned_users = comment.mentioned_users.exclude(id__in=exclude_ids)
 
     if mentioned_users.exists():
-        title = f"[Yorumda Etiketlendiniz] {topic.job_order.job_no} \u2013 {topic.title}"
-        body = (
-            f"{comment.created_by.get_full_name()} sizi bir yorumda etiketledi.\n\n"
-            f"{comment.content}"
-        )
+        ctx = {
+            'actor':           comment.created_by.get_full_name(),
+            'job_no':          topic.job_order.job_no,
+            'topic_title':     topic.title,
+            'comment_content': comment.content,
+            'topic_id':        topic.id,
+        }
+        title, body, link = render_notification(Notification.COMMENT_MENTION, ctx)
         bulk_notify(
             users=mentioned_users,
             notification_type=Notification.COMMENT_MENTION,
             title=title,
             body=body,
-            link=_topic_link(topic),
+            link=link,
             source_type='discussion_topic',
             source_id=topic.id,
         )
@@ -177,15 +178,6 @@ def send_drawing_released_notifications(release, topic):
     """Send notifications when technical drawings are released."""
     job_order = release.job_order
     rev = release.revision_code or release.revision_number
-    title = f"[Teknik Cizim Yayinlandi] {job_order.job_no} Rev.{rev}"
-    body = (
-        f"{release.released_by.get_full_name()} yeni teknik cizim yayinladi.\n"
-        f"Is Emri: {job_order.job_no} - {job_order.title}\n"
-        f"Revizyon: {rev}\n"
-        f"Hardcopy: {release.hardcopy_count} set\n\n"
-        f"Klasor Yolu:\n{release.folder_path}\n\n"
-        f"Degisiklikler:\n{release.changelog}"
-    )
 
     # Route-configured users
     route_users, route_link = get_route(Notification.DRAWING_RELEASED)
@@ -198,13 +190,25 @@ def send_drawing_released_notifications(release, topic):
     all_ids = mentioned_ids | route_ids
     if not all_ids:
         return
+
+    ctx = {
+        'actor':          release.released_by.get_full_name(),
+        'job_no':         job_order.job_no,
+        'job_title':      job_order.title,
+        'revision':       rev,
+        'hardcopy_count': release.hardcopy_count,
+        'folder_path':    release.folder_path,
+        'changelog':      release.changelog,
+        'topic_id':       topic.id,
+    }
+    title, body, link = render_notification(Notification.DRAWING_RELEASED, ctx, route_link)
     users_to_notify = User.objects.filter(id__in=all_ids)
     bulk_notify(
         users=users_to_notify,
         notification_type=Notification.DRAWING_RELEASED,
         title=title,
         body=body,
-        link=route_link or _topic_link(topic),
+        link=link,
         source_type='drawing_release',
         source_id=release.id,
     )
@@ -214,14 +218,6 @@ def send_revision_requested_notifications(release, topic, requester):
     """Send notifications when a revision is requested (pending approval)."""
     job_order = release.job_order
     rev = release.revision_code or release.revision_number
-    title = f"[Revizyon Talebi] {job_order.job_no} Rev.{rev}"
-    body = (
-        f"{requester.get_full_name()} teknik cizimler icin revizyon talep etti.\n"
-        f"Is Emri: {job_order.job_no} - {job_order.title}\n"
-        f"Mevcut Revizyon: {rev}\n\n"
-        f"Talep Nedeni:\n{topic.content}\n\n"
-        f"Bu talep onay beklemektedir."
-    )
 
     user_ids = set()
 
@@ -243,6 +239,16 @@ def send_revision_requested_notifications(release, topic, requester):
     route_ids = set(route_users.exclude(id=requester.id).values_list('id', flat=True))
     user_ids |= route_ids
 
+    ctx = {
+        'actor':         requester.get_full_name(),
+        'job_no':        job_order.job_no,
+        'job_title':     job_order.title,
+        'revision':      rev,
+        'topic_content': topic.content,
+        'topic_id':      topic.id,
+    }
+    title, body, link = render_notification(Notification.REVISION_REQUESTED, ctx, route_link)
+
     from django.contrib.auth.models import User
     for user in User.objects.filter(id__in=user_ids):
         notify(
@@ -250,7 +256,7 @@ def send_revision_requested_notifications(release, topic, requester):
             notification_type=Notification.REVISION_REQUESTED,
             title=title,
             body=body,
-            link=route_link or _topic_link(topic),
+            link=link,
             source_type='drawing_release',
             source_id=release.id,
         )
@@ -260,21 +266,23 @@ def send_revision_approved_notifications(release, topic, approver):
     """Send notifications when a revision is approved (job on hold)."""
     job_order = release.job_order
 
+    ctx = {
+        'actor':       approver.get_full_name(),
+        'job_no':      job_order.job_no,
+        'job_title':   job_order.title,
+        'topic_title': topic.title,
+        'topic_id':    topic.id,
+    }
+
     # Notify the original requester
     if topic.created_by and topic.created_by != approver:
-        title = f"[Revizyon Onaylandi] {job_order.job_no}"
-        body = (
-            f"{approver.get_full_name()} revizyon talebinizi onayladi.\n"
-            f"Is Emri: {job_order.job_no} - {job_order.title}\n"
-            f"Konu: {topic.title}\n\n"
-            f"Is emri revizyon suresince beklemeye alinmistir."
-        )
+        title, body, link = render_notification(Notification.REVISION_APPROVED, ctx)
         notify(
             user=topic.created_by,
             notification_type=Notification.REVISION_APPROVED,
             title=title,
             body=body,
-            link=_job_link(job_order),
+            link=link,
             source_type='drawing_release',
             source_id=release.id,
         )
@@ -286,19 +294,13 @@ def send_revision_approved_notifications(release, topic, approver):
     route_users, route_link = get_route(Notification.REVISION_APPROVED)
     route_users = route_users.exclude(id__in=exclude_ids)
     if route_users.exists():
-        title = f"[Revizyon Onaylandi] {job_order.job_no}"
-        body = (
-            f"{approver.get_full_name()} bir revizyon talebini onayladi.\n"
-            f"Is Emri: {job_order.job_no} - {job_order.title}\n"
-            f"Konu: {topic.title}\n\n"
-            f"Is emri revizyon suresince beklemeye alinmistir."
-        )
+        title, body, link = render_notification(Notification.REVISION_APPROVED, ctx, route_link)
         bulk_notify(
             users=route_users,
             notification_type=Notification.REVISION_APPROVED,
             title=title,
             body=body,
-            link=route_link or _job_link(job_order),
+            link=link,
             source_type='drawing_release',
             source_id=release.id,
         )
@@ -328,20 +330,21 @@ def send_self_revision_notifications(release, reason, initiator):
         all_ids = mentioned_ids | route_ids
         if all_ids:
             rev = release.revision_code or release.revision_number
-            title = f"[Revizyon Baslatildi] {job_order.job_no} Rev.{rev}"
-            body = (
-                f"{initiator.get_full_name()} teknik cizimlerde revizyon baslatti.\n"
-                f"Is Emri: {job_order.job_no} - {job_order.title}\n"
-                f"Mevcut Revizyon: {rev}\n\n"
-                f"Neden:\n{reason}\n\n"
-                f"IS EMRI BEKLEMEYE ALINDI - Revizyon tamamlanana kadar calismalar durdurulmustur."
-            )
+            ctx = {
+                'actor':         initiator.get_full_name(),
+                'job_no':        job_order.job_no,
+                'job_title':     job_order.title,
+                'revision':      rev,
+                'topic_content': reason,
+                'topic_id':      release.release_topic.id if release.release_topic else '',
+            }
+            title, body, link = render_notification(Notification.REVISION_REQUESTED, ctx, _sr_link)
             bulk_notify(
                 users=User.objects.filter(id__in=all_ids),
                 notification_type=Notification.REVISION_REQUESTED,
                 title=title,
                 body=body,
-                link=_sr_link or _job_link(job_order),
+                link=link,
                 source_type='drawing_release',
                 source_id=release.id,
             )
@@ -364,18 +367,17 @@ def send_job_on_hold_notifications(job_order, release, reason):
     if not all_ids:
         return
     users = User.objects.filter(id__in=all_ids, is_active=True)
-    title = f"[Is Emri Beklemede] {job_order.job_no}"
-    body = (
-        f"{job_order.job_no} numarali is emri revizyon nedeniyle bekletilmistir.\n"
-        f"Revizyon tamamlanana kadar bu is emri uzerindeki calismalara devam etmeyiniz.\n\n"
-        f"Neden: {reason}"
-    )
+    ctx = {
+        'job_no': job_order.job_no,
+        'reason': reason,
+    }
+    title, body, link = render_notification(Notification.JOB_ON_HOLD, ctx, route_link)
     bulk_notify(
         users=users,
         notification_type=Notification.JOB_ON_HOLD,
         title=title,
         body=body,
-        link=route_link or _job_link(job_order),
+        link=link,
         source_type='job_order',
         source_id=job_order.id,
     )
@@ -385,15 +387,19 @@ def send_revision_completed_notifications(new_release, new_topic, old_revision_t
     """Send notifications when revision is completed and new release is made."""
     job_order = new_release.job_order
     rev = new_release.revision_code or new_release.revision_number
-    title = f"[Revizyon Tamamlandi] {job_order.job_no} Rev.{rev}"
-    body = (
-        f"{completer.get_full_name()} revizyonu tamamladi ve yeni cizim yayinladi.\n"
-        f"Is Emri: {job_order.job_no} - {job_order.title}\n"
-        f"Yeni Revizyon: {rev}\n\n"
-        f"Degisiklikler:\n{new_release.changelog}\n\n"
-        f"Klasor Yolu:\n{new_release.folder_path}\n\n"
-        f"Is emri devam etmektedir."
-    )
+
+    _rc_users, _rc_link = get_route(Notification.REVISION_COMPLETED)
+
+    ctx = {
+        'actor':       completer.get_full_name(),
+        'job_no':      job_order.job_no,
+        'job_title':   job_order.title,
+        'revision':    rev,
+        'changelog':   new_release.changelog,
+        'folder_path': new_release.folder_path,
+        'topic_id':    new_topic.id,
+    }
+    title, body, link = render_notification(Notification.REVISION_COMPLETED, ctx, _rc_link)
 
     notified_ids = {completer.id}
 
@@ -404,7 +410,7 @@ def send_revision_completed_notifications(new_release, new_topic, old_revision_t
             notification_type=Notification.REVISION_COMPLETED,
             title=title,
             body=body,
-            link=_topic_link(new_topic),
+            link=link,
             source_type='drawing_release',
             source_id=new_release.id,
         )
@@ -415,7 +421,6 @@ def send_revision_completed_notifications(new_release, new_topic, old_revision_t
     mentioned_ids = set(
         new_topic.mentioned_users.exclude(id__in=notified_ids).values_list('id', flat=True)
     )
-    _rc_users, _rc_link = get_route(Notification.REVISION_COMPLETED)
     route_ids = set(_rc_users.exclude(id__in=notified_ids).values_list('id', flat=True))
     extra_ids = mentioned_ids | route_ids
     if extra_ids:
@@ -424,7 +429,7 @@ def send_revision_completed_notifications(new_release, new_topic, old_revision_t
             notification_type=Notification.REVISION_COMPLETED,
             title=title,
             body=body,
-            link=_rc_link or _topic_link(new_topic),
+            link=link,
             source_type='drawing_release',
             source_id=new_release.id,
         )
@@ -448,18 +453,17 @@ def send_job_resumed_notifications(job_order, topic, release):
         return
     users = User.objects.filter(id__in=all_ids, is_active=True)
     rev = release.revision_code or release.revision_number
-    title = f"[Is Emri Devam Ediyor] {job_order.job_no}"
-    body = (
-        f"{job_order.job_no} numarali is emri uzerindeki revizyon tamamlanmistir.\n"
-        f"Calismalara devam edebilirsiniz.\n\n"
-        f"Yeni Revizyon: {rev}"
-    )
+    ctx = {
+        'job_no':   job_order.job_no,
+        'revision': rev,
+    }
+    title, body, link = render_notification(Notification.JOB_RESUMED, ctx, route_link)
     bulk_notify(
         users=users,
         notification_type=Notification.JOB_RESUMED,
         title=title,
         body=body,
-        link=route_link or _job_link(job_order),
+        link=link,
         source_type='job_order',
         source_id=job_order.id,
     )
@@ -469,23 +473,26 @@ def send_revision_rejected_notifications(release, topic, reason, rejecter):
     """Send notification when a revision request is rejected."""
     job_order = release.job_order
     rev = release.revision_code or release.revision_number
-    title = f"[Revizyon Talebi Reddedildi] {job_order.job_no} Rev.{rev}"
-    body = (
-        f"{rejecter.get_full_name()} revizyon talebinizi reddetti.\n"
-        f"Is Emri: {job_order.job_no} - {job_order.title}\n"
-        f"Konu: {topic.title}\n\n"
-        f"Red Nedeni:\n{reason}"
-    )
+
+    ctx = {
+        'actor':       rejecter.get_full_name(),
+        'job_no':      job_order.job_no,
+        'job_title':   job_order.title,
+        'topic_title': topic.title,
+        'reason':      reason,
+        'topic_id':    topic.id,
+    }
 
     notified_ids = {rejecter.id}
 
     if topic.created_by and topic.created_by != rejecter:
+        title, body, link = render_notification(Notification.REVISION_REJECTED, ctx)
         notify(
             user=topic.created_by,
             notification_type=Notification.REVISION_REJECTED,
             title=title,
             body=body,
-            link=_topic_link(topic),
+            link=link,
             source_type='drawing_release',
             source_id=release.id,
         )
@@ -494,12 +501,13 @@ def send_revision_rejected_notifications(release, topic, reason, rejecter):
     _rr_users, _rr_link = get_route(Notification.REVISION_REJECTED)
     route_users = _rr_users.exclude(id__in=notified_ids)
     if route_users.exists():
+        title, body, link = render_notification(Notification.REVISION_REJECTED, ctx, _rr_link)
         bulk_notify(
             users=route_users,
             notification_type=Notification.REVISION_REJECTED,
             title=title,
             body=body,
-            link=_rr_link or _topic_link(topic),
+            link=link,
             source_type='drawing_release',
             source_id=release.id,
         )

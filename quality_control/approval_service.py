@@ -9,7 +9,7 @@ from approvals.models import ApprovalPolicy, ApprovalStage
 
 from .models import QCReview, NCR
 
-from notifications.service import notify, bulk_notify
+from notifications.service import notify, bulk_notify, render_notification
 from notifications.models import Notification
 
 
@@ -220,15 +220,18 @@ def _notify_qc_team_review_submitted(review: QCReview):
     if not qc_users.exists():
         return
     task = review.task
-    title = f"[KK İncelemesi] {task.job_order_id} — {task.title}"
-    body = (
-        f"Görev KK incelemesi için gönderildi.\n\n"
-        f"İş Emri: {task.job_order_id}\nGörev: {task.title}\n"
-        f"Departman: {task.get_department_display()}\nGönderen: {review.submitted_by.get_full_name()}\n"
-        f"İnceleme ID: #{review.id}"
-    )
+    ctx = {
+        'job_no':      str(task.job_order_id),
+        'task_title':  task.title,
+        'department':  task.get_department_display(),
+        'actor':       review.submitted_by.get_full_name(),
+        'review_id':   review.id,
+        'count':       1,
+        'review_ids':  str(review.id),
+    }
+    title, body, link = render_notification(Notification.QC_REVIEW_SUBMITTED, ctx)
     bulk_notify(users=qc_users, notification_type=Notification.QC_REVIEW_SUBMITTED,
-                title=title, body=body, source_type='qc_review', source_id=review.id)
+                title=title, body=body, link=link, source_type='qc_review', source_id=review.id)
 
 
 def _notify_qc_team_bulk_reviews_submitted(reviews: list, task, submitted_by):
@@ -237,13 +240,18 @@ def _notify_qc_team_bulk_reviews_submitted(reviews: list, task, submitted_by):
         return
     count = len(reviews)
     review_ids = ", ".join(f"#{r.id}" for r in reviews)
-    title = f"[KK İncelemesi] {task.job_order_id} — {task.title} ({count} inceleme)"
-    body = (
-        f"{task.job_order_id} / {task.title} için {count} adet KK incelemesi gönderildi.\n"
-        f"Gönderen: {submitted_by.get_full_name()}\nİnceleme ID'leri: {review_ids}"
-    )
+    ctx = {
+        'job_no':      str(task.job_order_id),
+        'task_title':  task.title,
+        'department':  task.get_department_display(),
+        'actor':       submitted_by.get_full_name(),
+        'review_id':   reviews[0].id if reviews else '',
+        'count':       count,
+        'review_ids':  review_ids,
+    }
+    title, body, link = render_notification(Notification.QC_REVIEW_SUBMITTED, ctx)
     bulk_notify(users=qc_users, notification_type=Notification.QC_REVIEW_SUBMITTED,
-                title=title, body=body, source_type='qc_review',
+                title=title, body=body, link=link, source_type='qc_review',
                 source_id=reviews[0].id if reviews else None)
 
 
@@ -251,26 +259,27 @@ def _notify_review_approved(review: QCReview):
     task = review.task
     recipients = {review.submitted_by}
     recipients.update(User.objects.filter(is_active=True, profile__team=task.department))
-    title = f"[KK Onaylandı] {task.job_order_id} — {task.title}"
-    body = (
-        f"İş Emri {task.job_order_id} / Görev: {task.title} KK incelemesi onaylandı.\n"
-        f"İnceleme ID: #{review.id}"
-    )
+    ctx = {
+        'job_no':     str(task.job_order_id),
+        'task_title': task.title,
+        'review_id':  review.id,
+    }
+    title, body, link = render_notification(Notification.QC_REVIEW_APPROVED, ctx)
     bulk_notify(users=list(recipients), notification_type=Notification.QC_REVIEW_APPROVED,
-                title=title, body=body, source_type='qc_review', source_id=review.id)
+                title=title, body=body, link=link, source_type='qc_review', source_id=review.id)
 
 
 def _notify_review_rejected(review: QCReview):
     task = review.task
-    title = f"[KK Reddedildi] {task.job_order_id} — {task.title}"
-    body = (
-        f"Gönderdiğiniz KK incelemesi reddedildi.\n\n"
-        f"İş Emri: {task.job_order_id}\nGörev: {task.title}\n"
-        f"İnceleme ID: #{review.id}\nYorum: {review.comment or chr(8212)}\n\n"
-        f"Otomatik NCR oluşturuldu."
-    )
+    ctx = {
+        'job_no':     str(task.job_order_id),
+        'task_title': task.title,
+        'review_id':  review.id,
+        'comment':    review.comment or '—',
+    }
+    title, body, link = render_notification(Notification.QC_REVIEW_REJECTED, ctx)
     notify(user=review.submitted_by, notification_type=Notification.QC_REVIEW_REJECTED,
-           title=title, body=body, source_type='qc_review', source_id=review.id)
+           title=title, body=body, link=link, source_type='qc_review', source_id=review.id)
 
 
 def _notify_ncr_created_on_rejection(ncr: NCR):
@@ -280,27 +289,31 @@ def _notify_ncr_created_on_rejection(ncr: NCR):
     dept_users = User.objects.filter(is_active=True, profile__team=task.department)
     if not dept_users.exists():
         return
-    title = f"[KK Red — NCR Oluşturuldu] {ncr.ncr_number} — {task.job_order_id}"
-    body = (
-        f"KK incelemesi reddedildi ve NCR otomatik oluşturuldu.\n\n"
-        f"NCR No: {ncr.ncr_number}\nİş Emri: {ncr.job_order_id}\n"
-        f"Görev: {task.title}\nAçıklama: {ncr.description}"
-    )
+    ctx = {
+        'ncr_number':  ncr.ncr_number,
+        'job_no':      str(ncr.job_order_id),
+        'task_title':  task.title,
+        'description': ncr.description,
+    }
+    title, body, link = render_notification(Notification.NCR_CREATED, ctx)
     bulk_notify(users=dept_users, notification_type=Notification.NCR_CREATED,
-                title=title, body=body, source_type='ncr', source_id=ncr.id)
+                title=title, body=body, link=link, source_type='ncr', source_id=ncr.id)
 
 
 def _notify_qc_team_ncr_submitted(ncr: NCR):
     qc_users = _get_qc_team_users()
     if not qc_users.exists():
         return
-    title = f"[NCR Onay Bekliyor] {ncr.ncr_number} — {ncr.title}"
-    body = (
-        f"NCR onayınızı bekliyor.\n\nNCR No: {ncr.ncr_number}\nBaşlık: {ncr.title}\n"
-        f"İş Emri: {ncr.job_order_id}\nÖnem: {ncr.get_severity_display()}\nAçıklama: {ncr.description}"
-    )
+    ctx = {
+        'ncr_number':  ncr.ncr_number,
+        'ncr_title':   ncr.title,
+        'job_no':      str(ncr.job_order_id),
+        'severity':    ncr.get_severity_display(),
+        'description': ncr.description,
+    }
+    title, body, link = render_notification(Notification.NCR_SUBMITTED, ctx)
     bulk_notify(users=qc_users, notification_type=Notification.NCR_SUBMITTED,
-                title=title, body=body, source_type='ncr', source_id=ncr.id)
+                title=title, body=body, link=link, source_type='ncr', source_id=ncr.id)
 
 
 def _notify_ncr_approved(ncr: NCR):
@@ -312,26 +325,29 @@ def _notify_ncr_approved(ncr: NCR):
         recipients.update(User.objects.filter(is_active=True, profile__team=ncr.department_task.department))
     if not recipients:
         return
-    title = f"[NCR Onaylandı] {ncr.ncr_number} — {ncr.title}"
-    body = (
-        f"NCR onaylandı.\n\nNCR No: {ncr.ncr_number}\nBaşlık: {ncr.title}\n"
-        f"İş Emri: {ncr.job_order_id}\nÖnem: {ncr.get_severity_display()}"
-    )
+    ctx = {
+        'ncr_number': ncr.ncr_number,
+        'ncr_title':  ncr.title,
+        'job_no':     str(ncr.job_order_id),
+        'severity':   ncr.get_severity_display(),
+    }
+    title, body, link = render_notification(Notification.NCR_APPROVED, ctx)
     bulk_notify(users=list(recipients), notification_type=Notification.NCR_APPROVED,
-                title=title, body=body, source_type='ncr', source_id=ncr.id)
+                title=title, body=body, link=link, source_type='ncr', source_id=ncr.id)
 
 
 def _notify_ncr_rejected(ncr: NCR, comment: str = ""):
     if not ncr.created_by:
         return
-    title = f"[NCR Reddedildi] {ncr.ncr_number} — {ncr.title}"
-    body = (
-        f"NCR reddedildi.\n\nNCR No: {ncr.ncr_number}\nBaşlık: {ncr.title}\n"
-        f"İş Emri: {ncr.job_order_id}\nYorum: {comment or chr(8212)}\n\n"
-        f"Lütfen NCR'ı güncelleyip yeniden gönderin."
-    )
+    ctx = {
+        'ncr_number': ncr.ncr_number,
+        'ncr_title':  ncr.title,
+        'job_no':     str(ncr.job_order_id),
+        'comment':    comment or '—',
+    }
+    title, body, link = render_notification(Notification.NCR_REJECTED, ctx)
     notify(user=ncr.created_by, notification_type=Notification.NCR_REJECTED,
-           title=title, body=body, source_type='ncr', source_id=ncr.id)
+           title=title, body=body, link=link, source_type='ncr', source_id=ncr.id)
 
 
 def email_ncr_assigned_team(ncr: NCR):
@@ -340,23 +356,28 @@ def email_ncr_assigned_team(ncr: NCR):
     dept_users = User.objects.filter(is_active=True, profile__team=ncr.assigned_team)
     if not dept_users.exists():
         return
-    title = f"[Yeni NCR] {ncr.ncr_number} — {ncr.title}"
-    body = (
-        f"Departmanınız için yeni NCR.\n\nNCR No: {ncr.ncr_number}\nBaşlık: {ncr.title}\n"
-        f"İş Emri: {ncr.job_order_id}\nÖnem: {ncr.get_severity_display()}\nAçıklama: {ncr.description}"
-    )
+    ctx = {
+        'ncr_number':  ncr.ncr_number,
+        'job_no':      str(ncr.job_order_id),
+        'task_title':  ncr.department_task.title if ncr.department_task else '—',
+        'description': ncr.description,
+    }
+    title, body, link = render_notification(Notification.NCR_CREATED, ctx)
     bulk_notify(users=dept_users, notification_type=Notification.NCR_CREATED,
-                title=title, body=body, source_type='ncr', source_id=ncr.id)
+                title=title, body=body, link=link, source_type='ncr', source_id=ncr.id)
 
 
 def email_ncr_assigned_members(ncr: NCR):
     members = list(ncr.assigned_members.filter(is_active=True))
     if not members:
         return
-    title = f"[NCR Atandı] {ncr.ncr_number} — {ncr.title}"
-    body = (
-        f"Size bir NCR atandı.\n\nNCR No: {ncr.ncr_number}\nBaşlık: {ncr.title}\n"
-        f"İş Emri: {ncr.job_order_id}\nÖnem: {ncr.get_severity_display()}\nAçıklama: {ncr.description}"
-    )
+    ctx = {
+        'ncr_number':  ncr.ncr_number,
+        'ncr_title':   ncr.title,
+        'job_no':      str(ncr.job_order_id),
+        'severity':    ncr.get_severity_display(),
+        'description': ncr.description,
+    }
+    title, body, link = render_notification(Notification.NCR_ASSIGNED, ctx)
     bulk_notify(users=members, notification_type=Notification.NCR_ASSIGNED,
-                title=title, body=body, source_type='ncr', source_id=ncr.id)
+                title=title, body=body, link=link, source_type='ncr', source_id=ncr.id)

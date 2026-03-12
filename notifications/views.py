@@ -18,9 +18,9 @@ from rest_framework.response import Response
 
 from core.emails import send_plain_email
 
-from .models import Notification, NotificationPreference, NotificationRoute
-from .serializers import NotificationPreferenceSerializer, NotificationRouteSerializer, NotificationSerializer, TEAM_CHOICES
-from .service import NOTIFICATION_DEFAULTS
+from .models import Notification, NotificationPreference, NotificationConfig
+from .serializers import NotificationPreferenceSerializer, NotificationConfigSerializer, NotificationSerializer, TEAM_CHOICES
+from .service import NOTIFICATION_DEFAULTS, NOTIFICATION_CONFIG_DEFAULTS, invalidate_config_cache
 
 logger = logging.getLogger(__name__)
 
@@ -153,60 +153,109 @@ class NotificationPreferenceViewSet(viewsets.ModelViewSet):
 
 
 # =============================================================================
-# Notification routes (admin-configurable recipient lists)
+# Notification config (admin — templates + routing, unified)
 # =============================================================================
 
-class NotificationRouteViewSet(
+class NotificationConfigViewSet(
     mixins.ListModelMixin,
     mixins.RetrieveModelMixin,
     mixins.UpdateModelMixin,
     viewsets.GenericViewSet,
 ):
     """
-    Admin-configurable recipient lists for specific event types.
+    Unified admin configuration: editable templates + routing per event type.
 
-    GET  /notifications/routes/                     — list all routable event types
-    GET  /notifications/routes/{notification_type}/ — detail for one type
-    PATCH /notifications/routes/{notification_type}/ — update users/enabled
+    GET   /notifications/config/                        — list all types
+    GET   /notifications/config/{notification_type}/    — detail for one type
+    PATCH /notifications/config/{notification_type}/    — update templates/users/teams
+    POST  /notifications/config/reset/                  — revert all to defaults
     """
-    serializer_class   = NotificationRouteSerializer
+    serializer_class   = NotificationConfigSerializer
     permission_classes = [permissions.IsAdminUser]
     lookup_field       = 'notification_type'
+    http_method_names  = ['get', 'patch', 'post', 'head', 'options']
 
     def get_queryset(self):
-        return NotificationRoute.objects.prefetch_related('users')
-
-    def _get_or_create(self, notification_type):
-        route, _ = NotificationRoute.objects.get_or_create(
-            notification_type=notification_type,
-            defaults={'enabled': True},
-        )
-        return route
+        return NotificationConfig.objects.prefetch_related('users')
 
     def list(self, request):
+        existing = {c.notification_type: c for c in self.get_queryset()}
         result = []
-        existing = {r.notification_type: r for r in self.get_queryset()}
-        for ntype in NotificationRoute.ROUTABLE_TYPES:
-            route = existing.get(ntype) or NotificationRoute(notification_type=ntype, enabled=True, teams=[])
-            data = self.get_serializer(route).data
+        choices = dict(Notification.NOTIFICATION_TYPE_CHOICES)
+        for ntype, default in NOTIFICATION_CONFIG_DEFAULTS.items():
+            if ntype in existing:
+                cfg = existing[ntype]
+                data = dict(self.get_serializer(cfg).data)
+                data['is_default'] = False
+            else:
+                data = {
+                    'notification_type': ntype,
+                    'notification_type_display': choices.get(ntype, ntype),
+                    'title_template': default['title'],
+                    'body_template': default['body'],
+                    'link_template': default['link'],
+                    'available_vars': default['vars'],
+                    'updated_at': None,
+                    'always_notified': None,
+                    'is_routable': ntype in NotificationConfig.ROUTABLE_TYPES,
+                    'users': [],
+                    'teams': [],
+                    'enabled': True,
+                    'is_default': True,
+                }
             result.append(data)
         return Response({
             'team_choices': TEAM_CHOICES,
-            'routes': result,
+            'configs': result,
         })
 
     def retrieve(self, request, notification_type=None):
-        route = self._get_or_create(notification_type)
-        return Response(self.get_serializer(route).data)
+        if notification_type not in NOTIFICATION_CONFIG_DEFAULTS:
+            return Response({'detail': 'Unknown notification type.'}, status=status.HTTP_404_NOT_FOUND)
+        default = NOTIFICATION_CONFIG_DEFAULTS[notification_type]
+        cfg, created = NotificationConfig.objects.get_or_create(
+            notification_type=notification_type,
+            defaults={
+                'title_template': default['title'],
+                'body_template':  default['body'],
+                'link_template':  default['link'],
+                'available_vars': default['vars'],
+            },
+        )
+        data = dict(self.get_serializer(cfg).data)
+        data['is_default'] = created
+        return Response(data)
 
     def partial_update(self, request, notification_type=None):
-        if notification_type not in NotificationRoute.ROUTABLE_TYPES:
-            return Response({'detail': 'Not a routable notification type.'}, status=status.HTTP_400_BAD_REQUEST)
-        route = self._get_or_create(notification_type)
-        serializer = self.get_serializer(route, data=request.data, partial=True)
+        if notification_type not in NOTIFICATION_CONFIG_DEFAULTS:
+            return Response({'detail': 'Unknown notification type.'}, status=status.HTTP_400_BAD_REQUEST)
+        default = NOTIFICATION_CONFIG_DEFAULTS[notification_type]
+        cfg, _ = NotificationConfig.objects.get_or_create(
+            notification_type=notification_type,
+            defaults={
+                'title_template': default['title'],
+                'body_template':  default['body'],
+                'link_template':  default['link'],
+                'available_vars': default['vars'],
+            },
+        )
+        serializer = self.get_serializer(cfg, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
-        return Response(self.get_serializer(route).data)
+        invalidate_config_cache()
+        data = dict(self.get_serializer(cfg).data)
+        data['is_default'] = False
+        return Response(data)
+
+    @action(detail=False, methods=['post'])
+    def reset(self, request):
+        """Delete all custom config rows, reverting to defaults."""
+        deleted, _ = NotificationConfig.objects.all().delete()
+        invalidate_config_cache()
+        return Response({
+            'status': 'success',
+            'message': f'{deleted} yapılandırma silindi. Varsayılan değerler geçerli.',
+        })
 
 
 # =============================================================================

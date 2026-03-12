@@ -7,7 +7,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
 
-from notifications.service import bulk_notify
+from notifications.service import bulk_notify, render_notification
 from notifications.models import Notification
 from machines.serializers import SimpleUserSerializer
 from users.filters import UserFilter, WageOrderingFilter
@@ -225,14 +225,13 @@ class PasswordResetRequestView(APIView):
                 requested_at = timezone.localtime().strftime("%d.%m.%Y %H:%M")
                 full_name = user.get_full_name() or user.username
                 team = getattr(profile, "team", "") or "—"
-                title = f"[Parola Sıfırlama Talebi] {user.username}"
-                body = (
-                    f"Parola sıfırlama talebi gönderildi.\n\n"
-                    f"Kullanıcı: {full_name} (username: {user.username})\n"
-                    f"Takım: {team}\n"
-                    f"Tarih: {requested_at}\n\n"
-                    f"Lütfen sistemden onaylayın."
-                )
+                ctx = {
+                    'username':     user.username,
+                    'full_name':    full_name,
+                    'team':         team,
+                    'requested_at': requested_at,
+                }
+                title, body, link = render_notification(Notification.PASSWORD_RESET, ctx)
                 try:
                     bulk_notify(
                         users=recipients,
