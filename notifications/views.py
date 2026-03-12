@@ -7,7 +7,9 @@ from django.conf import settings
 from django.core.exceptions import PermissionDenied
 from django.http import HttpResponse, JsonResponse
 from django.utils import timezone
+from django.utils.decorators import method_decorator
 from django.views import View
+from django.views.decorators.csrf import csrf_exempt
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import mixins, permissions, status, viewsets
 from rest_framework.decorators import action
@@ -231,6 +233,7 @@ def _verify_task_secret(request):
         raise PermissionDenied('Invalid task secret')
 
 
+@method_decorator(csrf_exempt, name='dispatch')
 class SendEmailTaskView(View):
     """
     POST /notifications/tasks/send-email/
