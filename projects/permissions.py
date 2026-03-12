@@ -8,7 +8,7 @@ from rest_framework.permissions import BasePermission
 
 def _is_cost_authorized(user) -> bool:
     """
-    Full cost access: management team members, OR planning team managers.
+    Full cost access: management team members, planning team managers, or sales team members.
     """
     prof = getattr(user, 'profile', None)
     if not prof:
@@ -17,13 +17,15 @@ def _is_cost_authorized(user) -> bool:
         return True
     if prof.team == 'planning' and prof.occupation == 'manager':
         return True
+    if prof.team == 'sales':
+        return True
     return False
 
 
 class IsCostAuthorized(BasePermission):
     """
     Full cost visibility (cost table, cost summary, margins).
-    Allowed: superusers, management team, planning team managers.
+    Allowed: superusers, management team, planning team managers, sales team.
     """
 
     def has_permission(self, request, view):

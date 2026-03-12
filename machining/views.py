@@ -18,7 +18,7 @@ from tasks.views import (
     GenericTimerStartView,
     GenericTimerStopView,
 )
-from users.permissions import IsAdmin, IsMachiningUserOrAdmin
+from users.permissions import IsAdmin, IsMachiningUserOrAdmin, can_see_job_costs
 
 
 class TimerStartView(GenericTimerStartView):
@@ -708,6 +708,10 @@ class MachiningJobEntriesReportView(APIView):
     def get(self, request):
         from tasks.models import Operation
         from django.contrib.contenttypes.models import ContentType
+        from decimal import Decimal, ROUND_HALF_UP
+        from tasks.services.costing import _build_wage_picker, WAGE_MONTH_HOURS
+        from machining.fx_utils import build_fx_lookup
+        from machining.services.timers import split_timer_by_local_day_and_bucket
 
         job_no = request.query_params.get('job_no')
         if not job_no:
@@ -715,6 +719,8 @@ class MachiningJobEntriesReportView(APIView):
                 {'error': 'job_no query parameter is required'},
                 status=status.HTTP_400_BAD_REQUEST
             )
+
+        show_costs = can_see_job_costs(request.user)
 
         # Find operations whose part has this exact job_no
         operation_keys = list(
@@ -724,14 +730,14 @@ class MachiningJobEntriesReportView(APIView):
         )
 
         if not operation_keys:
-            return Response({
-                'job_no': job_no,
-                'summary': {'total_hours': 0.0, 'total_entries': 0, 'breakdown_by_type': {}},
-                'entries': [],
-            })
+            summary = {'total_hours': 0.0, 'total_entries': 0, 'breakdown_by_type': {}}
+            if show_costs:
+                summary['total_cost'] = '0.00'
+                summary['cost_currency'] = 'EUR'
+            return Response({'job_no': job_no, 'summary': summary, 'entries': [], })
 
         operation_ct = ContentType.objects.get_for_model(Operation)
-        timers = (
+        timers = list(
             Timer.objects
             .select_related('user')
             .prefetch_related('issue_key')
@@ -743,7 +749,15 @@ class MachiningJobEntriesReportView(APIView):
             .order_by('start_time', 'user__username')
         )
 
+        # Build cost helpers once (only if needed)
+        if show_costs:
+            user_ids = {t.user_id for t in timers}
+            pick_wage = _build_wage_picker(user_ids)
+            fx = build_fx_lookup('EUR')
+            q2 = lambda x: x.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
         total_hours = 0.0
+        total_cost = Decimal('0') if show_costs else None
         breakdown_by_type = defaultdict(float)
         formatted_entries = []
 
@@ -758,7 +772,7 @@ class MachiningJobEntriesReportView(APIView):
             breakdown_by_type[work_type] += duration_hours
 
             task = timer.issue_key
-            formatted_entries.append({
+            entry = {
                 'id': timer.id,
                 'employee_id': timer.user_id,
                 'employee_username': timer.user.username,
@@ -770,16 +784,78 @@ class MachiningJobEntriesReportView(APIView):
                 'hours': round(duration_hours, 4),
                 'work_type': work_type,
                 'manual_entry': timer.manual_entry,
-            })
+            }
+
+            if show_costs:
+                entry_cost = Decimal('0')
+                segs = split_timer_by_local_day_and_bucket(
+                    int(timer.start_time), int(timer.finish_time), tz='Europe/Istanbul'
+                )
+                for s in segs:
+                    d = s['date']
+                    bucket = s['bucket']
+                    hrs = Decimal(s['seconds']) / Decimal(3600)
+                    wage = pick_wage(timer.user_id, d)
+                    if not wage:
+                        continue
+                    try_to_eur = fx(d)
+                    if try_to_eur == 0:
+                        continue
+                    base_hourly = Decimal(wage['base_monthly']) / WAGE_MONTH_HOURS
+                    ah_mul = Decimal(wage['after_hours_multiplier'])
+                    su_mul = Decimal(wage['sunday_multiplier'])
+                    if bucket == 'weekday_work':
+                        entry_cost += hrs * base_hourly * try_to_eur
+                    elif bucket == 'after_hours':
+                        entry_cost += hrs * base_hourly * ah_mul * try_to_eur
+                    else:
+                        entry_cost += hrs * base_hourly * su_mul * try_to_eur
+                entry_cost = q2(entry_cost)
+                total_cost += entry_cost
+                entry['cost'] = str(entry_cost)
+                entry['cost_currency'] = 'EUR'
+
+            formatted_entries.append(entry)
+
+        # Group entries by operation key (preserving insertion order)
+        grouped = {}
+        for entry in formatted_entries:
+            op_key = entry['operation_key']
+            if op_key not in grouped:
+                grouped[op_key] = {
+                    'operation_key': op_key,
+                    'operation_name': entry['operation_name'],
+                    'total_hours': 0.0,
+                    'total_entries': 0,
+                    'entries': [],
+                }
+                if show_costs:
+                    grouped[op_key]['total_cost'] = Decimal('0')
+                    grouped[op_key]['cost_currency'] = 'EUR'
+            grouped[op_key]['total_hours'] += entry['hours']
+            grouped[op_key]['total_entries'] += 1
+            grouped[op_key]['entries'].append(entry)
+            if show_costs:
+                grouped[op_key]['total_cost'] += Decimal(entry['cost'])
+
+        for op in grouped.values():
+            op['total_hours'] = round(op['total_hours'], 4)
+            if show_costs:
+                op['total_cost'] = str(q2(op['total_cost']))
+
+        summary = {
+            'total_hours': round(total_hours, 4),
+            'total_entries': len(formatted_entries),
+            'breakdown_by_type': {k: round(v, 4) for k, v in breakdown_by_type.items()},
+        }
+        if show_costs:
+            summary['total_cost'] = str(q2(total_cost))
+            summary['cost_currency'] = 'EUR'
 
         return Response({
             'job_no': job_no,
-            'summary': {
-                'total_hours': round(total_hours, 4),
-                'total_entries': len(formatted_entries),
-                'breakdown_by_type': {k: round(v, 4) for k, v in breakdown_by_type.items()},
-            },
-            'entries': formatted_entries,
+            'summary': summary,
+            'entries': list(grouped.values()),
         })
 
 

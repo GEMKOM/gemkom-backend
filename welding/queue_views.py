@@ -15,6 +15,7 @@ class DrainWeldingCostQueueView(APIView):
 
     Security: Requires X-Queue-Secret header matching QUEUE_SECRET setting.
     """
+    authentication_classes = []
     permission_classes = [HasQueueSecret]
 
     def post(self, request):

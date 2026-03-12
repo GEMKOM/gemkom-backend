@@ -14,7 +14,7 @@ from .models import WeldingTimeEntry
 from .serializers import WeldingTimeEntrySerializer, WeldingTimeEntryBulkCreateSerializer
 from .filters import WeldingTimeEntryFilter
 from .permissions import IsWeldingUserOrAdmin
-from users.permissions import IsAdmin
+from users.permissions import IsAdmin, can_see_job_costs
 from config.pagination import CustomPageNumberPagination
 
 User = get_user_model()
@@ -391,6 +391,10 @@ class WeldingJobEntriesReportView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        from decimal import Decimal, ROUND_HALF_UP
+        from welding.services.costing import _build_wage_picker, WAGE_MONTH_HOURS
+        from machining.fx_utils import build_fx_lookup
+
         job_no = request.query_params.get('job_no')
         if not job_no:
             return Response(
@@ -398,39 +402,79 @@ class WeldingJobEntriesReportView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        show_costs = can_see_job_costs(request.user)
+
         # Exact match on job_no (not partial/icontains)
-        entries = WeldingTimeEntry.objects.filter(
-            job_no=job_no
-        ).select_related('employee').order_by('date', 'employee__username')
+        entries = list(
+            WeldingTimeEntry.objects.filter(
+                job_no=job_no
+            ).select_related('employee').order_by('date', 'employee__username')
+        )
 
-        # Calculate summary totals
-        total_hours = 0
+        # Build cost helpers once (only if needed)
+        if show_costs and entries:
+            user_ids = {e.employee_id for e in entries}
+            pick_wage = _build_wage_picker(user_ids)
+            fx = build_fx_lookup('EUR')
+            q2 = lambda x: x.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+        total_hours = 0.0
+        total_cost = Decimal('0') if show_costs else None
         breakdown_by_type = defaultdict(float)
-
-        # Format entries with minimal fields
         formatted_entries = []
-        for entry in entries:
-            total_hours += float(entry.hours)
-            breakdown_by_type[entry.overtime_type] += float(entry.hours)
 
-            formatted_entries.append({
+        for entry in entries:
+            hrs = float(entry.hours)
+            total_hours += hrs
+            breakdown_by_type[entry.overtime_type] += hrs
+
+            row = {
                 'id': entry.id,
                 'employee_id': entry.employee.id,
                 'employee_username': entry.employee.username,
                 'employee_full_name': f"{entry.employee.first_name} {entry.employee.last_name}".strip() or entry.employee.username,
                 'date': entry.date.isoformat(),
-                'hours': float(entry.hours),
+                'hours': hrs,
                 'overtime_type': entry.overtime_type,
-            })
+            }
+
+            if show_costs:
+                d = entry.date
+                wage = pick_wage(entry.employee_id, d)
+                entry_cost = Decimal('0')
+                if wage:
+                    try_to_eur = fx(d)
+                    if try_to_eur != 0:
+                        base_hourly = Decimal(wage['base_monthly']) / WAGE_MONTH_HOURS
+                        ah_mul = Decimal(wage['after_hours_multiplier'])
+                        su_mul = Decimal(wage['sunday_multiplier'])
+                        dec_hrs = Decimal(str(entry.hours))
+                        if entry.overtime_type == 'regular':
+                            entry_cost = dec_hrs * base_hourly * try_to_eur
+                        elif entry.overtime_type == 'after_hours':
+                            entry_cost = dec_hrs * base_hourly * ah_mul * try_to_eur
+                        else:  # holiday
+                            entry_cost = dec_hrs * base_hourly * su_mul * try_to_eur
+                entry_cost = q2(entry_cost)
+                total_cost += entry_cost
+                row['cost'] = str(entry_cost)
+                row['cost_currency'] = 'EUR'
+
+            formatted_entries.append(row)
+
+        summary = {
+            'total_hours': total_hours,
+            'total_entries': len(formatted_entries),
+            'breakdown_by_type': dict(breakdown_by_type),
+        }
+        if show_costs:
+            summary['total_cost'] = str(q2(total_cost)) if entries else '0.00'
+            summary['cost_currency'] = 'EUR'
 
         return Response({
             'job_no': job_no,
-            'summary': {
-                'total_hours': total_hours,
-                'total_entries': len(formatted_entries),
-                'breakdown_by_type': dict(breakdown_by_type)
-            },
-            'entries': formatted_entries
+            'summary': summary,
+            'entries': formatted_entries,
         })
 
 

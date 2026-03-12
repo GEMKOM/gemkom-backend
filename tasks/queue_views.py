@@ -18,6 +18,7 @@ class DrainCostQueueView(APIView):
 
     Response: {"processed": 5}
     """
+    authentication_classes = []
     permission_classes = [HasQueueSecret]
 
     def post(self, request):
