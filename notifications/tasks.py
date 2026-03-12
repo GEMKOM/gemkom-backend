@@ -51,6 +51,10 @@ def enqueue_send_email(
                 'X-Task-Secret': settings.QUEUE_SECRET,
             },
             'body': payload,
+            'oidc_token': {
+                'service_account_email': sa_email,
+                'audience': service_url,
+            },
         }
     }
 
