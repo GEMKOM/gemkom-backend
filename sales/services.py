@@ -159,9 +159,7 @@ def send_consultations(offer: SalesOffer, departments_data: list[dict], user) ->
             offer.status = 'consultation'
             offer.save(update_fields=['status', 'updated_at'])
 
-        notified_teams = list({dept['department'] for dept in departments_data})
-        assigned_users = [t.assigned_to for t in created if t.assigned_to_id]
-        transaction.on_commit(lambda: _notify_dept_heads_on_consultation(offer, assigned_users, notified_teams))
+        transaction.on_commit(lambda tasks=list(created): _notify_dept_heads_on_consultation(offer, tasks))
 
         return created
 
@@ -221,38 +219,53 @@ def _notify_departments_on_conversion(offer: SalesOffer, root_job):
             body=body,
             link=link,
             source_type='job_order',
-            source_id=root_job.id,
+            source_id=root_job.job_no,
         )
     except Exception:
         pass
 
 
-def _notify_dept_heads_on_consultation(offer: SalesOffer, assigned_users, teams: list[str]):
-    """Notify consultation task assignees + route-configured users."""
+def _notify_dept_heads_on_consultation(offer: SalesOffer, tasks: list):
+    """
+    Send one notification per consultation task to:
+      - The department's managers (users with occupation='manager' in that team)
+      - The explicitly assigned user (if any)
+      - Route-configured global watchers
+    """
     try:
         from django.contrib.auth.models import User as DjangoUser
-        assignee_ids = set(u.id for u in assigned_users if u is not None)
+        from users.helpers import _team_manager_user_ids
         route_users, route_link = get_route(Notification.SALES_CONSULTATION)
         route_ids = set(route_users.values_list('id', flat=True))
-        all_ids = assignee_ids | route_ids
-        if not all_ids:
-            return
-        users = DjangoUser.objects.filter(id__in=all_ids, is_active=True)
-        ctx = {
-            'offer_no':    offer.offer_no,
-            'offer_title': offer.title,
-            'customer':    offer.customer.name,
-        }
-        title, body, link = render_notification(Notification.SALES_CONSULTATION, ctx, route_link)
-        bulk_notify(
-            users=users,
-            notification_type=Notification.SALES_CONSULTATION,
-            title=title,
-            body=body,
-            link=link,
-            source_type='sales_offer',
-            source_id=offer.id,
-        )
+
+        for task in tasks:
+            ctx = {
+                'offer_no':    offer.offer_no,
+                'offer_title': offer.title,
+                'customer':    offer.customer.name,
+                'department':  task.get_department_display(),
+                'task_title':  task.title,
+                'notes':       task.description or '',
+            }
+            title, body, link = render_notification(Notification.SALES_CONSULTATION, ctx, route_link)
+
+            manager_ids = set(_team_manager_user_ids(task.department))
+            recipient_ids = manager_ids | route_ids
+            if task.assigned_to_id:
+                recipient_ids.add(task.assigned_to_id)
+            if not recipient_ids:
+                continue
+
+            users = DjangoUser.objects.filter(id__in=recipient_ids, is_active=True)
+            bulk_notify(
+                users=users,
+                notification_type=Notification.SALES_CONSULTATION,
+                title=title,
+                body=body,
+                link=link,
+                source_type='sales_offer',
+                source_id=offer.id,
+            )
     except Exception:
         pass
 

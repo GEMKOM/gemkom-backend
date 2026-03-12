@@ -53,15 +53,50 @@ class NotificationPreferenceSerializer(serializers.ModelSerializer):
 
 # Describes who always gets notified regardless of config routing.
 ALWAYS_NOTIFIED = {
-    Notification.SALES_CONVERTED:    None,
-    Notification.SALES_CONSULTATION: 'Danışma görevi atanan kişiler',
-    Notification.JOB_ON_HOLD:        'İş emrindeki tüm görev sorumluları',
-    Notification.JOB_RESUMED:        'İş emrindeki tüm görev sorumluları',
-    Notification.DRAWING_RELEASED:   'Konudaki @bahsedilen kullanıcılar',
-    Notification.REVISION_REQUESTED: 'Tasarım görev sorumlusu ve mevcut yayımcı',
-    Notification.REVISION_APPROVED:  'Revizyon talebini açan kişi',
-    Notification.REVISION_COMPLETED: 'Orijinal revizyon talepcisi ve @bahsedilen kullanıcılar',
-    Notification.REVISION_REJECTED:  'Revizyon talebini açan kişi',
+    # Discussions
+    Notification.TOPIC_MENTION:          'Konuda @etiketlenen kullanıcılar',
+    Notification.COMMENT_MENTION:        'Yorumda @etiketlenen kullanıcılar',
+    Notification.NEW_COMMENT:            'Konuya daha önce yorum yapan veya konuyu açan kullanıcılar',
+    # Drawing workflow
+    Notification.DRAWING_RELEASED:       'Konudaki @bahsedilen kullanıcılar',
+    Notification.REVISION_REQUESTED:     'Tasarım görev sorumlusu ve mevcut yayımcı',
+    Notification.REVISION_APPROVED:      'Revizyon talebini açan kişi',
+    Notification.REVISION_COMPLETED:     'Orijinal revizyon talepcisi ve @bahsedilen kullanıcılar',
+    Notification.REVISION_REJECTED:      'Revizyon talebini açan kişi',
+    Notification.JOB_ON_HOLD:            'İş emrindeki tüm görev sorumluları',
+    Notification.JOB_RESUMED:            'İş emrindeki tüm görev sorumluları',
+    # Approvals — requestor/submitter always notified of outcome
+    Notification.PR_APPROVAL_REQUESTED:  'Onay aşamasındaki onaylayıcılar',
+    Notification.PR_APPROVED:            'Talebi oluşturan kişi',
+    Notification.PR_REJECTED:            'Talebi oluşturan kişi',
+    Notification.PR_PO_CREATED:          'Talebi oluşturan kişi',
+    Notification.OT_APPROVAL_REQUESTED:  'Onay aşamasındaki onaylayıcılar',
+    Notification.OT_APPROVED:            'Talebi oluşturan kişi',
+    Notification.OT_REJECTED:            'Talebi oluşturan kişi',
+    Notification.PLAN_APPROVAL_REQUESTED:'Onay aşamasındaki onaylayıcılar',
+    Notification.PLAN_APPROVED:          'Talebi oluşturan kişi',
+    Notification.PLAN_REJECTED:          'Talebi oluşturan kişi',
+    Notification.PLAN_DR_APPROVED:       'Talebi oluşturan kişi',
+    Notification.SUB_APPROVAL_REQUESTED: 'Onay aşamasındaki onaylayıcılar',
+    Notification.SUB_APPROVED:           'Hakedişi oluşturan kişi',
+    Notification.SUB_REJECTED:           'Hakedişi oluşturan kişi',
+    # Sales
+    Notification.SALES_APPROVAL_REQUESTED: 'Onay aşamasındaki onaylayıcılar',
+    Notification.SALES_APPROVED:           'Teklifi oluşturan kişi',
+    Notification.SALES_REJECTED:           'Teklifi oluşturan kişi',
+    Notification.SALES_CONSULTATION:       'İlgili departman müdürleri ve danışma görevine atanan kişi',
+    Notification.SALES_CONVERTED:          None,
+    # QC
+    Notification.QC_REVIEW_SUBMITTED:    'KK ekibi üyeleri',
+    Notification.QC_REVIEW_APPROVED:     'İncelemeyi gönderen kişi',
+    Notification.QC_REVIEW_REJECTED:     'İncelemeyi gönderen kişi',
+    Notification.NCR_CREATED:            'KK ekibi üyeleri ve görev sorumlusu',
+    Notification.NCR_SUBMITTED:          'KK ekibi onaylayıcıları',
+    Notification.NCR_APPROVED:           'NCR\'ı oluşturan kişi',
+    Notification.NCR_REJECTED:           'NCR\'ı oluşturan kişi',
+    Notification.NCR_ASSIGNED:           'NCR\'a atanan kişiler',
+    # Auth
+    Notification.PASSWORD_RESET:         'IT yöneticileri',
 }
 
 

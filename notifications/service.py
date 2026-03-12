@@ -226,13 +226,16 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
         'vars': ['offer_no', 'offer_title', 'customer', 'job_no', 'job_title'],
     },
     Notification.SALES_CONSULTATION: {
-        'title': '[Danışma Talebi] {offer_no}',
+        'title': '[Danışma Talebi] {offer_no} – {task_title}',
         'body': (
-            '{offer_no} numaralı "{offer_title}" teklifi için danışma talebi oluşturuldu.\n'
-            'Müşteri: {customer}'
+            '{offer_no} numaralı "{offer_title}" teklifi için danışma görevi oluşturuldu.\n'
+            'Müşteri: {customer}\n'
+            'Departman: {department}\n'
+            'Görev: {task_title}\n'
+            '{notes}'
         ),
         'link': '',
-        'vars': ['offer_no', 'offer_title', 'customer'],
+        'vars': ['offer_no', 'offer_title', 'customer', 'department', 'task_title', 'notes'],
     },
     Notification.PR_APPROVAL_REQUESTED: {
         'title': '[Onay Gerekli] Satınalma Talebi #{pr_id} \u2013 {pr_title}',
