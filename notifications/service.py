@@ -79,22 +79,31 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
             '{actor} sizi bir tartışma konusunda etiketledi.\n'
             'İş Emri: {job_no} - {job_title}\n'
             'Konu: {topic_title}\n\n'
-            '{topic_content}'
+            '{topic_content}\n\n'
+            '{link}'
         ),
         'link': f'{_BASE_URL}/projects/project-tracking/?job_no={{job_no}}&topic_id={{topic_id}}',
-        'vars': ['actor', 'job_no', 'job_title', 'topic_title', 'topic_content', 'topic_id'],
+        'vars': ['actor', 'job_no', 'job_title', 'topic_title', 'topic_content', 'topic_id', 'link'],
     },
     Notification.NEW_COMMENT: {
         'title': '[Yeni Yorum] {job_no} \u2013 {topic_title}',
-        'body': '{actor} tartışma konunuza yorum yaptı.\n\n{comment_content}',
+        'body': (
+            '{actor} tartışma konunuza yorum yaptı.\n\n'
+            '{comment_content}\n\n'
+            '{link}'
+        ),
         'link': f'{_BASE_URL}/projects/project-tracking/?job_no={{job_no}}&topic_id={{topic_id}}',
-        'vars': ['actor', 'job_no', 'topic_title', 'comment_content', 'topic_id'],
+        'vars': ['actor', 'job_no', 'topic_title', 'comment_content', 'topic_id', 'link'],
     },
     Notification.COMMENT_MENTION: {
         'title': '[Yorumda Etiketlendiniz] {job_no} \u2013 {topic_title}',
-        'body': '{actor} sizi bir yorumda etiketledi.\n\n{comment_content}',
+        'body': (
+            '{actor} sizi bir yorumda etiketledi.\n\n'
+            '{comment_content}\n\n'
+            '{link}'
+        ),
         'link': f'{_BASE_URL}/projects/project-tracking/?job_no={{job_no}}&topic_id={{topic_id}}',
-        'vars': ['actor', 'job_no', 'topic_title', 'comment_content', 'topic_id'],
+        'vars': ['actor', 'job_no', 'topic_title', 'comment_content', 'topic_id', 'link'],
     },
     Notification.DRAWING_RELEASED: {
         'title': '[Teknik Çizim Yayınlandı] {job_no} Rev.{revision}',
@@ -104,10 +113,11 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
             'Revizyon: {revision}\n'
             'Hardcopy: {hardcopy_count} set\n\n'
             'Klasör Yolu:\n{folder_path}\n\n'
-            'Değişiklikler:\n{changelog}'
+            'Değişiklikler:\n{changelog}\n\n'
+            '{link}'
         ),
         'link': f'{_BASE_URL}/projects/project-tracking/?job_no={{job_no}}&topic_id={{topic_id}}',
-        'vars': ['actor', 'job_no', 'job_title', 'revision', 'hardcopy_count', 'folder_path', 'changelog', 'topic_id'],
+        'vars': ['actor', 'job_no', 'job_title', 'revision', 'hardcopy_count', 'folder_path', 'changelog', 'topic_id', 'link'],
     },
     Notification.REVISION_REQUESTED: {
         'title': '[Revizyon Talebi] {job_no} Rev.{revision}',
@@ -116,10 +126,11 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
             'İş Emri: {job_no} - {job_title}\n'
             'Mevcut Revizyon: {revision}\n\n'
             'Talep Nedeni:\n{topic_content}\n\n'
-            'Bu talep onay beklemektedir.'
+            'Bu talep onay beklemektedir.\n\n'
+            '{link}'
         ),
         'link': f'{_BASE_URL}/projects/project-tracking/?job_no={{job_no}}&topic_id={{topic_id}}',
-        'vars': ['actor', 'job_no', 'job_title', 'revision', 'topic_content', 'topic_id'],
+        'vars': ['actor', 'job_no', 'job_title', 'revision', 'topic_content', 'topic_id', 'link'],
     },
     Notification.REVISION_APPROVED: {
         'title': '[Revizyon Onaylandı] {job_no}',
@@ -127,10 +138,11 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
             '{actor} revizyon talebini onayladı.\n'
             'İş Emri: {job_no} - {job_title}\n'
             'Konu: {topic_title}\n\n'
-            'İş emri revizyon süresince beklemeye alınmıştır.'
+            'İş emri revizyon süresince beklemeye alınmıştır.\n\n'
+            '{link}'
         ),
         'link': f'{_BASE_URL}/projects/project-tracking/?job_no={{job_no}}&topic_id={{topic_id}}',
-        'vars': ['actor', 'job_no', 'job_title', 'topic_title', 'topic_id'],
+        'vars': ['actor', 'job_no', 'job_title', 'topic_title', 'topic_id', 'link'],
     },
     Notification.REVISION_COMPLETED: {
         'title': '[Revizyon Tamamlandı] {job_no} Rev.{revision}',
@@ -140,10 +152,11 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
             'Yeni Revizyon: {revision}\n\n'
             'Değişiklikler:\n{changelog}\n\n'
             'Klasör Yolu:\n{folder_path}\n\n'
-            'İş emri devam etmektedir.'
+            'İş emri devam etmektedir.\n\n'
+            '{link}'
         ),
         'link': f'{_BASE_URL}/projects/project-tracking/?job_no={{job_no}}&topic_id={{topic_id}}',
-        'vars': ['actor', 'job_no', 'job_title', 'revision', 'changelog', 'folder_path', 'topic_id'],
+        'vars': ['actor', 'job_no', 'job_title', 'revision', 'changelog', 'folder_path', 'topic_id', 'link'],
     },
     Notification.REVISION_REJECTED: {
         'title': '[Revizyon Talebi Reddedildi] {job_no} Rev.{revision}',
@@ -151,30 +164,33 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
             '{actor} revizyon talebini reddetti.\n'
             'İş Emri: {job_no} - {job_title}\n'
             'Konu: {topic_title}\n\n'
-            'Red Nedeni:\n{reason}'
+            'Red Nedeni:\n{reason}\n\n'
+            '{link}'
         ),
         'link': f'{_BASE_URL}/projects/project-tracking/?job_no={{job_no}}&topic_id={{topic_id}}',
-        'vars': ['actor', 'job_no', 'job_title', 'topic_title', 'reason', 'topic_id'],
+        'vars': ['actor', 'job_no', 'job_title', 'topic_title', 'reason', 'topic_id', 'link'],
     },
     Notification.JOB_ON_HOLD: {
         'title': '[İş Emri Beklemede] {job_no}',
         'body': (
             '{job_no} numaralı iş emri revizyon nedeniyle bekletilmiştir.\n'
             'Revizyon tamamlanana kadar bu iş emri üzerindeki çalışmalara devam etmeyiniz.\n\n'
-            'Neden: {reason}'
+            'Neden: {reason}\n\n'
+            '{link}'
         ),
         'link': f'{_BASE_URL}/projects/project-tracking/?job_no={{job_no}}',
-        'vars': ['job_no', 'reason'],
+        'vars': ['job_no', 'reason', 'link'],
     },
     Notification.JOB_RESUMED: {
         'title': '[İş Emri Devam Ediyor] {job_no}',
         'body': (
             '{job_no} numaralı iş emri üzerindeki revizyon tamamlanmıştır.\n'
             'Çalışmalara devam edebilirsiniz.\n\n'
-            'Yeni Revizyon: {revision}'
+            'Yeni Revizyon: {revision}\n\n'
+            '{link}'
         ),
         'link': f'{_BASE_URL}/projects/project-tracking/?job_no={{job_no}}',
-        'vars': ['job_no', 'revision'],
+        'vars': ['job_no', 'revision', 'link'],
     },
     Notification.SALES_APPROVAL_REQUESTED: {
         'title': '[Onay Gerekli] Satış Teklifi: {offer_no}',
@@ -225,31 +241,41 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
             'Aşama: {stage_name} (Gerekli onay sayısı: {required_approvals})\n'
             'Öncelik: {priority}\n'
             'Talep Eden: {requestor}\n\n'
-            'Not: Bu bildirim nedeni: {reason}.'
+            'Not: Bu bildirim nedeni: {reason}.\n\n'
+            '{link}'
         ),
         'link': f'{_BASE_URL}/procurement/purchase-requests/pending/?talep={{pr_id}}',
-        'vars': ['pr_id', 'pr_title', 'stage_name', 'required_approvals', 'priority', 'requestor', 'reason'],
+        'vars': ['pr_id', 'pr_title', 'stage_name', 'required_approvals', 'priority', 'requestor', 'reason', 'link'],
     },
     Notification.PR_APPROVED: {
         'title': '[Satınalma Talebi Onaylandı] PR #{pr_id} \u2013 {pr_title}',
-        'body': 'Satınalma talebiniz (#{pr_id} \u2013 {pr_title}) onaylandı.\n{comment}',
+        'body': (
+            'Satınalma talebiniz (#{pr_id} \u2013 {pr_title}) onaylandı.\n'
+            '{comment}\n\n'
+            '{link}'
+        ),
         'link': f'{_BASE_URL}/procurement/purchase-requests/pending/?talep={{pr_id}}',
-        'vars': ['pr_id', 'pr_title', 'comment'],
+        'vars': ['pr_id', 'pr_title', 'comment', 'link'],
     },
     Notification.PR_REJECTED: {
         'title': '[Satınalma Talebi Reddedildi] PR #{pr_id} \u2013 {pr_title}',
-        'body': 'Satınalma talebiniz (#{pr_id} \u2013 {pr_title}) reddedildi.\n{comment}',
+        'body': (
+            'Satınalma talebiniz (#{pr_id} \u2013 {pr_title}) reddedildi.\n'
+            '{comment}\n\n'
+            '{link}'
+        ),
         'link': f'{_BASE_URL}/procurement/purchase-requests/pending/?talep={{pr_id}}',
-        'vars': ['pr_id', 'pr_title', 'comment'],
+        'vars': ['pr_id', 'pr_title', 'comment', 'link'],
     },
     Notification.PR_PO_CREATED: {
         'title': '[PO Oluşturuldu] PR #{pr_id} \u2013 {pr_title}',
         'body': (
             'Satınalma talebi (PR #{pr_id} \u2013 {pr_title}) onaylandı ve '
-            'aşağıdaki satınalma siparişleri oluşturuldu:\n\n{po_list}'
+            'aşağıdaki satınalma siparişleri oluşturuldu:\n\n{po_list}\n\n'
+            '{link}'
         ),
         'link': f'{_BASE_URL}/procurement/purchase-requests/pending/?talep={{pr_id}}',
-        'vars': ['pr_id', 'pr_title', 'po_list'],
+        'vars': ['pr_id', 'pr_title', 'po_list', 'link'],
     },
     Notification.OT_APPROVAL_REQUESTED: {
         'title': '[Onay Gerekli] Mesai Talebi #{ot_id} \u2013 {ot_title}',
@@ -259,22 +285,32 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
             'Talep Eden: {requestor}\n'
             'Takım: {team}\n'
             'Neden: {reason}\n\n'
-            'Not: Bildirim nedeni: {reason}.'
+            'Not: Bildirim nedeni: {reason}.\n\n'
+            '{link}'
         ),
         'link': f'{_BASE_URL}/general/overtime/pending/?request={{ot_id}}',
-        'vars': ['ot_id', 'ot_title', 'stage_name', 'required_approvals', 'requestor', 'team', 'reason'],
+        'vars': ['ot_id', 'ot_title', 'stage_name', 'required_approvals', 'requestor', 'team', 'reason', 'link'],
     },
     Notification.OT_APPROVED: {
         'title': '[Mesai Talebi Onaylandı] OT #{ot_id} \u2013 {ot_title}',
-        'body': 'Mesai talebiniz (#{ot_id}) onaylandı.\n{comment}\n\n{entries_summary}',
+        'body': (
+            'Mesai talebiniz (#{ot_id}) onaylandı.\n'
+            '{comment}\n\n'
+            '{entries_summary}\n\n'
+            '{link}'
+        ),
         'link': f'{_BASE_URL}/general/overtime/pending/?request={{ot_id}}',
-        'vars': ['ot_id', 'ot_title', 'comment', 'requestor', 'team', 'entries_summary'],
+        'vars': ['ot_id', 'ot_title', 'comment', 'requestor', 'team', 'entries_summary', 'link'],
     },
     Notification.OT_REJECTED: {
         'title': '[Mesai Talebi Reddedildi] OT #{ot_id} \u2013 {ot_title}',
-        'body': 'Mesai talebiniz (#{ot_id}) reddedildi.\n{comment}',
+        'body': (
+            'Mesai talebiniz (#{ot_id}) reddedildi.\n'
+            '{comment}\n\n'
+            '{link}'
+        ),
         'link': f'{_BASE_URL}/general/overtime/pending/?request={{ot_id}}',
-        'vars': ['ot_id', 'ot_title', 'comment'],
+        'vars': ['ot_id', 'ot_title', 'comment', 'link'],
     },
     Notification.QC_REVIEW_SUBMITTED: {
         'title': '[KK İncelemesi] {job_no} \u2014 {task_title}',
@@ -412,10 +448,11 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
             'Aşama: {stage_name} (Gerekli onay sayısı: {required_approvals})\n'
             'Öncelik: {priority}\n'
             'Talep Eden: {requestor}\n\n'
-            'Not: Bildirim nedeni: {reason}.'
+            'Not: Bildirim nedeni: {reason}.\n\n'
+            '{link}'
         ),
         'link': f'{_BASE_URL}/general/department-requests/?request={{dr_id}}',
-        'vars': ['dr_id', 'dr_title', 'stage_name', 'required_approvals', 'priority', 'requestor', 'reason'],
+        'vars': ['dr_id', 'dr_title', 'stage_name', 'required_approvals', 'priority', 'requestor', 'reason', 'link'],
     },
     Notification.PLAN_APPROVED: {
         'title': '[Departman Talebi Onaylandı] DR #{dr_id} \u2013 {dr_title}',
@@ -424,22 +461,30 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
             '{comment}\n\n'
             'Departman: {department}\n'
             'Talep Eden: {requestor}\n'
-            'Öncelik: {priority}'
+            'Öncelik: {priority}\n\n'
+            '{link}'
         ),
         'link': f'{_BASE_URL}/general/department-requests/?request={{dr_id}}',
-        'vars': ['dr_id', 'dr_title', 'comment', 'department', 'requestor', 'priority'],
+        'vars': ['dr_id', 'dr_title', 'comment', 'department', 'requestor', 'priority', 'link'],
     },
     Notification.PLAN_REJECTED: {
         'title': '[Departman Talebi Reddedildi] DR #{dr_id} \u2013 {dr_title}',
-        'body': 'Departman talebiniz (#{dr_id} \u2013 {dr_title}) reddedildi.\n{comment}',
+        'body': (
+            'Departman talebiniz (#{dr_id} \u2013 {dr_title}) reddedildi.\n'
+            '{comment}\n\n'
+            '{link}'
+        ),
         'link': f'{_BASE_URL}/general/department-requests/?request={{dr_id}}',
-        'vars': ['dr_id', 'dr_title', 'comment'],
+        'vars': ['dr_id', 'dr_title', 'comment', 'link'],
     },
     Notification.PLAN_DR_APPROVED: {
         'title': '[Departman Talebi Planlama Onayladı] DR #{dr_id} \u2013 {dr_title}',
-        'body': 'Departman talebi (#{dr_id} \u2013 {dr_title}) planlama tarafından onaylandı.',
+        'body': (
+            'Departman talebi (#{dr_id} \u2013 {dr_title}) planlama tarafından onaylandı.\n\n'
+            '{link}'
+        ),
         'link': f'{_BASE_URL}/general/department-requests/?request={{dr_id}}',
-        'vars': ['dr_id', 'dr_title'],
+        'vars': ['dr_id', 'dr_title', 'link'],
     },
     Notification.PASSWORD_RESET: {
         'title': '[Parola Sıfırlama Talebi] {username}',
@@ -526,8 +571,10 @@ def render_notification(
     tmpl  = _get_config_tmpl(notification_type)
     safe  = _SafeDict(context)
     title = tmpl['title'].format_map(safe)
-    body  = tmpl['body'].format_map(safe)
     link  = route_link or tmpl['link'].format_map(safe)
+    # Re-render body with 'link' available so {link} placeholders in body templates resolve
+    safe['link'] = link
+    body  = tmpl['body'].format_map(safe)
     return title, body, link
 
 
