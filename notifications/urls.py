@@ -1,13 +1,13 @@
 from django.urls import include, path
-from rest_framework.routers import DefaultRouter
+from rest_framework.routers import DefaultRouter, SimpleRouter
 
 from .views import NotificationPreferenceViewSet, NotificationRouteViewSet, NotificationViewSet, SendEmailTaskView
 
-# Separate routers so the empty-prefix NotificationViewSet doesn't swallow /routes/ and /preferences/
 notification_router = DefaultRouter()
 notification_router.register(r'', NotificationViewSet, basename='notification')
 
-aux_router = DefaultRouter()
+# SimpleRouter has no API-root view, so it won't shadow the notification list at /notifications/
+aux_router = SimpleRouter()
 aux_router.register(r'preferences', NotificationPreferenceViewSet, basename='notification-preference')
 aux_router.register(r'routes', NotificationRouteViewSet, basename='notification-route')
 

@@ -11,7 +11,7 @@ from django.contrib.auth.models import User
 from django.db import transaction
 from django.utils import timezone
 
-from notifications.service import notify, bulk_notify, get_route_users
+from notifications.service import notify, bulk_notify, get_route_users, get_route
 from notifications.models import Notification
 from projects.models import JobOrder, JobOrderDepartmentTask
 
@@ -202,7 +202,7 @@ def _notify_approvers_on_submission(offer: SalesOffer, wf):
 def _notify_departments_on_conversion(offer: SalesOffer, root_job):
     """Notify route-configured users when an offer is converted to a job order."""
     try:
-        users = get_route_users(Notification.SALES_CONVERTED)
+        users, link = get_route(Notification.SALES_CONVERTED)
         if not users.exists():
             return
         title = f"[Yeni İş Emri] {root_job.job_no}"
@@ -217,8 +217,9 @@ def _notify_departments_on_conversion(offer: SalesOffer, root_job):
             notification_type=Notification.SALES_CONVERTED,
             title=title,
             body=body,
-            source_type='sales_offer',
-            source_id=offer.id,
+            link=link,
+            source_type='job_order',
+            source_id=root_job.id,
         )
     except Exception:
         pass
@@ -229,9 +230,8 @@ def _notify_dept_heads_on_consultation(offer: SalesOffer, assigned_users, teams:
     try:
         from django.contrib.auth.models import User as DjangoUser
         assignee_ids = set(u.id for u in assigned_users if u is not None)
-        route_ids = set(
-            get_route_users(Notification.SALES_CONSULTATION).values_list('id', flat=True)
-        )
+        route_users, route_link = get_route(Notification.SALES_CONSULTATION)
+        route_ids = set(route_users.values_list('id', flat=True))
         all_ids = assignee_ids | route_ids
         if not all_ids:
             return
@@ -246,6 +246,7 @@ def _notify_dept_heads_on_consultation(offer: SalesOffer, assigned_users, teams:
             notification_type=Notification.SALES_CONSULTATION,
             title=title,
             body=body,
+            link=route_link,
             source_type='sales_offer',
             source_id=offer.id,
         )

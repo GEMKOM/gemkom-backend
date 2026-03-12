@@ -45,8 +45,8 @@ class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
         'is_read':           ['exact'],
         'notification_type': ['exact'],
     }
-    ordering_fields = ['created_at']
-    ordering        = ['-created_at']
+    ordering_fields = ['created_at', 'is_read']
+    ordering        = ['is_read', '-created_at']
 
     def get_queryset(self):
         return Notification.objects.filter(user=self.request.user)
@@ -82,19 +82,18 @@ class NotificationPreferenceViewSet(viewsets.ModelViewSet):
     """
     Manage per-user notification preferences.
 
-    GET  /notifications/preferences/          — list all types, defaults filled in
-    PUT  /notifications/preferences/{id}/     — update one preference
-    POST /notifications/preferences/reset/   — delete all rows (revert to defaults)
+    GET   /notifications/preferences/                        — list all types, defaults filled in
+    PUT   /notifications/preferences/{notification_type}/    — upsert one preference
+    PATCH /notifications/preferences/{notification_type}/    — upsert one preference (partial)
+    POST  /notifications/preferences/reset/                  — delete all rows (revert to defaults)
     """
     serializer_class   = NotificationPreferenceSerializer
     permission_classes = [permissions.IsAuthenticated]
+    lookup_field       = 'notification_type'
     http_method_names  = ['get', 'put', 'patch', 'post', 'head', 'options']
 
     def get_queryset(self):
         return NotificationPreference.objects.filter(user=self.request.user)
-
-    def perform_create(self, serializer):
-        serializer.save(user=self.request.user)
 
     def list(self, request, *args, **kwargs):
         """
@@ -115,7 +114,6 @@ class NotificationPreferenceViewSet(viewsets.ModelViewSet):
             else:
                 choices = dict(Notification.NOTIFICATION_TYPE_CHOICES)
                 data = {
-                    'id': None,
                     'notification_type': ntype,
                     'notification_type_display': choices.get(ntype, ntype),
                     'send_email': email_default,
@@ -126,18 +124,21 @@ class NotificationPreferenceViewSet(viewsets.ModelViewSet):
         return Response(result)
 
     def update(self, request, *args, **kwargs):
-        """
-        Update a preference row. Creates it if it doesn't exist yet (upsert).
-        """
+        """Upsert: create the preference row if it doesn't exist yet."""
         partial = kwargs.pop('partial', False)
-        try:
-            instance = self.get_object()
-            serializer = self.get_serializer(instance, data=request.data, partial=partial)
-            serializer.is_valid(raise_exception=True)
-            serializer.save()
-            return Response(serializer.data)
-        except NotificationPreference.DoesNotExist:
-            return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
+        notification_type = kwargs.get('notification_type') or self.kwargs.get('notification_type')
+        if notification_type not in NOTIFICATION_DEFAULTS:
+            return Response({'detail': 'Unknown notification type.'}, status=status.HTTP_400_BAD_REQUEST)
+        instance, _ = NotificationPreference.objects.get_or_create(
+            user=request.user,
+            notification_type=notification_type,
+        )
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        data = dict(serializer.data)
+        data['is_default'] = False
+        return Response(data)
 
     @action(detail=False, methods=['post'])
     def reset(self, request):

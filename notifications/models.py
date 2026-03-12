@@ -177,6 +177,7 @@ class NotificationRoute(models.Model):
         blank=True,
         related_name='notification_routes',
     )
+    link = models.CharField(max_length=500, blank=True)
     enabled = models.BooleanField(default=True)
 
     class Meta:

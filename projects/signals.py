@@ -9,7 +9,7 @@ from .models import (
     JobOrderQCCostLine,
     JobOrderShippingCostLine,
 )
-from notifications.service import notify, bulk_notify, get_route_users
+from notifications.service import notify, bulk_notify, get_route_users, get_route
 from notifications.models import Notification
 
 
@@ -188,7 +188,7 @@ def send_drawing_released_notifications(release, topic):
     )
 
     # Route-configured users
-    route_users = get_route_users(Notification.DRAWING_RELEASED)
+    route_users, route_link = get_route(Notification.DRAWING_RELEASED)
     exclude_id = release.released_by_id
 
     # Merge: topic mentioned users + route users, excluding releaser
@@ -204,7 +204,7 @@ def send_drawing_released_notifications(release, topic):
         notification_type=Notification.DRAWING_RELEASED,
         title=title,
         body=body,
-        link=_topic_link(topic),
+        link=route_link or _topic_link(topic),
         source_type='drawing_release',
         source_id=release.id,
     )
@@ -239,11 +239,8 @@ def send_revision_requested_notifications(release, topic, requester):
             user_ids.add(release.released_by_id)
 
     # Route-configured users
-    route_ids = set(
-        get_route_users(Notification.REVISION_REQUESTED)
-        .exclude(id=requester.id)
-        .values_list('id', flat=True)
-    )
+    route_users, route_link = get_route(Notification.REVISION_REQUESTED)
+    route_ids = set(route_users.exclude(id=requester.id).values_list('id', flat=True))
     user_ids |= route_ids
 
     from django.contrib.auth.models import User
@@ -253,7 +250,7 @@ def send_revision_requested_notifications(release, topic, requester):
             notification_type=Notification.REVISION_REQUESTED,
             title=title,
             body=body,
-            link=_topic_link(topic),
+            link=route_link or _topic_link(topic),
             source_type='drawing_release',
             source_id=release.id,
         )
@@ -286,7 +283,8 @@ def send_revision_approved_notifications(release, topic, approver):
     exclude_ids = {approver.id}
     if topic.created_by:
         exclude_ids.add(topic.created_by_id)
-    route_users = get_route_users(Notification.REVISION_APPROVED).exclude(id__in=exclude_ids)
+    route_users, route_link = get_route(Notification.REVISION_APPROVED)
+    route_users = route_users.exclude(id__in=exclude_ids)
     if route_users.exists():
         title = f"[Revizyon Onaylandi] {job_order.job_no}"
         body = (
@@ -300,7 +298,7 @@ def send_revision_approved_notifications(release, topic, approver):
             notification_type=Notification.REVISION_APPROVED,
             title=title,
             body=body,
-            link=_job_link(job_order),
+            link=route_link or _job_link(job_order),
             source_type='drawing_release',
             source_id=release.id,
         )
@@ -321,8 +319,9 @@ def send_self_revision_notifications(release, reason, initiator):
             .exclude(id=initiator.id)
             .values_list('id', flat=True)
         )
+        _sr_users, _sr_link = get_route(Notification.REVISION_REQUESTED)
         route_ids = set(
-            get_route_users(Notification.REVISION_REQUESTED)
+            _sr_users
             .exclude(id=initiator.id)
             .values_list('id', flat=True)
         )
@@ -342,7 +341,7 @@ def send_self_revision_notifications(release, reason, initiator):
                 notification_type=Notification.REVISION_REQUESTED,
                 title=title,
                 body=body,
-                link=_job_link(job_order),
+                link=_sr_link or _job_link(job_order),
                 source_type='drawing_release',
                 source_id=release.id,
             )
@@ -359,7 +358,8 @@ def send_job_on_hold_notifications(job_order, release, reason):
         .filter(assigned_to__isnull=False)
         .values_list('assigned_to_id', flat=True)
     )
-    route_ids = set(get_route_users(Notification.JOB_ON_HOLD).values_list('id', flat=True))
+    route_users, route_link = get_route(Notification.JOB_ON_HOLD)
+    route_ids = set(route_users.values_list('id', flat=True))
     all_ids = assignee_ids | route_ids
     if not all_ids:
         return
@@ -375,7 +375,7 @@ def send_job_on_hold_notifications(job_order, release, reason):
         notification_type=Notification.JOB_ON_HOLD,
         title=title,
         body=body,
-        link=_job_link(job_order),
+        link=route_link or _job_link(job_order),
         source_type='job_order',
         source_id=job_order.id,
     )
@@ -415,11 +415,8 @@ def send_revision_completed_notifications(new_release, new_topic, old_revision_t
     mentioned_ids = set(
         new_topic.mentioned_users.exclude(id__in=notified_ids).values_list('id', flat=True)
     )
-    route_ids = set(
-        get_route_users(Notification.REVISION_COMPLETED)
-        .exclude(id__in=notified_ids)
-        .values_list('id', flat=True)
-    )
+    _rc_users, _rc_link = get_route(Notification.REVISION_COMPLETED)
+    route_ids = set(_rc_users.exclude(id__in=notified_ids).values_list('id', flat=True))
     extra_ids = mentioned_ids | route_ids
     if extra_ids:
         bulk_notify(
@@ -427,7 +424,7 @@ def send_revision_completed_notifications(new_release, new_topic, old_revision_t
             notification_type=Notification.REVISION_COMPLETED,
             title=title,
             body=body,
-            link=_topic_link(new_topic),
+            link=_rc_link or _topic_link(new_topic),
             source_type='drawing_release',
             source_id=new_release.id,
         )
@@ -444,7 +441,8 @@ def send_job_resumed_notifications(job_order, topic, release):
         .filter(assigned_to__isnull=False)
         .values_list('assigned_to_id', flat=True)
     )
-    route_ids = set(get_route_users(Notification.JOB_RESUMED).values_list('id', flat=True))
+    route_users, route_link = get_route(Notification.JOB_RESUMED)
+    route_ids = set(route_users.values_list('id', flat=True))
     all_ids = assignee_ids | route_ids
     if not all_ids:
         return
@@ -461,7 +459,7 @@ def send_job_resumed_notifications(job_order, topic, release):
         notification_type=Notification.JOB_RESUMED,
         title=title,
         body=body,
-        link=_job_link(job_order),
+        link=route_link or _job_link(job_order),
         source_type='job_order',
         source_id=job_order.id,
     )
@@ -493,14 +491,15 @@ def send_revision_rejected_notifications(release, topic, reason, rejecter):
         )
         notified_ids.add(topic.created_by_id)
 
-    route_users = get_route_users(Notification.REVISION_REJECTED).exclude(id__in=notified_ids)
+    _rr_users, _rr_link = get_route(Notification.REVISION_REJECTED)
+    route_users = _rr_users.exclude(id__in=notified_ids)
     if route_users.exists():
         bulk_notify(
             users=route_users,
             notification_type=Notification.REVISION_REJECTED,
             title=title,
             body=body,
-            link=_topic_link(topic),
+            link=_rr_link or _topic_link(topic),
             source_type='drawing_release',
             source_id=release.id,
         )

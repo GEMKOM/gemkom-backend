@@ -57,7 +57,7 @@ NOTIFICATION_DEFAULTS: dict[str, tuple[bool, bool]] = {
     Notification.REVISION_APPROVED:        (True,  True),
     Notification.REVISION_COMPLETED:       (True,  True),
     Notification.REVISION_REJECTED:        (True,  True),
-    Notification.JOB_ON_HOLD:              (False, True),   # in-app only — too noisy for email
+    Notification.JOB_ON_HOLD:              (True, True),   # in-app only — too noisy for email
     Notification.JOB_RESUMED:              (False, True),   # in-app only
     Notification.TOPIC_MENTION:            (True,  True),
     Notification.COMMENT_MENTION:          (True,  True),
@@ -66,19 +66,25 @@ NOTIFICATION_DEFAULTS: dict[str, tuple[bool, bool]] = {
 }
 
 
-def get_route_users(notification_type: str):
+def get_route(notification_type: str) -> tuple:
     """
-    Return the configured extra User queryset for a routable notification type.
-    Returns an empty queryset if no route exists or the route is disabled.
+    Return (users_queryset, link) for a routable notification type.
+    Returns (empty queryset, '') if no route exists or the route is disabled.
     """
     from django.contrib.auth.models import User
     try:
         route = NotificationRoute.objects.get(notification_type=notification_type)
         if not route.enabled:
-            return User.objects.none()
-        return route.users.filter(is_active=True)
+            return User.objects.none(), ''
+        return route.users.filter(is_active=True), route.link or ''
     except NotificationRoute.DoesNotExist:
-        return User.objects.none()
+        return User.objects.none(), ''
+
+
+def get_route_users(notification_type: str):
+    """Return just the users queryset for a routable notification type."""
+    users, _ = get_route(notification_type)
+    return users
 
 
 def _get_user_prefs(user, notification_type: str) -> tuple[bool, bool]:

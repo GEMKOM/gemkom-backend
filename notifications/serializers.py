@@ -22,6 +22,8 @@ class NotificationSerializer(serializers.ModelSerializer):
             'is_read',
             'read_at',
             'is_emailed',
+            'emailed_at',
+            'email_error',
             'created_at',
         ]
         read_only_fields = fields
@@ -58,7 +60,7 @@ class NotificationRouteUserSerializer(serializers.Serializer):
 
 # Describes who always gets notified regardless of route configuration.
 ALWAYS_NOTIFIED = {
-    Notification.SALES_CONVERTED:   None,
+    Notification.SALES_CONVERTED:    None,
     Notification.SALES_CONSULTATION: 'Danışma görevi atanan kişiler',
     Notification.JOB_ON_HOLD:        'İş emrindeki tüm görev sorumluları',
     Notification.JOB_RESUMED:        'İş emrindeki tüm görev sorumluları',
@@ -89,6 +91,7 @@ class NotificationRouteSerializer(serializers.ModelSerializer):
             'notification_type', 'notification_type_display',
             'always_notified',
             'users', 'user_ids',
+            'link',
             'enabled',
         ]
 
@@ -102,7 +105,8 @@ class NotificationRouteSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
         user_ids = validated_data.pop('user_ids', None)
         instance.enabled = validated_data.get('enabled', instance.enabled)
-        instance.save(update_fields=['enabled'])
+        instance.link = validated_data.get('link', instance.link)
+        instance.save(update_fields=['enabled', 'link'])
         if user_ids is not None:
             from django.contrib.auth.models import User
             instance.users.set(User.objects.filter(id__in=user_ids, is_active=True))
