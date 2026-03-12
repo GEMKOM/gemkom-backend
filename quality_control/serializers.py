@@ -16,6 +16,7 @@ class QCReviewListSerializer(serializers.ModelSerializer):
     task_title = serializers.CharField(source='task.title', read_only=True)
     job_order = serializers.CharField(source='task.job_order_id', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
+    ncr_number = serializers.CharField(source='ncr.ncr_number', read_only=True, default=None)
 
     class Meta:
         model = QCReview
@@ -24,7 +25,7 @@ class QCReviewListSerializer(serializers.ModelSerializer):
             'submitted_by', 'submitted_by_name', 'submitted_at',
             'status', 'status_display',
             'reviewed_by', 'reviewed_by_name', 'reviewed_at',
-            'comment', 'part_data', 'ncr',
+            'comment', 'part_data', 'ncr', 'ncr_number',
         ]
 
 
@@ -35,6 +36,7 @@ class QCReviewDetailSerializer(serializers.ModelSerializer):
     task_department = serializers.CharField(source='task.department', read_only=True)
     job_order = serializers.CharField(source='task.job_order_id', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
+    ncr_number = serializers.CharField(source='ncr.ncr_number', read_only=True, default=None)
 
     class Meta:
         model = QCReview
@@ -43,7 +45,7 @@ class QCReviewDetailSerializer(serializers.ModelSerializer):
             'submitted_by', 'submitted_by_name', 'submitted_at',
             'status', 'status_display',
             'reviewed_by', 'reviewed_by_name', 'reviewed_at',
-            'comment', 'part_data', 'ncr',
+            'comment', 'part_data', 'ncr', 'ncr_number',
         ]
         read_only_fields = [
             'submitted_by', 'submitted_at', 'reviewed_by', 'reviewed_at', 'status', 'ncr',
