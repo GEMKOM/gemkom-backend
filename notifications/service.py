@@ -576,7 +576,7 @@ def render_notification(
     tmpl  = _get_config_tmpl(notification_type)
     safe  = _SafeDict(context)
     title = tmpl['title'].format_map(safe)
-    link  = route_link or tmpl['link'].format_map(safe)
+    link  = (route_link or tmpl['link']).format_map(safe)
     # Re-render body with 'link' available so {link} placeholders in body templates resolve
     safe['link'] = link
     body  = tmpl['body'].format_map(safe)

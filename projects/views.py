@@ -190,12 +190,33 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         return Response(detail_serializer.data, status=status.HTTP_201_CREATED)
 
     def update(self, request, *args, **kwargs):
+        from projects.services.job_order import rename_job_no, cascade_customer_to_children
+
         partial = kwargs.pop('partial', False)
         instance = self.get_object()
+        old_job_no = instance.job_no
+        old_customer_id = instance.customer_id
+
         serializer = self.get_serializer(instance, data=request.data, partial=partial)
         serializer.is_valid(raise_exception=True)
+
+        new_job_no = serializer.validated_data.get('job_no', old_job_no)
+        new_customer = serializer.validated_data.get('customer', None)
+
+        # Rename job_no first (before saving other fields) so the PK is consistent.
+        if new_job_no != old_job_no:
+            rename_job_no(old_job_no, new_job_no)
+            # The instance PK has changed; re-fetch so perform_update saves to the right row.
+            instance = self.get_queryset().get(job_no=new_job_no)
+            serializer = self.get_serializer(instance, data=request.data, partial=partial)
+            serializer.is_valid(raise_exception=True)
+
         self.perform_update(serializer)
-        # Return detail serializer for the updated object
+
+        # Cascade customer change to all child job orders.
+        if new_customer and new_customer.pk != old_customer_id:
+            cascade_customer_to_children(serializer.instance)
+
         detail_serializer = JobOrderDetailSerializer(serializer.instance)
         return Response(detail_serializer.data)
 

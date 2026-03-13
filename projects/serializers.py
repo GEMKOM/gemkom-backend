@@ -278,13 +278,25 @@ class JobOrderCreateSerializer(serializers.ModelSerializer):
 
 class JobOrderUpdateSerializer(serializers.ModelSerializer):
     """Serializer for updating job orders."""
+    job_no = serializers.CharField(required=False)
+    customer = serializers.PrimaryKeyRelatedField(
+        queryset=Customer.objects.all(),
+        required=False,
+    )
+
     class Meta:
         model = JobOrder
         fields = [
-            'title', 'quantity', 'description', 'customer_order_no',
-            'priority', 'target_completion_date', 'incoterms',
+            'job_no', 'title', 'quantity', 'description', 'customer_order_no',
+            'customer', 'priority', 'target_completion_date', 'incoterms',
             'estimated_cost', 'total_weight_kg', 'general_expenses_rate'
         ]
+
+    def validate_job_no(self, value):
+        value = value.upper().strip()
+        if value != self.instance.job_no and JobOrder.objects.filter(job_no=value).exists():
+            raise serializers.ValidationError("Bu iş emri numarası zaten kullanımda.")
+        return value
 
     def validate(self, attrs):
         """Prevent certain updates on completed/cancelled jobs."""
@@ -293,6 +305,9 @@ class JobOrderUpdateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 "Tamamlanmış veya iptal edilmiş işler güncellenemez."
             )
+        # For child jobs, customer is always inherited from parent — ignore any change.
+        if instance and instance.parent_id and 'customer' in attrs:
+            del attrs['customer']
         return attrs
 
 
