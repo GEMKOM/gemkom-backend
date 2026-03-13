@@ -183,6 +183,9 @@ class SalesOffer(models.Model):
         if event == 'approved':
             self.status = 'approved'
             self.save(update_fields=['status', 'updated_at'])
+        elif event == 'rejected':
+            self.status = 'pricing'
+            self.save(update_fields=['status', 'updated_at'])
 
     # -------------------------------------------------------------------------
     # Properties

@@ -200,19 +200,19 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
             'Tutar: {total_price} EUR'
         ),
         'link': '',
-        'vars': ['offer_no', 'offer_title', 'customer', 'total_price'],
+        'vars': ['offer_no', 'offer_title', 'customer', 'total_price', 'link'],
     },
     Notification.SALES_APPROVED: {
         'title': '[Satış Teklifi Onaylandı] {offer_no}',
         'body': '{offer_no} numaralı "{offer_title}" teklifi onaylandı.',
         'link': '',
-        'vars': ['offer_no', 'offer_title', 'customer'],
+        'vars': ['offer_no', 'offer_title', 'customer', 'link'],
     },
     Notification.SALES_REJECTED: {
         'title': '[Satış Teklifi Reddedildi] {offer_no}',
         'body': '{offer_no} numaralı "{offer_title}" teklifi reddedildi.',
         'link': '',
-        'vars': ['offer_no', 'offer_title', 'customer'],
+        'vars': ['offer_no', 'offer_title', 'customer', 'link'],
     },
     Notification.SALES_CONVERTED: {
         'title': '[Yeni İş Emri] {job_no}',
@@ -223,7 +223,7 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
             'İş Emri Başlığı: {job_title}'
         ),
         'link': '',
-        'vars': ['offer_no', 'offer_title', 'customer', 'job_no', 'job_title'],
+        'vars': ['offer_no', 'offer_title', 'customer', 'job_no', 'job_title', 'link'],
     },
     Notification.SALES_CONSULTATION: {
         'title': '[Danışma Talebi] {offer_no} – {task_title}',
@@ -235,7 +235,7 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
             '{notes}'
         ),
         'link': '',
-        'vars': ['offer_no', 'offer_title', 'customer', 'department', 'task_title', 'notes'],
+        'vars': ['offer_no', 'offer_title', 'customer', 'department', 'department_code', 'task_id', 'task_title', 'notes', 'link'],
     },
     Notification.PR_APPROVAL_REQUESTED: {
         'title': '[Onay Gerekli] Satınalma Talebi #{pr_id} \u2013 {pr_title}',
@@ -327,7 +327,7 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
             'Toplam: {count} inceleme'
         ),
         'link': '',
-        'vars': ['job_no', 'task_title', 'department', 'actor', 'review_id', 'count', 'review_ids'],
+        'vars': ['job_no', 'task_title', 'department', 'actor', 'review_id', 'count', 'review_ids', 'link'],
     },
     Notification.QC_REVIEW_APPROVED: {
         'title': '[KK Onaylandı] {job_no} \u2014 {task_title}',
@@ -336,7 +336,7 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
             'İnceleme ID: #{review_id}'
         ),
         'link': '',
-        'vars': ['job_no', 'task_title', 'review_id'],
+        'vars': ['job_no', 'task_title', 'review_id', 'link'],
     },
     Notification.QC_REVIEW_REJECTED: {
         'title': '[KK Reddedildi] {job_no} \u2014 {task_title}',
@@ -349,7 +349,7 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
             'Otomatik NCR oluşturuldu.'
         ),
         'link': '',
-        'vars': ['job_no', 'task_title', 'review_id', 'comment'],
+        'vars': ['job_no', 'task_title', 'review_id', 'comment', 'link'],
     },
     Notification.NCR_CREATED: {
         'title': '[NCR Oluşturuldu] {ncr_number} \u2014 {job_no}',
@@ -361,7 +361,7 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
             'Açıklama: {description}'
         ),
         'link': '',
-        'vars': ['ncr_number', 'job_no', 'task_title', 'description'],
+        'vars': ['ncr_number', 'job_no', 'task_title', 'description', 'link'],
     },
     Notification.NCR_SUBMITTED: {
         'title': '[NCR Onay Bekliyor] {ncr_number} \u2014 {ncr_title}',
@@ -374,7 +374,7 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
             'Açıklama: {description}'
         ),
         'link': '',
-        'vars': ['ncr_number', 'ncr_title', 'job_no', 'severity', 'description'],
+        'vars': ['ncr_number', 'ncr_title', 'job_no', 'severity', 'description', 'link'],
     },
     Notification.NCR_APPROVED: {
         'title': '[NCR Onaylandı] {ncr_number} \u2014 {ncr_title}',
@@ -386,7 +386,7 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
             'Önem: {severity}'
         ),
         'link': '',
-        'vars': ['ncr_number', 'ncr_title', 'job_no', 'severity'],
+        'vars': ['ncr_number', 'ncr_title', 'job_no', 'severity', 'link'],
     },
     Notification.NCR_REJECTED: {
         'title': '[NCR Reddedildi] {ncr_number} \u2014 {ncr_title}',
@@ -399,7 +399,7 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
             'Lütfen NCR\'ı güncelleyip yeniden gönderin.'
         ),
         'link': '',
-        'vars': ['ncr_number', 'ncr_title', 'job_no', 'comment'],
+        'vars': ['ncr_number', 'ncr_title', 'job_no', 'comment', 'link'],
     },
     Notification.NCR_ASSIGNED: {
         'title': '[NCR Atandı] {ncr_number} \u2014 {ncr_title}',
@@ -412,7 +412,7 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
             'Açıklama: {description}'
         ),
         'link': '',
-        'vars': ['ncr_number', 'ncr_title', 'job_no', 'severity', 'description'],
+        'vars': ['ncr_number', 'ncr_title', 'job_no', 'severity', 'description', 'link'],
     },
     Notification.SUB_APPROVAL_REQUESTED: {
         'title': '[Onay Gerekli] Taşeron Hakedişi \u2013 {subcontractor} {year}/{month}',
@@ -422,7 +422,7 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
             '{reason}'
         ),
         'link': '',
-        'vars': ['subcontractor', 'year', 'month', 'currency', 'total', 'reason'],
+        'vars': ['subcontractor', 'year', 'month', 'currency', 'total', 'reason', 'link'],
     },
     Notification.SUB_APPROVED: {
         'title': '[Taşeron Hakedişi Onaylandı] {subcontractor} {year}/{month}',
@@ -432,7 +432,7 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
             '{comment}'
         ),
         'link': '',
-        'vars': ['subcontractor', 'year', 'month', 'currency', 'total', 'comment'],
+        'vars': ['subcontractor', 'year', 'month', 'currency', 'total', 'comment', 'link'],
     },
     Notification.SUB_REJECTED: {
         'title': '[Taşeron Hakedişi Reddedildi] {subcontractor} {year}/{month}',
@@ -442,7 +442,7 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
             '{comment}'
         ),
         'link': '',
-        'vars': ['subcontractor', 'year', 'month', 'currency', 'total', 'comment'],
+        'vars': ['subcontractor', 'year', 'month', 'currency', 'total', 'comment', 'link'],
     },
     Notification.PLAN_APPROVAL_REQUESTED: {
         'title': '[Onay Gerekli] Departman Talebi #{dr_id} \u2013 {dr_title}',
@@ -499,7 +499,7 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
             'Lütfen sistemden onaylayın.'
         ),
         'link': '',
-        'vars': ['username', 'full_name', 'team', 'requested_at'],
+        'vars': ['username', 'full_name', 'team', 'requested_at', 'link'],
     },
 }
 

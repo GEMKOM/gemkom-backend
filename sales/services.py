@@ -191,6 +191,7 @@ def _notify_approvers_on_submission(offer: SalesOffer, wf):
             notification_type=Notification.SALES_APPROVAL_REQUESTED,
             title=title,
             body=body,
+            link=link,
             source_type='sales_offer',
             source_id=offer.id,
         )
@@ -240,12 +241,14 @@ def _notify_dept_heads_on_consultation(offer: SalesOffer, tasks: list):
 
         for task in tasks:
             ctx = {
-                'offer_no':    offer.offer_no,
-                'offer_title': offer.title,
-                'customer':    offer.customer.name,
-                'department':  task.get_department_display(),
-                'task_title':  task.title,
-                'notes':       task.description or '',
+                'offer_no':        offer.offer_no,
+                'offer_title':     offer.title,
+                'customer':        offer.customer.name,
+                'department':      task.get_department_display(),
+                'department_code': task.department,
+                'task_id':         task.id,
+                'task_title':      task.title,
+                'notes':           task.description or '',
             }
             title, body, link = render_notification(Notification.SALES_CONSULTATION, ctx, route_link)
 
@@ -293,6 +296,24 @@ def _get_sales_offer_policy():
     return policy
 
 
+def rollback_to_pricing(offer: SalesOffer) -> None:
+    """
+    Cancel any active approval workflow and move the offer back to 'pricing'.
+    Called when items are added/edited/deleted after submission or approval.
+    """
+    from django.contrib.contenttypes.models import ContentType
+    from approvals.models import ApprovalWorkflow
+    ct = ContentType.objects.get_for_model(SalesOffer)
+    ApprovalWorkflow.objects.filter(
+        content_type=ct,
+        object_id=offer.id,
+        is_complete=False,
+        is_rejected=False,
+    ).update(is_rejected=True)
+    offer.status = 'pricing'
+    offer.save(update_fields=['status', 'updated_at'])
+
+
 def submit_for_approval(offer: SalesOffer, user):
     """
     Submit the offer for internal approval.
@@ -326,6 +347,17 @@ def submit_for_approval(offer: SalesOffer, user):
         )
 
         policy = _get_sales_offer_policy()
+
+        # Cancel any stale active workflows before creating a new one
+        from django.contrib.contenttypes.models import ContentType
+        from approvals.models import ApprovalWorkflow
+        ct = ContentType.objects.get_for_model(SalesOffer)
+        ApprovalWorkflow.objects.filter(
+            content_type=ct,
+            object_id=offer.id,
+            is_complete=False,
+            is_rejected=False,
+        ).update(is_rejected=True)
 
         offer.approval_round += 1
         offer.status = 'pending_approval'

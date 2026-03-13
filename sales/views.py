@@ -234,9 +234,10 @@ class SalesOfferViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], url_path='add-items')
     def add_items(self, request, pk=None):
         offer = self.get_object()
-        if offer.status in ('won', 'cancelled'):
+        _TERMINAL = ('won', 'lost', 'cancelled', 'converted')
+        if offer.status in _TERMINAL:
             return Response(
-                {'detail': 'Kazanılmış veya iptal edilmiş tekliflere kalem eklenemez.'},
+                {'detail': 'Bu durumda teklife kalem eklenemez.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -251,6 +252,9 @@ class SalesOfferViewSet(viewsets.ModelViewSet):
                 **item_data,
             )
             created.append(item)
+
+        if offer.status in ('pending_approval', 'approved', 'submitted_customer'):
+            services.rollback_to_pricing(offer)
 
         return Response(
             SalesOfferItemSerializer(created, many=True).data,
@@ -268,20 +272,34 @@ class SalesOfferViewSet(viewsets.ModelViewSet):
         if request.method == 'GET':
             return Response(SalesOfferItemSerializer(item).data)
 
+        _TERMINAL = ('won', 'lost', 'cancelled', 'converted')
+
         if request.method == 'PATCH':
+            if offer.status in _TERMINAL:
+                return Response(
+                    {'detail': 'Bu durumda kalem güncellenemez.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
             serializer = SalesOfferItemCreateSerializer(item, data=request.data, partial=True)
             serializer.is_valid(raise_exception=True)
             serializer.save()
-            if (
-                item.unit_price is not None
-                and offer.status in ('draft', 'consultation')
-            ):
-                offer.status = 'pricing'
-                offer.save(update_fields=['status', 'updated_at'])
+            if offer.status in ('draft', 'consultation'):
+                if item.unit_price is not None:
+                    offer.status = 'pricing'
+                    offer.save(update_fields=['status', 'updated_at'])
+            elif offer.status in ('pending_approval', 'approved', 'submitted_customer'):
+                services.rollback_to_pricing(offer)
             return Response(SalesOfferItemSerializer(item).data)
 
         # DELETE
+        if offer.status in _TERMINAL:
+            return Response(
+                {'detail': 'Bu durumda kalem silinemez.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         item.delete()
+        if offer.status in ('pending_approval', 'approved', 'submitted_customer'):
+            services.rollback_to_pricing(offer)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     # ------------------------------------------------------------------ files
