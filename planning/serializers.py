@@ -663,7 +663,7 @@ class PlanningRequestUpdateSerializer(serializers.Serializer):
     title = serializers.CharField(max_length=255, required=False)
     description = serializers.CharField(required=False, allow_blank=True)
     needed_date = serializers.DateField(required=False, allow_null=True)
-    priority = serializers.ChoiceField(choices=['low', 'normal', 'high', 'urgent'], required=False)
+    priority = serializers.ChoiceField(choices=['normal', 'urgent', 'critical'], required=False)
     check_inventory = serializers.BooleanField(required=False)
 
     # Items payload - if provided, replaces all existing items
@@ -951,7 +951,7 @@ class PlanningRequestCreateSerializer(serializers.Serializer):
     title = serializers.CharField(max_length=255, required=False)
     description = serializers.CharField(required=False, allow_blank=True)
     needed_date = serializers.DateField(required=False, allow_null=True)
-    priority = serializers.ChoiceField(choices=['low', 'normal', 'high', 'urgent'], default='normal', required=False)
+    priority = serializers.ChoiceField(choices=['normal', 'urgent', 'critical'], default='normal', required=False)
     # Inventory control
     check_inventory = serializers.BooleanField(
         default=False,

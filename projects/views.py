@@ -573,35 +573,94 @@ class JobOrderViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get'])
     def files(self, request, job_no=None):
-        """Get all files for this job order."""
+        """Get all files for this job order (direct uploads + offer files)."""
         job_order = self.get_object()
-        files = job_order.files.select_related('uploaded_by')
 
-        # Optional filter by file_type
         file_type = request.query_params.get('file_type')
-        if file_type:
-            files = files.filter(file_type=file_type)
 
-        serializer = JobOrderFileSerializer(files, many=True, context={'request': request})
-        return Response(serializer.data)
+        # Direct uploads
+        direct_qs = job_order.files.select_related('uploaded_by')
+        if file_type:
+            direct_qs = direct_qs.filter(file_type=file_type)
+        serializer = JobOrderFileSerializer(direct_qs, many=True, context={'request': request})
+        direct_files = [{'source': 'job_order', **f} for f in serializer.data]
+
+        # Offer files (from sales conversion)
+        offer_qs = job_order.offer_files.select_related('uploaded_by', 'offer')
+        if file_type:
+            offer_qs = offer_qs.filter(file_type=file_type)
+        offer_files = []
+        for f in offer_qs:
+            file_url = request.build_absolute_uri(f.file.url) if f.file else None
+            offer_files.append({
+                'source': 'sales_offer',
+                'id': f.id,
+                'offer_no': f.offer.offer_no,
+                'file_url': file_url,
+                'filename': f.file.name.split('/')[-1] if f.file else None,
+                'file_size': f.file.size if f.file else None,
+                'file_type': f.file_type,
+                'file_type_display': f.get_file_type_display(),
+                'name': f.name,
+                'description': f.description,
+                'uploaded_at': f.uploaded_at,
+                'uploaded_by': f.uploaded_by_id,
+                'uploaded_by_name': f.uploaded_by.get_full_name() if f.uploaded_by else '',
+            })
+
+        return Response({
+            'job_order_files': direct_files,
+            'offer_files': offer_files,
+        })
 
     @action(detail=True, methods=['post'], parser_classes=[MultiPartParser, FormParser])
     def upload_file(self, request, job_no=None):
-        """Upload a file to this job order."""
+        """Upload one or more files to this job order.
+
+        Send multiple files as repeated `files` fields (multipart).
+        Shared metadata (file_type, name, description) applies to all files.
+        """
         job_order = self.get_object()
+        uploaded_files = request.FILES.getlist('files')
 
-        serializer = JobOrderFileUploadSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+        if not uploaded_files:
+            # Fallback: single-file field named 'file'
+            single = request.FILES.get('file')
+            if not single:
+                return Response(
+                    {'status': 'error', 'message': 'En az bir dosya gönderilmelidir.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            uploaded_files = [single]
 
-        file_obj = serializer.save(
-            job_order=job_order,
-            uploaded_by=request.user
-        )
+        file_type = request.data.get('file_type', 'other')
+        name = request.data.get('name', '')
+        description = request.data.get('description', '')
+
+        created = []
+        errors = []
+
+        for f in uploaded_files:
+            serializer = JobOrderFileUploadSerializer(data={
+                'file': f,
+                'file_type': file_type,
+                'name': name or f.name,
+                'description': description,
+            })
+            if serializer.is_valid():
+                file_obj = serializer.save(job_order=job_order, uploaded_by=request.user)
+                created.append(JobOrderFileSerializer(file_obj, context={'request': request}).data)
+            else:
+                errors.append({'filename': f.name, 'errors': serializer.errors})
+
+        if errors and not created:
+            return Response({'status': 'error', 'errors': errors}, status=status.HTTP_400_BAD_REQUEST)
 
         return Response({
             'status': 'success',
-            'message': 'Dosya yüklendi.',
-            'file': JobOrderFileSerializer(file_obj, context={'request': request}).data
+            'message': f'{len(created)} dosya yüklendi.',
+            'files': created,
+            **(({'errors': errors}) if errors else {}),
         }, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=['delete'], url_path='files/(?P<file_id>[^/.]+)')
