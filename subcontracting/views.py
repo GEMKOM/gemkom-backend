@@ -19,6 +19,7 @@ from .models import (
 from .serializers import (
     SubcontractingAssignmentSerializer,
     SubcontractingPriceTierSerializer,
+    SubcontractorOverviewSerializer,
     SubcontractorSerializer,
     SubcontractorStatementAdjustmentSerializer,
     SubcontractorStatementListSerializer,
@@ -42,6 +43,36 @@ class SubcontractorViewSet(viewsets.ModelViewSet):
         if is_active is not None:
             qs = qs.filter(is_active=is_active.lower() in ('true', '1', 'yes'))
         return qs
+
+    @action(detail=False, methods=['get'], url_path='overview')
+    def overview(self, request):
+        """
+        Returns all subcontractors with their job orders, earned amounts, and
+        next-award preview (unbilled cost per assignment).
+
+        GET /subcontracting/subcontractors/overview/
+
+        Optional query params:
+          ?is_active=true  – filter to active subcontractors only
+        """
+        from .models import SubcontractingAssignment
+
+        qs = Subcontractor.objects.prefetch_related(
+            models.Prefetch(
+                'assignments',
+                queryset=SubcontractingAssignment.objects.select_related(
+                    'department_task__job_order__customer',
+                    'price_tier',
+                ).order_by('department_task__job_order_id', 'id'),
+            )
+        ).order_by('name')
+
+        is_active = request.query_params.get('is_active')
+        if is_active is not None:
+            qs = qs.filter(is_active=is_active.lower() in ('true', '1', 'yes'))
+
+        serializer = SubcontractorOverviewSerializer(qs, many=True)
+        return Response(serializer.data)
 
 
 # ---------------------------------------------------------------------------

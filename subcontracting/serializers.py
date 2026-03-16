@@ -313,3 +313,122 @@ class SubcontractorStatementListSerializer(serializers.ModelSerializer):
             'currency', 'work_total', 'adjustment_total', 'grand_total',
             'created_at', 'submitted_at', 'approved_at',
         ]
+
+
+# ---------------------------------------------------------------------------
+# Subcontractor Overview
+# ---------------------------------------------------------------------------
+
+def _assignment_costs(assignment) -> dict:
+    """
+    Compute the four cost breakdown values for a single assignment.
+
+    - total_billed_cost      : cost for last_billed_progress (already invoiced & approved)
+    - next_bill_cost         : cost for unbilled progress done so far (current - last_billed)
+    - unbilled_remaining_cost: cost for work not yet done (100% - current_progress)
+    - total_cost             : full contract value at 100%
+    """
+    a = assignment
+    ppkg = a.price_tier.price_per_kg
+    wkg  = a.allocated_weight_kg
+
+    total_cost               = (wkg * ppkg).quantize(Decimal('0.01'))
+    total_billed_cost        = (wkg * (a.last_billed_progress / Decimal('100')) * ppkg).quantize(Decimal('0.01'))
+    next_bill_cost           = a.unbilled_cost
+    remaining_progress       = max(Decimal('0'), Decimal('100') - a.current_progress)
+    unbilled_remaining_cost  = (wkg * (remaining_progress / Decimal('100')) * ppkg).quantize(Decimal('0.01'))
+
+    return {
+        'allocated_weight_kg':     wkg,
+        'total_billed_cost':       total_billed_cost,
+        'next_bill_cost':          next_bill_cost,
+        'unbilled_remaining_cost': unbilled_remaining_cost,
+        'total_cost':              total_cost,
+    }
+
+
+class SubcontractorOverviewJobOrderSerializer(serializers.Serializer):
+    """Aggregated cost breakdown for one job order under a subcontractor."""
+    job_no                   = serializers.CharField()
+    job_title                = serializers.CharField()
+    job_status               = serializers.CharField()
+    customer_name            = serializers.CharField()
+    currency                 = serializers.CharField()
+    allocated_weight_kg      = serializers.DecimalField(max_digits=12, decimal_places=2)
+    total_billed_cost        = serializers.DecimalField(max_digits=16, decimal_places=2)
+    next_bill_cost           = serializers.DecimalField(max_digits=16, decimal_places=2)
+    unbilled_remaining_cost  = serializers.DecimalField(max_digits=16, decimal_places=2)
+    total_cost               = serializers.DecimalField(max_digits=16, decimal_places=2)
+
+
+class SubcontractorOverviewSerializer(serializers.ModelSerializer):
+    """Subcontractor with aggregated cost breakdown across all job orders."""
+    job_orders              = serializers.SerializerMethodField()
+    allocated_weight_kg     = serializers.SerializerMethodField()
+    total_billed_cost       = serializers.SerializerMethodField()
+    next_bill_cost          = serializers.SerializerMethodField()
+    unbilled_remaining_cost = serializers.SerializerMethodField()
+    total_cost              = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Subcontractor
+        fields = [
+            'id', 'name', 'short_name', 'contact_person', 'phone', 'email',
+            'default_currency', 'is_active',
+            'allocated_weight_kg',
+            'total_billed_cost', 'next_bill_cost',
+            'unbilled_remaining_cost', 'total_cost',
+            'job_orders',
+        ]
+
+    def _costs_by_job(self, obj):
+        """Build and cache per-job aggregated cost dicts."""
+        if not hasattr(obj, '_overview_costs'):
+            groups: dict[str, list] = {}
+            for a in obj.assignments.all():
+                groups.setdefault(a.department_task.job_order_id, []).append(a)
+
+            jobs = []
+            for job_no, job_assignments in sorted(groups.items()):
+                job_order = job_assignments[0].department_task.job_order
+                currency  = job_assignments[0].cost_currency
+
+                totals = {
+                    'allocated_weight_kg':     Decimal('0.00'),
+                    'total_billed_cost':       Decimal('0.00'),
+                    'next_bill_cost':          Decimal('0.00'),
+                    'unbilled_remaining_cost': Decimal('0.00'),
+                    'total_cost':              Decimal('0.00'),
+                }
+                for a in job_assignments:
+                    c = _assignment_costs(a)
+                    for k in totals:
+                        totals[k] += c[k]
+
+                jobs.append({
+                    'job_no':        job_no,
+                    'job_title':     job_order.title,
+                    'job_status':    job_order.status,
+                    'customer_name': job_order.customer.name if job_order.customer_id else '',
+                    'currency':      currency,
+                    **totals,
+                })
+
+            obj._overview_costs = jobs
+        return obj._overview_costs
+
+    def get_job_orders(self, obj):
+        return SubcontractorOverviewJobOrderSerializer(
+            self._costs_by_job(obj), many=True
+        ).data
+
+    def _sum_field(self, obj, field):
+        return str(sum(
+            (j[field] for j in self._costs_by_job(obj)), Decimal('0.00')
+        ))
+
+    def get_allocated_weight_kg(self, obj):     return self._sum_field(obj, 'allocated_weight_kg')
+    def get_total_billed_cost(self, obj):       return self._sum_field(obj, 'total_billed_cost')
+    def get_next_bill_cost(self, obj):          return self._sum_field(obj, 'next_bill_cost')
+    def get_unbilled_remaining_cost(self, obj): return self._sum_field(obj, 'unbilled_remaining_cost')
+    def get_total_cost(self, obj):              return self._sum_field(obj, 'total_cost')
