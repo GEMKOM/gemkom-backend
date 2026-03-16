@@ -156,9 +156,9 @@ class GenericTimerStopView(APIView):
 
             # This permission logic is specific but can be generalized later if needed.
             allowed = False
-            if request_user.is_admin or timer_user == request_user:
+            if (request_user.is_staff or request_user.is_superuser) or timer_user == request_user:
                 allowed = True
-            elif request_profile.work_location == "office" and (same_team or (timer_profile.team == "machining" and request_profile.team == "manufacturing")):
+            elif (request_user.is_staff or request_user.is_superuser) and (same_team or (timer_profile.team == "machining" and request_profile.team == "manufacturing")):
                 allowed = True
             elif getattr(request_profile, "is_lead", False) and same_team:
                 allowed = True

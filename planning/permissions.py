@@ -1,19 +1,12 @@
 from rest_framework.permissions import BasePermission
-
-DELIVERY_TEAMS = {"procurement", "planning", "warehouse"}
+from users.permissions import user_has_role_perm
 
 
 class CanMarkDelivered(BasePermission):
-    """Allow superusers and users in procurement, planning, or warehouse teams."""
+    """Allow superusers and users with the mark_delivered permission."""
 
     def has_permission(self, request, view):
-        u = request.user
-        if not u or not u.is_authenticated:
-            return False
-        if getattr(u, "is_superuser", False):
-            return True
-        prof = getattr(u, "profile", None)
-        return bool(prof and prof.team in DELIVERY_TEAMS)
+        return user_has_role_perm(request.user, 'mark_delivered')
 
     def has_object_permission(self, request, view, obj):
         return self.has_permission(request, view)

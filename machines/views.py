@@ -212,7 +212,7 @@ class MachineFaultListCreateView(generics.ListCreateAPIView):
 
         query = Q()
         # Restrict non-admin, non-maintenance users to their own faults
-        if not getattr(user, "is_admin", False) and getattr(profile, "team", "") != "maintenance":
+        if not (user.is_staff or user.is_superuser) and getattr(profile, "team", "") != "maintenance":
             query &= Q(reported_by=user)
 
         # Backwards-compat: still honor ?machine_id=... (also provided by filterset_class)
@@ -391,7 +391,7 @@ class MachineFaultDetailView(APIView):
             user_profile = getattr(request.user, 'profile', None)
             user_team = getattr(user_profile, 'team', None) if user_profile else None
             is_maintenance = user_team == 'maintenance'
-            is_admin = request.user.is_superuser or getattr(request.user, 'is_admin', False)
+            is_admin = request.user.is_superuser or request.user.is_staff
 
             if not is_maintenance and not is_admin:
                 return Response(

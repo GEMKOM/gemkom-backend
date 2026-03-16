@@ -49,22 +49,6 @@ class UserProfile(models.Model):
     def __str__(self):
         return self.user.username
     
-    @property
-    def is_admin(self) -> bool:
-        return bool(getattr(self.user, "is_superuser", False) or self.work_location == "office")
-
-def _user_is_admin(self) -> bool:
-    # guards AnonymousUser and missing profile
-    if not getattr(self, "is_authenticated", False):
-        return False
-    if getattr(self, "is_superuser", False):
-        return True
-    prof = getattr(self, "profile", None)
-    return bool(prof and getattr(prof, "work_location", None) == "office")
-
-# attach as a property
-User.add_to_class("is_admin", property(_user_is_admin))
-
 class WageRate(models.Model):
     """
     Versioned wage records per user.
@@ -113,3 +97,42 @@ class WageRate(models.Model):
 
     def __str__(self):
         return f"{self.user.username} @ {self.effective_from} {self.base_monthly} {self.currency}"
+
+
+class UserPermissionOverride(models.Model):
+    """
+    Explicit per-user permission grants or denies.
+
+    Overrides take priority over group membership in user_has_role_perm():
+      - granted=True  → user has this permission regardless of groups
+      - granted=False → user is explicitly denied this permission regardless of groups
+
+    Use sparingly. Prefer assigning users to additional groups instead.
+    """
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='permission_overrides',
+    )
+    codename = models.CharField(max_length=100)
+    granted = models.BooleanField(
+        default=True,
+        help_text='True = explicit grant, False = explicit deny',
+    )
+    reason = models.CharField(max_length=255, blank=True)
+    created_by = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='+',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = [('user', 'codename')]
+        ordering = ['user', 'codename']
+
+    def __str__(self):
+        action = 'GRANT' if self.granted else 'DENY'
+        return f'{action} {self.codename} → {self.user_id}'

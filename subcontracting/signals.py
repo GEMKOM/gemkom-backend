@@ -67,8 +67,9 @@ def on_department_task_saved(sender, instance, **kwargs):
     Uses transaction.on_commit + thread-local deduplication to avoid
     infinite loops and redundant recalculations.
     """
-    # Only care about subtasks (have a parent)
-    if not instance.parent_id:
+    # Only care about subtasks (have a parent), and never painting tasks
+    # (paint cost is price=0 and not billed via statements).
+    if not instance.parent_id or instance.task_type == 'painting':
         return
 
     # Cheap check: does this task have a subcontracting assignment?
@@ -112,8 +113,14 @@ def on_price_tier_changed(sender, instance, **kwargs):
     """
     When a price tier is added, updated, or deleted, sync the paint assignment
     weight for that job order (paint weight = sum of all non-paint tiers).
+
+    Skip when the Boya tier itself is saved — ensure_paint_assignment already
+    calls sync_paint_assignment_weight explicitly, and reacting to the Boya tier
+    save would cause a redundant (and in autocommit mode: blocking) second sync.
     """
-    from subcontracting.services.painting import sync_paint_assignment_weight
+    from subcontracting.services.painting import PAINT_TIER_NAME, sync_paint_assignment_weight
+    if instance.name == PAINT_TIER_NAME:
+        return
     job_order = instance.job_order
 
     transaction.on_commit(lambda: sync_paint_assignment_weight(job_order))

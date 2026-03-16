@@ -13,7 +13,9 @@ from machines.serializers import SimpleUserSerializer
 from users.filters import UserFilter, WageOrderingFilter
 from users.helpers import _team_manager_user_ids
 from users.models import UserProfile, WageRate
-from users.permissions import IsAdmin, IsHRorAuthorized
+from users.permissions import IsAdmin, IsHRorAuthorized, user_has_role_perm, _legacy_team_check
+from users.apps import CUSTOM_PERMISSIONS
+from users.constants import GROUP_DISPLAY_NAMES
 from .serializers import AdminUserUpdateSerializer, CurrentUserUpdateSerializer, PasswordResetSerializer, PublicUserSerializer, UserCreateSerializer, UserListSerializer, UserPasswordResetSerializer, UserWageOverviewSerializer, WageRateSerializer, WageRateSlimSerializer
 from rest_framework.permissions import IsAuthenticated, IsAdminUser
 from rest_framework.viewsets import ModelViewSet
@@ -49,10 +51,7 @@ class UserViewSet(ModelViewSet):
         if not user.is_authenticated:
             return qs.filter(is_active=True, profile__work_location='workshop')
 
-        if user.is_admin:
-            return qs
-
-        if getattr(user.profile, 'work_location', None) == 'office':
+        if user.is_staff or user.is_superuser:
             return qs
 
         return qs.filter(is_active=True, profile__work_location='workshop')
@@ -74,9 +73,7 @@ class UserViewSet(ModelViewSet):
             user = self.request.user
             if not user.is_authenticated:
                 return PublicUserSerializer
-            if user.is_admin:
-                return UserListSerializer
-            if getattr(user.profile, 'work_location', None) == 'office':
+            if user.is_staff or user.is_superuser:
                 return UserListSerializer
             return PublicUserSerializer
         return UserListSerializer
@@ -110,7 +107,7 @@ class CurrentUserView(APIView):
     def put(self, request):
         user = request.user
 
-        if user.is_admin:
+        if user.is_staff or user.is_superuser:
             serializer_class = AdminUserUpdateSerializer
         else:
             serializer_class = CurrentUserUpdateSerializer
@@ -397,3 +394,354 @@ class UserWageRateListView(ListAPIView):
             qs = qs.filter(id__in=Subquery(latest.values("id")[:1]))
 
         return qs
+
+
+# ---------------------------------------------------------------------------
+# Permission discovery endpoint
+# ---------------------------------------------------------------------------
+
+_PERMISSION_CODENAMES = [codename for codename, _ in CUSTOM_PERMISSIONS]
+
+
+class UserPermissionsView(APIView):
+    """
+    GET /users/me/permissions/
+
+    Returns a flat dict of {codename: bool} for every custom permission
+    codename. The frontend uses this to show/hide pages and actions.
+
+    Django caches all permissions after the first has_perm() call, so the
+    entire dict is resolved in a single DB query per request.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        if user.is_superuser:
+            return Response({c: True for c in _PERMISSION_CODENAMES})
+        return Response({c: user_has_role_perm(user, c) for c in _PERMISSION_CODENAMES})
+
+
+class GroupListView(APIView):
+    """
+    GET /users/groups/
+
+    Returns all role groups with their Turkish display names and member counts.
+    Useful for frontend filters, dropdowns, and mention pickers.
+
+    Response:
+      [
+        {"name": "planning_team", "display_name": "Planlama Ekibi", "member_count": 5},
+        ...
+      ]
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from django.contrib.auth.models import Group
+        groups = (
+            Group.objects
+            .filter(name__in=GROUP_DISPLAY_NAMES)
+            .prefetch_related('user_set')
+            .order_by('name')
+        )
+        data = [
+            {
+                'name': g.name,
+                'display_name': GROUP_DISPLAY_NAMES[g.name],
+                'member_count': g.user_set.count(),
+            }
+            for g in groups
+        ]
+        return Response(data)
+
+
+# ---------------------------------------------------------------------------
+# Centralized permissions management API
+# ---------------------------------------------------------------------------
+
+class UserPermissionDetailView(APIView):
+    """
+    GET /users/<user_id>/permissions/
+
+    Returns the complete permission state for a single user:
+      - groups they belong to (name + Turkish display name)
+      - per-codename effective permission (bool) resolved via user_has_role_perm
+      - explicit UserPermissionOverride records for this user
+
+    Only accessible by admins / superusers.
+    """
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request, user_id):
+        from django.contrib.auth.models import Group
+
+        target = get_object_or_404(
+            User.objects.select_related('profile').prefetch_related('groups', 'permissions', 'permission_overrides'),
+            pk=user_id,
+        )
+
+        # Groups
+        group_names = sorted(g.name for g in target.groups.all())
+        groups_data = [
+            {'name': g, 'display_name': GROUP_DISPLAY_NAMES.get(g, g)}
+            for g in group_names
+        ]
+
+        # Build group→perms map for this user's groups only
+        group_perms_detail: dict[str, set[str]] = {}
+        for g in (
+            Group.objects.filter(name__in=group_names).prefetch_related('permissions')
+        ):
+            group_perms_detail[g.name] = {p.codename for p in g.permissions.all()}
+
+        overrides_map = {o.codename: o for o in target.permission_overrides.all()}
+        codename_set = set(_PERMISSION_CODENAMES)
+        prof = getattr(target, 'profile', None)
+
+        effective = {}
+        for c in _PERMISSION_CODENAMES:
+            if target.is_superuser:
+                effective[c] = {'value': True, 'source': 'superuser', 'source_detail': ''}
+            elif c in overrides_map:
+                o = overrides_map[c]
+                src = 'override_grant' if o.granted else 'override_deny'
+                effective[c] = {'value': o.granted, 'source': src, 'source_detail': o.reason}
+            else:
+                granting_groups = [
+                    gn for gn, codes in group_perms_detail.items() if c in codes
+                ]
+                if granting_groups:
+                    effective[c] = {
+                        'value': True,
+                        'source': 'group',
+                        'source_detail': ', '.join(sorted(granting_groups)),
+                    }
+                elif prof and _legacy_team_check(target, c):
+                    effective[c] = {'value': True, 'source': 'legacy', 'source_detail': f'team={prof.team}'}
+                else:
+                    effective[c] = {'value': False, 'source': 'none', 'source_detail': ''}
+
+        overrides_data = [
+            {
+                'codename': o.codename,
+                'granted': o.granted,
+                'reason': o.reason,
+                'created_at': o.created_at,
+                'created_by': o.created_by_id,
+            }
+            for o in overrides_map.values()
+        ]
+
+        return Response({
+            'user': {
+                'id': target.pk,
+                'username': target.username,
+                'full_name': target.get_full_name(),
+                'is_superuser': target.is_superuser,
+            },
+            'groups': groups_data,
+            'effective_permissions': effective,
+            'overrides': overrides_data,
+        })
+
+
+class UserGroupMembershipView(APIView):
+    """
+    POST   /users/<user_id>/groups/<group_name>/  → add user to group
+    DELETE /users/<user_id>/groups/<group_name>/  → remove user from group
+
+    Only accessible by admins / superusers.
+    """
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def post(self, request, user_id, group_name):
+        from django.contrib.auth.models import Group
+
+        if group_name not in GROUP_DISPLAY_NAMES:
+            return Response({'detail': 'Unknown group.'}, status=400)
+
+        target = get_object_or_404(User, pk=user_id)
+        group = get_object_or_404(Group, name=group_name)
+        target.groups.add(group)
+        return Response({'detail': f'User added to {GROUP_DISPLAY_NAMES[group_name]}.'})
+
+    def delete(self, request, user_id, group_name):
+        from django.contrib.auth.models import Group
+
+        if group_name not in GROUP_DISPLAY_NAMES:
+            return Response({'detail': 'Unknown group.'}, status=400)
+
+        target = get_object_or_404(User, pk=user_id)
+        group = get_object_or_404(Group, name=group_name)
+        target.groups.remove(group)
+        return Response({'detail': f'User removed from {GROUP_DISPLAY_NAMES[group_name]}.'})
+
+
+class UserPermissionOverrideView(APIView):
+    """
+    POST   /users/<user_id>/permission-overrides/
+      Body: {"codename": "...", "granted": true/false, "reason": "..."}
+      Creates or updates a UserPermissionOverride for this user.
+
+    DELETE /users/<user_id>/permission-overrides/<codename>/
+      Removes the override (reverts to group-based resolution).
+
+    Only accessible by admins / superusers.
+    """
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def post(self, request, user_id):
+        from users.models import UserPermissionOverride
+
+        target = get_object_or_404(User, pk=user_id)
+        codename = (request.data.get('codename') or '').strip()
+        granted = request.data.get('granted')
+        reason = (request.data.get('reason') or '').strip()
+
+        if codename not in _PERMISSION_CODENAMES:
+            return Response({'detail': f'Unknown codename: {codename}'}, status=400)
+        if granted is None:
+            return Response({'detail': '"granted" (true/false) is required.'}, status=400)
+
+        override, created = UserPermissionOverride.objects.update_or_create(
+            user=target,
+            codename=codename,
+            defaults={
+                'granted': bool(granted),
+                'reason': reason,
+                'created_by': request.user,
+            },
+        )
+        action_word = 'Created' if created else 'Updated'
+        return Response({
+            'detail': f'{action_word} override.',
+            'codename': override.codename,
+            'granted': override.granted,
+            'reason': override.reason,
+        }, status=201 if created else 200)
+
+    def delete(self, request, user_id, codename):
+        from users.models import UserPermissionOverride
+
+        target = get_object_or_404(User, pk=user_id)
+        deleted, _ = UserPermissionOverride.objects.filter(user=target, codename=codename).delete()
+        if deleted:
+            return Response({'detail': 'Override removed.'})
+        return Response({'detail': 'No override found for this codename.'}, status=404)
+
+
+class UserPermissionsMatrixView(APIView):
+    """
+    GET /users/permissions/matrix/
+
+    Returns a compact matrix of all active office users × all permission codenames.
+    Useful for the ERP-style access management table.
+
+    Response:
+      {
+        "codenames": ["access_machining", ...],
+        "users": [
+          {
+            "id": 1,
+            "username": "ahmet",
+            "full_name": "Ahmet Yılmaz",
+            "groups": ["planning_team"],
+            "permissions": {"access_machining": false, "access_planning_write": true, ...}
+          },
+          ...
+        ]
+      }
+
+    Query params:
+      - active=true/false  (default: true)
+      - search=<str>       (username / first / last name)
+      - group=<group_name> (filter to users in a specific group)
+    """
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request):
+        from django.contrib.auth.models import Group, Permission
+
+        qs = (
+            User.objects
+            .select_related('profile')
+            .prefetch_related('groups', 'permission_overrides')
+            .order_by('username')
+        )
+
+        # Filters
+        active_param = request.query_params.get('active', 'true').lower()
+        if active_param in ('true', '1', 'yes'):
+            qs = qs.filter(is_active=True)
+        elif active_param in ('false', '0', 'no'):
+            qs = qs.filter(is_active=False)
+
+        search = (request.query_params.get('search') or '').strip()
+        if search:
+            qs = qs.filter(
+                Q(username__icontains=search) |
+                Q(first_name__icontains=search) |
+                Q(last_name__icontains=search)
+            )
+
+        group_filter = (request.query_params.get('group') or '').strip()
+        if group_filter:
+            qs = qs.filter(groups__name=group_filter)
+
+        # Build group_name → set(codenames) map in ONE query upfront.
+        # This avoids triggering has_perm() (which hits DB per user) in the loop.
+        group_perms: dict[str, set[str]] = {}
+        for gp in (
+            Group.objects
+            .filter(name__in=GROUP_DISPLAY_NAMES)
+            .prefetch_related('permissions')
+        ):
+            group_perms[gp.name] = {p.codename for p in gp.permissions.all()}
+
+        codename_set = set(_PERMISSION_CODENAMES)
+
+        def _resolve(u) -> dict:
+            if u.is_superuser:
+                return {c: {'value': True, 'source': 'superuser', 'source_detail': ''} for c in _PERMISSION_CODENAMES}
+
+            overrides = {o.codename: o for o in u.permission_overrides.all()}
+
+            # group_name → codenames granted by that group
+            granted_by_group: dict[str, set[str]] = {}
+            for g in u.groups.all():
+                for c in group_perms.get(g.name, set()) & codename_set:
+                    granted_by_group.setdefault(c, set()).add(g.name)
+
+            result = {}
+            prof = getattr(u, 'profile', None)
+            for c in _PERMISSION_CODENAMES:
+                if c in overrides:
+                    o = overrides[c]
+                    src = 'override_grant' if o.granted else 'override_deny'
+                    result[c] = {'value': o.granted, 'source': src, 'source_detail': o.reason}
+                elif c in granted_by_group:
+                    groups_str = ', '.join(sorted(granted_by_group[c]))
+                    result[c] = {'value': True, 'source': 'group', 'source_detail': groups_str}
+                elif prof and _legacy_team_check(u, c):
+                    result[c] = {'value': True, 'source': 'legacy', 'source_detail': f'team={prof.team}'}
+                else:
+                    result[c] = {'value': False, 'source': 'none', 'source_detail': ''}
+            return result
+
+        users_data = []
+        for u in qs:
+            group_names = [g.name for g in u.groups.all() if g.name in GROUP_DISPLAY_NAMES]
+            users_data.append({
+                'id': u.pk,
+                'username': u.username,
+                'full_name': u.get_full_name(),
+                'is_superuser': u.is_superuser,
+                'groups': group_names,
+                'permissions': _resolve(u),
+            })
+
+        return Response({
+            'codenames': _PERMISSION_CODENAMES,
+            'users': users_data,
+        })

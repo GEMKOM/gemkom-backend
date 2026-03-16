@@ -34,6 +34,7 @@ from .serializers import (
 )
 from .filters import PlanningRequestItemFilter, PlanningRequestFilter
 from .permissions import CanMarkDelivered
+from users.permissions import user_has_role_perm
 from approvals.models import ApprovalWorkflow, ApprovalStageInstance, ApprovalDecision
 
 
@@ -105,7 +106,7 @@ class DepartmentRequestViewSet(viewsets.ModelViewSet):
 
         # Filter based on user role
         # Superusers and planning team see all
-        if user.is_superuser or (hasattr(user, 'profile') and (user.profile.team == 'planning' or user.profile.occupation == 'manager')):
+        if user_has_role_perm(user, 'access_planning_write'):
             return qs
 
         # Regular users see only their own requests
@@ -223,7 +224,7 @@ class DepartmentRequestViewSet(viewsets.ModelViewSet):
         user = request.user
 
         # Only planning team and superusers can see this
-        if not (user.is_superuser or (hasattr(user, 'profile') and user.profile.team == 'planning')):
+        if not user_has_role_perm(user, 'access_planning_write'):
             return Response({"detail": "Only planning team can access this endpoint."}, status=403)
 
         queryset = self.get_queryset().filter(status='approved').order_by('-approved_at')
@@ -242,7 +243,7 @@ class DepartmentRequestViewSet(viewsets.ModelViewSet):
         user = request.user
 
         # Only planning team and superusers can see this
-        if not (user.is_superuser or (hasattr(user, 'profile') and user.profile.team == 'planning')):
+        if not user_has_role_perm(user, 'access_planning_write'):
             return Response({"detail": "Only planning team can access this endpoint."}, status=403)
 
         queryset = self.get_queryset().filter(status='transferred').order_by('-approved_at')
@@ -265,7 +266,7 @@ class DepartmentRequestViewSet(viewsets.ModelViewSet):
         user = request.user
 
         # Only planning team and superusers can mark as transferred
-        if not (user.is_superuser or (hasattr(user, 'profile') and user.profile.team == 'planning')):
+        if not user_has_role_perm(user, 'access_planning_write'):
             return Response({"detail": "Only planning team can mark requests as transferred."}, status=403)
 
         if dr.status != 'approved':
@@ -327,11 +328,11 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
             )
 
         # Planning team and superusers see all
-        if user.is_superuser or (hasattr(user, 'profile') and (user.profile.team == 'planning' or user.profile.team == 'warehouse')):
+        if user_has_role_perm(user, 'access_planning_write') or user_has_role_perm(user, 'access_warehouse_write'):
             return qs
 
         # Procurement team sees only 'ready' requests
-        if hasattr(user, 'profile') and user.profile.team == 'procurement':
+        if user_has_role_perm(user, 'access_procurement_write'):
             return qs.filter(status='ready')
 
         # Others see nothing
@@ -368,7 +369,7 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
         user = request.user
 
         # Only planning team can update
-        if not (user.is_superuser or (hasattr(user, 'profile') and user.profile.team == 'planning')):
+        if not user_has_role_perm(user, 'access_planning_write'):
             return Response(
                 {"detail": "Only planning team can update planning requests."},
                 status=403
@@ -397,7 +398,7 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
         user = request.user
 
         # Only procurement team can access
-        if not (user.is_superuser or (hasattr(user, 'profile') and user.profile.team == 'procurement')):
+        if not user_has_role_perm(user, 'access_procurement_write'):
             return Response({"detail": "Only procurement team can access this endpoint."}, status=403)
 
         queryset = self.get_queryset().filter(status='ready').order_by('-ready_at')
@@ -422,7 +423,7 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
         user = request.user
 
         # Only planning team can check inventory
-        if not (user.is_superuser or (hasattr(user, 'profile') and user.profile.team == 'planning')):
+        if not user_has_role_perm(user, 'access_planning_write'):
             return Response({"detail": "Only planning team can check inventory."}, status=403)
 
         if not planning_request.check_inventory:
@@ -449,7 +450,7 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
         user = request.user
 
         # Only planning team can auto-allocate
-        if not (user.is_superuser or (hasattr(user, 'profile') and user.profile.team == 'planning')):
+        if not user_has_role_perm(user, 'access_planning_write'):
             return Response({"detail": "Only planning team can allocate inventory."}, status=403)
 
         if not planning_request.check_inventory:
@@ -500,7 +501,7 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
         user = request.user
 
         # Only planning team can allocate
-        if not (user.is_superuser or (hasattr(user, 'profile') and user.profile.team == 'planning')):
+        if not user_has_role_perm(user, 'access_planning_write'):
             return Response({"detail": "Only planning team can allocate inventory."}, status=403)
 
         if not planning_request.check_inventory:
@@ -581,7 +582,7 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
         user = request.user
 
         # Only planning team can complete inventory control
-        if not (user.is_superuser or (hasattr(user, 'profile') and user.profile.team == 'planning')):
+        if not user_has_role_perm(user, 'access_planning_write'):
             return Response({"detail": "Only planning team can complete inventory control."}, status=403)
 
         if not planning_request.check_inventory:
@@ -642,7 +643,7 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
         user = request.user
 
         # Only planning team can mark as ready
-        if not (user.is_superuser or (hasattr(user, 'profile') and user.profile.team == 'planning')):
+        if not user_has_role_perm(user, 'access_planning_write'):
             return Response({"detail": "Only planning team can mark requests as ready for procurement."}, status=403)
 
         erp_code = request.data.get('erp_code', '').strip()
@@ -703,7 +704,7 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
         user = request.user
 
         # Only warehouse team and superusers can update inventory quantities
-        if not (user.is_superuser or (hasattr(user, 'profile') and user.profile.team == 'warehouse')):
+        if not user_has_role_perm(user, 'access_warehouse_write'):
             return Response(
                 {"detail": "Only warehouse team can update inventory quantities."},
                 status=403
@@ -756,7 +757,7 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
         user = request.user
 
         # Only warehouse team and superusers can access
-        if not (user.is_superuser or (hasattr(user, 'profile') and user.profile.team == 'warehouse')):
+        if not user_has_role_perm(user, 'access_warehouse_write'):
             return Response({"detail": "Only warehouse team can access this endpoint."}, status=403)
 
         # Base queryset: all requests with inventory control enabled
@@ -795,7 +796,7 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
         user = request.user
 
         # Only planning team can cancel
-        if not (user.is_superuser or (hasattr(user, 'profile') and user.profile.team == 'planning')):
+        if not user_has_role_perm(user, 'access_planning_write'):
             return Response(
                 {"detail": "Only planning team can cancel planning requests."},
                 status=403
@@ -928,7 +929,7 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
         # For write operations, check if user is planning team or superuser
         if self.action in ['create', 'update', 'partial_update', 'destroy', 'bulk_create', 'upload_attachment']:
             user = request.user
-            if not (user.is_superuser or (hasattr(user, 'profile') and user.profile.team == 'planning')):
+            if not user_has_role_perm(user, 'access_planning_write'):
                 from rest_framework.exceptions import PermissionDenied
                 raise PermissionDenied("Only planning team members can perform this action.")
 
@@ -976,7 +977,7 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
         user = request.user
 
         # Only planning team can bulk import
-        if not (user.is_superuser or (hasattr(user, 'profile') and user.profile.team == 'planning')):
+        if not user_has_role_perm(user, 'access_planning_write'):
             return Response({"detail": "Only planning team can bulk import items."}, status=403)
 
         serializer = BulkPlanningRequestItemSerializer(data=request.data, context={'request': request})

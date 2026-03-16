@@ -1,4 +1,5 @@
 import os
+import re
 from django.db import models
 from django.contrib.auth.models import User
 from django.utils import timezone
@@ -6,6 +7,45 @@ from django.core.validators import MinValueValidator, MaxValueValidator
 from django.core.exceptions import ValidationError
 from decimal import Decimal
 from core.storages import PrivateMediaStorage
+
+
+_GROUP_MENTION_RE = re.compile(r'@\[group:(\w+)\]')
+_USER_MENTION_RE  = re.compile(r'@(\w+)')
+
+
+def _extract_mentions(text: str):
+    """
+    Return a queryset-like list of User objects mentioned in *text*.
+
+    Supported syntax:
+      @username           → individual user
+      @[group:group_name] → all active members of the named Django Group
+    """
+    from django.contrib.auth.models import Group
+
+    user_ids: set[int] = set()
+
+    # Group mentions first (consume them so their brackets don't pollute username scan)
+    cleaned = text
+    for group_name in _GROUP_MENTION_RE.findall(text):
+        try:
+            g = Group.objects.get(name=group_name)
+            user_ids.update(g.user_set.filter(is_active=True).values_list('id', flat=True))
+        except Group.DoesNotExist:
+            pass
+    cleaned = _GROUP_MENTION_RE.sub('', cleaned)
+
+    # Individual user mentions
+    usernames = _USER_MENTION_RE.findall(cleaned)
+    if usernames:
+        user_ids.update(
+            User.objects.filter(username__in=usernames, is_active=True)
+            .values_list('id', flat=True)
+        )
+
+    if not user_ids:
+        return User.objects.none()
+    return User.objects.filter(id__in=user_ids)
 
 
 CURRENCY_CHOICES = [
@@ -1626,12 +1666,13 @@ class JobOrderDiscussionTopic(models.Model):
         ]
 
     def extract_mentions(self):
-        """Extract @username mentions."""
-        import re
-        pattern = r'@(\w+)'
-        usernames = re.findall(pattern, self.content)
-        users = User.objects.filter(username__in=usernames)
-        return users
+        """
+        Extract @username and @[group:group_name] mentions from content.
+
+        Individual mentions: @username
+        Group mentions: @[group:group_name]  → expands to all active group members
+        """
+        return _extract_mentions(self.content)
 
     def get_comment_count(self):
         return self.comments.filter(is_deleted=False).count()
@@ -1698,12 +1739,13 @@ class JobOrderDiscussionComment(models.Model):
         ]
 
     def extract_mentions(self):
-        """Extract @username mentions."""
-        import re
-        pattern = r'@(\w+)'
-        usernames = re.findall(pattern, self.content)
-        users = User.objects.filter(username__in=usernames)
-        return users
+        """
+        Extract @username and @[group:group_name] mentions from content.
+
+        Individual mentions: @username
+        Group mentions: @[group:group_name]  → expands to all active group members
+        """
+        return _extract_mentions(self.content)
 
 
 class DiscussionAttachment(models.Model):

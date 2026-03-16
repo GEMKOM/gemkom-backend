@@ -198,9 +198,9 @@ class CncPartViewSet(ModelViewSet):
         """
         # Authorization: Only office users can delete parts
         user = request.user
-        if not (user and hasattr(user, 'profile') and user.profile.work_location == 'office'):
+        if not (user and (user.is_staff or user.is_superuser)):
             return Response(
-                {"error": "Only office users can delete parts."},
+                {"error": "Only staff users can delete parts."},
                 status=status.HTTP_403_FORBIDDEN
             )
 

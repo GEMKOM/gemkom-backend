@@ -29,7 +29,9 @@ def ensure_paint_assignment(task) -> None:
 
     job_order = task.job_order
 
-    # Get or create the paint tier for this job order (one per job)
+    # Get or create the paint tier for this job order (one per job).
+    # on_price_tier_changed ignores saves to the Boya tier itself, so no
+    # redundant sync is scheduled here.
     paint_tier, _ = SubcontractingPriceTier.objects.get_or_create(
         job_order=job_order,
         name=PAINT_TIER_NAME,
@@ -39,7 +41,9 @@ def ensure_paint_assignment(task) -> None:
         }
     )
 
-    # Get or create the assignment
+    # Get or create the assignment.
+    # price_tier correction (if pointing to wrong tier) is handled by
+    # sync_paint_assignment_weight below via bulk .update().
     subcontractor = Subcontractor.objects.get(id=PAINT_SUBCONTRACTOR_ID)
     SubcontractingAssignment.objects.get_or_create(
         department_task=task,
@@ -50,7 +54,6 @@ def ensure_paint_assignment(task) -> None:
         }
     )
 
-    # Now sync the weight
     sync_paint_assignment_weight(job_order)
 
 
@@ -71,12 +74,16 @@ def sync_paint_assignment_weight(job_order) -> None:
     # Enforce model minimum constraint
     weight = max(total, Decimal('0.01'))
 
-    SubcontractingPriceTier.objects.filter(
+    paint_tier = SubcontractingPriceTier.objects.filter(
         job_order=job_order,
         name=PAINT_TIER_NAME,
-    ).update(allocated_weight_kg=weight)
+    ).first()
 
-    SubcontractingAssignment.objects.filter(
-        department_task__job_order=job_order,
-        department_task__task_type='painting',
-    ).update(allocated_weight_kg=weight)
+    if paint_tier:
+        # Use .update() to avoid re-firing the on_price_tier_changed signal
+        SubcontractingPriceTier.objects.filter(pk=paint_tier.pk).update(allocated_weight_kg=weight)
+
+        SubcontractingAssignment.objects.filter(
+            department_task__job_order=job_order,
+            department_task__task_type='painting',
+        ).update(allocated_weight_kg=weight, price_tier=paint_tier)

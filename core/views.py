@@ -53,14 +53,11 @@ class CustomTokenObtainPairView(TokenObtainPairView):
         username = request.data.get("username")
         user = User.objects.filter(username=username).first()
 
-        if user and not user.is_superuser and hasattr(user, "profile"):
-            work_location = user.profile.work_location  # adjust if needed
-
-            # Restrict based on domain
-            if host.startswith("ofis.") and work_location != "office":
-                raise PermissionDenied("Workshop employees must use workshop.gemcore.com.tr to log in.")
-            elif host.startswith("saha.") and work_location != "workshop":
-                raise PermissionDenied("Office employees must use office.gemcore.com.tr to log in.")
+        if user and not user.is_superuser:
+            if host.startswith("ofis.") and not user.has_perm('users.office_access'):
+                raise PermissionDenied("Bu portal için erişim izniniz yok.")
+            elif host.startswith("saha.") and not user.has_perm('users.workshop_access'):
+                raise PermissionDenied("Bu portal için erişim izniniz yok.")
 
         return super().post(request, *args, **kwargs)
 

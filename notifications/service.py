@@ -609,7 +609,15 @@ def get_route(notification_type: str) -> tuple:
                 .values_list('user_id', flat=True)
             )
 
-        all_ids = explicit_ids | team_ids
+        group_ids = set()
+        if cfg.groups:
+            from django.contrib.auth.models import Group
+            group_ids = set(
+                User.objects.filter(groups__name__in=cfg.groups, is_active=True)
+                .values_list('id', flat=True)
+            )
+
+        all_ids = explicit_ids | team_ids | group_ids
         link = cfg.link_template or ''
         if not all_ids:
             return User.objects.none(), link

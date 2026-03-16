@@ -259,6 +259,7 @@ class NotificationConfig(models.Model):
     # Routing — only meaningful for ROUTABLE_TYPES
     users   = models.ManyToManyField(User, blank=True, related_name='notification_configs')
     teams   = models.JSONField(default=list, blank=True)
+    groups  = models.JSONField(default=list, blank=True)  # Django Group names
     enabled = models.BooleanField(default=True)
 
     class Meta:

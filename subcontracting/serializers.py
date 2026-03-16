@@ -340,6 +340,9 @@ def _assignment_costs(assignment) -> dict:
 
     return {
         'allocated_weight_kg':     wkg,
+        'last_billed_progress':    a.last_billed_progress,
+        'current_progress':        a.current_progress,
+        'unbilled_progress':       a.unbilled_progress,
         'total_billed_cost':       total_billed_cost,
         'next_bill_cost':          next_bill_cost,
         'unbilled_remaining_cost': unbilled_remaining_cost,
@@ -355,6 +358,9 @@ class SubcontractorOverviewJobOrderSerializer(serializers.Serializer):
     customer_name            = serializers.CharField()
     currency                 = serializers.CharField()
     allocated_weight_kg      = serializers.DecimalField(max_digits=12, decimal_places=2)
+    last_billed_progress     = serializers.DecimalField(max_digits=5, decimal_places=2)
+    current_progress         = serializers.DecimalField(max_digits=5, decimal_places=2)
+    unbilled_progress        = serializers.DecimalField(max_digits=5, decimal_places=2)
     total_billed_cost        = serializers.DecimalField(max_digits=16, decimal_places=2)
     next_bill_cost           = serializers.DecimalField(max_digits=16, decimal_places=2)
     unbilled_remaining_cost  = serializers.DecimalField(max_digits=16, decimal_places=2)
@@ -400,10 +406,29 @@ class SubcontractorOverviewSerializer(serializers.ModelSerializer):
                     'unbilled_remaining_cost': Decimal('0.00'),
                     'total_cost':              Decimal('0.00'),
                 }
+                # Weighted progress accumulators (weight = allocated_weight_kg)
+                weighted = {
+                    'last_billed_progress': Decimal('0.00'),
+                    'current_progress':     Decimal('0.00'),
+                    'unbilled_progress':    Decimal('0.00'),
+                }
                 for a in job_assignments:
                     c = _assignment_costs(a)
                     for k in totals:
                         totals[k] += c[k]
+                    w = c['allocated_weight_kg']
+                    weighted['last_billed_progress'] += c['last_billed_progress'] * w
+                    weighted['current_progress']     += c['current_progress'] * w
+                    weighted['unbilled_progress']    += c['unbilled_progress'] * w
+
+                total_wkg = totals['allocated_weight_kg']
+                if total_wkg:
+                    progress = {
+                        k: (v / total_wkg).quantize(Decimal('0.01'))
+                        for k, v in weighted.items()
+                    }
+                else:
+                    progress = {k: Decimal('0.00') for k in weighted}
 
                 jobs.append({
                     'job_no':        job_no,
@@ -412,6 +437,7 @@ class SubcontractorOverviewSerializer(serializers.ModelSerializer):
                     'customer_name': job_order.customer.name if job_order.customer_id else '',
                     'currency':      currency,
                     **totals,
+                    **progress,
                 })
 
             obj._overview_costs = jobs

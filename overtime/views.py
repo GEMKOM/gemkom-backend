@@ -86,7 +86,7 @@ class OvertimeRequestViewSet(viewsets.ModelViewSet):
               .prefetch_related(
                   Prefetch("entries", queryset=OvertimeEntry.objects.select_related("user"))
               ))
-        if getattr(user, "is_admin", False) or getattr(user, "is_superuser", False):
+        if user.is_staff or user.is_superuser:
             return qs.distinct()
         # Non-admin: requester or included as entry user
         return qs.filter(Q(requester=user) | Q(entries__user=user)).distinct()
@@ -145,7 +145,7 @@ class OvertimeRequestViewSet(viewsets.ModelViewSet):
             return wf, None, "no_open_stage"
 
         approver_ids = stage.approver_user_ids or []
-        if user.id in approver_ids or getattr(user, "is_superuser", False) or getattr(user, "is_admin", False):
+        if user.id in approver_ids or user.is_superuser or user.is_staff:
             return wf, stage, "ok"
         return wf, stage, "forbidden"
 
