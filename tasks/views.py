@@ -1038,8 +1038,8 @@ class OperationViewSet(ModelViewSet):
     permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, OrderingFilter]
     filterset_class = OperationFilter
-    ordering_fields = ['part', 'order', 'created_at', 'plan_order']
-    ordering = ['plan_order', 'order']
+    ordering_fields = ['part', 'order', 'created_at', 'plan_order', 'in_plan']
+    ordering = ['in_plan', 'plan_order', 'order']
 
     def get_serializer_class(self):
         """
