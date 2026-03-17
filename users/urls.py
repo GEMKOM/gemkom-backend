@@ -5,7 +5,7 @@ from .views import (
     PasswordResetRequestView, TeamChoicesView, UserViewSet, UserWageRateListView,
     WageRateDetailView, WageRateListCreateView, UserPermissionsView, GroupListView,
     UserPermissionDetailView, UserGroupMembershipView, UserPermissionOverrideView,
-    UserPermissionsMatrixView, GroupPermissionView,
+    UserPermissionsMatrixView, GroupPermissionView, PermissionListView,
 )
 from rest_framework.routers import DefaultRouter
 
@@ -30,6 +30,7 @@ urlpatterns = [
     path("wages/<int:pk>/", WageRateDetailView.as_view(), name="wage-detail"),
     path("<int:user_id>/wages/", UserWageRateListView.as_view(), name="user-wage-list"),
     # Centralized permissions management
+    path("permissions/", PermissionListView.as_view(), name="permissions-list"),
     path("permissions/matrix/", UserPermissionsMatrixView.as_view(), name="permissions-matrix"),
     path("<int:user_id>/permissions/", UserPermissionDetailView.as_view(), name="user-permission-detail"),
     path("<int:user_id>/groups/<str:group_name>/", UserGroupMembershipView.as_view(), name="user-group-membership"),

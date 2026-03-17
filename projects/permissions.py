@@ -3,10 +3,6 @@ from rest_framework.permissions import BasePermission
 from users.permissions import user_has_role_perm, IsOfficeUserOrAdmin
 
 
-# ---------------------------------------------------------------------------
-# Cost visibility
-# ---------------------------------------------------------------------------
-
 class IsCostAuthorized(BasePermission):
     """Full cost visibility (cost table, cost summary, margins)."""
 
@@ -21,7 +17,7 @@ class IsProcurementCostAuthorized(BasePermission):
     """Material / procurement cost lines."""
 
     def has_permission(self, request, view):
-        return user_has_role_perm(request.user, 'view_procurement_costs')
+        return user_has_role_perm(request.user, 'view_job_costs')
 
     def has_object_permission(self, request, view, obj):
         return self.has_permission(request, view)
@@ -31,7 +27,7 @@ class IsQCCostAuthorized(BasePermission):
     """QC cost lines."""
 
     def has_permission(self, request, view):
-        return user_has_role_perm(request.user, 'view_qc_costs')
+        return user_has_role_perm(request.user, 'view_job_costs')
 
     def has_object_permission(self, request, view, obj):
         return self.has_permission(request, view)
@@ -41,25 +37,21 @@ class IsShippingCostAuthorized(BasePermission):
     """Shipping cost lines."""
 
     def has_permission(self, request, view):
-        return user_has_role_perm(request.user, 'view_shipping_costs')
+        return user_has_role_perm(request.user, 'view_job_costs')
 
     def has_object_permission(self, request, view, obj):
         return self.has_permission(request, view)
 
 
 class IsPlanning(BasePermission):
-    """Any user with planning write access."""
+    """Authenticated users — planning access now open."""
 
     def has_permission(self, request, view):
-        return user_has_role_perm(request.user, 'access_planning_write')
+        return request.user and request.user.is_authenticated
 
     def has_object_permission(self, request, view, obj):
         return self.has_permission(request, view)
 
-
-# ---------------------------------------------------------------------------
-# General
-# ---------------------------------------------------------------------------
 
 class IsOfficeUser(IsOfficeUserOrAdmin):
     """Office portal users. Delegates to office_access permission."""

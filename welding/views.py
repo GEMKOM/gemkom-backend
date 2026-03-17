@@ -13,7 +13,7 @@ from collections import defaultdict
 from .models import WeldingTimeEntry
 from .serializers import WeldingTimeEntrySerializer, WeldingTimeEntryBulkCreateSerializer
 from .filters import WeldingTimeEntryFilter
-from .permissions import IsWeldingUserOrAdmin
+from rest_framework.permissions import IsAuthenticated
 from users.permissions import IsAdmin, can_see_job_costs
 from config.pagination import CustomPageNumberPagination
 
@@ -34,7 +34,7 @@ class WeldingTimeEntryViewSet(viewsets.ModelViewSet):
     """
     queryset = WeldingTimeEntry.objects.all()
     serializer_class = WeldingTimeEntrySerializer
-    permission_classes = [IsWeldingUserOrAdmin]
+    permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, OrderingFilter]
     filterset_class = WeldingTimeEntryFilter
     pagination_class = CustomPageNumberPagination
@@ -236,7 +236,7 @@ class WeldingTimeEntryBulkCreateView(APIView):
         "entries": [...]
     }
     """
-    permission_classes = [IsWeldingUserOrAdmin]
+    permission_classes = [IsAuthenticated]
 
     def post(self, request):
         serializer = WeldingTimeEntryBulkCreateSerializer(
@@ -520,7 +520,7 @@ class UserWorkHoursReportView(APIView):
         ]
     }
     """
-    permission_classes = [IsWeldingUserOrAdmin]
+    permission_classes = [IsAuthenticated]
 
     def get(self, request):
         date_after = request.query_params.get('date_after')

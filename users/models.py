@@ -46,9 +46,12 @@ class UserProfile(models.Model):
     ]
     work_location = models.CharField(max_length=10, choices=location_type, default='workshop')
 
+    class Meta:
+        default_permissions = ()  # suppress add/change/delete/view_userprofile
+
     def __str__(self):
         return self.user.username
-    
+
 class WageRate(models.Model):
     """
     Versioned wage records per user.

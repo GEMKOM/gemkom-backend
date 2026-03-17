@@ -12,7 +12,8 @@ import requests
 from machines.models import Machine, MachineCalendar, MachineFault
 from machines.serializers import MachineCalendarSerializer, MachineFaultSerializer, MachineGetSerializer, MachineListSerializer, MachineMinimalSerializer, MachineSerializer
 from tasks.models import Timer
-from users.permissions import IsAdmin, IsMachiningUserOrAdmin
+from rest_framework.permissions import IsAuthenticated
+from users.permissions import IsAdmin
 from django.db.models import Q
 
 from config.pagination import CustomPageNumberPagination
@@ -506,7 +507,7 @@ class MachineCalendarView(APIView):
         "work_exceptions": [ {"date":"YYYY-MM-DD","windows":[...], "note":"..."} ]
       }
     """
-    permission_classes = [IsMachiningUserOrAdmin]
+    permission_classes = [IsAuthenticated]
 
     def get(self, request):
         machine_id = request.query_params.get("machine_fk")

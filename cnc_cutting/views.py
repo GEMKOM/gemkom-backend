@@ -9,7 +9,7 @@ from rest_framework.filters import OrderingFilter
 from rest_framework import viewsets, mixins
 from rest_framework.generics import ListAPIView
 from rest_framework.pagination import PageNumberPagination
-from users.permissions import IsCuttingUserOrAdmin, IsOfficeUserOrAdmin
+from rest_framework.permissions import IsAuthenticated
 from django.utils import timezone
 from rest_framework.response import Response
 from rest_framework import status
@@ -71,7 +71,7 @@ class TimerDetailView(GenericTimerDetailView):
     permission_classes = [IsAuthenticated]
 
 class TimerReportView(GenericTimerReportView):
-    permission_classes = [IsOfficeUserOrAdmin]
+    permission_classes = [IsAuthenticated]
     def get(self, request, *args, **kwargs):
         return super().get(request, task_type='cnc_cutting')
 
@@ -83,7 +83,7 @@ class MarkTaskCompletedView(GenericMarkTaskCompletedView):
 
 
 class UnmarkTaskCompletedView(GenericUnmarkTaskCompletedView):
-    permission_classes = [IsCuttingUserOrAdmin]
+    permission_classes = [IsAuthenticated]
 
     def post(self, request):
         return super().post(request, task_type='cnc_cutting')
@@ -132,7 +132,7 @@ class PlanningBulkSaveView(GenericPlanningBulkSaveView):
     """
     POST /cnc_cutting/planning/bulk-save/
     """
-    permission_classes = [IsOfficeUserOrAdmin] # Planning updates are typically restricted
+    permission_classes = [IsAuthenticated]
     task_model = CncTask
     item_serializer_class = CncTaskPlanUpdateItemSerializer
     bulk_list_serializer_class = CncTaskPlanBulkListSerializer

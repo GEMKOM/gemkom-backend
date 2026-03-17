@@ -56,7 +56,7 @@ from .serializers import (
 )
 from .permissions import (
     IsOfficeUser, IsTopicOwnerOrReadOnly, IsCommentAuthorOrReadOnly,
-    IsCostAuthorized, IsProcurementCostAuthorized, IsQCCostAuthorized, IsShippingCostAuthorized, IsPlanning,
+    IsCostAuthorized, IsPlanning,
 )
 
 
@@ -822,7 +822,7 @@ class JobOrderViewSet(viewsets.ModelViewSet):
 
         return Response(JobOrderCostSummarySerializer(summary).data)
 
-    @action(detail=False, methods=['get'], url_path='procurement_pending', permission_classes=[IsProcurementCostAuthorized])
+    @action(detail=False, methods=['get'], url_path='procurement_pending', permission_classes=[IsCostAuthorized])
     def procurement_pending(self, request):
         """
         Returns job orders that have no saved procurement cost lines yet.
@@ -847,7 +847,7 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         serializer = JobOrderListSerializer(qs, many=True)
         return Response(serializer.data)
 
-    @action(detail=False, methods=['get'], url_path='qc_pending', permission_classes=[IsQCCostAuthorized])
+    @action(detail=False, methods=['get'], url_path='qc_pending', permission_classes=[IsCostAuthorized])
     def qc_pending(self, request):
         """
         Returns job orders that have no QC cost lines yet.
@@ -872,7 +872,7 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         serializer = JobOrderListSerializer(qs, many=True)
         return Response(serializer.data)
 
-    @action(detail=False, methods=['get'], url_path='shipping_pending', permission_classes=[IsShippingCostAuthorized])
+    @action(detail=False, methods=['get'], url_path='shipping_pending', permission_classes=[IsCostAuthorized])
     def shipping_pending(self, request):
         """
         Returns job orders that have no shipping cost lines yet.
@@ -897,7 +897,7 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         serializer = JobOrderListSerializer(qs, many=True)
         return Response(serializer.data)
 
-    @action(detail=False, methods=['get'], url_path='has_procurement', permission_classes=[IsProcurementCostAuthorized])
+    @action(detail=False, methods=['get'], url_path='has_procurement', permission_classes=[IsCostAuthorized])
     def has_procurement(self, request):
         """
         Returns job orders that have at least one saved procurement cost line.
@@ -920,7 +920,7 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         serializer = JobOrderListSerializer(qs, many=True)
         return Response(serializer.data)
 
-    @action(detail=False, methods=['get'], url_path='has_qc', permission_classes=[IsQCCostAuthorized])
+    @action(detail=False, methods=['get'], url_path='has_qc', permission_classes=[IsCostAuthorized])
     def has_qc(self, request):
         """
         Returns job orders that have at least one QC cost line.
@@ -943,7 +943,7 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         serializer = JobOrderListSerializer(qs, many=True)
         return Response(serializer.data)
 
-    @action(detail=False, methods=['get'], url_path='has_shipping', permission_classes=[IsShippingCostAuthorized])
+    @action(detail=False, methods=['get'], url_path='has_shipping', permission_classes=[IsCostAuthorized])
     def has_shipping(self, request):
         """
         Returns job orders that have at least one shipping cost line.
@@ -2396,7 +2396,7 @@ class JobOrderProcurementLineViewSet(viewsets.ModelViewSet):
       POST /procurement-lines/submit/
            Atomically replace all lines for a job order.
     """
-    permission_classes = [IsProcurementCostAuthorized]
+    permission_classes = [IsCostAuthorized]
     from .serializers import JobOrderProcurementLineSerializer as _Ser
     serializer_class = _Ser
     filter_backends = [DjangoFilterBackend, OrderingFilter]
@@ -2627,7 +2627,7 @@ class JobOrderQCCostLineViewSet(viewsets.ModelViewSet):
     POST /qc-cost-lines/submit/
          Atomically replace all QC lines for a job order.
     """
-    permission_classes = [IsQCCostAuthorized]
+    permission_classes = [IsCostAuthorized]
     filter_backends = [DjangoFilterBackend, OrderingFilter]
     filterset_fields = {'job_order': ['exact']}
     ordering = ['-date', 'id']
@@ -2685,7 +2685,7 @@ class JobOrderShippingCostLineViewSet(viewsets.ModelViewSet):
     POST /shipping-cost-lines/submit/
          Atomically replace all shipping lines for a job order.
     """
-    permission_classes = [IsShippingCostAuthorized]
+    permission_classes = [IsCostAuthorized]
     filter_backends = [DjangoFilterBackend, OrderingFilter]
     filterset_fields = {'job_order': ['exact']}
     ordering = ['-date', 'id']

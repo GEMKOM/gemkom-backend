@@ -33,8 +33,7 @@ from .serializers import (
     UpdateInventoryQuantitiesSerializer,
 )
 from .filters import PlanningRequestItemFilter, PlanningRequestFilter
-from .permissions import CanMarkDelivered
-from users.permissions import user_has_role_perm
+from rest_framework.permissions import IsAuthenticated
 from approvals.models import ApprovalWorkflow, ApprovalStageInstance, ApprovalDecision
 
 
@@ -104,13 +103,7 @@ class DepartmentRequestViewSet(viewsets.ModelViewSet):
             )
             qs = qs.prefetch_related(Prefetch("approvals", queryset=wf_qs))
 
-        # Filter based on user role
-        # Superusers and planning team see all
-        if user_has_role_perm(user, 'access_planning_write'):
-            return qs
-
-        # Regular users see only their own requests
-        return qs.filter(requestor=user)
+        return qs
 
     def get_serializer_class(self):
         if self.action in ['list', 'my_requests', 'pending_approval', 'approved_requests', 'completed_requests']:
@@ -223,9 +216,6 @@ class DepartmentRequestViewSet(viewsets.ModelViewSet):
         """Get approved department requests waiting to be processed by planning"""
         user = request.user
 
-        # Only planning team and superusers can see this
-        if not user_has_role_perm(user, 'access_planning_write'):
-            return Response({"detail": "Only planning team can access this endpoint."}, status=403)
 
         queryset = self.get_queryset().filter(status='approved').order_by('-approved_at')
 
@@ -242,9 +232,6 @@ class DepartmentRequestViewSet(viewsets.ModelViewSet):
         """Get transferred department requests (processed by planning)"""
         user = request.user
 
-        # Only planning team and superusers can see this
-        if not user_has_role_perm(user, 'access_planning_write'):
-            return Response({"detail": "Only planning team can access this endpoint."}, status=403)
 
         queryset = self.get_queryset().filter(status='transferred').order_by('-approved_at')
 
@@ -265,9 +252,6 @@ class DepartmentRequestViewSet(viewsets.ModelViewSet):
         dr = self.get_object()
         user = request.user
 
-        # Only planning team and superusers can mark as transferred
-        if not user_has_role_perm(user, 'access_planning_write'):
-            return Response({"detail": "Only planning team can mark requests as transferred."}, status=403)
 
         if dr.status != 'approved':
             return Response({"detail": "Only approved requests can be marked as transferred."}, status=400)
@@ -327,16 +311,7 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
                 Prefetch('items__files', queryset=FileAttachment.objects.select_related('asset', 'uploaded_by', 'source_attachment')),
             )
 
-        # Planning team and superusers see all
-        if user_has_role_perm(user, 'access_planning_write') or user_has_role_perm(user, 'access_warehouse_write'):
-            return qs
-
-        # Procurement team sees only 'ready' requests
-        if user_has_role_perm(user, 'access_procurement_write'):
-            return qs.filter(status='ready')
-
-        # Others see nothing
-        return qs.none()
+        return qs
 
     def get_serializer_class(self):
         if self.action == 'create':
@@ -368,12 +343,6 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
         instance = self.get_object()
         user = request.user
 
-        # Only planning team can update
-        if not user_has_role_perm(user, 'access_planning_write'):
-            return Response(
-                {"detail": "Only planning team can update planning requests."},
-                status=403
-            )
 
         serializer = self.get_serializer(instance, data=request.data, partial=partial)
         serializer.is_valid(raise_exception=True)
@@ -397,9 +366,6 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
         """Get planning requests ready for procurement to convert."""
         user = request.user
 
-        # Only procurement team can access
-        if not user_has_role_perm(user, 'access_procurement_write'):
-            return Response({"detail": "Only procurement team can access this endpoint."}, status=403)
 
         queryset = self.get_queryset().filter(status='ready').order_by('-ready_at')
 
@@ -422,9 +388,6 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
         planning_request = self.get_object()
         user = request.user
 
-        # Only planning team can check inventory
-        if not user_has_role_perm(user, 'access_planning_write'):
-            return Response({"detail": "Only planning team can check inventory."}, status=403)
 
         if not planning_request.check_inventory:
             return Response(
@@ -449,9 +412,6 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
         planning_request = self.get_object()
         user = request.user
 
-        # Only planning team can auto-allocate
-        if not user_has_role_perm(user, 'access_planning_write'):
-            return Response({"detail": "Only planning team can allocate inventory."}, status=403)
 
         if not planning_request.check_inventory:
             return Response(
@@ -500,9 +460,6 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
         planning_request = self.get_object()
         user = request.user
 
-        # Only planning team can allocate
-        if not user_has_role_perm(user, 'access_planning_write'):
-            return Response({"detail": "Only planning team can allocate inventory."}, status=403)
 
         if not planning_request.check_inventory:
             return Response(
@@ -581,9 +538,6 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
         planning_request = self.get_object()
         user = request.user
 
-        # Only planning team can complete inventory control
-        if not user_has_role_perm(user, 'access_planning_write'):
-            return Response({"detail": "Only planning team can complete inventory control."}, status=403)
 
         if not planning_request.check_inventory:
             return Response(
@@ -642,9 +596,6 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
         planning_request = self.get_object()
         user = request.user
 
-        # Only planning team can mark as ready
-        if not user_has_role_perm(user, 'access_planning_write'):
-            return Response({"detail": "Only planning team can mark requests as ready for procurement."}, status=403)
 
         erp_code = request.data.get('erp_code', '').strip()
         if not erp_code:
@@ -703,12 +654,6 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
         planning_request = self.get_object()
         user = request.user
 
-        # Only warehouse team and superusers can update inventory quantities
-        if not user_has_role_perm(user, 'access_warehouse_write'):
-            return Response(
-                {"detail": "Only warehouse team can update inventory quantities."},
-                status=403
-            )
 
         serializer = UpdateInventoryQuantitiesSerializer(
             data=request.data,
@@ -756,9 +701,6 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
         """
         user = request.user
 
-        # Only warehouse team and superusers can access
-        if not user_has_role_perm(user, 'access_warehouse_write'):
-            return Response({"detail": "Only warehouse team can access this endpoint."}, status=403)
 
         # Base queryset: all requests with inventory control enabled
         queryset = self.get_queryset().filter(check_inventory=True)
@@ -795,12 +737,6 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
         planning_request = self.get_object()
         user = request.user
 
-        # Only planning team can cancel
-        if not user_has_role_perm(user, 'access_planning_write'):
-            return Response(
-                {"detail": "Only planning team can cancel planning requests."},
-                status=403
-            )
 
         # Cannot cancel if already converted or completed
         if planning_request.status in ['converted', 'completed', 'cancelled']:
@@ -922,16 +858,6 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
 
         return [permission() for permission in permission_classes]
 
-    def check_permissions(self, request):
-        """Override to add custom team-based permission check for write operations."""
-        super().check_permissions(request)
-
-        # For write operations, check if user is planning team or superuser
-        if self.action in ['create', 'update', 'partial_update', 'destroy', 'bulk_create', 'upload_attachment']:
-            user = request.user
-            if not user_has_role_perm(user, 'access_planning_write'):
-                from rest_framework.exceptions import PermissionDenied
-                raise PermissionDenied("Only planning team members can perform this action.")
 
     def perform_create(self, serializer):
         # Extract item_id if provided
@@ -976,9 +902,6 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
         """
         user = request.user
 
-        # Only planning team can bulk import
-        if not user_has_role_perm(user, 'access_planning_write'):
-            return Response({"detail": "Only planning team can bulk import items."}, status=403)
 
         serializer = BulkPlanningRequestItemSerializer(data=request.data, context={'request': request})
         if not serializer.is_valid():
@@ -1020,7 +943,7 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
                 task.check_auto_complete(user=user)
             task.job_order.update_completion_percentage()
 
-    @action(detail=True, methods=['POST'], permission_classes=[CanMarkDelivered], url_path='mark_delivered')
+    @action(detail=True, methods=['POST'], permission_classes=[IsAuthenticated], url_path='mark_delivered')
     def mark_delivered(self, request, pk=None):
         """Mark a single PlanningRequestItem as delivered."""
         from django.utils import timezone
@@ -1039,7 +962,7 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
         serializer = PlanningRequestItemDeliverySerializer(item)
         return Response(serializer.data)
 
-    @action(detail=False, methods=['POST'], permission_classes=[CanMarkDelivered], url_path='bulk_mark_delivered')
+    @action(detail=False, methods=['POST'], permission_classes=[IsAuthenticated], url_path='bulk_mark_delivered')
     def bulk_mark_delivered(self, request):
         """
         Mark multiple PlanningRequestItems as delivered.

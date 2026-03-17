@@ -439,17 +439,31 @@ class GroupListView(APIView):
 
     def get(self, request):
         from django.contrib.auth.models import Group
+        from users.constants import OFFICE_GROUPS, WORKSHOP_GROUPS
+
         groups = (
             Group.objects
             .filter(name__in=GROUP_DISPLAY_NAMES)
-            .prefetch_related('user_set')
+            .prefetch_related('user_set', 'permissions')
             .order_by('name')
         )
+
+        def portal_for(name):
+            if name in OFFICE_GROUPS:
+                return 'office'
+            if name in WORKSHOP_GROUPS:
+                return 'workshop'
+            return None
+
         data = [
             {
                 'name': g.name,
                 'display_name': GROUP_DISPLAY_NAMES[g.name],
+                'portal': portal_for(g.name),
                 'member_count': g.user_set.count(),
+                'permissions': sorted(
+                    p.codename for p in g.permissions.all()
+                ),
             }
             for g in groups
         ]
@@ -671,6 +685,91 @@ class UserPermissionOverrideView(APIView):
         if deleted:
             return Response({'detail': 'Override removed.'})
         return Response({'detail': 'No override found for this codename.'}, status=404)
+
+
+class PermissionListView(APIView):
+    """
+    GET /users/permissions/
+
+    Returns all custom permissions defined in the system (attached to UserProfile content type).
+    Useful for building the permissions management UI.
+
+    Response:
+      [
+        { "codename": "access_planning", "name": "Page: /planning/" },
+        ...
+      ]
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from django.contrib.auth.models import Permission, User
+        from django.contrib.contenttypes.models import ContentType
+        from users.models import UserProfile, UserPermissionOverride
+        from users.constants import PERMISSION_SECTION_MAP
+
+        ct = ContentType.objects.get_for_model(UserProfile)
+        perms = (
+            Permission.objects
+            .filter(content_type=ct)
+            .prefetch_related('user_set', 'group_set__user_set')
+            .order_by('codename')
+        )
+
+        # Build override lookup: codename → {user_id: granted}
+        overrides = UserPermissionOverride.objects.select_related('user').all()
+        override_map: dict[str, dict] = {}
+        for o in overrides:
+            override_map.setdefault(o.codename, {})[o.user_id] = {
+                'id': o.user.id,
+                'username': o.user.username,
+                'full_name': o.user.get_full_name(),
+                'granted': o.granted,
+            }
+
+
+        data = []
+        for perm in perms:
+            # Users via group membership
+            group_user_ids = set()
+            group_users = []
+            for group in perm.group_set.all():
+                for u in group.user_set.all():
+                    if u.id not in group_user_ids:
+                        group_user_ids.add(u.id)
+                        group_users.append({
+                            'id': u.id,
+                            'username': u.username,
+                            'full_name': u.get_full_name(),
+                            'source': 'group',
+                            'source_detail': group.name,
+                        })
+
+            # Users via direct user_permissions assignment
+            direct_users = [
+                {
+                    'id': u.id,
+                    'username': u.username,
+                    'full_name': u.get_full_name(),
+                    'source': 'direct',
+                    'source_detail': None,
+                }
+                for u in perm.user_set.all()
+                if u.id not in group_user_ids
+            ]
+
+            # Overrides for this codename
+            perm_overrides = list(override_map.get(perm.codename, {}).values())
+
+            data.append({
+                'codename': perm.codename,
+                'name': perm.name,
+                'section': PERMISSION_SECTION_MAP.get(perm.codename),
+                'users': group_users + direct_users,
+                'overrides': perm_overrides,
+            })
+
+        return Response(data)
 
 
 class GroupPermissionView(APIView):

@@ -14,7 +14,7 @@ from .models import (
     SalesOfferFile,
     SalesOfferPriceRevision,
 )
-from .permissions import IsSalesUser
+from rest_framework.permissions import IsAuthenticated
 from .serializers import (
     OfferTemplateListSerializer,
     OfferTemplateDetailSerializer,
@@ -63,7 +63,7 @@ class OfferTemplateViewSet(viewsets.ModelViewSet):
         if self.action in ['create', 'update', 'partial_update', 'destroy',
                            'add_node', 'update_node', 'delete_node',
                            ] or (self.action == 'node_detail' and self.request.method in ['PATCH', 'DELETE']):
-            return [IsSalesUser()]
+            return [IsAuthenticated()]
         return [permissions.IsAuthenticated()]
 
     def get_serializer_class(self):
@@ -176,7 +176,7 @@ class SalesOfferViewSet(viewsets.ModelViewSet):
       GET    /sales/offers/{id}/price-history/
       GET    /sales/offers/{id}/approval-status/
     """
-    permission_classes = [IsSalesUser]
+    permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     search_fields = ['offer_no', 'title', 'description', 'customer__name', 'customer__code']
     ordering_fields = ['offer_no', 'status', 'created_at', 'updated_at']

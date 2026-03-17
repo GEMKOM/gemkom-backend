@@ -18,7 +18,8 @@ from tasks.views import (
     GenericTimerStartView,
     GenericTimerStopView,
 )
-from users.permissions import IsAdmin, IsMachiningUserOrAdmin, can_see_job_costs
+from users.permissions import can_see_job_costs
+from machining.permissions import IsMachiningAdmin
 
 
 class TimerStartView(GenericTimerStartView):
@@ -26,7 +27,7 @@ class TimerStartView(GenericTimerStartView):
     Starts a timer for an 'operation' (migrated from machining tasks).
     Inherits all logic from the generic view and passes the task_type.
     """
-    permission_classes = [IsMachiningUserOrAdmin]
+    permission_classes = [IsAuthenticated]
 
     def post(self, request, *args, **kwargs):
         return super().post(request, task_type='operation')
@@ -36,13 +37,13 @@ class TimerStopView(GenericTimerStopView):
     """
     Stops any timer. The logic is already generic.
     """
-    permission_classes = [IsAuthenticated] # Or your specific permission
+    permission_classes = [IsAuthenticated]
 
 class TimerManualEntryView(GenericTimerManualEntryView):
     """
     Creates a manual timer for an 'operation' (migrated from machining tasks).
     """
-    permission_classes = [IsMachiningUserOrAdmin]
+    permission_classes = [IsMachiningAdmin]
 
     def post(self, request, *args, **kwargs):
         return super().post(request, task_type='operation')
@@ -51,7 +52,7 @@ class TimerListView(GenericTimerListView):
     """
     Lists timers for 'operation' (migrated from machining tasks).
     """
-    permission_classes = [IsMachiningUserOrAdmin]
+    permission_classes = [IsAuthenticated]
 
     def get(self, request, *args, **kwargs):
         return super().get(request, task_type='operation')
@@ -60,13 +61,13 @@ class TimerDetailView(GenericTimerDetailView):
     """
     Retrieve, update, or delete a 'machining' timer instance.
     """
-    permission_classes = [IsMachiningUserOrAdmin]
+    permission_classes = [IsAuthenticated]
 
 class TimerReportView(GenericTimerReportView):
     """
     Generates aggregate reports for 'operation' timers (migrated from machining tasks).
     """
-    permission_classes = [IsAdmin]
+    permission_classes = [IsMachiningAdmin]
 
     def get(self, request, *args, **kwargs):
         return super().get(request, task_type='operation')
@@ -123,7 +124,7 @@ class PlanningAggregateView(APIView):
       }
     }
     """
-    permission_classes = [IsMachiningUserOrAdmin]
+    permission_classes = [IsMachiningAdmin]
 
     def get(self, request):
         # --- Machine selection
@@ -247,7 +248,7 @@ class MachineTimelineView(APIView):
 
     Enforces a maximum window of 7 full days.
     """
-    permission_classes = [IsMachiningUserOrAdmin]
+    permission_classes = [IsMachiningAdmin]
 
     def get(self, request):
         machine_param = request.query_params.get('machine_fk')
@@ -343,7 +344,7 @@ class JobHoursReportView(APIView):
       ]
     }
     """
-    permission_classes = [IsAdmin]
+    permission_classes = [IsMachiningAdmin]
 
     def _parse_ms(self, x):
         if x is None or x == "":
@@ -487,7 +488,7 @@ class DailyEfficiencyReportView(APIView):
       ]
     }
     """
-    permission_classes = [IsMachiningUserOrAdmin]
+    permission_classes = [IsMachiningAdmin]
 
     def get(self, request):
         from datetime import datetime, date, time
@@ -703,7 +704,7 @@ class MachiningJobEntriesReportView(APIView):
         ]
     }
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsMachiningAdmin]
 
     def get(self, request):
         from tasks.models import Operation
@@ -910,7 +911,7 @@ class DailyUserReportView(APIView):
       ]
     }
     """
-    permission_classes = [IsMachiningUserOrAdmin]
+    permission_classes = [IsMachiningAdmin]
 
     def _get_working_hours_for_date(self, date_obj, tz):
         """Get working hours window for a specific date (07:30-17:00 on weekdays)"""
