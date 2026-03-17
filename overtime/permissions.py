@@ -13,7 +13,7 @@ class IsRequesterOrAdmin(BasePermission):
         if not user or not user.is_authenticated:
             return False
 
-        if user.is_admin:
+        if user.is_staff or user.is_superuser:
             return True
 
         if request.method in SAFE_METHODS:
