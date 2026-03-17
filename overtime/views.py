@@ -7,10 +7,12 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.filters import OrderingFilter, SearchFilter
 from django_filters.rest_framework import DjangoFilterBackend
 from django.contrib.auth.models import User
+from django.contrib.contenttypes.models import ContentType
 from rest_framework.views import APIView
 from datetime import date, datetime, time, timedelta
 from django.utils import timezone
 
+from approvals.models import ApprovalWorkflow, ApprovalStageInstance
 from .models import OvertimeRequest, OvertimeEntry
 from .serializers import (
     OvertimeRequestListSerializer,
@@ -88,8 +90,16 @@ class OvertimeRequestViewSet(viewsets.ModelViewSet):
               ))
         if user.is_staff or user.is_superuser:
             return qs.distinct()
-        # Non-admin: requester or included as entry user
-        return qs.filter(Q(requester=user) | Q(entries__user=user)).distinct()
+        ct = ContentType.objects.get_for_model(OvertimeRequest)
+        approver_ids = (ApprovalStageInstance.objects
+                        .filter(workflow__content_type=ct,
+                                approver_user_ids__contains=[user.id])
+                        .values_list("workflow__object_id", flat=True))
+        return qs.filter(
+            Q(requester=user) |
+            Q(entries__user=user) |
+            Q(id__in=approver_ids)
+        ).distinct()
 
     def get_serializer_class(self):
         if self.action == "create":

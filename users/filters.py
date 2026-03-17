@@ -12,7 +12,6 @@ class CharInFilter(BaseInFilter, CharFilter):
 
 class UserFilter(filters.FilterSet):
     username = filters.CharFilter(field_name='username', lookup_expr='icontains')
-    team = CharInFilter(field_name='profile__team', lookup_expr='in')
     occupation = CharInFilter(field_name='profile__occupation', lookup_expr='in')
     group = CharInFilter(field_name='groups__name', lookup_expr='in')
     reset_password_request = filters.BooleanFilter(field_name='profile__reset_password_request')
@@ -33,7 +32,7 @@ class UserFilter(filters.FilterSet):
 
     class Meta:
         model = User
-        fields = ['username', 'team', 'occupation', 'group', 'reset_password_request', 'is_active', 'office_access', 'workshop_access']
+        fields = ['username', 'occupation', 'group', 'reset_password_request', 'is_active', 'office_access', 'workshop_access']
 
 
 class WageOrderingFilter(OrderingFilter):
@@ -68,7 +67,6 @@ class WageOrderingFilter(OrderingFilter):
             ("username", "username"),
             ("first_name", "first_name"),
             ("last_name", "last_name"),
-            ("team", "profile__team"),
             ("occupation", "profile__occupation"),
             ("has_wage", "has_wage"),
             ("current_effective_from", "current_effective_from"),

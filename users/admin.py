@@ -14,9 +14,6 @@ class UserProfileInline(admin.StackedInline):
 class UserAdmin(BaseUserAdmin):
     inlines = [UserProfileInline]
 
-    def team(self, instance):
-        return instance.profile.team if hasattr(instance, 'profile') else '-'
-    
     def portal(self, instance):
         groups = set(instance.groups.values_list('name', flat=True))
         if groups & set(OFFICE_GROUPS):
@@ -26,9 +23,9 @@ class UserAdmin(BaseUserAdmin):
         return '-'
     portal.short_description = 'Portal'
 
-    list_display = BaseUserAdmin.list_display + ('team', 'portal',)
-    search_fields = BaseUserAdmin.search_fields + ('profile__team',)
-    list_filter = BaseUserAdmin.list_filter + ('profile__team',)
+    list_display = BaseUserAdmin.list_display + ('portal',)
+    search_fields = BaseUserAdmin.search_fields + ('groups__name',)
+    list_filter = BaseUserAdmin.list_filter + ('groups',)
 
 @admin.register(WageRate)
 class WageRateAdmin(admin.ModelAdmin):

@@ -38,7 +38,7 @@ class UserViewSet(ModelViewSet):
 
     ordering_fields = [
         'username', 'first_name', 'last_name', 'email',
-        'profile__team', 'profile__occupation', 'profile__must_reset_password',
+        'profile__occupation', 'profile__must_reset_password',
     ]
     # default ordering if ?ordering=… is not provided
     ordering = ['username']
@@ -319,9 +319,9 @@ class WageRateListCreateView(ListCreateAPIView):
             qs = qs.filter(is_active=False)
 
         # optional filters
-        team = (self.request.query_params.get("team") or "").strip()
-        if team:
-            qs = qs.filter(profile__team=team)
+        group = (self.request.query_params.get("group") or "").strip()
+        if group:
+            qs = qs.filter(groups__name=group)
 
         search = (self.request.query_params.get("search") or "").strip()
         if search:
