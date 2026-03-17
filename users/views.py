@@ -491,7 +491,9 @@ class UserPermissionDetailView(APIView):
         from django.contrib.auth.models import Group
 
         target = get_object_or_404(
-            User.objects.select_related('profile').prefetch_related('groups', 'permission_overrides'),
+            User.objects.select_related('profile').prefetch_related(
+                'groups', 'permission_overrides', 'user_permissions',
+            ),
             pk=user_id,
         )
 
@@ -509,8 +511,10 @@ class UserPermissionDetailView(APIView):
         ):
             group_perms_detail[g.name] = {p.codename for p in g.permissions.all()}
 
+        # Direct user_permissions (not via group)
+        direct_perms: set[str] = {p.codename for p in target.user_permissions.all()}
+
         overrides_map = {o.codename: o for o in target.permission_overrides.all()}
-        codename_set = set(_PERMISSION_CODENAMES)
         prof = getattr(target, 'profile', None)
 
         effective = {}
@@ -531,6 +535,8 @@ class UserPermissionDetailView(APIView):
                         'source': 'group',
                         'source_detail': ', '.join(sorted(granting_groups)),
                     }
+                elif c in direct_perms:
+                    effective[c] = {'value': True, 'source': 'direct', 'source_detail': ''}
                 elif prof and _legacy_team_check(target, c):
                     effective[c] = {'value': True, 'source': 'legacy', 'source_detail': f'team={prof.team}'}
                 else:
@@ -889,7 +895,7 @@ class UserPermissionsMatrixView(APIView):
         qs = (
             User.objects
             .select_related('profile')
-            .prefetch_related('groups', 'permission_overrides')
+            .prefetch_related('groups', 'permission_overrides', 'user_permissions')
             .order_by('username')
         )
 
@@ -936,6 +942,9 @@ class UserPermissionsMatrixView(APIView):
                 for c in group_perms.get(g.name, set()) & codename_set:
                     granted_by_group.setdefault(c, set()).add(g.name)
 
+            # Direct user_permissions (not via group)
+            direct_perms: set[str] = {p.codename for p in u.user_permissions.all()}
+
             result = {}
             prof = getattr(u, 'profile', None)
             for c in _PERMISSION_CODENAMES:
@@ -946,6 +955,8 @@ class UserPermissionsMatrixView(APIView):
                 elif c in granted_by_group:
                     groups_str = ', '.join(sorted(granted_by_group[c]))
                     result[c] = {'value': True, 'source': 'group', 'source_detail': groups_str}
+                elif c in direct_perms:
+                    result[c] = {'value': True, 'source': 'direct', 'source_detail': ''}
                 elif prof and _legacy_team_check(u, c):
                     result[c] = {'value': True, 'source': 'legacy', 'source_detail': f'team={prof.team}'}
                 else:
