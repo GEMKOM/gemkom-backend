@@ -49,12 +49,14 @@ class UserViewSet(ModelViewSet):
         qs = User.objects.select_related('profile').order_by('username')
 
         if not user.is_authenticated:
-            return qs.filter(is_active=True, profile__work_location='workshop')
+            return qs.none()
 
-        if user.is_staff or user.is_superuser:
+        if user.is_staff or user.is_superuser or user_has_role_perm(user, 'office_access'):
             return qs
 
-        return qs.filter(is_active=True, profile__work_location='workshop')
+        if user_has_role_perm(user, 'workshop_access'):
+            return qs.filter(is_active=True)
+        return qs.none()
 
 
     def get_permissions(self):
