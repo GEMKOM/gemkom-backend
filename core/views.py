@@ -10,7 +10,7 @@ from config import settings
 import requests
 from rest_framework.decorators import permission_classes
 from rest_framework.permissions import IsAuthenticated
-from users.permissions import can_see_job_costs
+from users.permissions import can_see_job_costs, user_has_role_perm
 import logging
 
 from django.contrib.auth.models import User
@@ -47,16 +47,16 @@ class TimerNowView(APIView):
 
 class CustomTokenObtainPairView(TokenObtainPairView):
     def post(self, request, *args, **kwargs):
-        host = request.headers.get("X-Subdomain", "").split(":")[0]
+        host = request.META.get("HTTP_HOST", "").split(":")[0]
 
         # You must extract username manually to get the user object before token creation
         username = request.data.get("username")
         user = User.objects.filter(username=username).first()
 
         if user and not user.is_superuser:
-            if host.startswith("ofis.") and not user.has_perm('users.office_access'):
+            if host.startswith("ofis.") and not user_has_role_perm(user, 'office_access'):
                 raise PermissionDenied("Bu portal için erişim izniniz yok.")
-            elif host.startswith("saha.") and not user.has_perm('users.workshop_access'):
+            elif host.startswith("saha.") and not user_has_role_perm(user, 'workshop_access'):
                 raise PermissionDenied("Bu portal için erişim izniniz yok.")
 
         return super().post(request, *args, **kwargs)

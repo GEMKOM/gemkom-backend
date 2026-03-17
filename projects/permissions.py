@@ -1,6 +1,6 @@
 from rest_framework import permissions
 from rest_framework.permissions import BasePermission
-from users.permissions import user_has_role_perm
+from users.permissions import user_has_role_perm, IsOfficeUserOrAdmin
 
 
 # ---------------------------------------------------------------------------
@@ -61,13 +61,8 @@ class IsPlanning(BasePermission):
 # General
 # ---------------------------------------------------------------------------
 
-class IsOfficeUser(permissions.BasePermission):
-    """Only staff / superusers can access."""
-
-    def has_permission(self, request, view):
-        if not request.user.is_authenticated:
-            return False
-        return request.user.is_staff or request.user.is_superuser
+class IsOfficeUser(IsOfficeUserOrAdmin):
+    """Office portal users. Delegates to office_access permission."""
 
 
 class IsTopicOwnerOrReadOnly(permissions.BasePermission):

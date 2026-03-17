@@ -15,5 +15,5 @@ GROUP_DISPLAY_NAMES: dict[str, str] = {
     'qualitycontrol_team':     'Kalite Kontrol Ekibi',
     'logistics_team':          'Lojistik Ekibi',
     'hr_team':                 'İnsan Kaynakları',
-    'external_workshops_team': 'Dış Atölyeler',
+    'design_team':             'Dizayn Ekibi',
 }

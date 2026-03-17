@@ -97,12 +97,7 @@ class IsCuttingUserOrAdmin(BasePermission):
 
 class IsOfficeUserOrAdmin(BasePermission):
     def has_permission(self, request, view):
-        user = request.user
-        return (
-            user
-            and user.is_authenticated
-            and (user.is_superuser or getattr(user, 'is_admin', False))
-        )
+        return user_has_role_perm(request.user, 'office_access')
 
 
 # ---------------------------------------------------------------------------
@@ -152,3 +147,19 @@ class IsHRorAuthorized(BasePermission):
 
 def can_see_job_costs(user) -> bool:
     return user_has_role_perm(user, 'view_job_costs')
+
+
+# ---------------------------------------------------------------------------
+# Shared cost/hours visibility helpers (used by machining, welding, etc.)
+# ---------------------------------------------------------------------------
+
+def can_view_all_money(user) -> bool:
+    return user_has_role_perm(user, 'view_job_costs')
+
+
+def can_view_all_users_hours(user) -> bool:
+    return user_has_role_perm(user, 'view_all_user_hours')
+
+
+def can_view_header_totals_only(user) -> bool:
+    return can_view_all_users_hours(user) and not can_view_all_money(user)
