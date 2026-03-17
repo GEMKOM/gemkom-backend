@@ -477,7 +477,7 @@ class UserPermissionDetailView(APIView):
         from django.contrib.auth.models import Group
 
         target = get_object_or_404(
-            User.objects.select_related('profile').prefetch_related('groups', 'permissions', 'permission_overrides'),
+            User.objects.select_related('profile').prefetch_related('groups', 'permission_overrides'),
             pk=user_id,
         )
 
@@ -582,7 +582,12 @@ class UserPermissionOverrideView(APIView):
     """
     POST   /users/<user_id>/permission-overrides/
       Body: {"codename": "...", "granted": true/false, "reason": "..."}
-      Creates or updates a UserPermissionOverride for this user.
+      Creates or updates a single UserPermissionOverride for this user.
+
+    PUT    /users/<user_id>/permission-overrides/
+      Body: [{"codename": "...", "granted": true/false, "reason": "..."}, ...]
+      Replaces ALL overrides for this user with the provided list.
+      Omitting a codename removes its override (reverts to group resolution).
 
     DELETE /users/<user_id>/permission-overrides/<codename>/
       Removes the override (reverts to group-based resolution).
@@ -590,6 +595,43 @@ class UserPermissionOverrideView(APIView):
     Only accessible by admins / superusers.
     """
     permission_classes = [IsAuthenticated, IsAdmin]
+
+    def put(self, request, user_id):
+        from users.models import UserPermissionOverride
+
+        target = get_object_or_404(User, pk=user_id)
+        items = request.data
+        if not isinstance(items, list):
+            return Response({'detail': 'Expected a list of override objects.'}, status=400)
+
+        for i, item in enumerate(items):
+            codename = (item.get('codename') or '').strip()
+            granted = item.get('granted')
+            if codename not in _PERMISSION_CODENAMES:
+                return Response({'detail': f'Item {i}: unknown codename "{codename}".'}, status=400)
+            if granted is None:
+                return Response({'detail': f'Item {i}: "granted" is required.'}, status=400)
+
+        incoming = {item['codename'].strip(): item for item in items}
+
+        UserPermissionOverride.objects.filter(user=target).exclude(codename__in=incoming.keys()).delete()
+        for codename, item in incoming.items():
+            UserPermissionOverride.objects.update_or_create(
+                user=target,
+                codename=codename,
+                defaults={
+                    'granted': bool(item['granted']),
+                    'reason': (item.get('reason') or '').strip(),
+                    'created_by': request.user,
+                },
+            )
+
+        result = list(
+            UserPermissionOverride.objects.filter(user=target)
+            .values('codename', 'granted', 'reason')
+            .order_by('codename')
+        )
+        return Response({'detail': 'Overrides updated.', 'overrides': result})
 
     def post(self, request, user_id):
         from users.models import UserPermissionOverride
@@ -629,6 +671,88 @@ class UserPermissionOverrideView(APIView):
         if deleted:
             return Response({'detail': 'Override removed.'})
         return Response({'detail': 'No override found for this codename.'}, status=404)
+
+
+class GroupPermissionView(APIView):
+    """
+    GET    /users/groups/<group_name>/permissions/
+      Returns all permission codenames currently assigned to this group.
+
+    POST   /users/groups/<group_name>/permissions/
+      Body: {"codename": "..."}
+      Adds a single permission to the group.
+
+    PUT    /users/groups/<group_name>/permissions/
+      Body: ["codename1", "codename2", ...]
+      Replaces ALL permissions of the group with the provided list.
+
+    DELETE /users/groups/<group_name>/permissions/<codename>/
+      Removes a permission from the group.
+
+    Only accessible by admins / superusers.
+    """
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def _get_group_and_permission(self, group_name, codename=None):
+        from django.contrib.auth.models import Group, Permission
+        if group_name not in GROUP_DISPLAY_NAMES:
+            return None, None, Response({'detail': 'Unknown group.'}, status=400)
+        group = get_object_or_404(Group, name=group_name)
+        if codename is not None:
+            if codename not in _PERMISSION_CODENAMES:
+                return None, None, Response({'detail': f'Unknown codename: {codename}'}, status=400)
+            perm = get_object_or_404(Permission, codename=codename)
+            return group, perm, None
+        return group, None, None
+
+    def get(self, request, group_name):
+        group, _, err = self._get_group_and_permission(group_name)
+        if err:
+            return err
+        codenames = sorted(group.permissions.values_list('codename', flat=True))
+        return Response({
+            'group': group_name,
+            'display_name': GROUP_DISPLAY_NAMES[group_name],
+            'permissions': codenames,
+        })
+
+    def put(self, request, group_name):
+        from django.contrib.auth.models import Group, Permission
+        if group_name not in GROUP_DISPLAY_NAMES:
+            return Response({'detail': 'Unknown group.'}, status=400)
+        codenames = request.data
+        if not isinstance(codenames, list):
+            return Response({'detail': 'Expected a list of codename strings.'}, status=400)
+        unknown = [c for c in codenames if c not in _PERMISSION_CODENAMES]
+        if unknown:
+            return Response({'detail': f'Unknown codenames: {unknown}'}, status=400)
+
+        group = get_object_or_404(Group, name=group_name)
+        perms = list(Permission.objects.filter(codename__in=codenames))
+        group.permissions.set(perms)
+        return Response({
+            'detail': f'Permissions updated for {GROUP_DISPLAY_NAMES[group_name]}.',
+            'permissions': sorted(codenames),
+        })
+
+    def post(self, request, group_name):
+        codename = (request.data.get('codename') or '').strip()
+        group, perm, err = self._get_group_and_permission(group_name, codename)
+        if err:
+            return err
+        if group.permissions.filter(pk=perm.pk).exists():
+            return Response({'detail': 'Permission already assigned to this group.'}, status=200)
+        group.permissions.add(perm)
+        return Response({'detail': f'Permission "{codename}" added to {GROUP_DISPLAY_NAMES[group_name]}.'}, status=201)
+
+    def delete(self, request, group_name, codename):
+        group, perm, err = self._get_group_and_permission(group_name, codename)
+        if err:
+            return err
+        if not group.permissions.filter(pk=perm.pk).exists():
+            return Response({'detail': 'Permission not assigned to this group.'}, status=404)
+        group.permissions.remove(perm)
+        return Response({'detail': f'Permission "{codename}" removed from {GROUP_DISPLAY_NAMES[group_name]}.'})
 
 
 class UserPermissionsMatrixView(APIView):

@@ -1170,6 +1170,9 @@ class JobOrderDepartmentTask(models.Model):
         if self.department != 'procurement':
             return (Decimal('0.00'), Decimal('0.00'))
 
+        if self.job_order is None:
+            return (Decimal('0.00'), Decimal('0.00'))
+
         from planning.models import PlanningRequestItem
 
         pr_items = PlanningRequestItem.objects.filter(
