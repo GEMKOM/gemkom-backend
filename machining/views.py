@@ -524,7 +524,7 @@ class DailyEfficiencyReportView(APIView):
             .filter(
                 start_time__gte=day_start_ms,
                 start_time__lt=day_end_ms + 86400000,
-                user__profile__team='machining'
+                user__groups__name='machining_team'
             )
             .order_by('user_id', 'start_time')
         )
@@ -598,7 +598,7 @@ class DailyEfficiencyReportView(APIView):
         user_ids = list(user_task_timers.keys())
         users = User.objects.filter(
             id__in=user_ids,
-            profile__team='machining'
+            groups__name='machining_team'
         ).select_related('profile')
         users_by_id = {u.id: u for u in users}
 
@@ -1037,7 +1037,7 @@ class DailyUserReportView(APIView):
             .filter(
                 start_time__gte=day_start_ms,
                 start_time__lt=day_end_ms + 86400000,  # Include next day start for finish_time
-                user__profile__team='machining'  # Only machining team users
+                user__groups__name='machining_team'  # Only machining team users
             )
             .order_by('user_id', 'start_time')
         )
@@ -1116,7 +1116,7 @@ class DailyUserReportView(APIView):
         user_ids = list(user_timers.keys())
         users = User.objects.filter(
             id__in=user_ids,
-            profile__team='machining'
+            groups__name='machining_team'
         ).select_related('profile')
         users_by_id = {u.id: u for u in users}
         

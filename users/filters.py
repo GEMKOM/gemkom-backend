@@ -2,29 +2,38 @@ from django.contrib.auth.models import User
 from django_filters import rest_framework as filters
 from django_filters.filters import BaseInFilter, CharFilter
 from rest_framework.filters import OrderingFilter
+from users.constants import OFFICE_GROUPS, WORKSHOP_GROUPS
+
 
 class CharInFilter(BaseInFilter, CharFilter):
     """Accepts comma-separated values, e.g. ?team=machining,design"""
     pass
 
+
 class UserFilter(filters.FilterSet):
-    # substring match anywhere in username (on, onat, nat, cali…)
     username = filters.CharFilter(field_name='username', lookup_expr='icontains')
-
-    # allow single or multi select via comma-separated values
     team = CharInFilter(field_name='profile__team', lookup_expr='in')
-    work_location = CharInFilter(field_name='profile__work_location', lookup_expr='in')
     occupation = CharInFilter(field_name='profile__occupation', lookup_expr='in')
-
-    reset_password_request = filters.BooleanFilter(
-        field_name='profile__reset_password_request'  # or 'reset_password_request' if on User
-    )
-
+    group = CharInFilter(field_name='groups__name', lookup_expr='in')
+    reset_password_request = filters.BooleanFilter(field_name='profile__reset_password_request')
     is_active = filters.BooleanFilter(field_name='is_active')
+
+    # ?office_access=true  → users in any OFFICE_GROUP
+    # ?office_access=false → users NOT in any OFFICE_GROUP
+    office_access = filters.BooleanFilter(method='filter_office_access')
+    workshop_access = filters.BooleanFilter(method='filter_workshop_access')
+
+    def filter_office_access(self, queryset, name, value):
+        qs = queryset.filter(groups__name__in=OFFICE_GROUPS).distinct()
+        return qs if value else queryset.exclude(id__in=qs.values('id'))
+
+    def filter_workshop_access(self, queryset, name, value):
+        qs = queryset.filter(groups__name__in=WORKSHOP_GROUPS).distinct()
+        return qs if value else queryset.exclude(id__in=qs.values('id'))
 
     class Meta:
         model = User
-        fields = ['username', 'team', 'work_location', 'occupation', 'reset_password_request', 'is_active']
+        fields = ['username', 'team', 'occupation', 'group', 'reset_password_request', 'is_active', 'office_access', 'workshop_access']
 
 
 class WageOrderingFilter(OrderingFilter):
@@ -61,7 +70,6 @@ class WageOrderingFilter(OrderingFilter):
             ("last_name", "last_name"),
             ("team", "profile__team"),
             ("occupation", "profile__occupation"),
-            ("work_location", "profile__work_location"),
             ("has_wage", "has_wage"),
             ("current_effective_from", "current_effective_from"),
             ("current_currency", "current_currency"),

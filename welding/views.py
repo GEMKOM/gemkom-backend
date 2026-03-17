@@ -75,7 +75,7 @@ class WeldingTimeEntryViewSet(viewsets.ModelViewSet):
         # Get active users in welding team
         active_welders = User.objects.filter(
             is_active=True,
-            profile__team='welding'
+            groups__name='welding_team'
         ).select_related('profile').order_by('first_name', 'last_name', 'username')
 
         # Format response

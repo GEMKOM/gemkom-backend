@@ -14,7 +14,6 @@ def user_has_role_perm(user, codename: str) -> bool:
       2. Explicit deny UserPermissionOverride → False
       3. Explicit grant UserPermissionOverride → True
       4. Django group/permission system (user.has_perm) → result
-      5. Legacy team/occupation fallback (safety net during transition) → result
     """
     if not user or not getattr(user, 'is_authenticated', False):
         return False
@@ -28,30 +27,7 @@ def user_has_role_perm(user, codename: str) -> bool:
     except Exception:
         pass
 
-    if user.has_perm(f'users.{codename}'):
-        return True
-
-    return _legacy_team_check(user, codename)
-
-
-def _legacy_team_check(user, codename: str) -> bool:
-    """
-    Safety net for users not yet assigned to Django Groups.
-    Remove once all users have been migrated to groups.
-    """
-    prof = getattr(user, 'profile', None)
-    team = (getattr(prof, 'team', '') or '').lower()
-    occ  = (getattr(prof, 'occupation', '') or '').lower()
-
-    LEGACY: dict[str, bool] = {
-        'manage_hr':       team in ('human_resouces', 'management'),
-        'view_job_costs':  team == 'management' or (team == 'planning' and occ == 'manager') or team == 'sales',
-        'view_cost_pages': team == 'management' or (team == 'planning' and occ == 'manager') or team == 'sales',
-        'office_access':   getattr(prof, 'work_location', '') == 'office',
-        'workshop_access': getattr(prof, 'work_location', '') != 'office',
-        'machining_admin': team == 'machining' and occ in ('engineer', 'manager'),
-    }
-    return LEGACY.get(codename, False)
+    return user.has_perm(f'users.{codename}')
 
 
 # ---------------------------------------------------------------------------

@@ -11,6 +11,7 @@ from .models import QCReview, NCR
 
 from notifications.service import notify, bulk_notify, render_notification
 from notifications.models import Notification
+from users.helpers import users_in_team
 
 
 QC_REVIEW_POLICY_NAME = "KK İnceleme Onay Politikası"
@@ -18,7 +19,7 @@ NCR_POLICY_NAME = "NCR Onay Politikası"
 
 
 def _get_qc_team_users():
-    return User.objects.filter(is_active=True, profile__team='qualitycontrol')
+    return users_in_team('qualitycontrol')
 
 
 def _get_qc_team_user_ids() -> list[int]:
@@ -258,7 +259,7 @@ def _notify_qc_team_bulk_reviews_submitted(reviews: list, task, submitted_by):
 def _notify_review_approved(review: QCReview):
     task = review.task
     recipients = {review.submitted_by}
-    recipients.update(User.objects.filter(is_active=True, profile__team=task.department))
+    recipients.update(users_in_team(task.department))
     ctx = {
         'job_no':     str(task.job_order_id),
         'task_title': task.title,
@@ -286,7 +287,7 @@ def _notify_ncr_created_on_rejection(ncr: NCR):
     task = ncr.department_task
     if not task:
         return
-    dept_users = User.objects.filter(is_active=True, profile__team=task.department)
+    dept_users = users_in_team(task.department)
     if not dept_users.exists():
         return
     ctx = {
@@ -322,7 +323,7 @@ def _notify_ncr_approved(ncr: NCR):
         recipients.add(ncr.created_by)
     recipients.update(ncr.assigned_members.filter(is_active=True))
     if ncr.department_task:
-        recipients.update(User.objects.filter(is_active=True, profile__team=ncr.department_task.department))
+        recipients.update(users_in_team(ncr.department_task.department))
     if not recipients:
         return
     ctx = {
@@ -353,7 +354,7 @@ def _notify_ncr_rejected(ncr: NCR, comment: str = ""):
 def email_ncr_assigned_team(ncr: NCR):
     if not ncr.assigned_team:
         return
-    dept_users = User.objects.filter(is_active=True, profile__team=ncr.assigned_team)
+    dept_users = users_in_team(ncr.assigned_team)
     if not dept_users.exists():
         return
     ctx = {

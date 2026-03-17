@@ -13,14 +13,13 @@ from machines.serializers import SimpleUserSerializer
 from users.filters import UserFilter, WageOrderingFilter
 from users.helpers import _team_manager_user_ids
 from users.models import UserProfile, WageRate
-from users.permissions import IsAdmin, IsHRorAuthorized, user_has_role_perm, _legacy_team_check
+from users.permissions import IsAdmin, IsHRorAuthorized, user_has_role_perm
 from users.apps import CUSTOM_PERMISSIONS
 from users.constants import GROUP_DISPLAY_NAMES
 from .serializers import AdminUserUpdateSerializer, CurrentUserUpdateSerializer, PasswordResetSerializer, PublicUserSerializer, UserCreateSerializer, UserListSerializer, UserPasswordResetSerializer, UserWageOverviewSerializer, WageRateSerializer, WageRateSlimSerializer
 from rest_framework.permissions import IsAuthenticated, IsAdminUser
 from rest_framework.viewsets import ModelViewSet
 
-from django.db.models import Count
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.filters import OrderingFilter
@@ -39,7 +38,7 @@ class UserViewSet(ModelViewSet):
 
     ordering_fields = [
         'username', 'first_name', 'last_name', 'email',
-        'profile__team', 'profile__work_location', 'profile__occupation', 'profile__must_reset_password',
+        'profile__team', 'profile__occupation', 'profile__must_reset_password',
     ]
     # default ordering if ?ordering=… is not provided
     ordering = ['username']
@@ -82,22 +81,15 @@ class UserViewSet(ModelViewSet):
     
     @action(detail=False, methods=['get'], url_path='summary')
     def summary(self, request):
-        qs = (UserProfile.objects
-              .values('work_location')
-              .annotate(count=Count('id'))
-              .order_by('work_location'))
-
-        # map code -> label
-        loc_field = UserProfile._meta.get_field('work_location')
-        loc_map = dict(loc_field.choices)
-
-        data = [
-            {'work_location': row['work_location'],
-             'work_location_label': loc_map.get(row['work_location']),
-             'count': row['count']}
-            for row in qs
-        ]
-        return Response(data)
+        from users.constants import OFFICE_GROUPS, WORKSHOP_GROUPS
+        total = User.objects.filter(is_active=True).count()
+        office_count = User.objects.filter(is_active=True, groups__name__in=OFFICE_GROUPS).distinct().count()
+        workshop_count = User.objects.filter(is_active=True, groups__name__in=WORKSHOP_GROUPS).distinct().count()
+        return Response({
+            'total': total,
+            'office': office_count,
+            'workshop': workshop_count,
+        })
 
 
 class CurrentUserView(APIView):
@@ -339,9 +331,13 @@ class WageRateListCreateView(ListCreateAPIView):
                 Q(last_name__icontains=search)
             )
 
-        work_location = (self.request.query_params.get("work_location") or "").lower()
-        if work_location in {"office", "workshop"}:
-            qs = qs.filter(profile__work_location=work_location)
+        portal = (self.request.query_params.get("portal") or "").lower()
+        if portal == "office":
+            from users.constants import OFFICE_GROUPS
+            qs = qs.filter(groups__name__in=OFFICE_GROUPS)
+        elif portal == "workshop":
+            from users.constants import WORKSHOP_GROUPS
+            qs = qs.filter(groups__name__in=WORKSHOP_GROUPS)
 
         return qs
 
@@ -539,8 +535,6 @@ class UserPermissionDetailView(APIView):
                     }
                 elif c in direct_perms:
                     effective[c] = {'value': True, 'source': 'direct', 'source_detail': ''}
-                elif prof and _legacy_team_check(target, c):
-                    effective[c] = {'value': True, 'source': 'legacy', 'source_detail': f'team={prof.team}'}
                 else:
                     effective[c] = {'value': False, 'source': 'none', 'source_detail': ''}
 
@@ -948,7 +942,6 @@ class UserPermissionsMatrixView(APIView):
             direct_perms: set[str] = {p.codename for p in u.user_permissions.all()}
 
             result = {}
-            prof = getattr(u, 'profile', None)
             for c in _PERMISSION_CODENAMES:
                 if c in overrides:
                     o = overrides[c]
@@ -959,8 +952,6 @@ class UserPermissionsMatrixView(APIView):
                     result[c] = {'value': True, 'source': 'group', 'source_detail': groups_str}
                 elif c in direct_perms:
                     result[c] = {'value': True, 'source': 'direct', 'source_detail': ''}
-                elif prof and _legacy_team_check(u, c):
-                    result[c] = {'value': True, 'source': 'legacy', 'source_detail': f'team={prof.team}'}
                 else:
                     result[c] = {'value': False, 'source': 'none', 'source_detail': ''}
             return result

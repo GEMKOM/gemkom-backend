@@ -213,7 +213,7 @@ class MachineFaultListCreateView(generics.ListCreateAPIView):
 
         query = Q()
         # Restrict non-admin, non-maintenance users to their own faults
-        if not (user.is_staff or user.is_superuser) and getattr(profile, "team", "") != "maintenance":
+        if not (user.is_staff or user.is_superuser) and not user.groups.filter(name='maintenance_team').exists():
             query &= Q(reported_by=user)
 
         # Backwards-compat: still honor ?machine_id=... (also provided by filterset_class)

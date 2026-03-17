@@ -17,7 +17,7 @@ from approvals.services import (
 from approvals.models import ApprovalPolicy, ApprovalStageInstance, ApprovalWorkflow
 from notifications.service import notify, bulk_notify, render_notification
 from notifications.models import Notification
-from users.helpers import _team_manager_user_ids
+from users.helpers import _team_manager_user_ids, users_in_team
 
 
 @transaction.atomic
@@ -368,7 +368,7 @@ def _notify_requestor_on_final(dr: DepartmentRequest, status_str: str, comment: 
 
 def _notify_planning_on_approval(dr: DepartmentRequest):
     """Notify planning department when a department request is approved."""
-    planning_users = User.objects.filter(is_active=True, profile__team="planning")
+    planning_users = users_in_team("planning")
     if not planning_users.exists():
         return
     ctx = {

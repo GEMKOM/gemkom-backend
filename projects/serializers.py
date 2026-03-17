@@ -11,26 +11,27 @@ from .models import (
     TechnicalDrawingRelease
 )
 
-# Stakeholder teams that should receive drawing release notifications
-DRAWING_RELEASE_STAKEHOLDER_TEAMS = [
-    'procurement',      # Satın Alma
-    'planning',         # Planlama
-    'manufacturing',    # İmalat
-    'qualitycontrol',   # Kalite Kontrol
-    'logistics',        # Lojistik
-    'sales',            # Proje Taahhüt
+# Groups that should receive drawing release notifications
+DRAWING_RELEASE_STAKEHOLDER_GROUPS = [
+    'procurement_team',
+    'planning_team',
+    'planning_manager',
+    'manufacturing_team',
+    'qualitycontrol_team',
+    'logistics_team',
+    'sales_team',
 ]
 
 
 def get_drawing_release_stakeholders():
     """
-    Get all active users from stakeholder teams who should receive
+    Get all active users from stakeholder groups who should receive
     drawing release notifications.
     """
     User = get_user_model()
     return User.objects.filter(
         is_active=True,
-        profile__team__in=DRAWING_RELEASE_STAKEHOLDER_TEAMS
+        groups__name__in=DRAWING_RELEASE_STAKEHOLDER_GROUPS,
     ).distinct()
 
 

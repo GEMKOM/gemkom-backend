@@ -20,6 +20,7 @@ from django.db.models import Max, Q
 
 from notifications.service import notify, bulk_notify, render_notification
 from notifications.models import Notification
+from users.helpers import users_in_team
 
 
 SYSTEM_USERNAME = "system"
@@ -113,7 +114,7 @@ def _notify_requestor_on_final(pr: PurchaseRequest, status_str: str, comment: st
 def _notify_finance_pos_created(pr: PurchaseRequest, pos_list):
     if not pos_list:
         return
-    finance_users = User.objects.filter(is_active=True, profile__team="finance")
+    finance_users = users_in_team("finance")
     if not finance_users.exists():
         return
     pr_title = getattr(pr, "title", f"PR-{pr.id}")

@@ -1,32 +1,26 @@
 # your_app/middlewares/subdomain_restriction.py
 from django.http import JsonResponse
+from users.permissions import user_has_role_perm
+
+PORTAL_PERMISSION = {
+    'office':   'office_access',
+    'workshop': 'workshop_access',
+}
 
 class SubdomainRestrictionMiddleware:
     def __init__(self, get_response):
         self.get_response = get_response
 
     def __call__(self, request):
-        # ✅ Allow CORS preflight requests
         if request.method == "OPTIONS":
             return self.get_response(request)
 
-        # ✅ Normalize host (remove port if any)
-        host = request.headers.get("X-Subdomain", "").split(":")[0]
-
-        # ✅ Ensure request.user is safe to access
         user = getattr(request, "user", None)
+        portal = request.headers.get("X-Portal", "")
+        required_perm = PORTAL_PERMISSION.get(portal)
 
-        if user and user.is_authenticated and not user.is_superuser:
-            profile = getattr(user, "profile", None)
-
-            if profile:
-                work_location = profile.work_location  # "office" or "workshop"
-
-                # 🚫 Enforce domain rules
-                if host.startswith("ofis.") and work_location != "office":
-                    return JsonResponse({"error": "You do not have access to this page."}, status=403)
-
-                if host.startswith("saha.") and work_location != "workshop":
-                    return JsonResponse({"error": "You do not have access to this page."}, status=403)
+        if user and user.is_authenticated and not user.is_superuser and required_perm:
+            if not user_has_role_perm(user, required_perm):
+                return JsonResponse({"error": "Bu portal için erişim izniniz yok."}, status=403)
 
         return self.get_response(request)

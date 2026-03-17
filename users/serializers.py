@@ -1,6 +1,19 @@
 from django.contrib.auth.models import User
 from rest_framework import serializers
 from .models import UserProfile, WageRate
+from .constants import OFFICE_GROUPS, WORKSHOP_GROUPS
+
+OFFICE_GROUP_SET   = set(OFFICE_GROUPS)
+WORKSHOP_GROUP_SET = set(WORKSHOP_GROUPS)
+
+
+def _portal_from_groups(group_names: list[str]) -> str | None:
+    names = set(group_names)
+    if names & OFFICE_GROUP_SET:
+        return 'office'
+    if names & WORKSHOP_GROUP_SET:
+        return 'workshop'
+    return None
 
 
 class SimpleUserSerializer(serializers.ModelSerializer):
@@ -8,9 +21,11 @@ class SimpleUserSerializer(serializers.ModelSerializer):
         model = User
         fields = ['id', 'username', 'first_name', 'last_name']
 
+
 class PublicUserSerializer(serializers.ModelSerializer):
     team = serializers.CharField(source='profile.team')
     team_label = serializers.SerializerMethodField()
+
     class Meta:
         model = User
         fields = ['username', 'first_name', 'last_name', 'team', 'team_label']
@@ -19,6 +34,7 @@ class PublicUserSerializer(serializers.ModelSerializer):
         if hasattr(obj, 'profile') and obj.profile.team:
             return obj.profile.get_team_display()
         return None
+
 
 class UserPasswordResetSerializer(serializers.ModelSerializer):
     reset_password_request = serializers.BooleanField(source='profile.reset_password_request')
@@ -31,35 +47,37 @@ class UserPasswordResetSerializer(serializers.ModelSerializer):
             'id', 'username', 'first_name', 'last_name', 'email', 'is_superuser',
             'team', 'reset_password_request', 'must_reset_password'
         ]
-    
+
+
 class UserListSerializer(serializers.ModelSerializer):
     team = serializers.CharField(source='profile.team')
     occupation = serializers.CharField(source='profile.occupation')
     must_reset_password = serializers.BooleanField(source='profile.must_reset_password')
     team_label = serializers.SerializerMethodField()
     occupation_label = serializers.SerializerMethodField()
-
-    work_location = serializers.CharField(source='profile.work_location')
-    work_location_label = serializers.SerializerMethodField()
+    groups = serializers.SerializerMethodField()
+    portal = serializers.SerializerMethodField()
 
     class Meta:
         model = User
         fields = [
             'id', 'username', 'first_name', 'last_name', 'email', 'is_superuser',
-            'team', 'team_label', 'occupation', 'occupation_label', 'work_location', 'work_location_label', 'must_reset_password',
-            'is_active'
+            'team', 'team_label', 'occupation', 'occupation_label',
+            'groups', 'portal',
+            'must_reset_password', 'is_active',
         ]
 
-    def get_work_location_label(self, obj):
-        if hasattr(obj, 'profile') and obj.profile.work_location:
-            return obj.profile.get_work_location_display()
-        return None
+    def get_groups(self, obj):
+        return [g.name for g in obj.groups.all()]
+
+    def get_portal(self, obj):
+        return _portal_from_groups([g.name for g in obj.groups.all()])
 
     def get_team_label(self, obj):
         if hasattr(obj, 'profile') and obj.profile.team:
             return obj.profile.get_team_display()
         return None
-    
+
     def get_occupation_label(self, obj):
         if hasattr(obj, 'profile') and obj.profile.occupation:
             return obj.profile.get_occupation_display()
@@ -67,41 +85,36 @@ class UserListSerializer(serializers.ModelSerializer):
 
 
 class UserCreateSerializer(serializers.ModelSerializer):
-    team = serializers.CharField(write_only=True)
-    work_location = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    team = serializers.CharField(write_only=True, required=False, allow_blank=True)
 
     class Meta:
         model = User
-        fields = ['username', 'first_name', 'last_name', 'email', 'team', 'work_location']
+        fields = ['username', 'first_name', 'last_name', 'email', 'team']
 
     def create(self, validated_data):
         team = validated_data.pop('team', None)
-        work_location = validated_data.pop('work_location', None)
 
-        # Create user with remaining data (first_name, last_name, etc.)
         user = User.objects.create(
             username=validated_data.get('username'),
             first_name=validated_data.get('first_name', ''),
             last_name=validated_data.get('last_name', ''),
-            email=validated_data.get('email', '')
+            email=validated_data.get('email', ''),
         )
-        user.set_password("gemkom2025.")  # You can change this later
+        user.set_password("gemkom2025.")
         user.save()
 
-        # Create or update profile
         UserProfile.objects.update_or_create(user=user, defaults={
             'team': team,
-            'work_location': work_location,
-            'must_reset_password': True
+            'must_reset_password': True,
         })
 
         return user
-    
+
+
 class PasswordResetSerializer(serializers.Serializer):
     new_password = serializers.CharField(write_only=True, min_length=8)
 
     def validate_new_password(self, value):
-        # Add any custom password validation here
         return value
 
     def save(self, user):
@@ -110,6 +123,7 @@ class PasswordResetSerializer(serializers.Serializer):
         profile = user.profile
         profile.must_reset_password = False
         profile.save()
+
 
 class CurrentUserUpdateSerializer(serializers.ModelSerializer):
     jira_api_token = serializers.CharField(source="profile.jira_api_token", allow_blank=True, required=False)
@@ -131,18 +145,20 @@ class CurrentUserUpdateSerializer(serializers.ModelSerializer):
         profile.save()
 
         return instance
-    
+
 
 class AdminUserUpdateSerializer(serializers.ModelSerializer):
     jira_api_token = serializers.CharField(source="profile.jira_api_token", allow_blank=True, required=False)
-    team = serializers.CharField(source='profile.team')
-    must_reset_password = serializers.BooleanField(source='profile.must_reset_password')
-    occupation = serializers.CharField(source='profile.occupation')
-    work_location = serializers.CharField(source='profile.work_location')
+    team = serializers.CharField(source='profile.team', required=False, allow_blank=True)
+    must_reset_password = serializers.BooleanField(source='profile.must_reset_password', required=False)
+    occupation = serializers.CharField(source='profile.occupation', required=False, allow_blank=True)
 
     class Meta:
         model = User
-        fields = ['first_name', 'last_name', 'email', 'jira_api_token', 'team', 'must_reset_password', 'occupation', 'work_location', 'is_active']
+        fields = [
+            'first_name', 'last_name', 'email', 'jira_api_token',
+            'team', 'must_reset_password', 'occupation', 'is_active',
+        ]
 
     def update(self, instance, validated_data):
         profile_data = validated_data.pop('profile', {})
@@ -158,19 +174,29 @@ class AdminUserUpdateSerializer(serializers.ModelSerializer):
 
         return instance
 
+
 class UserMiniSerializer(serializers.ModelSerializer):
     team = serializers.CharField(source="profile.team", read_only=True)
     team_label = serializers.CharField(source="profile.get_team_display", read_only=True)
     occupation = serializers.CharField(source="profile.occupation", read_only=True)
     occupation_label = serializers.CharField(source="profile.get_occupation_display", read_only=True)
-    work_location = serializers.CharField(source="profile.work_location", read_only=True)
+    groups = serializers.SerializerMethodField()
+    portal = serializers.SerializerMethodField()
 
     class Meta:
         model = User
         fields = [
             "id", "username", "first_name", "last_name",
-            "team", "team_label", "occupation", "occupation_label", "work_location",
+            "team", "team_label", "occupation", "occupation_label",
+            "groups", "portal",
         ]
+
+    def get_groups(self, obj):
+        return [g.name for g in obj.groups.all()]
+
+    def get_portal(self, obj):
+        return _portal_from_groups([g.name for g in obj.groups.all()])
+
 
 class UserWageOverviewSerializer(serializers.ModelSerializer):
     """
@@ -196,6 +222,7 @@ class UserWageOverviewSerializer(serializers.ModelSerializer):
             "sunday_multiplier": obj.current_sunday_multiplier,
         }
 
+
 class WageRateSerializer(serializers.ModelSerializer):
     from django.contrib.auth.models import User as DjangoUser
     user = serializers.PrimaryKeyRelatedField(queryset=DjangoUser.objects.all())
@@ -219,8 +246,8 @@ class WageRateSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
         validated_data["updated_by"] = self.context["request"].user
         return super().update(instance, validated_data)
-    
+
+
 class WageRateSlimSerializer(WageRateSerializer):
     class Meta(WageRateSerializer.Meta):
-        # reuse existing fields, just drop user-related ones
         fields = [f for f in WageRateSerializer.Meta.fields if f not in ("user_info")]

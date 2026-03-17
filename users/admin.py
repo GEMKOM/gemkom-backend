@@ -2,7 +2,7 @@ from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin, GroupAdmin as BaseGroupAdmin
 from django.contrib.auth.models import User, Group
 from .models import UserProfile, WageRate, UserPermissionOverride
-from .constants import GROUP_DISPLAY_NAMES
+from .constants import GROUP_DISPLAY_NAMES, OFFICE_GROUPS, WORKSHOP_GROUPS
 
 # Inline profile for User admin
 class UserProfileInline(admin.StackedInline):
@@ -17,12 +17,16 @@ class UserAdmin(BaseUserAdmin):
     def team(self, instance):
         return instance.profile.team if hasattr(instance, 'profile') else '-'
     
-    def is_admin(self, instance):
-        return instance.profile.work_location == "office" if hasattr(instance, 'profile') else False
-    is_admin.boolean = True  # show as checkmark in admin
-    is_admin.short_description = 'Admin?'
+    def portal(self, instance):
+        groups = set(instance.groups.values_list('name', flat=True))
+        if groups & set(OFFICE_GROUPS):
+            return 'office'
+        if groups & set(WORKSHOP_GROUPS):
+            return 'workshop'
+        return '-'
+    portal.short_description = 'Portal'
 
-    list_display = BaseUserAdmin.list_display + ('team', 'is_admin',)
+    list_display = BaseUserAdmin.list_display + ('team', 'portal',)
     search_fields = BaseUserAdmin.search_fields + ('profile__team',)
     list_filter = BaseUserAdmin.list_filter + ('profile__team',)
 

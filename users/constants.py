@@ -17,6 +17,7 @@ GROUP_DISPLAY_NAMES: dict[str, str] = {
     'hr_team':                 'İnsan Kaynakları',
     'design_team':             'Dizayn Ekibi',
     'manufacturing_team':      'Üretim Ekibi',
+    'maintenance_team':        'Bakım Ekibi',
 }
 
 # Which groups belong to each portal.
@@ -41,6 +42,7 @@ WORKSHOP_GROUPS: list[str] = [
     'cutting_team',
     'warehouse_team',
     'manufacturing_team',
+    'maintenance_team',
 ]
 
 # Per-section permission groupings.

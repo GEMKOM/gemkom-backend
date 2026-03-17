@@ -23,6 +23,7 @@ from .serializers import (
 )
 from .filters import OperationFilter, PartFilter
 from config.pagination import CustomPageNumberPagination
+from users.permissions import user_has_role_perm
 
 
 def _get_task_model_from_type(task_type):
@@ -149,18 +150,16 @@ class GenericTimerStopView(APIView):
                 }, status=status.HTTP_403_FORBIDDEN)
 
             request_user = request.user
-            request_profile = request_user.profile
             timer_user = timer.user
-            timer_profile = timer_user.profile
-            same_team = request_profile.team == timer_profile.team
+            request_groups = set(request_user.groups.values_list('name', flat=True))
+            timer_groups = set(timer_user.groups.values_list('name', flat=True))
+            same_team = bool(request_groups & timer_groups)
+            cross_team = 'machining_team' in timer_groups and 'manufacturing_team' in request_groups
 
-            # This permission logic is specific but can be generalized later if needed.
             allowed = False
             if (request_user.is_staff or request_user.is_superuser) or timer_user == request_user:
                 allowed = True
-            elif (request_user.is_staff or request_user.is_superuser) and (same_team or (timer_profile.team == "machining" and request_profile.team == "manufacturing")):
-                allowed = True
-            elif getattr(request_profile, "is_lead", False) and same_team:
+            elif (request_user.is_staff or request_user.is_superuser) and (same_team or cross_team):
                 allowed = True
 
             if not allowed:
@@ -251,10 +250,10 @@ class GenericTimerListView(APIView):
         # For null content_type timers, filter by user's team to avoid showing them in wrong task_type views
         # cnc_cutting -> users with team='cutting', operation/machining -> users with team='machining'
         if task_type == 'cnc_cutting':
-            null_content_type_filter = Q(content_type__isnull=True, user__profile__team='cutting')
+            null_content_type_filter = Q(content_type__isnull=True, user__groups__name='cutting_team')
         else:
             # For 'operation' and 'machining', show timers from machining team users
-            null_content_type_filter = Q(content_type__isnull=True, user__profile__team='machining')
+            null_content_type_filter = Q(content_type__isnull=True, user__groups__name='machining_team')
 
         query = Q(content_type=ct) | null_content_type_filter
 
@@ -264,8 +263,7 @@ class GenericTimerListView(APIView):
             query &= Q(finish_time__isnull=False)
 
         user_param = request.GET.get("user")
-        # Check if user has admin-like abilities (work_location is 'office')
-        if request.user and getattr(request.user, 'profile', None) and request.user.profile.work_location == 'office':
+        if user_has_role_perm(request.user, 'office_access'):
             if user_param:
                 query &= Q(user__username=user_param)
         else:
@@ -340,7 +338,7 @@ class GenericTimerDetailView(RetrieveUpdateDestroyAPIView):
     def get_queryset(self):
         user = self.request.user
         # Admins (office staff) can see all timers
-        if user and getattr(user, 'profile', None) and user.profile.work_location == 'office':
+        if user_has_role_perm(user, 'office_access'):
             return Timer.objects.all()
         return Timer.objects.filter(user=user)
 
@@ -353,7 +351,7 @@ class GenericTimerDetailView(RetrieveUpdateDestroyAPIView):
 
     def destroy(self, request, *args, **kwargs):
         # Only admins (office staff) can delete timers
-        if not (request.user and getattr(request.user, 'profile', None) and request.user.profile.work_location == 'office'):
+        if not user_has_role_perm(request.user, 'office_access'):
             return Response({"error": "You do not have permission to delete timers."}, status=status.HTTP_403_FORBIDDEN)
         return super().destroy(request, *args, **kwargs)
 
@@ -1435,17 +1433,16 @@ class LogReasonView(APIView):
 
                 # Check permissions (same logic as GenericTimerStopView)
                 request_user = request.user
-                request_profile = request_user.profile
                 timer_user = current_timer.user
-                timer_profile = timer_user.profile
-                same_team = request_profile.team == timer_profile.team
+                request_groups = set(request_user.groups.values_list('name', flat=True))
+                timer_groups = set(timer_user.groups.values_list('name', flat=True))
+                same_team = bool(request_groups & timer_groups)
+                cross_team = 'machining_team' in timer_groups and 'manufacturing_team' in request_groups
 
                 allowed = False
                 if (request_user.is_staff or request_user.is_superuser) or timer_user == request_user:
                     allowed = True
-                elif (request_user.is_staff or request_user.is_superuser) and (same_team or (timer_profile.team == "machining" and request_profile.team == "manufacturing")):
-                    allowed = True
-                elif getattr(request_profile, "is_lead", False) and same_team:
+                elif (request_user.is_staff or request_user.is_superuser) and (same_team or cross_team):
                     allowed = True
 
                 if not allowed:

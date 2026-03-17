@@ -10,7 +10,7 @@ from approvals.services import (
     auto_bypass_self_approver,
     resolve_group_user_ids,
 )
-from users.helpers import _team_manager_user_ids
+from users.helpers import _team_manager_user_ids, users_in_team
 from .models import OvertimeRequest
 
 from notifications.service import notify, bulk_notify, render_notification
@@ -110,7 +110,7 @@ def _notify_requester(ot: OvertimeRequest, status_str: str, comment: str = ""):
 
 
 def _notify_hr_on_approved(ot: OvertimeRequest):
-    hr_users = User.objects.filter(is_active=True, profile__team=TEAM_HR_CODE)
+    hr_users = users_in_team(TEAM_HR_CODE)
     if not hr_users.exists():
         return
     lines = [

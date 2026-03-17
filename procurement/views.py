@@ -927,16 +927,18 @@ class ProcurementReportViewSet(viewsets.GenericViewSet):
         """
         from .reports.employees import build_procurement_staff_report
 
+        from users.helpers import TEAM_TO_GROUP
         User = get_user_model()
         base_qs = User.objects.all()
 
-        # Teams: default to both procurement & external_workshops
+        # Groups: default to procurement_team
         teams_param = request.query_params.get("teams") or request.query_params.get("team")
         if teams_param:
-            teams = [t.strip() for t in teams_param.split(",") if t.strip()]
+            team_codes = [t.strip() for t in teams_param.split(",") if t.strip()]
+            group_names = [TEAM_TO_GROUP[t] for t in team_codes if t in TEAM_TO_GROUP]
         else:
-            teams = ["procurement", "external_workshops"]
-        base_qs = base_qs.filter(profile__team__in=teams)
+            group_names = ["procurement_team"]
+        base_qs = base_qs.filter(groups__name__in=group_names)
 
         # User filters
         username_q = request.query_params.get("username")
