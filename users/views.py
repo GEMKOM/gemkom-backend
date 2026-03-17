@@ -74,7 +74,7 @@ class UserViewSet(ModelViewSet):
             user = self.request.user
             if not user.is_authenticated:
                 return PublicUserSerializer
-            if user.is_staff or user.is_superuser:
+            if user_has_role_perm(user, 'office_access') or user.is_staff or user.is_superuser:
                 return UserListSerializer
             return PublicUserSerializer
         return UserListSerializer
