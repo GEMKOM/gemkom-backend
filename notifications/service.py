@@ -603,11 +603,13 @@ def get_route(notification_type: str) -> tuple:
 
         team_ids = set()
         if cfg.teams:
-            from users.models import UserProfile
-            team_ids = set(
-                UserProfile.objects.filter(team__in=cfg.teams)
-                .values_list('user_id', flat=True)
-            )
+            from users.helpers import TEAM_TO_GROUP
+            group_names = [TEAM_TO_GROUP[t] for t in cfg.teams if t in TEAM_TO_GROUP]
+            if group_names:
+                team_ids = set(
+                    User.objects.filter(groups__name__in=group_names, is_active=True)
+                    .values_list('id', flat=True)
+                )
 
         group_ids = set()
         if cfg.groups:

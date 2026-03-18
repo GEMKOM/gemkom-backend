@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from django.contrib.auth.models import Group
 from .models import Notification, NotificationPreference, NotificationConfig
 from .service import NOTIFICATION_DEFAULTS, NOTIFICATION_CONFIG_DEFAULTS
 from users.models import UserProfile
@@ -125,9 +126,15 @@ class NotificationConfigSerializer(serializers.ModelSerializer):
     user_ids = serializers.ListField(
         child=serializers.IntegerField(), write_only=True, required=False
     )
-    teams = serializers.ListField(
-        child=serializers.CharField(), required=False, default=list
+    groups = serializers.SerializerMethodField()
+    group_names = serializers.ListField(
+        child=serializers.CharField(), write_only=True, required=False
     )
+
+    def get_groups(self, obj):
+        from users.constants import GROUP_DISPLAY_NAMES
+        names = obj.get('groups', []) if isinstance(obj, dict) else (obj.groups or [])
+        return [{'name': n, 'display': GROUP_DISPLAY_NAMES.get(n, n)} for n in names]
 
     def get_users(self, obj):
         if not obj.pk:
@@ -159,10 +166,13 @@ class NotificationConfigSerializer(serializers.ModelSerializer):
         ntype = obj.get('notification_type') if isinstance(obj, dict) else obj.notification_type
         return ntype in NotificationConfig.ROUTABLE_TYPES
 
-    def validate_teams(self, value):
-        invalid = set(value) - _VALID_TEAMS
+    def validate_group_names(self, value):
+        if not value:
+            return value
+        valid_names = set(Group.objects.filter(name__in=value).values_list('name', flat=True))
+        invalid = set(value) - valid_names
         if invalid:
-            raise serializers.ValidationError(f"Geçersiz ekip(ler): {', '.join(invalid)}")
+            raise serializers.ValidationError(f"Geçersiz grup(lar): {', '.join(sorted(invalid))}")
         return value
 
     class Meta:
@@ -183,20 +193,24 @@ class NotificationConfigSerializer(serializers.ModelSerializer):
             'is_routable',
             'users',
             'user_ids',
-            'teams',
+            'groups',
+            'group_names',
             'enabled',
         ]
         read_only_fields = ['notification_type', 'category', 'category_display', 'available_vars', 'updated_at']
 
     def update(self, instance, validated_data):
         user_ids = validated_data.pop('user_ids', None)
+        group_names = validated_data.pop('group_names', None)
         for attr in (
             'title_template', 'body_template', 'link_template',
             'default_send_email', 'default_send_in_app',
-            'teams', 'enabled',
+            'enabled',
         ):
             if attr in validated_data:
                 setattr(instance, attr, validated_data[attr])
+        if group_names is not None:
+            instance.groups = group_names
         instance.save()
         if user_ids is not None:
             from django.contrib.auth.models import User
