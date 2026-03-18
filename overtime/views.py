@@ -22,7 +22,7 @@ from .serializers import (
     UserOvertimeListSerializer,
 )
 from .filters import OvertimeRequestFilter
-from .permissions import IsRequesterOrAdmin
+
 
 
 # overtime/views.py (add/replace inside your file)
@@ -44,7 +44,7 @@ from .serializers import (
     OvertimeRequestUpdateSerializer,
 )
 from .filters import OvertimeRequestFilter
-from .permissions import IsRequesterOrAdmin
+
 from .approval_service import decide as ot_decide  # approve/reject helper
 from approvals.services import get_workflow
 
@@ -66,20 +66,12 @@ class OvertimeRequestViewSet(viewsets.ModelViewSet):
       - POST /overtime/requests/{id}/reject/       (reject  current stage — approvers only)
       - GET  /overtime/requests/pending-approvals/ (your approval inbox)
     """
-    permission_classes = [IsAuthenticated & IsRequesterOrAdmin]
+    permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, OrderingFilter, SearchFilter]
     filterset_class = OvertimeRequestFilter
     ordering = ["-created_at"]
     ordering_fields = ["start_at", "end_at", "status", "created_at"]
     search_fields = ["reason", "entries__job_no", "entries__description"]
-
-    # --- Allow approvers (non-requesters) to hit approve/reject/inbox
-    def get_permissions(self):
-        # These actions: only need to be logged in (approvers who aren’t requesters)
-        if self.action in ["approve", "reject", "pending_approvals"]:
-            return [IsAuthenticated()]
-        # Everything else: must be authenticated AND requester/admin
-        return [IsAuthenticated(), IsRequesterOrAdmin()]
 
     def get_queryset(self):
         return (OvertimeRequest.objects

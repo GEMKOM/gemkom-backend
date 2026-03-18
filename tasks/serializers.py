@@ -52,7 +52,7 @@ class BaseTimerSerializer(serializers.ModelSerializer):
 
     # --- Fields for creating/updating a Timer with a Generic Foreign Key ---
     task_key = serializers.CharField(write_only=True, source='object_id')
-    task_type = serializers.ChoiceField(write_only=True, choices=['machining', 'cnc_cutting', 'operation'])
+    task_type = serializers.ChoiceField(write_only=True, choices=['machining', 'cnc_cutting', 'operation', 'machine_fault'])
 
     class Meta:
         model = Timer
@@ -83,6 +83,9 @@ class BaseTimerSerializer(serializers.ModelSerializer):
         elif task_type_name == 'operation':
             app_label = 'tasks'
             model_name = 'operation'
+        elif task_type_name == 'machine_fault':
+            app_label = 'machines'
+            model_name = 'machinefault'
         else:
             raise serializers.ValidationError(f"Invalid task_type: {task_type_name}")
 

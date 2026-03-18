@@ -10,8 +10,14 @@ from django.utils import timezone
 import requests
 
 from machines.models import Machine, MachineCalendar, MachineFault
-from machines.serializers import MachineCalendarSerializer, MachineFaultSerializer, MachineGetSerializer, MachineListSerializer, MachineMinimalSerializer, MachineSerializer
+from machines.serializers import MachineCalendarSerializer, MachineFaultSerializer, MachineFaultTimerSerializer, MachineGetSerializer, MachineListSerializer, MachineMinimalSerializer, MachineSerializer
 from tasks.models import Timer
+from tasks.views import (
+    GenericTimerDetailView,
+    GenericTimerListView,
+    GenericTimerStartView,
+    GenericTimerStopView,
+)
 from rest_framework.permissions import IsAuthenticated
 from users.permissions import IsAdmin
 from django.db.models import Q
@@ -389,9 +395,7 @@ class MachineFaultDetailView(APIView):
 
         if not fault.resolved_at:
             # Only maintenance team or admins can resolve faults
-            user_profile = getattr(request.user, 'profile', None)
-            user_team = getattr(user_profile, 'team', None) if user_profile else None
-            is_maintenance = user_team == 'maintenance'
+            is_maintenance = request.user.groups.filter(name='maintenance_team').exists()
             is_admin = request.user.is_superuser or request.user.is_staff
 
             if not is_maintenance and not is_admin:
@@ -495,6 +499,104 @@ class MachineFaultDetailView(APIView):
             requests.post(url, data=payload, timeout=5)
         except requests.RequestException as e:
             print("Telegram çözüm bildirimi hatası:", e)
+
+
+class FaultTimerStartView(GenericTimerStartView):
+    """Start a productive timer for working on a machine fault."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        return super().post(request, task_type='machine_fault')
+
+
+class FaultTimerStopView(GenericTimerStopView):
+    """Stop a fault work timer."""
+    permission_classes = [IsAuthenticated]
+
+
+class FaultTimerListView(GenericTimerListView):
+    """List timers for a specific fault or all fault timers."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        return super().get(request, task_type='machine_fault')
+
+
+class FaultTimerDetailView(GenericTimerDetailView):
+    """Retrieve, update, or delete a fault timer."""
+    permission_classes = [IsAuthenticated]
+
+
+class MachineFaultCompleteView(APIView):
+    """
+    POST /machines/faults/<pk>/complete/
+    Stops all active fault work timers and marks the fault as resolved in one call.
+    Only maintenance team members or admins can complete faults.
+    Body (optional): { "resolution_description": "..." }
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        from django.contrib.contenttypes.models import ContentType
+
+        fault = get_object_or_404(MachineFault, pk=pk)
+
+        if fault.resolved_at:
+            return Response({'error': 'This fault is already resolved.'}, status=400)
+
+        is_maintenance = request.user.groups.filter(name='maintenance_team').exists()
+        is_admin = request.user.is_superuser or request.user.is_staff
+
+        if not is_maintenance and not is_admin:
+            return Response(
+                {'error': 'Only maintenance team members can complete machine faults.'},
+                status=403
+            )
+
+        now_ms = int(timezone.now().timestamp() * 1000)
+
+        # Stop all active GFK-linked fault work timers
+        fault_ct = ContentType.objects.get_for_model(MachineFault)
+        active_work_timers = Timer.objects.filter(
+            content_type=fault_ct,
+            object_id=str(fault.pk),
+            finish_time__isnull=True,
+        )
+        for timer in active_work_timers:
+            timer.finish_time = now_ms
+            timer.stopped_by = request.user
+            timer.save(update_fields=['finish_time', 'stopped_by'])
+
+        # Also stop any downtime timers linked to this fault via related_fault FK
+        if fault.is_breaking:
+            self._stop_downtime_timers_for_fault(fault, request.user)
+
+        # Resolve the fault
+        resolution_desc = request.data.get('resolution_description', '')
+        fault.resolved_by = request.user
+        fault.resolved_at = timezone.now()
+        if resolution_desc:
+            fault.resolution_description = resolution_desc
+        if fault.is_breaking:
+            fault.downtime_end_ms = now_ms
+        fault.save()
+
+        # Re-fetch with relations for serializer
+        fault.refresh_from_db()
+        serializer = MachineFaultSerializer(fault)
+        return Response(serializer.data)
+
+    def _stop_downtime_timers_for_fault(self, fault, user):
+        now_ms = int(timezone.now().timestamp() * 1000)
+        downtime_timers = Timer.objects.filter(
+            related_fault=fault,
+            finish_time__isnull=True,
+            timer_type='downtime',
+        )
+        for timer in downtime_timers:
+            timer.finish_time = now_ms
+            timer.stopped_by = user
+            timer.save(update_fields=['finish_time', 'stopped_by'])
 
 
 class MachineCalendarView(APIView):

@@ -55,6 +55,9 @@ def get_timer_serializer_class(task_type):
     elif task_type == 'operation':
         from tasks.serializers import OperationTimerSerializer
         return OperationTimerSerializer
+    elif task_type in ('machine_fault', 'machines'):
+        from machines.serializers import MachineFaultTimerSerializer
+        return MachineFaultTimerSerializer
     return BaseTimerSerializer
 
 class GenericTimerStartView(APIView):
@@ -234,6 +237,7 @@ class GenericTimerListView(APIView):
             'machining': ('machining', 'task'),
             'cnc_cutting': ('cnc_cutting', 'cnctask'),
             'operation': ('tasks', 'operation'),
+            'machine_fault': ('machines', 'machinefault'),
         }
 
         if task_type not in task_type_map:
@@ -249,13 +253,16 @@ class GenericTimerListView(APIView):
         # Include both task-linked timers AND machine-level timers (downtime/break with no operation)
         # For null content_type timers, filter by user's team to avoid showing them in wrong task_type views
         # cnc_cutting -> users with team='cutting', operation/machining -> users with team='machining'
-        if task_type == 'cnc_cutting':
+        # machine_fault -> only GFK-linked timers, no null content_type timers
+        if task_type == 'machine_fault':
+            query = Q(content_type=ct)
+        elif task_type == 'cnc_cutting':
             null_content_type_filter = Q(content_type__isnull=True, user__groups__name='cutting_team')
+            query = Q(content_type=ct) | null_content_type_filter
         else:
             # For 'operation' and 'machining', show timers from machining team users
             null_content_type_filter = Q(content_type__isnull=True, user__groups__name='machining_team')
-
-        query = Q(content_type=ct) | null_content_type_filter
+            query = Q(content_type=ct) | null_content_type_filter
 
         if request.GET.get("is_active") == "true":
             query &= Q(finish_time__isnull=True)
@@ -378,6 +385,7 @@ class GenericTimerReportView(APIView):
             'machining': ('machining', 'task'),
             'cnc_cutting': ('cnc_cutting', 'cnctask'),
             'operation': ('tasks', 'operation'),
+            'machine_fault': ('machines', 'machinefault'),
         }
 
         if task_type not in task_type_map:

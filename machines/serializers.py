@@ -2,6 +2,7 @@ from machines.models import Machine, MachineFault
 from rest_framework import serializers
 from .models import MachineCalendar
 from django.contrib.auth.models import User
+from tasks.serializers import BaseTimerSerializer
 
 class SimpleUserSerializer(serializers.ModelSerializer):
     class Meta:
@@ -156,6 +157,41 @@ class MachineFaultSerializer(serializers.ModelSerializer):
         if not machine and not (asset_name or '').strip():
             raise serializers.ValidationError("Provide 'asset_name' when 'machine' is not selected.")
         return super().validate(attrs)
+
+class MachineFaultTimerSerializer(BaseTimerSerializer):
+    """
+    Timer serializer for machine fault work sessions.
+    Linked to MachineFault via GFK (content_type + object_id = fault.id).
+    """
+    issue_name = serializers.SerializerMethodField()
+    fault_description = serializers.CharField(source='issue_key.description', read_only=True, allow_null=True)
+    fault_machine_name = serializers.SerializerMethodField()
+    fault_is_resolved = serializers.SerializerMethodField()
+
+    def get_issue_name(self, obj):
+        fault = obj.issue_key
+        if fault:
+            machine_label = fault.machine.name if fault.machine else (fault.asset_name or "Unknown")
+            return f"Fault #{fault.id} - {machine_label}"
+        return None
+
+    def get_fault_machine_name(self, obj):
+        fault = obj.issue_key
+        if fault:
+            return fault.machine.name if fault.machine else fault.asset_name
+        return None
+
+    def get_fault_is_resolved(self, obj):
+        fault = obj.issue_key
+        if fault:
+            return bool(fault.resolved_at)
+        return None
+
+    class Meta(BaseTimerSerializer.Meta):
+        fields = BaseTimerSerializer.Meta.fields + [
+            'fault_description', 'fault_machine_name', 'fault_is_resolved'
+        ]
+
 
 # machining/serializers_calendar.py
 
