@@ -399,14 +399,15 @@ class UserWageRateListView(ListAPIView):
 # ---------------------------------------------------------------------------
 
 _PERMISSION_CODENAMES = [codename for codename, _ in CUSTOM_PERMISSIONS]
+_PERMISSION_NAMES = {codename: name for codename, name in CUSTOM_PERMISSIONS}
 
 
 class UserPermissionsView(APIView):
     """
     GET /users/me/permissions/
 
-    Returns a flat dict of {codename: bool} for every custom permission
-    codename. The frontend uses this to show/hide pages and actions.
+    Returns a dict of {codename: {granted: bool, name: str}} for every custom
+    permission. The frontend uses this to show/hide pages and derive URLs.
 
     Django caches all permissions after the first has_perm() call, so the
     entire dict is resolved in a single DB query per request.
@@ -416,8 +417,8 @@ class UserPermissionsView(APIView):
     def get(self, request):
         user = request.user
         if user.is_superuser:
-            return Response({c: True for c in _PERMISSION_CODENAMES})
-        return Response({c: user_has_role_perm(user, c) for c in _PERMISSION_CODENAMES})
+            return Response({c: {'granted': True, 'name': _PERMISSION_NAMES[c]} for c in _PERMISSION_CODENAMES})
+        return Response({c: {'granted': user_has_role_perm(user, c), 'name': _PERMISSION_NAMES[c]} for c in _PERMISSION_CODENAMES})
 
 
 class GroupListView(APIView):
