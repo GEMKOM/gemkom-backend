@@ -29,7 +29,9 @@ class MachineFaultFilter(django_filters.FilterSet):
     machine_id = django_filters.NumberFilter(field_name='machine__id')  # Backwards-compat with your query param
 
     def filter_unresolved(self, qs, name, value):
-        return qs.filter(resolved_at__isnull=True) if value else qs
+        if value:
+            return qs.filter(resolved_at__isnull=True)
+        return qs.filter(resolved_at__isnull=False)
 
     class Meta:
         model = MachineFault
