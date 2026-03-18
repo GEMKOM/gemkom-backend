@@ -1,5 +1,5 @@
 # overtime/views.py
-from django.db.models import Q, Prefetch
+from django.db.models import Prefetch
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -26,7 +26,7 @@ from .permissions import IsRequesterOrAdmin
 
 
 # overtime/views.py (add/replace inside your file)
-from django.db.models import Q, Prefetch, F
+from django.db.models import Prefetch
 from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
@@ -48,7 +48,7 @@ from .permissions import IsRequesterOrAdmin
 from .approval_service import decide as ot_decide  # approve/reject helper
 from approvals.services import get_workflow
 
-from django.db.models import Exists, OuterRef, Subquery
+from django.db.models import Exists, OuterRef, Subquery, F
 from django.contrib.contenttypes.models import ContentType
 from rest_framework import permissions
 
@@ -82,24 +82,11 @@ class OvertimeRequestViewSet(viewsets.ModelViewSet):
         return [IsAuthenticated(), IsRequesterOrAdmin()]
 
     def get_queryset(self):
-        user = self.request.user
-        qs = (OvertimeRequest.objects
-              .select_related("requester")
-              .prefetch_related(
-                  Prefetch("entries", queryset=OvertimeEntry.objects.select_related("user"))
-              ))
-        if user.is_staff or user.is_superuser:
-            return qs.distinct()
-        ct = ContentType.objects.get_for_model(OvertimeRequest)
-        approver_ids = (ApprovalStageInstance.objects
-                        .filter(workflow__content_type=ct,
-                                approver_user_ids__contains=[user.id])
-                        .values_list("workflow__object_id", flat=True))
-        return qs.filter(
-            Q(requester=user) |
-            Q(entries__user=user) |
-            Q(id__in=approver_ids)
-        ).distinct()
+        return (OvertimeRequest.objects
+                .select_related("requester")
+                .prefetch_related(
+                    Prefetch("entries", queryset=OvertimeEntry.objects.select_related("user"))
+                ).distinct())
 
     def get_serializer_class(self):
         if self.action == "create":
