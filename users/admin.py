@@ -2,7 +2,7 @@ from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin, GroupAdmin as BaseGroupAdmin
 from django.contrib.auth.models import User, Group
 from .models import UserProfile, WageRate, UserPermissionOverride
-from .constants import GROUP_DISPLAY_NAMES, OFFICE_GROUPS, WORKSHOP_GROUPS
+from .constants import GROUP_DISPLAY_NAMES
 
 # Inline profile for User admin
 class UserProfileInline(admin.StackedInline):
@@ -14,16 +14,22 @@ class UserProfileInline(admin.StackedInline):
 class UserAdmin(BaseUserAdmin):
     inlines = [UserProfileInline]
 
-    def portal(self, instance):
-        groups = set(instance.groups.values_list('name', flat=True))
-        if groups & set(OFFICE_GROUPS):
-            return 'office'
-        if groups & set(WORKSHOP_GROUPS):
-            return 'workshop'
-        return '-'
-    portal.short_description = 'Portal'
+    def portals(self, instance):
+        perms = set(
+            instance.user_permissions.values_list('codename', flat=True)
+        ) | set(
+            p for g in instance.groups.prefetch_related('permissions').all()
+            for p in g.permissions.values_list('codename', flat=True)
+        )
+        result = []
+        if instance.is_superuser or 'office_access' in perms:
+            result.append('office')
+        if instance.is_superuser or 'workshop_access' in perms:
+            result.append('workshop')
+        return ', '.join(result) if result else '-'
+    portals.short_description = 'Portals'
 
-    list_display = BaseUserAdmin.list_display + ('portal',)
+    list_display = BaseUserAdmin.list_display + ('portals',)
     search_fields = BaseUserAdmin.search_fields + ('groups__name',)
     list_filter = BaseUserAdmin.list_filter + ('groups',)
 

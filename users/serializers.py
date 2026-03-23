@@ -1,19 +1,6 @@
 from django.contrib.auth.models import User
 from rest_framework import serializers
 from .models import UserProfile, WageRate
-from .constants import OFFICE_GROUPS, WORKSHOP_GROUPS
-
-OFFICE_GROUP_SET   = set(OFFICE_GROUPS)
-WORKSHOP_GROUP_SET = set(WORKSHOP_GROUPS)
-
-
-def _portal_from_groups(group_names: list[str]) -> str | None:
-    names = set(group_names)
-    if names & OFFICE_GROUP_SET:
-        return 'office'
-    if names & WORKSHOP_GROUP_SET:
-        return 'workshop'
-    return None
 
 
 class SimpleUserSerializer(serializers.ModelSerializer):
@@ -56,22 +43,18 @@ class UserListSerializer(serializers.ModelSerializer):
     team_label = serializers.SerializerMethodField()
     occupation_label = serializers.SerializerMethodField()
     groups = serializers.SerializerMethodField()
-    portal = serializers.SerializerMethodField()
 
     class Meta:
         model = User
         fields = [
             'id', 'username', 'first_name', 'last_name', 'email', 'is_superuser',
             'team', 'team_label', 'occupation', 'occupation_label',
-            'groups', 'portal',
+            'groups',
             'must_reset_password', 'is_active',
         ]
 
     def get_groups(self, obj):
         return [g.name for g in obj.groups.all()]
-
-    def get_portal(self, obj):
-        return _portal_from_groups([g.name for g in obj.groups.all()])
 
     def get_team_label(self, obj):
         if hasattr(obj, 'profile') and obj.profile.team:
@@ -181,21 +164,17 @@ class UserMiniSerializer(serializers.ModelSerializer):
     occupation = serializers.CharField(source="profile.occupation", read_only=True)
     occupation_label = serializers.CharField(source="profile.get_occupation_display", read_only=True)
     groups = serializers.SerializerMethodField()
-    portal = serializers.SerializerMethodField()
 
     class Meta:
         model = User
         fields = [
             "id", "username", "first_name", "last_name",
             "team", "team_label", "occupation", "occupation_label",
-            "groups", "portal",
+            "groups",
         ]
 
     def get_groups(self, obj):
         return [g.name for g in obj.groups.all()]
-
-    def get_portal(self, obj):
-        return _portal_from_groups([g.name for g in obj.groups.all()])
 
 
 class UserWageOverviewSerializer(serializers.ModelSerializer):

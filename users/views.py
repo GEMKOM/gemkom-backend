@@ -333,11 +333,13 @@ class WageRateListCreateView(ListCreateAPIView):
 
         portal = (self.request.query_params.get("portal") or "").lower()
         if portal == "office":
-            from users.constants import OFFICE_GROUPS
-            qs = qs.filter(groups__name__in=OFFICE_GROUPS)
+            qs = qs.filter(permission_overrides__codename="office_access", permission_overrides__granted=True) | \
+                 qs.filter(groups__permissions__codename="office_access")
+            qs = qs.distinct()
         elif portal == "workshop":
-            from users.constants import WORKSHOP_GROUPS
-            qs = qs.filter(groups__name__in=WORKSHOP_GROUPS)
+            qs = qs.filter(permission_overrides__codename="workshop_access", permission_overrides__granted=True) | \
+                 qs.filter(groups__permissions__codename="workshop_access")
+            qs = qs.distinct()
 
         return qs
 
@@ -438,7 +440,6 @@ class GroupListView(APIView):
 
     def get(self, request):
         from django.contrib.auth.models import Group
-        from users.constants import OFFICE_GROUPS, WORKSHOP_GROUPS
 
         groups = (
             Group.objects
@@ -447,18 +448,10 @@ class GroupListView(APIView):
             .order_by('name')
         )
 
-        def portal_for(name):
-            if name in OFFICE_GROUPS:
-                return 'office'
-            if name in WORKSHOP_GROUPS:
-                return 'workshop'
-            return None
-
         data = [
             {
                 'name': g.name,
                 'display_name': GROUP_DISPLAY_NAMES[g.name],
-                'portal': portal_for(g.name),
                 'member_count': g.user_set.count(),
                 'permissions': sorted(
                     p.codename for p in g.permissions.all()
