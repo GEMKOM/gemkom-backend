@@ -101,6 +101,7 @@ MANUFACTURING_PERMISSIONS: list[str] = [
     'access_manufacturing_maintenance_fault_requests',
     'access_manufacturing_maintenance_reports',
     'access_manufacturing_maintenance_reports_faults',
+    'access_manufacturing_subcontracting',
     'access_manufacturing_subcontracting_overview',
     'access_manufacturing_subcontracting_statements',
     'access_manufacturing_subcontracting_subcontractors',

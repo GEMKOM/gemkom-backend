@@ -96,6 +96,7 @@ NEW_PERMISSIONS = [
     ('access_manufacturing_reports',            'Page: /manufacturing/reports/'),
     ('access_manufacturing_reports_combined_job_costs', 'Page: /manufacturing/reports/combined-job-costs/'),
     # Manufacturing — Subcontracting
+    ('access_manufacturing_subcontracting',               'Page: /manufacturing/subcontracting/'),
     ('access_manufacturing_subcontracting_overview',      'Page: /manufacturing/subcontracting/overview/'),
     ('access_manufacturing_subcontracting_statements',    'Page: /manufacturing/subcontracting/statements/'),
     ('access_manufacturing_subcontracting_subcontractors','Page: /manufacturing/subcontracting/subcontractors/'),
