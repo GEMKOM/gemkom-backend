@@ -70,7 +70,7 @@ def recompute_job_cost_summary(job_no: str) -> None:
     Cost components (all in EUR):
       labor_cost          = WeldingJobCostAgg.total_cost + sum(PartCostAgg.total_cost)
       material_cost       = sum(JobOrderProcurementLine.amount_eur)
-      subcontractor_cost  = non-paint SubcontractingAssignment costs converted to EUR
+      subcontractor_cost  = non-paint SubcontractingAssignment costs + approved statement adjustments (job-linked) converted to EUR
       paint_cost          = paint SubcontractingAssignment costs (approved statement lines
                             use statement.approved_at date for FX; unbilled portion uses today)
       qc_cost             = sum(JobOrderQCCostLine.amount_eur)
@@ -82,7 +82,7 @@ def recompute_job_cost_summary(job_no: str) -> None:
     """
     from welding.models import WeldingJobCostAgg
     from tasks.models import PartCostAgg
-    from subcontracting.models import SubcontractingAssignment, SubcontractorStatementLine
+    from subcontracting.models import SubcontractingAssignment, SubcontractorStatementLine, SubcontractorStatementAdjustment
     from projects.models import (
         JobOrder, JobOrderCostSummary,
         JobOrderProcurementLine, JobOrderQCCostLine, JobOrderShippingCostLine,
@@ -151,6 +151,19 @@ def recompute_job_cost_summary(job_no: str) -> None:
         convert_to_eur(a.current_cost, a.cost_currency, today)
         for a in sc_assignments
     ))
+
+    # Add approved statement adjustments linked to this job order
+    sc_adjustments = (
+        SubcontractorStatementAdjustment.objects
+        .filter(
+            job_order_id=job_no,
+            statement__status='approved',
+        )
+        .select_related('statement')
+    )
+    for adj in sc_adjustments:
+        subcontractor += convert_to_eur(adj.amount, adj.statement.currency, adj.statement.approved_at.date())
+    subcontractor = q2(subcontractor)
 
     # ------------------------------------------------------------------
     # 4. Paint = paint assignments

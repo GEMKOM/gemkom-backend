@@ -67,7 +67,7 @@ ALWAYS_NOTIFIED = {
     Notification.DRAWING_RELEASED:       'Konudaki @bahsedilen kullanıcılar',
     Notification.REVISION_REQUESTED:     'Tasarım görev sorumlusu ve mevcut yayımcı',
     Notification.REVISION_APPROVED:      'Revizyon talebini açan kişi',
-    Notification.REVISION_COMPLETED:     'Orijinal revizyon talepcisi ve @bahsedilen kullanıcılar',
+    Notification.REVISION_COMPLETED:     'Orijinal revizyon talepcisi ve yeni sürüm konusunda @bahsedilen kullanıcılar',
     Notification.REVISION_REJECTED:      'Revizyon talebini açan kişi',
     Notification.JOB_ON_HOLD:            'İş emrindeki tüm görev sorumluları',
     Notification.JOB_RESUMED:            'İş emrindeki tüm görev sorumluları',

@@ -359,9 +359,14 @@ class SubcontractorStatementAdjustment(models.Model):
     description = models.TextField(blank=True)
     job_order = models.ForeignKey(
         'projects.JobOrder',
-        on_delete=models.SET_NULL,
-        null=True, blank=True,
-        related_name='+'
+        on_delete=models.PROTECT,
+        related_name='subcontracting_adjustments'
+    )
+    weight_kg = models.DecimalField(
+        max_digits=12, decimal_places=2,
+        default=Decimal('0.00'),
+        validators=[MinValueValidator(Decimal('0'))],
+        help_text='Applicable weight in kg (optional context, default 0)'
     )
 
     created_at = models.DateTimeField(auto_now_add=True)
