@@ -322,13 +322,20 @@ def _notify_qc_team_ncr_submitted(ncr: NCR):
                 title=title, body=body, link=link, source_type='ncr', source_id=ncr.id)
 
 
+def _ncr_assigned_team_users(ncr: NCR):
+    """Return active users in the group responsible for the NCR."""
+    team_code = ncr.assigned_team or (ncr.department_task.department if ncr.department_task else None)
+    if not team_code:
+        return User.objects.none()
+    return users_in_team(team_code)
+
+
 def _notify_ncr_approved(ncr: NCR):
     recipients = set()
     if ncr.created_by:
         recipients.add(ncr.created_by)
     recipients.update(ncr.assigned_members.filter(is_active=True))
-    if ncr.department_task:
-        recipients.update(users_in_team(ncr.department_task.department))
+    recipients.update(_ncr_assigned_team_users(ncr))
     if not recipients:
         return
     ctx = {
@@ -343,7 +350,11 @@ def _notify_ncr_approved(ncr: NCR):
 
 
 def _notify_ncr_rejected(ncr: NCR, comment: str = ""):
-    if not ncr.created_by:
+    recipients = set()
+    if ncr.created_by:
+        recipients.add(ncr.created_by)
+    recipients.update(_ncr_assigned_team_users(ncr))
+    if not recipients:
         return
     ctx = {
         'ncr_number': ncr.ncr_number,
@@ -352,8 +363,8 @@ def _notify_ncr_rejected(ncr: NCR, comment: str = ""):
         'comment':    comment or '—',
     }
     title, body, link = render_notification(Notification.NCR_REJECTED, ctx)
-    notify(user=ncr.created_by, notification_type=Notification.NCR_REJECTED,
-           title=title, body=body, link=link, source_type='ncr', source_id=ncr.id)
+    bulk_notify(users=list(recipients), notification_type=Notification.NCR_REJECTED,
+                title=title, body=body, link=link, source_type='ncr', source_id=ncr.id)
 
 
 def email_ncr_assigned_team(ncr: NCR):
@@ -364,12 +375,13 @@ def email_ncr_assigned_team(ncr: NCR):
         return
     ctx = {
         'ncr_number':  ncr.ncr_number,
+        'ncr_title':   ncr.title,
         'job_no':      str(ncr.job_order_id),
-        'task_title':  ncr.department_task.title if ncr.department_task else '—',
+        'severity':    ncr.get_severity_display(),
         'description': ncr.description,
     }
-    title, body, link = render_notification(Notification.NCR_CREATED, ctx)
-    bulk_notify(users=dept_users, notification_type=Notification.NCR_CREATED,
+    title, body, link = render_notification(Notification.NCR_ASSIGNED, ctx)
+    bulk_notify(users=dept_users, notification_type=Notification.NCR_ASSIGNED,
                 title=title, body=body, link=link, source_type='ncr', source_id=ncr.id)
 
 

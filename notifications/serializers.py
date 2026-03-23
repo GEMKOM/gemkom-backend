@@ -98,9 +98,9 @@ ALWAYS_NOTIFIED = {
     Notification.QC_REVIEW_REJECTED:     'İncelemeyi gönderen kişi',
     Notification.NCR_CREATED:            'KK ekibi üyeleri ve görev sorumlusu',
     Notification.NCR_SUBMITTED:          'KK ekibi onaylayıcıları',
-    Notification.NCR_APPROVED:           'NCR\'ı oluşturan kişi',
-    Notification.NCR_REJECTED:           'NCR\'ı oluşturan kişi',
-    Notification.NCR_ASSIGNED:           'NCR\'a atanan kişiler',
+    Notification.NCR_APPROVED:           'NCR\'ı oluşturan kişi, atanan ekip ve atanan üyeler',
+    Notification.NCR_REJECTED:           'NCR\'ı oluşturan kişi ve atanan ekip',
+    Notification.NCR_ASSIGNED:           'NCR\'a atanan ekip ve atanan üyeler',
     # Auth
     Notification.PASSWORD_RESET:         'IT yöneticileri',
 }
