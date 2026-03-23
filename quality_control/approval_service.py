@@ -11,7 +11,15 @@ from .models import QCReview, NCR
 
 from notifications.service import notify, bulk_notify, render_notification
 from notifications.models import Notification
+from django.contrib.auth.models import Group
 from users.helpers import users_in_team, TEAM_TO_GROUP
+
+
+def _group_for_team(team_code: str) -> Group | None:
+    group_name = TEAM_TO_GROUP.get(team_code)
+    if not group_name:
+        return None
+    return Group.objects.filter(name=group_name).first()
 
 
 QC_REVIEW_POLICY_NAME = "KK İnceleme Onay Politikası"
@@ -147,7 +155,7 @@ def _on_qc_review_rejected(review: QCReview, comment: str = ""):
         detected_by=reviewer,
         affected_quantity=prefill.get('affected_quantity') or 1,
         disposition=prefill.get('disposition') or 'pending',
-        assigned_team=task.department, status='draft', created_by=reviewer,
+        assigned_team=_group_for_team(task.department), status='draft', created_by=reviewer,
     )
     review.ncr = ncr
     review.save(update_fields=['ncr'])
@@ -324,10 +332,12 @@ def _notify_qc_team_ncr_submitted(ncr: NCR):
 
 def _ncr_assigned_team_users(ncr: NCR):
     """Return active users in the group responsible for the NCR."""
-    team_code = ncr.assigned_team or (ncr.department_task.department if ncr.department_task else None)
-    if not team_code:
+    group = ncr.assigned_team
+    if not group and ncr.department_task:
+        group = _group_for_team(ncr.department_task.department)
+    if not group:
         return User.objects.none()
-    return users_in_team(team_code)
+    return User.objects.filter(is_active=True, groups=group)
 
 
 def _notify_ncr_approved(ncr: NCR):
@@ -368,9 +378,9 @@ def _notify_ncr_rejected(ncr: NCR, comment: str = ""):
 
 
 def email_ncr_assigned_team(ncr: NCR):
-    if not ncr.assigned_team:
+    if not ncr.assigned_team_id:
         return
-    dept_users = users_in_team(ncr.assigned_team)
+    dept_users = User.objects.filter(is_active=True, groups=ncr.assigned_team)
     if not dept_users.exists():
         return
     ctx = {

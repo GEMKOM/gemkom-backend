@@ -11,7 +11,7 @@ from notifications.service import bulk_notify, render_notification
 from notifications.models import Notification
 from machines.serializers import SimpleUserSerializer
 from users.filters import UserFilter, WageOrderingFilter
-from users.helpers import _team_manager_user_ids
+from users.helpers import _team_manager_user_ids, primary_team_from_groups, TEAM_TO_GROUP, TEAM_CHOICES, TEAM_LABELS
 from users.models import UserProfile, WageRate
 from users.permissions import IsAdmin, IsHRorAuthorized, user_has_role_perm
 from users.apps import CUSTOM_PERMISSIONS
@@ -130,7 +130,7 @@ class ForcedPasswordResetView(APIView):
 class TeamChoicesView(APIView):
     def get(self, request):
         return Response([
-            {"value": k, "label": v} for k, v in UserProfile.TEAM_CHOICES
+            {"value": k, "label": v} for k, v in TEAM_CHOICES
         ])
     
 class OccupationChoicesView(APIView):
@@ -205,7 +205,8 @@ class PasswordResetRequestView(APIView):
             # (Optional) notify admins via email/telegram here
 
             # build recipient list: superusers + team managers (deduped)
-            manager_ids = _team_manager_user_ids(getattr(profile, "team", "") or "")
+            team_code = primary_team_from_groups(user)
+            manager_ids = _team_manager_user_ids(team_code or "")
             recipient_ids = set(
                 list(User.objects.filter(is_active=True, is_superuser=True).values_list("id", flat=True))
                 + list(User.objects.filter(id__in=manager_ids, is_active=True).values_list("id", flat=True))
@@ -215,11 +216,11 @@ class PasswordResetRequestView(APIView):
             if recipients.exists():
                 requested_at = timezone.localtime().strftime("%d.%m.%Y %H:%M")
                 full_name = user.get_full_name() or user.username
-                team = getattr(profile, "team", "") or "—"
+                team_label = TEAM_LABELS.get(team_code, "") if team_code else "—"
                 ctx = {
                     'username':     user.username,
                     'full_name':    full_name,
-                    'team':         team,
+                    'team':         team_label,
                     'requested_at': requested_at,
                 }
                 title, body, link = render_notification(Notification.PASSWORD_RESET, ctx)

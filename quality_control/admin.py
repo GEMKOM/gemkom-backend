@@ -107,7 +107,7 @@ class NCRAdmin(admin.ModelAdmin):
         'assigned_team',
         'created_by', 'created_at',
     )
-    list_filter = ('status', 'severity', 'defect_type', 'assigned_team', 'disposition')
+    list_filter = ('status', 'severity', 'defect_type', 'assigned_team__name', 'disposition')
     search_fields = (
         'ncr_number', 'title', 'description',
         'job_order__job_no',
@@ -116,7 +116,7 @@ class NCRAdmin(admin.ModelAdmin):
     date_hierarchy = 'created_at'
     ordering = ('-created_at',)
     readonly_fields = ('ncr_number', 'submission_count', 'created_at', 'updated_at')
-    raw_id_fields = ('job_order', 'department_task', 'qc_review', 'detected_by', 'created_by')
+    raw_id_fields = ('job_order', 'department_task', 'qc_review', 'detected_by', 'created_by', 'assigned_team')
     filter_horizontal = ('assigned_members',)
     fieldsets = (
         ('Identification', {

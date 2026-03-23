@@ -10,7 +10,8 @@ from approvals.services import (
     auto_bypass_self_approver,
     resolve_group_user_ids,
 )
-from users.helpers import _team_manager_user_ids, users_in_team
+from django.contrib.auth.models import Group
+from users.helpers import _team_manager_user_ids
 from .models import OvertimeRequest
 
 from notifications.service import notify, bulk_notify, render_notification
@@ -18,9 +19,9 @@ from notifications.models import Notification
 
 
 # ------- Config -------
-OVERTIME_POLICY_NAME    = "Overtime – Default"
+OVERTIME_POLICY_NAME     = "Overtime – Default"
 TEAM_MANAGER_STAGE_ORDER = 1
-TEAM_HR_CODE = "human_resources"
+HR_GROUP_NAME            = "hr_team"
 
 def _dedupe_ordered(ids: list[int]) -> list[int]:
     seen, ordered = set(), []
@@ -110,7 +111,7 @@ def _notify_requester(ot: OvertimeRequest, status_str: str, comment: str = ""):
 
 
 def _notify_hr_on_approved(ot: OvertimeRequest):
-    hr_users = users_in_team(TEAM_HR_CODE)
+    hr_users = User.objects.filter(is_active=True, groups__name=HR_GROUP_NAME)
     if not hr_users.exists():
         return
     lines = [

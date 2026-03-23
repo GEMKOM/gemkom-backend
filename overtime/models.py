@@ -49,7 +49,6 @@ class OvertimeRequest(models.Model):
             models.Index(fields=["end_at"]),
             models.Index(fields=["status"]),
             models.Index(fields=["requester"]),
-            models.Index(fields=["team"]),
         ]
 
     def __str__(self):

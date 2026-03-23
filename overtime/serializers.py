@@ -6,12 +6,11 @@ from approvals.serializers import WorkflowSerializer
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 
-from users.models import UserProfile
+from users.helpers import primary_team_from_groups, GROUP_TO_TEAM, TEAM_LABELS
 
 from .models import OvertimeRequest, OvertimeEntry
 
 User = get_user_model()
-TEAM_LABELS = dict(UserProfile._meta.get_field("team").choices)
 
 class OvertimeEntryReadSerializer(serializers.ModelSerializer):
     user_id = serializers.IntegerField(source="user.id", read_only=True)
@@ -158,8 +157,8 @@ class OvertimeRequestCreateSerializer(serializers.ModelSerializer):
         start_at = validated_data["start_at"]
         end_at = validated_data["end_at"]
 
-        # Snapshot team from profile if available
-        team = getattr(getattr(requester, "profile", None), "team", "") or ""
+        # Snapshot team from group membership
+        team = primary_team_from_groups(requester) or ""
 
         # Validate overlaps before creating
         users = [row["user"] for row in entries_data]
@@ -203,15 +202,19 @@ class OvertimeEntryShortSerializer(serializers.ModelSerializer):
 
 class UserOvertimeListSerializer(serializers.ModelSerializer):
     full_name = serializers.SerializerMethodField()
-    team = serializers.CharField(source="profile.team", read_only=True)
+    team = serializers.SerializerMethodField()
     team_label = serializers.SerializerMethodField()
     entries = serializers.SerializerMethodField()
 
     def get_full_name(self, obj):
         return obj.get_full_name() or obj.username
-    
+
+    def get_team(self, obj):
+        return primary_team_from_groups(obj)
+
     def get_team_label(self, obj):
-        return TEAM_LABELS.get(obj.profile.team, obj.profile.team or "")
+        team = primary_team_from_groups(obj)
+        return TEAM_LABELS.get(team, "") if team else ""
     
     def get_entries(self, obj):
         # We’ll prefetch filtered entries into obj.entries_for_day

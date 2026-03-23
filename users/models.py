@@ -4,27 +4,6 @@ from django.contrib.auth import get_user_model
 User = get_user_model()
 
 class UserProfile(models.Model):
-    TEAM_CHOICES = [
-        ('machining', 'Talaşlı İmalat'),
-        ('design', 'Dizayn'),
-        ('logistics', 'Lojistik'),
-        ('procurement', 'Satın Alma'),
-        ('welding', 'Kaynaklı İmalat'),
-        ('planning', 'Planlama'),
-        ('manufacturing', 'İmalat'),
-        ('maintenance', "Bakım"),
-        ('rollingmill', 'Haddehane'),
-        ('qualitycontrol', 'Kalite Kontrol'),
-        ('cutting', 'CNC Kesim'),
-        ('warehouse', 'Ambar'),
-        ('finance', 'Finans'),
-        ('management', 'Yönetim'),
-        ('external_workshops', 'Dış Atölyeler'),
-        ('human_resouces', 'İnsan Kaynakları'),
-        ('sales', 'Proje Taahhüt'),
-        ('accounting', 'Muhasebe'),
-        # Add more as needed
-    ]
     OCCUPATION_CHOICES = [
         ('manager', 'Müdür'),
         ('welder', 'Kaynakçı'),
@@ -35,7 +14,6 @@ class UserProfile(models.Model):
         ('office', 'Ofis çalışanı')
     ]
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
-    team = models.CharField(max_length=50, choices=TEAM_CHOICES, null=True, blank=True)
     must_reset_password = models.BooleanField(default=False)
     reset_password_request = models.BooleanField(default=False)
     jira_api_token = models.CharField(max_length=255, blank=True, null=True)

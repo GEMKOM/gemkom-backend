@@ -1,6 +1,19 @@
 from django.contrib.auth.models import User
 from rest_framework import serializers
 from .models import UserProfile, WageRate
+from .helpers import GROUP_TO_TEAM, TEAM_TO_GROUP, TEAM_LABELS, sync_user_group
+
+
+def _team_code_from_user(user) -> str | None:
+    for group in user.groups.all():
+        if group.name in GROUP_TO_TEAM:
+            return GROUP_TO_TEAM[group.name]
+    return None
+
+
+def _team_label_from_user(user) -> str | None:
+    team = _team_code_from_user(user)
+    return TEAM_LABELS.get(team) if team else None
 
 
 class SimpleUserSerializer(serializers.ModelSerializer):
@@ -10,23 +23,24 @@ class SimpleUserSerializer(serializers.ModelSerializer):
 
 
 class PublicUserSerializer(serializers.ModelSerializer):
-    team = serializers.CharField(source='profile.team')
+    team = serializers.SerializerMethodField()
     team_label = serializers.SerializerMethodField()
 
     class Meta:
         model = User
         fields = ['username', 'first_name', 'last_name', 'team', 'team_label']
 
+    def get_team(self, obj):
+        return _team_code_from_user(obj)
+
     def get_team_label(self, obj):
-        if hasattr(obj, 'profile') and obj.profile.team:
-            return obj.profile.get_team_display()
-        return None
+        return _team_label_from_user(obj)
 
 
 class UserPasswordResetSerializer(serializers.ModelSerializer):
     reset_password_request = serializers.BooleanField(source='profile.reset_password_request')
     must_reset_password = serializers.BooleanField(source='profile.must_reset_password')
-    team = serializers.CharField(source='profile.team')
+    team = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -35,9 +49,12 @@ class UserPasswordResetSerializer(serializers.ModelSerializer):
             'team', 'reset_password_request', 'must_reset_password'
         ]
 
+    def get_team(self, obj):
+        return _team_code_from_user(obj)
+
 
 class UserListSerializer(serializers.ModelSerializer):
-    team = serializers.CharField(source='profile.team')
+    team = serializers.SerializerMethodField()
     occupation = serializers.CharField(source='profile.occupation')
     must_reset_password = serializers.BooleanField(source='profile.must_reset_password')
     team_label = serializers.SerializerMethodField()
@@ -56,10 +73,11 @@ class UserListSerializer(serializers.ModelSerializer):
     def get_groups(self, obj):
         return [g.name for g in obj.groups.all()]
 
+    def get_team(self, obj):
+        return _team_code_from_user(obj)
+
     def get_team_label(self, obj):
-        if hasattr(obj, 'profile') and obj.profile.team:
-            return obj.profile.get_team_display()
-        return None
+        return _team_label_from_user(obj)
 
     def get_occupation_label(self, obj):
         if hasattr(obj, 'profile') and obj.profile.occupation:
@@ -90,6 +108,9 @@ class UserCreateSerializer(serializers.ModelSerializer):
             'team': team,
             'must_reset_password': True,
         })
+
+        if team:
+            sync_user_group(user, team)
 
         return user
 
@@ -132,7 +153,7 @@ class CurrentUserUpdateSerializer(serializers.ModelSerializer):
 
 class AdminUserUpdateSerializer(serializers.ModelSerializer):
     jira_api_token = serializers.CharField(source="profile.jira_api_token", allow_blank=True, required=False)
-    team = serializers.CharField(source='profile.team', required=False, allow_blank=True)
+    team = serializers.CharField(required=False, allow_blank=True, write_only=True)
     must_reset_password = serializers.BooleanField(source='profile.must_reset_password', required=False)
     occupation = serializers.CharField(source='profile.occupation', required=False, allow_blank=True)
 
@@ -144,6 +165,7 @@ class AdminUserUpdateSerializer(serializers.ModelSerializer):
         ]
 
     def update(self, instance, validated_data):
+        team = validated_data.pop('team', None)
         profile_data = validated_data.pop('profile', {})
 
         for attr, value in validated_data.items():
@@ -155,12 +177,15 @@ class AdminUserUpdateSerializer(serializers.ModelSerializer):
             setattr(profile, attr, value)
         profile.save()
 
+        if team is not None:
+            sync_user_group(instance, team or None)
+
         return instance
 
 
 class UserMiniSerializer(serializers.ModelSerializer):
-    team = serializers.CharField(source="profile.team", read_only=True)
-    team_label = serializers.CharField(source="profile.get_team_display", read_only=True)
+    team = serializers.SerializerMethodField()
+    team_label = serializers.SerializerMethodField()
     occupation = serializers.CharField(source="profile.occupation", read_only=True)
     occupation_label = serializers.CharField(source="profile.get_occupation_display", read_only=True)
     groups = serializers.SerializerMethodField()
@@ -172,6 +197,12 @@ class UserMiniSerializer(serializers.ModelSerializer):
             "team", "team_label", "occupation", "occupation_label",
             "groups",
         ]
+
+    def get_team(self, obj):
+        return _team_code_from_user(obj)
+
+    def get_team_label(self, obj):
+        return _team_label_from_user(obj)
 
     def get_groups(self, obj):
         return [g.name for g in obj.groups.all()]

@@ -1,5 +1,5 @@
 from django.db import models
-from django.contrib.auth.models import User
+from django.contrib.auth.models import User, Group
 from django.contrib.contenttypes.fields import GenericRelation
 
 from approvals.models import ApprovalWorkflow
@@ -187,7 +187,13 @@ class NCR(models.Model):
     )
 
     # Assignment
-    assigned_team = models.CharField(max_length=50, blank=True)
+    assigned_team = models.ForeignKey(
+        Group,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='assigned_ncrs',
+    )
     assigned_members = models.ManyToManyField(
         User,
         blank=True,
@@ -223,7 +229,7 @@ class NCR(models.Model):
         indexes = [
             models.Index(fields=['job_order', 'status']),
             models.Index(fields=['severity', 'status']),
-            models.Index(fields=['assigned_team', 'status']),
+            models.Index(fields=['assigned_team_id', 'status']),
         ]
         verbose_name = 'Uygunsuzluk Raporu'
         verbose_name_plural = 'Uygunsuzluk Raporları'

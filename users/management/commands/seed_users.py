@@ -1,6 +1,6 @@
 from django.core.management.base import BaseCommand
 from django.contrib.auth.models import User
-from users.models import UserProfile
+from users.helpers import sync_user_group
 
 class Command(BaseCommand):
     help = "Seed initial users without passwords"
@@ -13,7 +13,7 @@ class Command(BaseCommand):
             "ADEM GÜREL", "MUSTAFA SEMİZ", "YÜKSEL ÖZTÜRK", "YÜKSEL ÇEBİ", "SEYİTHAN ACAR"
         ]
 
-        team = "Machining"
+        team = "machining"
 
         for full_name in names:
             username = (
@@ -32,7 +32,4 @@ class Command(BaseCommand):
             else:
                 self.stdout.write(self.style.WARNING(f"⏭ Already exists: {username}"))
 
-            # Assign team in profile
-            profile = user.profile
-            profile.team = team
-            profile.save()
+            sync_user_group(user, team)

@@ -162,7 +162,7 @@ class SubcontractingAssignment(models.Model):
         Recalculate and cache the cumulative cost from current progress.
         This does NOT advance last_billed_progress — that happens only on statement approval.
         """
-        progress = self.department_task.manual_progress or Decimal('0')
+        progress = self.current_progress
         self.current_cost = (
             self.allocated_weight_kg
             * (progress / Decimal('100'))
@@ -172,7 +172,7 @@ class SubcontractingAssignment(models.Model):
 
     @property
     def current_progress(self) -> Decimal:
-        return self.department_task.manual_progress or Decimal('0')
+        return self.department_task.get_completion_percentage(skip_expensive_calculations=True)
 
     @property
     def unbilled_progress(self) -> Decimal:

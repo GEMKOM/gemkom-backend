@@ -2,10 +2,10 @@ from rest_framework import serializers
 from django.contrib.auth.models import Group
 from .models import Notification, NotificationPreference, NotificationConfig
 from .service import NOTIFICATION_DEFAULTS, NOTIFICATION_CONFIG_DEFAULTS
-from users.models import UserProfile
+from users.helpers import TEAM_CHOICES as _TEAM_CHOICES, TEAM_LABELS
 
-_VALID_TEAMS = {v for v, _ in UserProfile.TEAM_CHOICES}
-TEAM_CHOICES = [{'value': v, 'label': l} for v, l in UserProfile.TEAM_CHOICES]
+_VALID_TEAMS = set(TEAM_LABELS.keys())
+TEAM_CHOICES = [{'value': v, 'label': l} for v, l in _TEAM_CHOICES]
 
 
 class NotificationSerializer(serializers.ModelSerializer):

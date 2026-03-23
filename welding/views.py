@@ -13,6 +13,7 @@ from collections import defaultdict
 from .models import WeldingTimeEntry
 from .serializers import WeldingTimeEntrySerializer, WeldingTimeEntryBulkCreateSerializer
 from .filters import WeldingTimeEntryFilter
+from users.helpers import primary_team_from_groups
 from rest_framework.permissions import IsAuthenticated
 from users.permissions import IsAdmin, can_see_job_costs
 from config.pagination import CustomPageNumberPagination
@@ -84,7 +85,7 @@ class WeldingTimeEntryViewSet(viewsets.ModelViewSet):
                 'id': user.id,
                 'username': user.username,
                 'full_name': f"{user.first_name} {user.last_name}".strip() or user.username,
-                'team': user.profile.team if hasattr(user, 'profile') else None,
+                'team': primary_team_from_groups(user),
                 'occupation': user.profile.occupation if hasattr(user, 'profile') else None,
             }
             for user in active_welders

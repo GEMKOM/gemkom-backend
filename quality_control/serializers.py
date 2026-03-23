@@ -128,6 +128,7 @@ class NCRListSerializer(serializers.ModelSerializer):
     defect_type_display = serializers.CharField(source='get_defect_type_display', read_only=True)
     created_by_name = serializers.CharField(source='created_by.get_full_name', read_only=True)
     job_order_title = serializers.CharField(source='job_order.title', read_only=True)
+    assigned_team_name = serializers.CharField(source='assigned_team.name', read_only=True, default=None)
 
     class Meta:
         model = NCR
@@ -138,7 +139,7 @@ class NCRListSerializer(serializers.ModelSerializer):
             'severity', 'severity_display',
             'defect_type', 'defect_type_display',
             'status', 'status_display',
-            'assigned_team', 'disposition',
+            'assigned_team', 'assigned_team_name', 'disposition',
             'submission_count',
             'created_by', 'created_by_name', 'created_at',
         ]
@@ -152,6 +153,7 @@ class NCRDetailSerializer(serializers.ModelSerializer):
     created_by_name = serializers.CharField(source='created_by.get_full_name', read_only=True)
     detected_by_name = serializers.CharField(source='detected_by.get_full_name', read_only=True)
     job_order_title = serializers.CharField(source='job_order.title', read_only=True)
+    assigned_team_name = serializers.CharField(source='assigned_team.name', read_only=True, default=None)
     assigned_members_data = serializers.SerializerMethodField()
 
     class Meta:
@@ -166,7 +168,7 @@ class NCRDetailSerializer(serializers.ModelSerializer):
             'affected_quantity',
             'root_cause', 'corrective_action',
             'disposition', 'disposition_display',
-            'assigned_team', 'assigned_members', 'assigned_members_data',
+            'assigned_team', 'assigned_team_name', 'assigned_members', 'assigned_members_data',
             'status', 'status_display',
             'submission_count',
             'created_by', 'created_by_name', 'created_at', 'updated_at',

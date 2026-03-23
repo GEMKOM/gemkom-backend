@@ -18,7 +18,6 @@ from .approval_service import (
     email_ncr_assigned_members,
     email_ncr_assigned_team,
 )
-from users.helpers import TEAM_TO_GROUP
 
 
 def _is_qc_member(user):
@@ -31,10 +30,8 @@ def _is_qc_member(user):
 def _can_submit_ncr(user, ncr):
     if user.is_superuser:
         return True
-    if ncr.assigned_team:
-        group_name = TEAM_TO_GROUP.get(ncr.assigned_team)
-        if group_name and user.groups.filter(name=group_name).exists():
-            return True
+    if ncr.assigned_team_id and user.groups.filter(pk=ncr.assigned_team_id).exists():
+        return True
     if ncr.assigned_members.filter(pk=user.pk).exists():
         return True
     return False
@@ -172,7 +169,8 @@ class NCRViewSet(viewsets.ModelViewSet):
         'status': ['exact', 'in'],
         'severity': ['exact', 'in'],
         'defect_type': ['exact'],
-        'assigned_team': ['exact'],
+        'assigned_team': ['exact', 'isnull'],
+        'assigned_team__name': ['exact'],
         'department_task': ['exact'],
     }
     search_fields = ['ncr_number', 'title', 'description', 'job_order__job_no']
