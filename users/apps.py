@@ -100,6 +100,7 @@ CUSTOM_PERMISSIONS = [
 
     # Manufacturing — Maintenance
     ('access_manufacturing_maintenance',                'Page: /manufacturing/maintenance/'),
+    ('access_manufacturing_maintenance_dashboard',      'Page: /manufacturing/maintenance/dashboard/'),
     ('access_manufacturing_maintenance_fault_requests', 'Page: /manufacturing/maintenance/fault-requests/'),
     ('access_manufacturing_maintenance_reports',        'Page: /manufacturing/maintenance/reports/'),
     ('access_manufacturing_maintenance_reports_faults', 'Page: /manufacturing/maintenance/reports/faults/'),

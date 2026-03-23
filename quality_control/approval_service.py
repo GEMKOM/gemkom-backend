@@ -11,7 +11,7 @@ from .models import QCReview, NCR
 
 from notifications.service import notify, bulk_notify, render_notification
 from notifications.models import Notification
-from users.helpers import users_in_team
+from users.helpers import users_in_team, TEAM_TO_GROUP
 
 
 QC_REVIEW_POLICY_NAME = "KK İnceleme Onay Politikası"
@@ -48,14 +48,20 @@ def _qc_team_builder(stage, _subject):
 # QCReview
 # =============================================================================
 
+def _user_in_team(user, team_code: str) -> bool:
+    group_name = TEAM_TO_GROUP.get(team_code)
+    if not group_name:
+        return False
+    return user.groups.filter(name=group_name).exists()
+
+
 def submit_for_qc_review(task, submitted_by, part_data=None) -> QCReview:
     if not task.qc_required:
         raise ValueError(
             "Bu görev KK incelemesine uygun değil. Yalnızca imalat ana görevleri ve "
             "parça görevleri KK incelemesine gönderilebilir."
         )
-    user_team = getattr(getattr(submitted_by, 'profile', None), 'team', None)
-    if user_team not in (task.department, 'qualitycontrol') and not submitted_by.is_superuser:
+    if not submitted_by.is_superuser and not _user_in_team(submitted_by, task.department) and not _user_in_team(submitted_by, 'qualitycontrol'):
         raise ValueError("Bu görevi KK için gönderme yetkiniz yok.")
 
     with transaction.atomic():
@@ -80,8 +86,7 @@ def bulk_submit_for_qc_review(task, submitted_by, part_data_list: list) -> list:
             "Bu görev KK incelemesine uygun değil. Yalnızca imalat ana görevleri ve "
             "parça görevleri KK incelemesine gönderilebilir."
         )
-    user_team = getattr(getattr(submitted_by, 'profile', None), 'team', None)
-    if user_team not in (task.department, 'qualitycontrol') and not submitted_by.is_superuser:
+    if not submitted_by.is_superuser and not _user_in_team(submitted_by, task.department) and not _user_in_team(submitted_by, 'qualitycontrol'):
         raise ValueError("Bu görevi KK için gönderme yetkiniz yok.")
 
     policy = _get_or_create_policy(QC_REVIEW_POLICY_NAME)

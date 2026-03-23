@@ -97,6 +97,7 @@ MANUFACTURING_PERMISSIONS: list[str] = [
     'access_manufacturing_machining_tasks_create',
     'access_manufacturing_machining_tasks_list',
     'access_manufacturing_maintenance',
+    'access_manufacturing_maintenance_dashboard',
     'access_manufacturing_maintenance_fault_requests',
     'access_manufacturing_maintenance_reports',
     'access_manufacturing_maintenance_reports_faults',

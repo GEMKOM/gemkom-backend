@@ -18,21 +18,23 @@ from .approval_service import (
     email_ncr_assigned_members,
     email_ncr_assigned_team,
 )
+from users.helpers import TEAM_TO_GROUP
 
 
 def _is_qc_member(user):
     return (
         user.is_superuser
-        or getattr(getattr(user, 'profile', None), 'team', None) == 'qualitycontrol'
+        or user.groups.filter(name='qualitycontrol_team').exists()
     )
 
 
 def _can_submit_ncr(user, ncr):
     if user.is_superuser:
         return True
-    user_team = getattr(getattr(user, 'profile', None), 'team', None)
-    if user_team and user_team == ncr.assigned_team:
-        return True
+    if ncr.assigned_team:
+        group_name = TEAM_TO_GROUP.get(ncr.assigned_team)
+        if group_name and user.groups.filter(name=group_name).exists():
+            return True
     if ncr.assigned_members.filter(pk=user.pk).exists():
         return True
     return False

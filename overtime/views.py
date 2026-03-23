@@ -74,11 +74,25 @@ class OvertimeRequestViewSet(viewsets.ModelViewSet):
     search_fields = ["reason", "entries__job_no", "entries__description"]
 
     def get_queryset(self):
-        return (OvertimeRequest.objects
-                .select_related("requester")
-                .prefetch_related(
-                    Prefetch("entries", queryset=OvertimeEntry.objects.select_related("user"))
-                ).distinct())
+        user = self.request.user
+        qs = (OvertimeRequest.objects
+              .select_related("requester")
+              .prefetch_related(
+                  Prefetch("entries", queryset=OvertimeEntry.objects.select_related("user"))
+              ))
+        from users.permissions import user_has_role_perm
+        if user.is_staff or user.is_superuser or user_has_role_perm(user, 'office_access'):
+            return qs.distinct()
+
+        # Workshop users: only their own requests / entries
+        ct = ContentType.objects.get_for_model(OvertimeRequest)
+        approver_ids = (ApprovalStageInstance.objects
+                        .filter(workflow__content_type=ct,
+                                approver_user_ids__contains=[user.id])
+                        .values_list("workflow__object_id", flat=True))
+        return qs.filter(
+            Q(requester=user) | Q(entries__user=user) | Q(id__in=approver_ids)
+        ).distinct()
 
     def get_serializer_class(self):
         if self.action == "create":
