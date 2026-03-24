@@ -583,8 +583,34 @@ class MachineFaultCompleteView(APIView):
 
         # Re-fetch with relations for serializer
         fault.refresh_from_db()
+        self.send_resolution_notification(fault, request.user)
         serializer = MachineFaultSerializer(fault)
         return Response(serializer.data)
+
+    def send_resolution_notification(self, fault: MachineFault, user):
+        if not TELEGRAM_MAINTENANCE_BOT_TOKEN:
+            return
+
+        CHAT_ID = "-4944950975"
+
+        resolved_at = timezone.localtime(fault.resolved_at).strftime("%d.%m.%Y %H:%M")
+        machine_name = fault.machine.name if fault.machine else (fault.asset_name or "Bilinmiyor")
+        description = fault.resolution_description or "Yok"
+        resolved_by = user.get_full_name() or user.username
+
+        message = (
+            "✅ *Bakım Talebi Çözüldü*\n"
+            f"👤 *Çözen:* {resolved_by}\n"
+            f"🖥 *Makine:* {machine_name}\n"
+            f"📄 *Açıklama:* {description}\n"
+        )
+
+        url = f"https://api.telegram.org/bot{TELEGRAM_MAINTENANCE_BOT_TOKEN}/sendMessage"
+        payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"}
+        try:
+            requests.post(url, data=payload, timeout=5)
+        except requests.RequestException as e:
+            print("Telegram çözüm bildirimi hatası:", e)
 
     def _stop_downtime_timers_for_fault(self, fault, user):
         now_ms = int(timezone.now().timestamp() * 1000)

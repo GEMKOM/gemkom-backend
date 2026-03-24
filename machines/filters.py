@@ -27,6 +27,7 @@ class MachineFaultFilter(django_filters.FilterSet):
     unassigned_machine = django_filters.BooleanFilter(field_name='machine', lookup_expr='isnull')
     area = django_filters.CharFilter(field_name='area', lookup_expr='iexact')
     machine_id = django_filters.NumberFilter(field_name='machine__id')  # Backwards-compat with your query param
+    resolved_date = django_filters.DateFilter(field_name='resolved_at', lookup_expr='date')
 
     def filter_unresolved(self, qs, name, value):
         if value:
@@ -41,5 +42,5 @@ class MachineFaultFilter(django_filters.FilterSet):
             # booleans
             'is_breaking', 'is_maintenance',
             # convenience
-            'unassigned_machine', 'unresolved', 'area', 'machine_id',
+            'unassigned_machine', 'unresolved', 'area', 'machine_id', 'resolved_date',
         ]

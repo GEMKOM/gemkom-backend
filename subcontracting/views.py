@@ -522,6 +522,21 @@ class SubcontractorStatementViewSet(viewsets.ModelViewSet):
             return Response({'detail': str(e)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(SubcontractorStatementSerializer(statement, context={'request': request}).data)
 
+    @action(detail=True, methods=['post'], url_path='mark-paid')
+    def mark_paid(self, request, pk=None):
+        """Mark an approved statement as paid."""
+        statement = self.get_object()
+        if statement.status != 'approved':
+            return Response(
+                {'detail': 'Yalnızca onaylanmış hakedişler ödenmiş olarak işaretlenebilir.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        from django.utils import timezone
+        statement.status = 'paid'
+        statement.paid_at = timezone.now()
+        statement.save(update_fields=['status', 'paid_at'])
+        return Response(SubcontractorStatementSerializer(statement, context={'request': request}).data)
+
     @action(detail=True, methods=['post'], url_path='decide')
     def decide(self, request, pk=None):
         """

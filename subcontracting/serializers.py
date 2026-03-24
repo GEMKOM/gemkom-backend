@@ -276,11 +276,11 @@ class SubcontractorStatementSerializer(serializers.ModelSerializer):
             'id', 'subcontractor', 'subcontractor_name', 'year', 'month', 'status',
             'currency', 'work_total', 'adjustment_total', 'grand_total',
             'notes', 'line_items', 'adjustments',
-            'created_at', 'created_by', 'updated_at', 'submitted_at', 'approved_at',
+            'created_at', 'created_by', 'updated_at', 'submitted_at', 'approved_at', 'paid_at',
         ]
         read_only_fields = [
             'status', 'work_total', 'adjustment_total', 'grand_total',
-            'created_at', 'created_by', 'updated_at', 'submitted_at', 'approved_at',
+            'created_at', 'created_by', 'updated_at', 'submitted_at', 'approved_at', 'paid_at',
         ]
 
     def validate(self, data):
@@ -311,7 +311,7 @@ class SubcontractorStatementListSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'subcontractor', 'subcontractor_name', 'year', 'month', 'status',
             'currency', 'work_total', 'adjustment_total', 'grand_total',
-            'created_at', 'submitted_at', 'approved_at',
+            'created_at', 'submitted_at', 'approved_at', 'paid_at',
         ]
 
 
