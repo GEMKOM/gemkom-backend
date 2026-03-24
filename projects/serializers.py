@@ -1918,7 +1918,7 @@ class CostTableRowSerializer(serializers.Serializer):
         if obj.job_no in self._at100_cache:
             return self._at100_cache[obj.job_no]
 
-        from subcontracting.models import SubcontractingAssignment
+        from subcontracting.models import SubcontractingAssignment, SubcontractorStatementLine, SubcontractorStatementAdjustment
         from projects.services.costing import convert_to_eur
         from projects.models import JobOrder as _JO
         from django.db.models import Q
@@ -1926,25 +1926,38 @@ class CostTableRowSerializer(serializers.Serializer):
 
         prefix = f'{obj.job_no}-'
 
-        # --- subcontractor at 100%: allocated_weight_kg × price_per_kg → EUR ---
-        # Use each assignment's created_at date for FX (rate locked at contract time).
-        sc_assignments = (
-            SubcontractingAssignment.objects
+        # --- subcontractor actual cost: approved/paid statement lines + adjustments → EUR ---
+        # Statement lines are in statement.currency; convert at statement.approved_at date.
+        approved_statuses = ['approved', 'paid']
+
+        statement_lines = (
+            SubcontractorStatementLine.objects
             .filter(
-                Q(department_task__job_order__job_no=obj.job_no) |
-                Q(department_task__job_order__job_no__startswith=prefix),
-                price_tier__isnull=False,
-                allocated_weight_kg__gt=0,
+                Q(job_no=obj.job_no) | Q(job_no__startswith=prefix),
+                statement__status__in=approved_statuses,
             )
-            .exclude(department_task__task_type='painting')
-            .select_related('price_tier')
+            .exclude(assignment__department_task__task_type='painting')
+            .select_related('statement')
         )
         sc_total = sum(
-            convert_to_eur(a.allocated_weight_kg * a.price_tier.price_per_kg, a.price_tier.currency, a.created_at.date())
-            for a in sc_assignments
+            convert_to_eur(line.cost_amount, line.statement.currency, line.statement.approved_at.date())
+            for line in statement_lines
         ) or Decimal('0')
 
-        # --- paint at 100%: allocated_weight_kg × price_per_kg → EUR ---
+        adjustments = (
+            SubcontractorStatementAdjustment.objects
+            .filter(
+                Q(job_order__job_no=obj.job_no) | Q(job_order__job_no__startswith=prefix),
+                statement__status__in=approved_statuses,
+            )
+            .select_related('statement')
+        )
+        sc_total += sum(
+            convert_to_eur(adj.amount, adj.statement.currency, adj.statement.approved_at.date())
+            for adj in adjustments
+        ) or Decimal('0')
+
+        # paint: not statement-based, keep at actual progress via current_cost
         paint_assignments = (
             SubcontractingAssignment.objects
             .filter(
@@ -1957,7 +1970,7 @@ class CostTableRowSerializer(serializers.Serializer):
             .select_related('price_tier')
         )
         paint_total = sum(
-            convert_to_eur(a.allocated_weight_kg * a.price_tier.price_per_kg, a.price_tier.currency, a.created_at.date())
+            convert_to_eur(a.current_cost, a.cost_currency, a.created_at.date())
             for a in paint_assignments
         ) or Decimal('0')
 

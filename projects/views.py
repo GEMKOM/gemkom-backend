@@ -222,14 +222,17 @@ class JobOrderViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'])
     def dropdown(self, request):
-        """Lightweight list of non-completed job orders for dropdowns."""
+        """Lightweight list of job orders for dropdowns.
+        ?all=true  → include all job orders regardless of status.
+        (default)  → exclude completed and cancelled.
+        """
         results = [{'job_no': '1000', 'title': 'Fabrika İşleri'}]
-        job_orders = JobOrder.objects.exclude(
-            status__in=['completed', 'cancelled']
-        ).order_by('job_no').values_list('job_no', 'title')
+        qs = JobOrder.objects.order_by('job_no')
+        if request.query_params.get('all') != 'true':
+            qs = qs.exclude(status__in=['completed', 'cancelled'])
         results.extend(
             {'job_no': job_no, 'title': title}
-            for job_no, title in job_orders
+            for job_no, title in qs.values_list('job_no', 'title')
         )
         return Response(results)
 
@@ -823,6 +826,97 @@ class JobOrderViewSet(viewsets.ModelViewSet):
             summary.job_order = job_order
 
         return Response(JobOrderCostSummarySerializer(summary).data)
+
+    @action(detail=True, methods=['get'], url_path='subcontractor_cost_breakdown', permission_classes=[IsCostAuthorized])
+    def subcontractor_cost_breakdown(self, request, job_no=None):
+        """
+        Returns the subcontractor cost breakdown for this job order and its children.
+        Includes approved/paid statement lines and adjustments, each converted to EUR.
+        """
+        from subcontracting.models import SubcontractorStatementLine, SubcontractorStatementAdjustment
+        from projects.services.costing import convert_to_eur
+        from django.db.models import Q
+        from decimal import Decimal
+
+        job_order = self.get_object()
+        prefix = f'{job_order.job_no}-'
+        approved_statuses = ['approved', 'paid']
+
+        lines = (
+            SubcontractorStatementLine.objects
+            .filter(
+                Q(job_no=job_order.job_no) | Q(job_no__startswith=prefix),
+                statement__status__in=approved_statuses,
+            )
+            .exclude(assignment__department_task__task_type='painting')
+            .select_related('statement', 'assignment__department_task')
+            .order_by('statement__year', 'statement__month', 'job_no', 'id')
+        )
+
+        adjustments = (
+            SubcontractorStatementAdjustment.objects
+            .filter(
+                Q(job_order__job_no=job_order.job_no) | Q(job_order__job_no__startswith=prefix),
+                statement__status__in=approved_statuses,
+            )
+            .select_related('statement', 'job_order')
+            .order_by('statement__year', 'statement__month', 'id')
+        )
+
+        line_data = [
+            {
+                'type': 'work',
+                'statement_year': line.statement.year,
+                'statement_month': line.statement.month,
+                'statement_status': line.statement.status,
+                'job_no': line.job_no,
+                'job_title': line.job_title,
+                'subcontractor_name': line.subcontractor_name,
+                'price_tier_name': line.price_tier_name,
+                'allocated_weight_kg': str(line.allocated_weight_kg),
+                'previous_progress': str(line.previous_progress),
+                'current_progress': str(line.current_progress),
+                'delta_progress': str(line.delta_progress),
+                'effective_weight_kg': str(line.effective_weight_kg),
+                'price_per_kg': str(line.price_per_kg),
+                'cost_amount': str(line.cost_amount),
+                'cost_currency': line.statement.currency,
+                'cost_amount_eur': str(
+                    convert_to_eur(line.cost_amount, line.statement.currency, line.statement.approved_at.date())
+                    .quantize(Decimal('0.01'))
+                ),
+            }
+            for line in lines
+        ]
+
+        adj_data = [
+            {
+                'type': 'adjustment',
+                'statement_year': adj.statement.year,
+                'statement_month': adj.statement.month,
+                'statement_status': adj.statement.status,
+                'job_no': adj.job_order.job_no,
+                'adjustment_type': adj.adjustment_type,
+                'reason': adj.reason,
+                'description': adj.description,
+                'amount': str(adj.amount),
+                'cost_currency': adj.statement.currency,
+                'cost_amount_eur': str(
+                    convert_to_eur(adj.amount, adj.statement.currency, adj.statement.approved_at.date())
+                    .quantize(Decimal('0.01'))
+                ),
+            }
+            for adj in adjustments
+        ]
+
+        total_eur = sum(Decimal(r['cost_amount_eur']) for r in line_data + adj_data)
+
+        return Response({
+            'job_no': job_order.job_no,
+            'total_eur': str(total_eur.quantize(Decimal('0.01'))),
+            'lines': line_data,
+            'adjustments': adj_data,
+        })
 
     @action(detail=False, methods=['get'], url_path='procurement_pending', permission_classes=[IsCostAuthorized])
     def procurement_pending(self, request):
