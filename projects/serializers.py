@@ -1082,12 +1082,14 @@ class DepartmentTaskUpdateSerializer(serializers.ModelSerializer):
         ]
 
     def validate(self, attrs):
-        """Prevent updates on completed tasks."""
+        """Prevent updates on completed/skipped tasks, except weight."""
         instance = self.instance
         if instance and instance.status in ['completed', 'skipped']:
-            raise serializers.ValidationError(
-                "Tamamlanmış veya atlanan görevler güncellenemez."
-            )
+            non_weight = {k for k in attrs if k != 'weight'}
+            if non_weight:
+                raise serializers.ValidationError(
+                    "Tamamlanmış veya atlanan görevler güncellenemez."
+                )
         return attrs
 
     def update(self, instance, validated_data):
@@ -2051,11 +2053,24 @@ class CostTableRowSerializer(serializers.Serializer):
                  + qc + shipping + at100['pm'] + gen_exp + emp_oh)
         return str(total.quantize(Decimal('0.01')))
 
+    def _offer_price(self, obj):
+        """Return the current SalesOfferPriceRevision for the job's source offer, or None."""
+        offer = getattr(obj, 'source_offer', None)
+        if offer is None:
+            return None
+        return offer.current_price
+
     def get_selling_price(self, obj):
+        offer_price = self._offer_price(obj)
+        if offer_price is not None:
+            return str(offer_price.amount)
         s = self._summary(obj)
         return str(s.selling_price) if s else '0.00'
 
     def get_selling_price_currency(self, obj):
+        offer_price = self._offer_price(obj)
+        if offer_price is not None:
+            return offer_price.currency
         s = self._summary(obj)
         return s.selling_price_currency if s else 'EUR'
 
@@ -2072,19 +2087,25 @@ class CostTableRowSerializer(serializers.Serializer):
 
     def get_margin_eur(self, obj):
         from decimal import Decimal
-        s = self._summary(obj)
-        if not s or s.selling_price_currency != 'EUR' or s.selling_price == 0:
+        currency = self.get_selling_price_currency(obj)
+        if currency != 'EUR':
+            return None
+        price = Decimal(self.get_selling_price(obj))
+        if price == 0:
             return None
         total_at100 = Decimal(self.get_actual_total_cost(obj))
-        return str(s.selling_price - total_at100)
+        return str(price - total_at100)
 
     def get_margin_pct(self, obj):
         from decimal import Decimal
-        s = self._summary(obj)
-        if not s or s.selling_price == 0 or s.selling_price_currency != 'EUR':
+        currency = self.get_selling_price_currency(obj)
+        if currency != 'EUR':
+            return None
+        price = Decimal(self.get_selling_price(obj))
+        if price == 0:
             return None
         total_at100 = Decimal(self.get_actual_total_cost(obj))
-        pct = (s.selling_price - total_at100) / s.selling_price * 100
+        pct = (price - total_at100) / price * 100
         return str(pct.quantize(Decimal('0.01')))
 
     def get_last_updated(self, obj):

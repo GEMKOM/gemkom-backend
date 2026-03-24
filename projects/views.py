@@ -723,7 +723,8 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         """
         base_qs = (
             JobOrder.objects
-            .select_related('cost_summary', 'customer')
+            .select_related('cost_summary', 'customer', 'source_offer')
+            .prefetch_related('source_offer__price_revisions')
             .exclude(job_no='LEGACY-ARCHIVE')
             .exclude(cost_summary__cost_not_applicable=True)
             .order_by('job_no')
@@ -763,7 +764,8 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         """
         children = list(
             JobOrder.objects
-            .select_related('cost_summary', 'customer')
+            .select_related('cost_summary', 'customer', 'source_offer')
+            .prefetch_related('source_offer__price_revisions')
             .filter(parent_id=job_no)
             .order_by('job_no')
         )
