@@ -1550,11 +1550,14 @@ class JobOrderDepartmentTaskFile(models.Model):
 
 
 def discussion_attachment_upload_path(instance, filename):
-    """Upload path: discussion_files/{job_no}/{topic_id}/{filename}"""
+    """Upload path: discussion_files/{job_no_or_task_id}/{topic_id}/{filename}"""
     topic = instance.topic or instance.comment.topic
-    job_no = topic.job_order.job_no
+    if topic.job_order_id:
+        folder = topic.job_order.job_no
+    else:
+        folder = f'task_{topic.task_id}'
     topic_id = topic.id
-    return f'discussion_files/{job_no}/{topic_id}/{filename}'
+    return f'discussion_files/{folder}/{topic_id}/{filename}'
 
 
 class JobOrderDiscussionTopic(models.Model):
@@ -1584,7 +1587,16 @@ class JobOrderDiscussionTopic(models.Model):
     job_order = models.ForeignKey(
         JobOrder,
         on_delete=models.CASCADE,
+        null=True,
+        blank=True,
         related_name='discussion_topics',
+    )
+    task = models.ForeignKey(
+        'JobOrderDepartmentTask',
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='discussion_topic',
     )
     title = models.CharField(max_length=255)
     content = models.TextField()
@@ -1664,9 +1676,24 @@ class JobOrderDiscussionTopic(models.Model):
         ordering = ['-created_at']
         indexes = [
             models.Index(fields=['job_order', 'is_deleted']),
+            models.Index(fields=['task', 'is_deleted']),
             models.Index(fields=['created_by', 'created_at']),
             models.Index(fields=['priority', 'created_at']),
         ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['task'],
+                condition=models.Q(is_deleted=False, task__isnull=False),
+                name='unique_active_topic_per_task',
+            )
+        ]
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+        if not self.job_order_id and not self.task_id:
+            raise ValidationError('A discussion topic must be linked to either a job order or a task.')
+        if self.job_order_id and self.task_id:
+            raise ValidationError('A discussion topic cannot be linked to both a job order and a task.')
 
     def extract_mentions(self):
         """

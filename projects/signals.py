@@ -125,39 +125,49 @@ def send_topic_notifications(topic):
 
 
 def send_comment_notifications(comment):
-    """Send notifications to topic owner and @mentioned users."""
+    """Send notifications to topic owner, task participants, and @mentioned users."""
     topic = comment.topic
+    job_no = topic.job_order.job_no if topic.job_order_id else f'Task-{topic.task_id}'
 
-    # Notify topic owner (if someone else commented)
+    # Collect users to notify about new comment (topic creator + task assignee, excluding commenter)
+    users_to_notify_new_comment = set()
     if topic.created_by and topic.created_by != comment.created_by:
+        users_to_notify_new_comment.add(topic.created_by)
+    if topic.task_id:
+        task = topic.task
+        if task.assigned_to and task.assigned_to != comment.created_by:
+            users_to_notify_new_comment.add(task.assigned_to)
+        if task.created_by and task.created_by != comment.created_by:
+            users_to_notify_new_comment.add(task.created_by)
+
+    if users_to_notify_new_comment:
         ctx = {
             'actor':           comment.created_by.get_full_name(),
-            'job_no':          topic.job_order.job_no,
+            'job_no':          job_no,
             'topic_title':     topic.title,
             'comment_content': comment.content,
             'topic_id':        topic.id,
         }
         title, body, link = render_notification(Notification.NEW_COMMENT, ctx)
-        notify(
-            user=topic.created_by,
-            notification_type=Notification.NEW_COMMENT,
-            title=title,
-            body=body,
-            link=link,
-            source_type='discussion_topic',
-            source_id=topic.id,
-        )
+        for user in users_to_notify_new_comment:
+            notify(
+                user=user,
+                notification_type=Notification.NEW_COMMENT,
+                title=title,
+                body=body,
+                link=link,
+                source_type='discussion_topic',
+                source_id=topic.id,
+            )
 
-    # Notify @mentioned users (excluding comment author and topic owner)
-    exclude_ids = [comment.created_by_id]
-    if topic.created_by_id:
-        exclude_ids.append(topic.created_by_id)
+    # Notify @mentioned users (excluding comment author and already-notified users)
+    exclude_ids = {comment.created_by_id} | {u.id for u in users_to_notify_new_comment}
     mentioned_users = comment.mentioned_users.exclude(id__in=exclude_ids)
 
     if mentioned_users.exists():
         ctx = {
             'actor':           comment.created_by.get_full_name(),
-            'job_no':          topic.job_order.job_no,
+            'job_no':          job_no,
             'topic_title':     topic.title,
             'comment_content': comment.content,
             'topic_id':        topic.id,

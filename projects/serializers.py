@@ -723,6 +723,7 @@ class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
     offer_summary = serializers.SerializerMethodField()
     shared_files = serializers.SerializerMethodField()
     completion_files = serializers.SerializerMethodField()
+    discussion_topic = serializers.SerializerMethodField()
 
     class Meta:
         model = JobOrderDepartmentTask
@@ -742,6 +743,7 @@ class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
             'qc_required', 'has_qc_approval', 'qc_status',
             'is_consultation', 'offer_summary', 'shared_files',
             'notes', 'completion_files',
+            'discussion_topic',
             'created_at', 'created_by', 'created_by_name',
             'updated_at', 'completed_by', 'completed_by_name'
         ]
@@ -753,6 +755,16 @@ class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
     def get_completion_files(self, obj):
         files = obj.completion_files.all()
         return DepartmentTaskFileSerializer(files, many=True, context=self.context).data
+
+    def get_discussion_topic(self, obj):
+        topic = obj.discussion_topic.filter(is_deleted=False).first()
+        if topic is None:
+            return None
+        comments = topic.comments.filter(is_deleted=False).select_related('created_by').prefetch_related('attachments')
+        return {
+            'id': topic.id,
+            'comments': JobOrderDiscussionCommentListSerializer(comments, many=True, context=self.context).data,
+        }
 
     def get_is_consultation(self, obj):
         return bool(obj.sales_offer_id)
@@ -1172,8 +1184,8 @@ class ApplyTemplateSerializer(serializers.Serializer):
 
 class JobOrderDiscussionTopicListSerializer(serializers.ModelSerializer):
     """Lightweight serializer for list views."""
-    job_order_no = serializers.CharField(source='job_order.job_no', read_only=True)
-    job_order_title = serializers.CharField(source='job_order.title', read_only=True)
+    job_order_no = serializers.CharField(source='job_order.job_no', read_only=True, default=None)
+    job_order_title = serializers.CharField(source='job_order.title', read_only=True, default=None)
     priority_display = serializers.CharField(source='get_priority_display', read_only=True)
     topic_type_display = serializers.CharField(source='get_topic_type_display', read_only=True)
     revision_status_display = serializers.SerializerMethodField()
@@ -1188,6 +1200,7 @@ class JobOrderDiscussionTopicListSerializer(serializers.ModelSerializer):
         model = JobOrderDiscussionTopic
         fields = [
             'id', 'job_order', 'job_order_no', 'job_order_title',
+            'task',
             'title', 'priority', 'priority_display',
             'topic_type', 'topic_type_display',
             'revision_status', 'revision_status_display',
@@ -1210,8 +1223,8 @@ class JobOrderDiscussionTopicListSerializer(serializers.ModelSerializer):
 
 class JobOrderDiscussionTopicDetailSerializer(serializers.ModelSerializer):
     """Full serializer for detail views."""
-    job_order_no = serializers.CharField(source='job_order.job_no', read_only=True)
-    job_order_title = serializers.CharField(source='job_order.title', read_only=True)
+    job_order_no = serializers.CharField(source='job_order.job_no', read_only=True, default=None)
+    job_order_title = serializers.CharField(source='job_order.title', read_only=True, default=None)
     priority_display = serializers.CharField(source='get_priority_display', read_only=True)
     topic_type_display = serializers.CharField(source='get_topic_type_display', read_only=True)
     revision_status_display = serializers.SerializerMethodField()
@@ -1228,6 +1241,7 @@ class JobOrderDiscussionTopicDetailSerializer(serializers.ModelSerializer):
         model = JobOrderDiscussionTopic
         fields = [
             'id', 'job_order', 'job_order_no', 'job_order_title',
+            'task',
             'title', 'content', 'priority', 'priority_display',
             'topic_type', 'topic_type_display',
             'revision_status', 'revision_status_display',
@@ -1264,7 +1278,16 @@ class JobOrderDiscussionTopicDetailSerializer(serializers.ModelSerializer):
 class JobOrderDiscussionTopicCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = JobOrderDiscussionTopic
-        fields = ['job_order', 'title', 'content', 'priority']
+        fields = ['job_order', 'task', 'title', 'content', 'priority']
+
+    def validate(self, attrs):
+        job_order = attrs.get('job_order')
+        task = attrs.get('task')
+        if not job_order and not task:
+            raise serializers.ValidationError('Either job_order or task must be provided.')
+        if job_order and task:
+            raise serializers.ValidationError('Provide either job_order or task, not both.')
+        return attrs
 
     def create(self, validated_data):
         topic = super().create(validated_data)

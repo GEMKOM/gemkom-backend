@@ -1887,6 +1887,16 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
             for choice in DEPARTMENT_CHOICES
         ])
 
+    @action(detail=True, methods=['get'])
+    def discussion(self, request, pk=None):
+        """Return the discussion topic for this task, or null if none exists."""
+        task = self.get_object()
+        topic = task.discussion_topic.filter(is_deleted=False).first()
+        if topic is None:
+            return Response(None)
+        serializer = JobOrderDiscussionTopicDetailSerializer(topic, context={'request': request})
+        return Response(serializer.data)
+
 
 # ============================================================================
 # Discussion System ViewSets
@@ -1897,7 +1907,7 @@ class JobOrderDiscussionTopicViewSet(viewsets.ModelViewSet):
 
     queryset = JobOrderDiscussionTopic.objects.filter(
         is_deleted=False
-    ).select_related('job_order', 'created_by').prefetch_related('mentioned_users', 'attachments')
+    ).select_related('job_order', 'task', 'created_by').prefetch_related('mentioned_users', 'attachments')
 
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     search_fields = ['title', 'content', 'job_order__job_no', 'job_order__title']
@@ -1906,6 +1916,7 @@ class JobOrderDiscussionTopicViewSet(viewsets.ModelViewSet):
     filterset_fields = {
         'job_order': ['exact'],
         'job_order__job_no': ['exact'],
+        'task': ['exact'],
         'priority': ['exact', 'in'],
         'created_by': ['exact'],
     }
