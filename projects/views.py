@@ -1576,11 +1576,41 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
     def update(self, request, *args, **kwargs):
         partial = kwargs.pop('partial', False)
         instance = self.get_object()
+        prev_assigned_to_id = instance.assigned_to_id
         serializer = self.get_serializer(instance, data=request.data, partial=partial)
         serializer.is_valid(raise_exception=True)
         self.perform_update(serializer)
-        detail_serializer = DepartmentTaskDetailSerializer(serializer.instance)
+        task = serializer.instance
+        new_assigned_to_id = task.assigned_to_id
+        if new_assigned_to_id and new_assigned_to_id != prev_assigned_to_id:
+            self._notify_task_assigned(request, task)
+        detail_serializer = DepartmentTaskDetailSerializer(task)
         return Response(detail_serializer.data)
+
+    def _notify_task_assigned(self, request, task):
+        try:
+            from notifications.service import notify, render_notification
+            from notifications.models import Notification
+            offer_no = task.sales_offer.offer_no if task.sales_offer_id else (task.job_order.job_no if task.job_order_id else '')
+            ctx = {
+                'actor': request.user.get_full_name(),
+                'task_title': task.title,
+                'task_id': task.id,
+                'offer_no': offer_no,
+                'department': task.department,
+            }
+            title, body, link = render_notification(Notification.TASK_ASSIGNED, ctx)
+            notify(
+                user=task.assigned_to,
+                notification_type=Notification.TASK_ASSIGNED,
+                title=title,
+                body=body,
+                link=link,
+                source_type='department_task',
+                source_id=task.id,
+            )
+        except Exception:
+            pass
 
     # -------------------------------------------------------------------------
     # Workflow Actions

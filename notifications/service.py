@@ -66,6 +66,7 @@ NOTIFICATION_DEFAULTS: dict[str, tuple[bool, bool]] = {
     Notification.COMMENT_MENTION:          (True,  True),
     Notification.NEW_COMMENT:              (False, True),
     Notification.PASSWORD_RESET:           (True,  False),
+    Notification.TASK_ASSIGNED:            (True,  True),
 }
 
 
@@ -500,6 +501,12 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
         ),
         'link': '',
         'vars': ['username', 'full_name', 'team', 'requested_at', 'link'],
+    },
+    Notification.TASK_ASSIGNED: {
+        'title': 'Göreve Atandınız: {task_title}',
+        'body': '{actor} sizi "{task_title}" görevine atadı.',
+        'link': '',
+        'vars': ['actor', 'task_title', 'task_id', 'offer_no', 'department', 'link'],
     },
 }
 

@@ -54,6 +54,8 @@ class Notification(models.Model):
     TOPIC_MENTION            = 'topic_mention'
     COMMENT_MENTION          = 'comment_mention'
     NEW_COMMENT              = 'new_comment'
+    # Tasks
+    TASK_ASSIGNED            = 'task_assigned'
     # Auth
     PASSWORD_RESET           = 'password_reset'
 
@@ -106,6 +108,7 @@ class Notification(models.Model):
         OT_REJECTED:              CATEGORY_GENERAL,
         JOB_ON_HOLD:              CATEGORY_GENERAL,
         JOB_RESUMED:              CATEGORY_GENERAL,
+        TASK_ASSIGNED:            CATEGORY_GENERAL,
         PASSWORD_RESET:           CATEGORY_GENERAL,
     }
 
@@ -157,6 +160,7 @@ class Notification(models.Model):
         (TOPIC_MENTION,            'Konuda Etiketlendiniz'),
         (COMMENT_MENTION,          'Yorumda Etiketlendiniz'),
         (NEW_COMMENT,              'Yeni Yorum'),
+        (TASK_ASSIGNED,            'Göreve Atandınız'),
         (PASSWORD_RESET,           'Parola Sıfırlama Talebi'),
     ]
 
