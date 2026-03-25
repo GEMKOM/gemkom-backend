@@ -4,7 +4,7 @@ from django.contrib.auth.models import User
 from django.utils import timezone
 from django.core.exceptions import ValidationError
 
-from core.storages import PrivateMediaStorage
+from core.storages import PrivateMediaStorage, sanitize_filename
 from projects.models import Customer, JobOrder, CURRENCY_CHOICES
 from procurement.models import PaymentTerms
 
@@ -309,7 +309,7 @@ class SalesOfferItem(models.Model):
 # =============================================================================
 
 def sales_offer_file_upload_path(instance, filename):
-    return os.path.join('sales_offer_files', instance.offer.offer_no, filename)
+    return os.path.join('sales_offer_files', instance.offer.offer_no, sanitize_filename(filename))
 
 
 class SalesOfferFile(models.Model):
@@ -321,6 +321,7 @@ class SalesOfferFile(models.Model):
         ('quotation',     'Fiyat Teklifi'),
         ('correspondence','Yazışma'),
         ('photo',         'Fotoğraf'),
+        ('receipt', 'Proforma'),
         ('other',         'Diğer'),
     ]
 

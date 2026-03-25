@@ -3,12 +3,12 @@ from django.contrib.auth.models import User, Group
 from django.contrib.contenttypes.fields import GenericRelation
 
 from approvals.models import ApprovalWorkflow
-from core.storages import PrivateMediaStorage
+from core.storages import PrivateMediaStorage, sanitize_filename
 from projects.models import JobOrder, JobOrderDepartmentTask
 
 
 def ncr_file_upload_path(instance, filename):
-    return f'ncr_files/{instance.ncr_id}/{filename}'
+    return f'ncr_files/{instance.ncr_id}/{sanitize_filename(filename)}'
 
 
 # =============================================================================

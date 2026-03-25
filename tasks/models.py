@@ -5,7 +5,7 @@ from django.contrib.contenttypes.models import ContentType
 import os
 
 from machines.models import Machine
-from core.storages import PrivateMediaStorage
+from core.storages import PrivateMediaStorage, sanitize_filename
 
 
 class DowntimeReason(models.Model):
@@ -49,7 +49,7 @@ class DowntimeReason(models.Model):
 def task_attachment_upload_path(instance, filename):
     """Generic upload path for any task attachment."""
     # file will be uploaded to MEDIA_ROOT/task_attachments/<app_label>/<task_key>/<filename>
-    return os.path.join('task_attachments', instance.content_type.app_label, str(instance.object_id), filename)
+    return os.path.join('task_attachments', instance.content_type.app_label, str(instance.object_id), sanitize_filename(filename))
 
 class TaskKeyCounter(models.Model):
     """

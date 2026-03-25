@@ -6,7 +6,7 @@ from django.utils import timezone
 from django.core.validators import MinValueValidator, MaxValueValidator
 from django.core.exceptions import ValidationError
 from decimal import Decimal
-from core.storages import PrivateMediaStorage
+from core.storages import PrivateMediaStorage, sanitize_filename
 
 
 _GROUP_MENTION_RE = re.compile(r'@\[group:(\w+)\]')
@@ -525,7 +525,7 @@ class JobOrder(models.Model):
 
 def job_order_file_upload_path(instance, filename):
     """Upload path for job order attachments."""
-    return os.path.join('job_order_files', instance.job_order.job_no, filename)
+    return os.path.join('job_order_files', instance.job_order.job_no, sanitize_filename(filename))
 
 
 class JobOrderFile(models.Model):
@@ -1489,7 +1489,7 @@ class JobOrderDepartmentTask(models.Model):
 # =============================================================================
 
 def department_task_file_upload_path(instance, filename):
-    return f'department_task_files/{instance.task_id}/{filename}'
+    return f'department_task_files/{instance.task_id}/{sanitize_filename(filename)}'
 
 
 class JobOrderDepartmentTaskFile(models.Model):
@@ -1557,7 +1557,7 @@ def discussion_attachment_upload_path(instance, filename):
     else:
         folder = f'task_{topic.task_id}'
     topic_id = topic.id
-    return f'discussion_files/{folder}/{topic_id}/{filename}'
+    return f'discussion_files/{folder}/{topic_id}/{sanitize_filename(filename)}'
 
 
 class JobOrderDiscussionTopic(models.Model):
