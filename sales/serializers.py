@@ -1,6 +1,7 @@
 from rest_framework import serializers
 
 from projects.models import Customer
+from procurement.models import PaymentTerms
 
 from .models import (
     OfferTemplate,
@@ -10,6 +11,16 @@ from .models import (
     SalesOfferFile,
     SalesOfferPriceRevision,
 )
+
+
+# =============================================================================
+# Shared
+# =============================================================================
+
+class PaymentTermsMinimalSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PaymentTerms
+        fields = ['id', 'name', 'code']
 
 
 # =============================================================================
@@ -155,7 +166,7 @@ class SalesOfferItemSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'offer', 'template_node', 'template_node_detail',
             'quantity', 'title_override', 'notes', 'sequence',
-            'unit_price', 'weight_kg', 'subtotal',
+            'unit_price', 'weight_kg', 'delivery_period', 'subtotal',
             'resolved_title', 'created_at',
         ]
         read_only_fields = ['offer', 'created_at']
@@ -164,7 +175,7 @@ class SalesOfferItemSerializer(serializers.ModelSerializer):
 class SalesOfferItemCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = SalesOfferItem
-        fields = ['template_node', 'quantity', 'title_override', 'notes', 'sequence', 'unit_price', 'weight_kg']
+        fields = ['template_node', 'quantity', 'title_override', 'notes', 'sequence', 'unit_price', 'weight_kg', 'delivery_period']
 
     def validate(self, attrs):
         if self.instance is None:
@@ -196,6 +207,7 @@ class SalesOfferListSerializer(serializers.ModelSerializer):
     created_by_name = serializers.CharField(
         source='created_by.get_full_name', read_only=True, default=''
     )
+    payment_terms_detail = PaymentTermsMinimalSerializer(source='payment_terms', read_only=True)
 
     class Meta:
         model = SalesOffer
@@ -203,6 +215,7 @@ class SalesOfferListSerializer(serializers.ModelSerializer):
             'id', 'offer_no', 'title', 'status', 'status_display',
             'customer', 'customer_name', 'customer_code',
             'delivery_date_requested', 'offer_expiry_date',
+            'delivery_place', 'payment_terms', 'payment_terms_detail', 'order_no',
             'current_price', 'item_count',
             'total_price', 'total_weight_kg',
             'approval_round',
@@ -240,6 +253,7 @@ class SalesOfferDetailSerializer(serializers.ModelSerializer):
     job_orders = SalesOfferJobOrderSummarySerializer(many=True, read_only=True)
     total_price = serializers.SerializerMethodField()
     total_weight_kg = serializers.SerializerMethodField()
+    payment_terms_detail = PaymentTermsMinimalSerializer(source='payment_terms', read_only=True)
 
     class Meta:
         model = SalesOffer
@@ -248,7 +262,7 @@ class SalesOfferDetailSerializer(serializers.ModelSerializer):
             'status', 'status_display',
             'customer', 'customer_name', 'customer_code',
             'customer_inquiry_ref', 'delivery_date_requested', 'offer_expiry_date',
-            'incoterms',
+            'incoterms', 'delivery_place', 'payment_terms', 'payment_terms_detail', 'order_no',
             'approval_round',
             'current_price',
             'total_price', 'total_weight_kg',
@@ -271,7 +285,7 @@ class SalesOfferCreateSerializer(serializers.ModelSerializer):
         fields = [
             'customer', 'title', 'description',
             'customer_inquiry_ref', 'delivery_date_requested', 'offer_expiry_date',
-            'incoterms',
+            'incoterms', 'delivery_place', 'payment_terms', 'order_no',
         ]
 
 
@@ -281,7 +295,7 @@ class SalesOfferUpdateSerializer(serializers.ModelSerializer):
         fields = [
             'customer', 'title', 'description',
             'customer_inquiry_ref', 'delivery_date_requested', 'offer_expiry_date',
-            'incoterms',
+            'incoterms', 'delivery_place', 'payment_terms', 'order_no',
         ]
 
     def validate(self, attrs):

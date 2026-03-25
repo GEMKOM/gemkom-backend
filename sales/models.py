@@ -6,6 +6,7 @@ from django.core.exceptions import ValidationError
 
 from core.storages import PrivateMediaStorage
 from projects.models import Customer, JobOrder, CURRENCY_CHOICES
+from procurement.models import PaymentTerms
 
 
 # =============================================================================
@@ -128,6 +129,16 @@ class SalesOffer(models.Model):
     delivery_date_requested = models.DateField(null=True, blank=True)
     offer_expiry_date = models.DateField(null=True, blank=True)
     incoterms = models.CharField(max_length=100, blank=True, help_text="Teslim şekli (e.g. EXW, FOB, CIF)")
+    delivery_place = models.CharField(max_length=255, blank=True, help_text="Teslim yeri")
+    payment_terms = models.ForeignKey(
+        PaymentTerms,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='sales_offers',
+        help_text="Ödeme şekli"
+    )
+    order_no = models.CharField(max_length=100, blank=True, help_text="Sipariş no")
 
     status = models.CharField(
         max_length=30,
@@ -248,6 +259,11 @@ class SalesOfferItem(models.Model):
     sequence = models.PositiveIntegerField(default=1)
     unit_price = models.DecimalField(max_digits=16, decimal_places=2, null=True, blank=True)
     weight_kg = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    delivery_period = models.CharField(
+        max_length=100,
+        blank=True,
+        help_text="Termin süresi (örn. '4 ay', '6 hafta')"
+    )
 
     created_by = models.ForeignKey(
         User,
