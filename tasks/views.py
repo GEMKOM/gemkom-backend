@@ -122,12 +122,21 @@ class GenericTimerStartView(APIView):
                     machine_fk=machine_id,
                     finish_time__isnull=True
                 )
-                # Fault-downtime timers (auto-created when a breaking fault is reported)
-                # should not block maintenance team from starting a machine_fault timer.
-                blocking_timers = existing_active_timers.exclude(
-                    timer_type='downtime',
-                    related_fault__isnull=False
-                )
+                # Fault-downtime timers and machine_fault work timers should not block
+                # other maintenance users from starting their own machine_fault timer.
+                if task_type == 'machine_fault':
+                    fault_ct = ContentType.objects.get(app_label='machines', model='machinefault')
+                    blocking_timers = existing_active_timers.exclude(
+                        timer_type='downtime',
+                        related_fault__isnull=False
+                    ).exclude(
+                        content_type=fault_ct
+                    )
+                else:
+                    blocking_timers = existing_active_timers.exclude(
+                        timer_type='downtime',
+                        related_fault__isnull=False
+                    )
                 if blocking_timers.exists():
                     first = blocking_timers.first()
                     return Response({
