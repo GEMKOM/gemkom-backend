@@ -56,6 +56,7 @@ class Notification(models.Model):
     NEW_COMMENT              = 'new_comment'
     # Tasks
     TASK_ASSIGNED            = 'task_assigned'
+    SALES_CONSULT_COMPLETED  = 'sales_consult_completed'
     # Auth
     PASSWORD_RESET           = 'password_reset'
 
@@ -109,6 +110,7 @@ class Notification(models.Model):
         JOB_ON_HOLD:              CATEGORY_GENERAL,
         JOB_RESUMED:              CATEGORY_GENERAL,
         TASK_ASSIGNED:            CATEGORY_GENERAL,
+        SALES_CONSULT_COMPLETED:  CATEGORY_SALES,
         PASSWORD_RESET:           CATEGORY_GENERAL,
     }
 
@@ -161,6 +163,7 @@ class Notification(models.Model):
         (COMMENT_MENTION,          'Yorumda Etiketlendiniz'),
         (NEW_COMMENT,              'Yeni Yorum'),
         (TASK_ASSIGNED,            'Göreve Atandınız'),
+        (SALES_CONSULT_COMPLETED,  'Satış Destek Görevi Tamamlandı'),
         (PASSWORD_RESET,           'Parola Sıfırlama Talebi'),
     ]
 

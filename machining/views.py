@@ -19,7 +19,6 @@ from tasks.views import (
     GenericTimerStopView,
 )
 from users.permissions import can_see_job_costs
-from machining.permissions import IsMachiningAdmin
 
 
 class TimerStartView(GenericTimerStartView):
@@ -43,7 +42,7 @@ class TimerManualEntryView(GenericTimerManualEntryView):
     """
     Creates a manual timer for an 'operation' (migrated from machining tasks).
     """
-    permission_classes = [IsMachiningAdmin]
+    permission_classes = [IsAuthenticated]
 
     def post(self, request, *args, **kwargs):
         return super().post(request, task_type='operation')
@@ -67,7 +66,7 @@ class TimerReportView(GenericTimerReportView):
     """
     Generates aggregate reports for 'operation' timers (migrated from machining tasks).
     """
-    permission_classes = [IsMachiningAdmin]
+    permission_classes = [IsAuthenticated]
 
     def get(self, request, *args, **kwargs):
         return super().get(request, task_type='operation')
@@ -124,7 +123,7 @@ class PlanningAggregateView(APIView):
       }
     }
     """
-    permission_classes = [IsMachiningAdmin]
+    permission_classes = [IsAuthenticated]
 
     def get(self, request):
         # --- Machine selection
@@ -248,7 +247,7 @@ class MachineTimelineView(APIView):
 
     Enforces a maximum window of 7 full days.
     """
-    permission_classes = [IsMachiningAdmin]
+    permission_classes = [IsAuthenticated]
 
     def get(self, request):
         machine_param = request.query_params.get('machine_fk')
@@ -344,7 +343,7 @@ class JobHoursReportView(APIView):
       ]
     }
     """
-    permission_classes = [IsMachiningAdmin]
+    permission_classes = [IsAuthenticated]
 
     def _parse_ms(self, x):
         if x is None or x == "":
@@ -488,7 +487,7 @@ class DailyEfficiencyReportView(APIView):
       ]
     }
     """
-    permission_classes = [IsMachiningAdmin]
+    permission_classes = [IsAuthenticated]
 
     def get(self, request):
         from datetime import datetime, date, time
@@ -704,7 +703,7 @@ class MachiningJobEntriesReportView(APIView):
         ]
     }
     """
-    permission_classes = [IsMachiningAdmin]
+    permission_classes = [IsAuthenticated]
 
     def get(self, request):
         from tasks.models import Operation
@@ -911,7 +910,7 @@ class DailyUserReportView(APIView):
       ]
     }
     """
-    permission_classes = [IsMachiningAdmin]
+    permission_classes = [IsAuthenticated]
 
     def _get_working_hours_for_date(self, date_obj, tz):
         """Get working hours window for a specific date (07:30-17:00 on weekdays)"""

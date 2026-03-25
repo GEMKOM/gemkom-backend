@@ -67,6 +67,7 @@ NOTIFICATION_DEFAULTS: dict[str, tuple[bool, bool]] = {
     Notification.NEW_COMMENT:              (False, True),
     Notification.PASSWORD_RESET:           (True,  False),
     Notification.TASK_ASSIGNED:            (True,  True),
+    Notification.SALES_CONSULT_COMPLETED:  (True,  True),
 }
 
 
@@ -237,6 +238,17 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
         ),
         'link': '',
         'vars': ['offer_no', 'offer_title', 'customer', 'department', 'department_code', 'task_id', 'task_title', 'notes', 'link'],
+    },
+    Notification.SALES_CONSULT_COMPLETED: {
+        'title': '[Danışma Tamamlandı] {offer_no} – {task_title}',
+        'body': (
+            '{offer_no} numaralı "{offer_title}" teklifi için "{task_title}" danışma görevi tamamlandı.\n'
+            'Müşteri: {customer}\n'
+            'Departman: {department}\n'
+            'Tamamlayan: {completed_by}'
+        ),
+        'link': '',
+        'vars': ['offer_no', 'offer_title', 'customer', 'department', 'task_title', 'completed_by', 'link'],
     },
     Notification.PR_APPROVAL_REQUESTED: {
         'title': '[Onay Gerekli] Satınalma Talebi #{pr_id} \u2013 {pr_title}',

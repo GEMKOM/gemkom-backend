@@ -1640,6 +1640,8 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
         notes = request.data.get('notes', None)
         try:
             task.complete(user=request.user, notes=notes)
+            if task.task_type == 'sales_consult' and task.sales_offer_id:
+                self._notify_sales_consult_completed(task, request.user)
             return Response({
                 'status': 'success',
                 'message': 'Görev tamamlandı.',
@@ -1650,6 +1652,34 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
                 {'status': 'error', 'message': str(e)},
                 status=status.HTTP_400_BAD_REQUEST
             )
+
+    def _notify_sales_consult_completed(self, task, completed_by_user):
+        try:
+            from notifications.service import notify, render_notification
+            from notifications.models import Notification
+            offer = task.sales_offer
+            if not offer.created_by_id:
+                return
+            ctx = {
+                'offer_no':     offer.offer_no,
+                'offer_title':  offer.title,
+                'customer':     offer.customer.name,
+                'department':   task.get_department_display(),
+                'task_title':   task.title,
+                'completed_by': completed_by_user.get_full_name() or completed_by_user.username,
+            }
+            title, body, link = render_notification(Notification.SALES_CONSULT_COMPLETED, ctx)
+            notify(
+                user=offer.created_by,
+                notification_type=Notification.SALES_CONSULT_COMPLETED,
+                title=title,
+                body=body,
+                link=link,
+                source_type='sales_offer',
+                source_id=offer.id,
+            )
+        except Exception:
+            pass
 
     @action(detail=True, methods=['post'], url_path='upload-file',
             parser_classes=[MultiPartParser, FormParser])

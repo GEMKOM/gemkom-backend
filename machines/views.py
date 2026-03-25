@@ -214,14 +214,7 @@ class MachineFaultListCreateView(generics.ListCreateAPIView):
     ordering = ["-reported_at"]
 
     def get_queryset(self):
-        user = self.request.user
-        profile = getattr(user, 'profile', None)
-
         query = Q()
-        # Restrict non-admin, non-maintenance users to their own faults
-        if not (user.is_staff or user.is_superuser) and not user.groups.filter(name='maintenance_team').exists():
-            query &= Q(reported_by=user)
-
         # Backwards-compat: still honor ?machine_id=... (also provided by filterset_class)
         machine_id = self.request.query_params.get("machine_id")
         if machine_id:
