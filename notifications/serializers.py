@@ -1,10 +1,10 @@
 from rest_framework import serializers
-from django.contrib.auth.models import Group
 from .models import Notification, NotificationPreference, NotificationConfig
 from .service import NOTIFICATION_DEFAULTS, NOTIFICATION_CONFIG_DEFAULTS
-from users.helpers import TEAM_CHOICES as _TEAM_CHOICES, TEAM_LABELS
+from users.helpers import TEAM_CHOICES as _TEAM_CHOICES
+from users.constants import GROUP_DISPLAY_NAMES as _GROUP_DISPLAY_NAMES
 
-_VALID_TEAMS = set(TEAM_LABELS.keys())
+_VALID_TEAMS = set(_GROUP_DISPLAY_NAMES.keys())
 TEAM_CHOICES = [{'value': v, 'label': l} for v, l in _TEAM_CHOICES]
 
 
@@ -127,15 +127,18 @@ class NotificationConfigSerializer(serializers.ModelSerializer):
     user_ids = serializers.ListField(
         child=serializers.IntegerField(), write_only=True, required=False
     )
-    groups = serializers.SerializerMethodField()
-    group_names = serializers.ListField(
-        child=serializers.CharField(), write_only=True, required=False
+    groups = serializers.ListField(
+        child=serializers.CharField(), required=False
     )
 
-    def get_groups(self, obj):
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
         from users.constants import GROUP_DISPLAY_NAMES
-        names = obj.get('groups', []) if isinstance(obj, dict) else (obj.groups or [])
-        return [{'name': n, 'display': GROUP_DISPLAY_NAMES.get(n, n)} for n in names]
+        ret['groups'] = [
+            {'name': n, 'display': GROUP_DISPLAY_NAMES.get(n, n)}
+            for n in (ret.get('groups') or [])
+        ]
+        return ret
 
     def get_users(self, obj):
         if not obj.pk:
@@ -167,13 +170,12 @@ class NotificationConfigSerializer(serializers.ModelSerializer):
         ntype = obj.get('notification_type') if isinstance(obj, dict) else obj.notification_type
         return ntype in NotificationConfig.ROUTABLE_TYPES
 
-    def validate_group_names(self, value):
+    def validate_groups(self, value):
         if not value:
             return value
-        valid_names = set(Group.objects.filter(name__in=value).values_list('name', flat=True))
-        invalid = set(value) - valid_names
+        invalid = set(value) - _VALID_TEAMS
         if invalid:
-            raise serializers.ValidationError(f"Geçersiz grup(lar): {', '.join(sorted(invalid))}")
+            raise serializers.ValidationError(f"Geçersiz takım(lar): {', '.join(sorted(invalid))}")
         return value
 
     class Meta:
@@ -195,23 +197,19 @@ class NotificationConfigSerializer(serializers.ModelSerializer):
             'users',
             'user_ids',
             'groups',
-            'group_names',
             'enabled',
         ]
         read_only_fields = ['notification_type', 'category', 'category_display', 'available_vars', 'updated_at']
 
     def update(self, instance, validated_data):
         user_ids = validated_data.pop('user_ids', None)
-        group_names = validated_data.pop('group_names', None)
         for attr in (
             'title_template', 'body_template', 'link_template',
             'default_send_email', 'default_send_in_app',
-            'enabled',
+            'groups', 'enabled',
         ):
             if attr in validated_data:
                 setattr(instance, attr, validated_data[attr])
-        if group_names is not None:
-            instance.groups = group_names
         instance.save()
         if user_ids is not None:
             from django.contrib.auth.models import User

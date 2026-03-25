@@ -118,15 +118,30 @@ class GenericTimerStartView(APIView):
             # Check for existing active timer on the same machine
             machine_id = serializer.validated_data.get('machine_fk')
             if machine_id:
-                existing_active_timer = Timer.objects.filter(
+                existing_active_timers = Timer.objects.filter(
                     machine_fk=machine_id,
                     finish_time__isnull=True
-                ).first()
-                if existing_active_timer:
+                )
+                # Fault-downtime timers (auto-created when a breaking fault is reported)
+                # should not block maintenance team from starting a machine_fault timer.
+                blocking_timers = existing_active_timers.exclude(
+                    timer_type='downtime',
+                    related_fault__isnull=False
+                )
+                if blocking_timers.exists():
+                    first = blocking_timers.first()
                     return Response({
                         'error': 'There is already an active timer on this machine. Stop it first before starting a new one.',
-                        'existing_timer_id': existing_active_timer.id,
-                        'existing_timer_user': existing_active_timer.user.username
+                        'existing_timer_id': first.id,
+                        'existing_timer_user': first.user.username
+                    }, status=status.HTTP_409_CONFLICT)
+                elif existing_active_timers.exists() and task_type != 'machine_fault':
+                    # Only fault-downtime timers are active — only maintenance timers allowed
+                    first = existing_active_timers.first()
+                    return Response({
+                        'error': 'Machine is under fault repair. Only maintenance timers can be started.',
+                        'existing_timer_id': first.id,
+                        'existing_timer_user': first.user.username
                     }, status=status.HTTP_409_CONFLICT)
 
             timer = serializer.save()
