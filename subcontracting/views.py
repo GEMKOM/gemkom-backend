@@ -597,8 +597,8 @@ class SubcontractorStatementViewSet(viewsets.ModelViewSet):
 
         Query params:
           year, month   – required
-          distribute    – 'true' (default): one paint row per job_no proportional
-                          to paint line weights; 'false': single row with job_no=DEPO1
+          distribute    – 'false' (default): single paint row with job_no=DEPO1;
+                          'true': one paint row per job_no proportional to paint line weights
         """
         from collections import defaultdict
 
@@ -628,7 +628,7 @@ class SubcontractorStatementViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        distribute = request.query_params.get('distribute', 'true').lower() in ('true', '1', 'yes')
+        distribute = request.query_params.get('distribute', 'false').lower() in ('true', '1', 'yes')
 
         statements = (
             SubcontractorStatement.objects
