@@ -80,6 +80,45 @@ class WageRate(models.Model):
         return f"{self.user.username} @ {self.effective_from} {self.base_monthly} {self.currency}"
 
 
+class PermissionMeta(models.Model):
+    """
+    Single source of truth for every custom permission.
+
+    Adding a row here is all you need to do:
+      - save_model in the admin syncs the auth.Permission row automatically.
+      - Views read codename/name/section from here instead of constants.py.
+    """
+    SECTION_CHOICES = [
+        ('workshop',        'Workshop'),
+        ('manufacturing',   'Manufacturing'),
+        ('design',          'Design'),
+        ('finance',         'Finance'),
+        ('general',         'General'),
+        ('human_resources', 'Human Resources'),
+        ('it',              'IT'),
+        ('logistics',       'Logistics'),
+        ('management',      'Management'),
+        ('planning',        'Planning'),
+        ('procurement',     'Procurement'),
+        ('projects',        'Projects'),
+        ('quality_control', 'Quality Control'),
+        ('sales',           'Sales'),
+        ('accounting',      'Accounting')
+    ]
+
+    codename = models.CharField(max_length=100, unique=True)
+    name     = models.CharField(max_length=255)
+    section  = models.CharField(max_length=50, choices=SECTION_CHOICES, null=True, blank=True)
+
+    class Meta:
+        ordering = ['codename']
+        verbose_name = 'Permission'
+        verbose_name_plural = 'Permissions'
+
+    def __str__(self):
+        return self.codename
+
+
 class UserPermissionOverride(models.Model):
     """
     Explicit per-user permission grants or denies.

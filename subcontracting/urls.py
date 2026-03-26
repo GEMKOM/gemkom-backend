@@ -3,6 +3,7 @@ from rest_framework.routers import DefaultRouter
 
 from .queue_views import DrainSubcontractorCostQueueView
 from .views import (
+    MonthlyPaintInputViewSet,
     SubcontractingAssignmentViewSet,
     SubcontractingPriceTierViewSet,
     SubcontractorStatementAdjustmentViewSet,
@@ -15,6 +16,7 @@ router.register(r'subcontractors', SubcontractorViewSet, basename='subcontractor
 router.register(r'price-tiers', SubcontractingPriceTierViewSet, basename='price-tier')
 router.register(r'assignments', SubcontractingAssignmentViewSet, basename='assignment')
 router.register(r'statements', SubcontractorStatementViewSet, basename='statement')
+router.register(r'paint-inputs', MonthlyPaintInputViewSet, basename='paint-input')
 
 urlpatterns = [
     path('', include(router.urls)),

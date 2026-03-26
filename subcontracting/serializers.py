@@ -7,6 +7,7 @@ from django.db.models import Sum
 from rest_framework import serializers
 
 from .models import (
+    MonthlyPaintInput,
     Subcontractor,
     SubcontractingAssignment,
     SubcontractingPriceTier,
@@ -458,3 +459,17 @@ class SubcontractorOverviewSerializer(serializers.ModelSerializer):
     def get_next_bill_cost(self, obj):          return self._sum_field(obj, 'next_bill_cost')
     def get_unbilled_remaining_cost(self, obj): return self._sum_field(obj, 'unbilled_remaining_cost')
     def get_total_cost(self, obj):              return self._sum_field(obj, 'total_cost')
+
+
+# ---------------------------------------------------------------------------
+# MonthlyPaintInput
+# ---------------------------------------------------------------------------
+
+class MonthlyPaintInputSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = MonthlyPaintInput
+        fields = [
+            'id', 'year', 'month', 'total_kg', 'total_cost',
+            'created_at', 'created_by', 'updated_at',
+        ]
+        read_only_fields = ['created_at', 'created_by', 'updated_at']

@@ -14,7 +14,6 @@ from users.filters import UserFilter, WageOrderingFilter
 from users.helpers import _team_manager_user_ids, primary_team_from_groups, TEAM_TO_GROUP, TEAM_CHOICES, TEAM_LABELS
 from users.models import UserProfile, WageRate
 from users.permissions import IsAdmin, IsHRorAuthorized, user_has_role_perm
-from users.apps import CUSTOM_PERMISSIONS
 from users.constants import GROUP_DISPLAY_NAMES
 from .serializers import AdminUserUpdateSerializer, CurrentUserUpdateSerializer, PasswordResetSerializer, PublicUserSerializer, UserCreateSerializer, UserListSerializer, UserPasswordResetSerializer, UserWageOverviewSerializer, WageRateSerializer, WageRateSlimSerializer
 from rest_framework.permissions import IsAuthenticated, IsAdminUser
@@ -401,8 +400,12 @@ class UserWageRateListView(ListAPIView):
 # Permission discovery endpoint
 # ---------------------------------------------------------------------------
 
-_PERMISSION_CODENAMES = [codename for codename, _ in CUSTOM_PERMISSIONS]
-_PERMISSION_NAMES = {codename: name for codename, name in CUSTOM_PERMISSIONS}
+def _get_custom_permissions():
+    """Return (codenames_list, names_dict) from PermissionMeta."""
+    from users.models import PermissionMeta
+    rows = list(PermissionMeta.objects.order_by('codename').values_list('codename', 'name'))
+    return [c for c, _ in rows], {c: n for c, n in rows}
+
 
 
 class UserPermissionsView(APIView):
@@ -419,9 +422,10 @@ class UserPermissionsView(APIView):
 
     def get(self, request):
         user = request.user
+        codenames, names = _get_custom_permissions()
         if user.is_superuser:
-            return Response({c: {'granted': True, 'name': _PERMISSION_NAMES[c]} for c in _PERMISSION_CODENAMES})
-        return Response({c: {'granted': user_has_role_perm(user, c), 'name': _PERMISSION_NAMES[c]} for c in _PERMISSION_CODENAMES})
+            return Response({c: {'granted': True, 'name': names[c]} for c in codenames})
+        return Response({c: {'granted': user_has_role_perm(user, c), 'name': names[c]} for c in codenames})
 
 
 class GroupListView(APIView):
@@ -510,8 +514,9 @@ class UserPermissionDetailView(APIView):
         overrides_map = {o.codename: o for o in target.permission_overrides.all()}
         prof = getattr(target, 'profile', None)
 
+        codenames, _ = _get_custom_permissions()
         effective = {}
-        for c in _PERMISSION_CODENAMES:
+        for c in codenames:
             if target.is_superuser:
                 effective[c] = {'value': True, 'source': 'superuser', 'source_detail': ''}
             elif c in overrides_map:
@@ -615,10 +620,11 @@ class UserPermissionOverrideView(APIView):
         if not isinstance(items, list):
             return Response({'detail': 'Expected a list of override objects.'}, status=400)
 
+        codenames, _ = _get_custom_permissions()
         for i, item in enumerate(items):
             codename = (item.get('codename') or '').strip()
             granted = item.get('granted')
-            if codename not in _PERMISSION_CODENAMES:
+            if codename not in codenames:
                 return Response({'detail': f'Item {i}: unknown codename "{codename}".'}, status=400)
             if granted is None:
                 return Response({'detail': f'Item {i}: "granted" is required.'}, status=400)
@@ -652,7 +658,8 @@ class UserPermissionOverrideView(APIView):
         granted = request.data.get('granted')
         reason = (request.data.get('reason') or '').strip()
 
-        if codename not in _PERMISSION_CODENAMES:
+        codenames, _ = _get_custom_permissions()
+        if codename not in codenames:
             return Response({'detail': f'Unknown codename: {codename}'}, status=400)
         if granted is None:
             return Response({'detail': '"granted" (true/false) is required.'}, status=400)
@@ -702,8 +709,7 @@ class PermissionListView(APIView):
     def get(self, request):
         from django.contrib.auth.models import Permission, User
         from django.contrib.contenttypes.models import ContentType
-        from users.models import UserProfile, UserPermissionOverride
-        from users.constants import PERMISSION_SECTION_MAP
+        from users.models import UserProfile, UserPermissionOverride, PermissionMeta
 
         ct = ContentType.objects.get_for_model(UserProfile)
         perms = (
@@ -712,6 +718,9 @@ class PermissionListView(APIView):
             .prefetch_related('user_set', 'group_set__user_set')
             .order_by('codename')
         )
+
+        # section lookup from PermissionMeta
+        section_map = dict(PermissionMeta.objects.values_list('codename', 'section'))
 
         # Build override lookup: codename → {user_id: granted}
         overrides = UserPermissionOverride.objects.select_related('user').all()
@@ -723,7 +732,6 @@ class PermissionListView(APIView):
                 'full_name': o.user.get_full_name(),
                 'granted': o.granted,
             }
-
 
         data = []
         for perm in perms:
@@ -761,7 +769,7 @@ class PermissionListView(APIView):
             data.append({
                 'codename': perm.codename,
                 'name': perm.name,
-                'section': PERMISSION_SECTION_MAP.get(perm.codename),
+                'section': section_map.get(perm.codename),
                 'users': group_users + direct_users,
                 'overrides': perm_overrides,
             })
@@ -795,7 +803,8 @@ class GroupPermissionView(APIView):
             return None, None, Response({'detail': 'Unknown group.'}, status=400)
         group = get_object_or_404(Group, name=group_name)
         if codename is not None:
-            if codename not in _PERMISSION_CODENAMES:
+            codenames, _ = _get_custom_permissions()
+            if codename not in codenames:
                 return None, None, Response({'detail': f'Unknown codename: {codename}'}, status=400)
             perm = get_object_or_404(Permission, codename=codename)
             return group, perm, None
@@ -819,7 +828,8 @@ class GroupPermissionView(APIView):
         codenames = request.data
         if not isinstance(codenames, list):
             return Response({'detail': 'Expected a list of codename strings.'}, status=400)
-        unknown = [c for c in codenames if c not in _PERMISSION_CODENAMES]
+        allowed_codenames, _ = _get_custom_permissions()
+        unknown = [c for c in codenames if c not in allowed_codenames]
         if unknown:
             return Response({'detail': f'Unknown codenames: {unknown}'}, status=400)
 
@@ -919,11 +929,12 @@ class UserPermissionsMatrixView(APIView):
         ):
             group_perms[gp.name] = {p.codename for p in gp.permissions.all()}
 
-        codename_set = set(_PERMISSION_CODENAMES)
+        perm_codenames, _ = _get_custom_permissions()
+        codename_set = set(perm_codenames)
 
         def _resolve(u) -> dict:
             if u.is_superuser:
-                return {c: {'value': True, 'source': 'superuser', 'source_detail': ''} for c in _PERMISSION_CODENAMES}
+                return {c: {'value': True, 'source': 'superuser', 'source_detail': ''} for c in perm_codenames}
 
             overrides = {o.codename: o for o in u.permission_overrides.all()}
 
@@ -937,7 +948,7 @@ class UserPermissionsMatrixView(APIView):
             direct_perms: set[str] = {p.codename for p in u.user_permissions.all()}
 
             result = {}
-            for c in _PERMISSION_CODENAMES:
+            for c in perm_codenames:
                 if c in overrides:
                     o = overrides[c]
                     src = 'override_grant' if o.granted else 'override_deny'
@@ -964,6 +975,6 @@ class UserPermissionsMatrixView(APIView):
             })
 
         return Response({
-            'codenames': _PERMISSION_CODENAMES,
+            'codenames': perm_codenames,
             'users': users_data,
         })

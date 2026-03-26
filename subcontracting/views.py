@@ -8,8 +8,11 @@ from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from decimal import Decimal
+
 from .approval_service import decide_statement, submit_statement
 from .models import (
+    MonthlyPaintInput,
     Subcontractor,
     SubcontractingAssignment,
     SubcontractingPriceTier,
@@ -17,6 +20,7 @@ from .models import (
     SubcontractorStatementAdjustment,
 )
 from .serializers import (
+    MonthlyPaintInputSerializer,
     SubcontractingAssignmentSerializer,
     SubcontractingPriceTierSerializer,
     SubcontractorOverviewSerializer,
@@ -25,7 +29,25 @@ from .serializers import (
     SubcontractorStatementListSerializer,
     SubcontractorStatementSerializer,
 )
+from .services.painting import PAINT_SUBCONTRACTOR_ID
 from .services.statements import generate_or_refresh_statement
+
+# ---------------------------------------------------------------------------
+# Accounting export helpers
+# ---------------------------------------------------------------------------
+
+_ACCOUNTING_STOCK_CODES = {
+    ('normal', 'work'):  'T00M 1000 1000 000 000',
+    ('normal', 'paint'): 'T00M 1000 2000 000 000',
+    ('rm',     'work'):  'T0RM 1000 1000 000 000',
+    ('rm',     'paint'): 'T0RM 1000 2000 000 000',
+}
+
+
+def _accounting_stock_code(job_no: str, is_painting: bool) -> str:
+    prefix = 'rm' if job_no.upper().startswith('RM') else 'normal'
+    kind = 'paint' if is_painting else 'work'
+    return _ACCOUNTING_STOCK_CODES[(prefix, kind)]
 
 
 # ---------------------------------------------------------------------------
@@ -561,6 +583,173 @@ class SubcontractorStatementViewSet(viewsets.ModelViewSet):
 
         statement.refresh_from_db()
         return Response(SubcontractorStatementSerializer(statement, context={'request': request}).data)
+
+    @action(detail=False, methods=['get'], url_path='accounting-export')
+    def accounting_export(self, request):
+        """
+        Returns billing rows for the given month mapped to ERP stock codes,
+        plus distributed paint rows based on the MonthlyPaintInput record.
+
+        GET /subcontracting/statements/accounting-export/?year=YYYY&month=M&distribute=true
+
+        Only includes statements with status 'approved' or 'paid'.
+        Requires a MonthlyPaintInput record for the given month (400 if missing).
+
+        Query params:
+          year, month   – required
+          distribute    – 'true' (default): one paint row per job_no proportional
+                          to paint line weights; 'false': single row with job_no=DEPO1
+        """
+        from collections import defaultdict
+
+        year = request.query_params.get('year')
+        month = request.query_params.get('month')
+
+        if not year or not month:
+            return Response(
+                {'detail': 'year ve month parametreleri gereklidir.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            year = int(year)
+            month = int(month)
+        except (TypeError, ValueError):
+            return Response(
+                {'detail': 'year ve month geçerli tam sayılar olmalıdır.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            paint_input = MonthlyPaintInput.objects.get(year=year, month=month)
+        except MonthlyPaintInput.DoesNotExist:
+            return Response(
+                {'detail': 'Bu ay için boya girdisi bulunamadı.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        distribute = request.query_params.get('distribute', 'true').lower() in ('true', '1', 'yes')
+
+        statements = (
+            SubcontractorStatement.objects
+            .filter(year=year, month=month, status__in=['approved', 'paid'])
+            .select_related('subcontractor')
+            .prefetch_related(
+                'line_items__assignment__department_task',
+                'adjustments__job_order',
+            )
+        )
+
+        rows = []
+        paint_job_weights = defaultdict(Decimal)
+        paint_sub_name = ''
+
+        for stmt in statements:
+            # --- Work lines ---
+            for line in stmt.line_items.all():
+                if not line.cost_amount:
+                    continue
+                is_painting = (
+                    line.assignment.department_task.task_type == 'painting'
+                )
+                if is_painting:
+                    paint_job_weights[line.job_no] += line.effective_weight_kg
+                    if not paint_sub_name:
+                        paint_sub_name = line.subcontractor_name
+                rows.append({
+                    'stock_code': _accounting_stock_code(line.job_no, is_painting),
+                    'amount': str(line.effective_weight_kg),
+                    'unit_price': str(line.price_per_kg),
+                    'total_price': str(line.cost_amount),
+                    'job_no': line.job_no,
+                    'subcontractor_name': line.subcontractor_name,
+                    'description': line.job_title,
+                })
+
+            # --- Adjustments ---
+            is_paint_subcontractor = stmt.subcontractor_id == PAINT_SUBCONTRACTOR_ID
+            for adj in stmt.adjustments.all():
+                adj_abs = abs(adj.amount)
+                if not adj_abs:
+                    continue
+                if adj.weight_kg and adj.weight_kg > Decimal('0'):
+                    amount = adj.weight_kg
+                    unit_price = (adj_abs / adj.weight_kg).quantize(Decimal('0.0001'))
+                else:
+                    amount = Decimal('1')
+                    unit_price = adj_abs
+                rows.append({
+                    'stock_code': _accounting_stock_code(
+                        adj.job_order.job_no, is_paint_subcontractor
+                    ),
+                    'amount': str(amount),
+                    'unit_price': str(unit_price),
+                    'total_price': str(adj_abs),
+                    'job_no': adj.job_order.job_no,
+                    'subcontractor_name': stmt.subcontractor.name,
+                    'description': adj.reason,
+                })
+
+        # --- Paint rows ---
+        total_paint_kg = paint_input.total_kg
+        total_paint_cost = paint_input.total_cost
+        unit_price = (
+            (total_paint_cost / total_paint_kg).quantize(Decimal('0.0001'))
+            if total_paint_kg else Decimal('0')
+        )
+
+        if distribute:
+            total_paint_weight = sum(paint_job_weights.values())
+            if total_paint_weight > 0:
+                for job_no, w in sorted(paint_job_weights.items()):
+                    ratio = w / total_paint_weight
+                    rows.append({
+                        'stock_code': '9999 Y1 213',
+                        'amount': str((total_paint_kg * ratio).quantize(Decimal('0.0001'))),
+                        'unit_price': str(unit_price),
+                        'total_price': str((total_paint_cost * ratio).quantize(Decimal('0.01'))),
+                        'job_no': job_no,
+                        'subcontractor_name': paint_sub_name,
+                        'description': '',
+                    })
+        else:
+            rows.append({
+                'stock_code': '9999 Y1 213',
+                'amount': str(total_paint_kg),
+                'unit_price': str(unit_price),
+                'total_price': str(total_paint_cost),
+                'job_no': 'DEPO1',
+                'subcontractor_name': paint_sub_name,
+                'description': '',
+            })
+
+        return Response({
+            'rows': rows,
+            'paint_summary': {
+                'total_paint_kg': str(total_paint_kg),
+                'total_paint_cost': str(total_paint_cost),
+            },
+        })
+
+
+# ---------------------------------------------------------------------------
+# MonthlyPaintInput CRUD
+# ---------------------------------------------------------------------------
+
+class MonthlyPaintInputViewSet(viewsets.ModelViewSet):
+    serializer_class = MonthlyPaintInputSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        qs = MonthlyPaintInput.objects.all()
+        if year := self.request.query_params.get('year'):
+            qs = qs.filter(year=year)
+        if month := self.request.query_params.get('month'):
+            qs = qs.filter(month=month)
+        return qs
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
 
 
 # ---------------------------------------------------------------------------

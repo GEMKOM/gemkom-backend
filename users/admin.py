@@ -1,7 +1,8 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin, GroupAdmin as BaseGroupAdmin
-from django.contrib.auth.models import User, Group
-from .models import UserProfile, WageRate, UserPermissionOverride
+from django.contrib.auth.models import User, Group, Permission
+from django.contrib.contenttypes.models import ContentType
+from .models import UserProfile, WageRate, UserPermissionOverride, PermissionMeta
 from .constants import GROUP_DISPLAY_NAMES
 
 # Inline profile for User admin
@@ -101,6 +102,39 @@ class GroupAdmin(BaseGroupAdmin):
 
     def get_queryset(self, request):
         return super().get_queryset(request).prefetch_related('user_set')
+
+
+@admin.register(PermissionMeta)
+class PermissionMetaAdmin(admin.ModelAdmin):
+    """
+    Single place to manage all custom permissions.
+    Saving here automatically creates/updates the matching auth.Permission row.
+    """
+    list_display  = ('codename', 'name', 'section')
+    list_filter   = ('section',)
+    search_fields = ('codename', 'name')
+    ordering      = ('section', 'codename')
+
+    def save_model(self, request, obj, form, change):
+        super().save_model(request, obj, form, change)
+        # Keep auth.Permission in sync
+        ct = ContentType.objects.get_for_model(UserProfile)
+        Permission.objects.update_or_create(
+            codename=obj.codename,
+            content_type=ct,
+            defaults={'name': obj.name},
+        )
+
+    def delete_model(self, request, obj):
+        ct = ContentType.objects.get_for_model(UserProfile)
+        Permission.objects.filter(codename=obj.codename, content_type=ct).delete()
+        super().delete_model(request, obj)
+
+    def delete_queryset(self, request, queryset):
+        ct = ContentType.objects.get_for_model(UserProfile)
+        codenames = list(queryset.values_list('codename', flat=True))
+        Permission.objects.filter(codename__in=codenames, content_type=ct).delete()
+        super().delete_queryset(request, queryset)
 
 
 # Unregister and re-register with custom admin

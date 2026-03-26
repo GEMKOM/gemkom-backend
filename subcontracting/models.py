@@ -189,6 +189,32 @@ class SubcontractingAssignment(models.Model):
         ).quantize(Decimal('0.01'))
 
 
+class MonthlyPaintInput(models.Model):
+    """
+    Monthly paint consumption entered by manufacturing.
+    Used by the accounting export to distribute paint cost across job orders.
+    """
+    year = models.PositiveIntegerField()
+    month = models.PositiveIntegerField(validators=[MinValueValidator(1), MaxValueValidator(12)])
+    total_kg = models.DecimalField(max_digits=12, decimal_places=4)
+    total_cost = models.DecimalField(max_digits=16, decimal_places=2)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name='+'
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = [('year', 'month')]
+        ordering = ['-year', '-month']
+        verbose_name = 'Aylık Boya Girdisi'
+        verbose_name_plural = 'Aylık Boya Girdileri'
+
+    def __str__(self):
+        return f"Boya {self.year}/{self.month:02d} – {self.total_kg} kg"
+
+
 class SubcontractorCostRecalcQueue(models.Model):
     """
     Queue for background subcontractor cost recalculation per job order.
