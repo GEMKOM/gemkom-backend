@@ -13,7 +13,7 @@ from django.utils import timezone
 
 from notifications.service import bulk_notify, get_route, render_notification
 from notifications.models import Notification
-from projects.models import JobOrder, JobOrderDepartmentTask
+from projects.models import JobOrder, JobOrderDepartmentTask, JobOrderDiscussionTopic
 
 from .models import (
     SalesOffer,
@@ -152,6 +152,16 @@ def send_consultations(offer: SalesOffer, departments_data: list[dict], user) ->
                 task.shared_files.set(
                     offer.files.filter(id__in=file_ids)
                 )
+
+            JobOrderDiscussionTopic.objects.create(
+                task=task,
+                job_order=None,
+                title=f'Danışmanlık: {task.title}',
+                content='',
+                topic_type='general',
+                priority='normal',
+                created_by=user,
+            )
 
             created.append(task)
 

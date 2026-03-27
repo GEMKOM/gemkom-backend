@@ -326,7 +326,7 @@ class SalesOfferFile(models.Model):
         ('quotation',     'Fiyat Teklifi'),
         ('correspondence','Yazışma'),
         ('photo',         'Fotoğraf'),
-        ('receipt', 'Proforma'),
+        ('receipt',       'Proforma'),
         ('other',         'Diğer'),
     ]
 
