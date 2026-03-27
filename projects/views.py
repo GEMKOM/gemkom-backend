@@ -918,7 +918,7 @@ class JobOrderViewSet(viewsets.ModelViewSet):
             'adjustments': adj_data,
         })
 
-    @action(detail=False, methods=['get'], url_path='procurement_pending', permission_classes=[IsCostAuthorized])
+    @action(detail=False, methods=['get'], url_path='procurement_pending')
     def procurement_pending(self, request):
         """
         Returns job orders that have no saved procurement cost lines yet.
@@ -943,7 +943,7 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         serializer = JobOrderListSerializer(qs, many=True)
         return Response(serializer.data)
 
-    @action(detail=False, methods=['get'], url_path='qc_pending', permission_classes=[IsCostAuthorized])
+    @action(detail=False, methods=['get'], url_path='qc_pending')
     def qc_pending(self, request):
         """
         Returns job orders that have no QC cost lines yet.
@@ -968,7 +968,7 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         serializer = JobOrderListSerializer(qs, many=True)
         return Response(serializer.data)
 
-    @action(detail=False, methods=['get'], url_path='shipping_pending', permission_classes=[IsCostAuthorized])
+    @action(detail=False, methods=['get'], url_path='shipping_pending')
     def shipping_pending(self, request):
         """
         Returns job orders that have no shipping cost lines yet.
@@ -993,7 +993,7 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         serializer = JobOrderListSerializer(qs, many=True)
         return Response(serializer.data)
 
-    @action(detail=False, methods=['get'], url_path='has_procurement', permission_classes=[IsCostAuthorized])
+    @action(detail=False, methods=['get'], url_path='has_procurement')
     def has_procurement(self, request):
         """
         Returns job orders that have at least one saved procurement cost line.
@@ -1016,7 +1016,7 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         serializer = JobOrderListSerializer(qs, many=True)
         return Response(serializer.data)
 
-    @action(detail=False, methods=['get'], url_path='has_qc', permission_classes=[IsCostAuthorized])
+    @action(detail=False, methods=['get'], url_path='has_qc')
     def has_qc(self, request):
         """
         Returns job orders that have at least one QC cost line.
@@ -1039,7 +1039,7 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         serializer = JobOrderListSerializer(qs, many=True)
         return Response(serializer.data)
 
-    @action(detail=False, methods=['get'], url_path='has_shipping', permission_classes=[IsCostAuthorized])
+    @action(detail=False, methods=['get'], url_path='has_shipping')
     def has_shipping(self, request):
         """
         Returns job orders that have at least one shipping cost line.
