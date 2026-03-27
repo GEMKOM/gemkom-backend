@@ -159,12 +159,17 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         return JobOrderDetailSerializer
 
     def get_queryset(self):
-        from django.db.models import Count
+        from django.db.models import Count, Q
         queryset = JobOrder.objects.select_related(
             'customer', 'parent', 'created_by', 'completed_by', 'source_offer'
         ).annotate(
             ncr_count=Count('ncrs', distinct=True),
             children_count=Count('children', distinct=True),
+            revision_count=Count(
+                'technical_drawing_releases',
+                filter=Q(technical_drawing_releases__status='superseded'),
+                distinct=True
+            ),
         ).exclude(job_no='LEGACY-ARCHIVE')
 
         # Filter by root only (no parent) if requested
