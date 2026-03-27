@@ -139,6 +139,10 @@ class SalesOffer(models.Model):
         help_text="Ödeme şekli"
     )
     order_no = models.CharField(max_length=100, blank=True, help_text="Sipariş no")
+    shipping_price = models.DecimalField(
+        max_digits=16, decimal_places=2, default=0,
+        help_text="Nakliye bedeli (tarafımızca üstlenilirse toplam fiyata eklenir)"
+    )
 
     status = models.CharField(
         max_length=30,
@@ -212,6 +216,7 @@ class SalesOffer(models.Model):
         for item in self.items.all():
             if item.unit_price is not None:
                 total += item.unit_price * item.quantity
+        total += self.shipping_price
         return total
 
     @property

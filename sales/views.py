@@ -611,10 +611,18 @@ class SalesOfferViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['get'], url_path='approval-status')
     def approval_status(self, request, pk=None):
         offer = self.get_object()
-        from approvals.services import get_workflow
-        wf = get_workflow(offer)
-        if not wf:
-            return Response({'detail': 'Aktif onay süreci bulunamadı.'}, status=status.HTTP_404_NOT_FOUND)
-
+        from django.contrib.contenttypes.models import ContentType
+        from approvals.models import ApprovalWorkflow
         from approvals.serializers import WorkflowSerializer
-        return Response(WorkflowSerializer(wf).data)
+
+        ct = ContentType.objects.get_for_model(SalesOffer)
+        workflows = (
+            ApprovalWorkflow.objects
+            .filter(content_type=ct, object_id=offer.id)
+            .prefetch_related('stage_instances__decisions__approver')
+            .order_by('created_at')
+        )
+        if not workflows.exists():
+            return Response({'detail': 'Onay süreci bulunamadı.'}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response(WorkflowSerializer(workflows, many=True).data)
