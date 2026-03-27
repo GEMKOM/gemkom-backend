@@ -18,6 +18,7 @@ GROUP_DISPLAY_NAMES: dict[str, str] = {
     'design_team':             'Dizayn Ekibi',
     'manufacturing_team':      'Üretim Ekibi',
     'maintenance_team':        'Bakım Ekibi',
+    'Formen':                  'Formen',
 }
 
 # Which groups belong to each portal.
