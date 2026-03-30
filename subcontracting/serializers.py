@@ -6,6 +6,9 @@ from django.db import transaction
 from django.db.models import Sum
 from rest_framework import serializers
 
+from approvals.serializers import WorkflowSerializer
+from approvals.services import get_workflow
+
 from .models import (
     MonthlyPaintInput,
     Subcontractor,
@@ -270,6 +273,14 @@ class SubcontractorStatementSerializer(serializers.ModelSerializer):
     line_items = SubcontractorStatementLineSerializer(many=True, read_only=True)
     adjustments = SubcontractorStatementAdjustmentSerializer(many=True, read_only=True)
     subcontractor_name = serializers.CharField(source='subcontractor.name', read_only=True)
+    approval_workflow = serializers.SerializerMethodField()
+
+    def get_approval_workflow(self, obj):
+        try:
+            wf = get_workflow(obj)
+        except Exception:
+            return None
+        return WorkflowSerializer(wf, context=self.context).data
 
     class Meta:
         model = SubcontractorStatement
@@ -278,6 +289,7 @@ class SubcontractorStatementSerializer(serializers.ModelSerializer):
             'currency', 'work_total', 'adjustment_total', 'grand_total',
             'notes', 'line_items', 'adjustments',
             'created_at', 'created_by', 'updated_at', 'submitted_at', 'approved_at', 'paid_at',
+            'approval_workflow',
         ]
         read_only_fields = [
             'status', 'work_total', 'adjustment_total', 'grand_total',
