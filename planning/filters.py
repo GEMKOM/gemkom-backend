@@ -71,12 +71,22 @@ class PlanningRequestItemFilter(django_filters.FilterSet):
         label='Exclude Item Type'
     )
 
+    job_no = django_filters.CharFilter(
+        field_name='job_no',
+        lookup_expr='icontains',
+        label='Job No'
+    )
+
+    from_inventory = django_filters.BooleanFilter(
+        method='filter_from_inventory',
+        label='Has inventory allocation (partial or full)'
+    )
+
     class Meta:
         model = PlanningRequestItem
         fields = {
             'planning_request': ['exact'],
             'item': ['exact'],
-            'job_no': ['exact', 'icontains'],
             'priority': ['exact'],
             'is_delivered': ['exact'],
         }
@@ -124,6 +134,13 @@ class PlanningRequestItemFilter(django_filters.FilterSet):
             return queryset.filter(quantity_to_purchase__gt=models.F('_qty_in_prs'))
         else:  # is_available=false - fully converted
             return queryset.filter(quantity_to_purchase__lte=models.F('_qty_in_prs'))
+
+    def filter_from_inventory(self, queryset, name, value):
+        from decimal import Decimal
+        if value:
+            return queryset.filter(quantity_from_inventory__gt=Decimal('0'))
+        else:
+            return queryset.filter(quantity_from_inventory=Decimal('0'))
 
     def filter_needs_purchase(self, queryset, name, value):
         """
