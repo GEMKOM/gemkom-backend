@@ -5,6 +5,7 @@ from django.db import transaction as db_transaction
 from rest_framework import serializers as drf_serializers
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
+from rest_framework.filters import OrderingFilter
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
@@ -366,6 +367,9 @@ class SubcontractingAssignmentViewSet(viewsets.ModelViewSet):
 
 class SubcontractorStatementViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
+    filter_backends = [OrderingFilter]
+    ordering_fields = ['year', 'month', 'created_at', 'submitted_at', 'approved_at', 'grand_total']
+    ordering = ['-year', '-month']
 
     def get_serializer_class(self):
         if self.action == 'list':

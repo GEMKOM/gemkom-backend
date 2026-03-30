@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Notification, NotificationPreference
+from .models import Notification, NotificationConfig, NotificationPreference
 
 
 @admin.register(Notification)
@@ -9,6 +9,14 @@ class NotificationAdmin(admin.ModelAdmin):
     search_fields = ['user__username', 'user__email', 'title', 'body']
     readonly_fields = ['created_at', 'read_at', 'emailed_at']
     ordering      = ['-created_at']
+
+
+@admin.register(NotificationConfig)
+class NotificationConfigAdmin(admin.ModelAdmin):
+    list_display  = ['notification_type', 'default_send_email', 'default_send_in_app', 'updated_at']
+    list_filter   = ['default_send_email', 'default_send_in_app']
+    search_fields = ['notification_type', 'title_template', 'body_template']
+    readonly_fields = ['updated_at']
 
 
 @admin.register(NotificationPreference)

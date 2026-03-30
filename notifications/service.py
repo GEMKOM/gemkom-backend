@@ -435,7 +435,7 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
             '{reason}'
         ),
         'link': '',
-        'vars': ['subcontractor', 'year', 'month', 'currency', 'total', 'reason', 'link'],
+        'vars': ['subcontractor', 'year', 'month', 'currency', 'total', 'reason', 'statement_id', 'link'],
     },
     Notification.SUB_APPROVED: {
         'title': '[Taşeron Hakedişi Onaylandı] {subcontractor} {year}/{month}',
@@ -445,7 +445,7 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
             '{comment}'
         ),
         'link': '',
-        'vars': ['subcontractor', 'year', 'month', 'currency', 'total', 'comment', 'link'],
+        'vars': ['subcontractor', 'year', 'month', 'currency', 'total', 'comment', 'statement_id', 'link'],
     },
     Notification.SUB_REJECTED: {
         'title': '[Taşeron Hakedişi Reddedildi] {subcontractor} {year}/{month}',
@@ -455,7 +455,7 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
             '{comment}'
         ),
         'link': '',
-        'vars': ['subcontractor', 'year', 'month', 'currency', 'total', 'comment', 'link'],
+        'vars': ['subcontractor', 'year', 'month', 'currency', 'total', 'comment', 'statement_id', 'link'],
     },
     Notification.PLAN_APPROVAL_REQUESTED: {
         'title': '[Onay Gerekli] Departman Talebi #{dr_id} \u2013 {dr_title}',

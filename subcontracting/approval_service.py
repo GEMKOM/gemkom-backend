@@ -56,6 +56,7 @@ def _notify_approvers(wf: ApprovalWorkflow, statement: SubcontractorStatement, r
         'currency':      statement.currency,
         'total':         str(statement.grand_total),
         'reason':        reason,
+        'statement_id':  statement.id,
     }
     title, body, link = render_notification(Notification.SUB_APPROVAL_REQUESTED, ctx)
     bulk_notify(
@@ -80,6 +81,7 @@ def _notify_on_final(statement: SubcontractorStatement, status_str: str, comment
         'currency':      statement.currency,
         'total':         str(statement.grand_total),
         'comment':       comment,
+        'statement_id':  statement.id,
     }
     title, body, link = render_notification(notification_type, ctx)
     notify(
