@@ -2,6 +2,7 @@ from rest_framework import serializers
 from django.contrib.auth import get_user_model
 
 from .models import QCReview, NCR, NCRFile
+from users.constants import GROUP_DISPLAY_NAMES
 
 User = get_user_model()
 
@@ -128,7 +129,12 @@ class NCRListSerializer(serializers.ModelSerializer):
     defect_type_display = serializers.CharField(source='get_defect_type_display', read_only=True)
     created_by_name = serializers.CharField(source='created_by.get_full_name', read_only=True)
     job_order_title = serializers.CharField(source='job_order.title', read_only=True)
-    assigned_team_name = serializers.CharField(source='assigned_team.name', read_only=True, default=None)
+    assigned_team_name = serializers.SerializerMethodField()
+
+    def get_assigned_team_name(self, obj):
+        if obj.assigned_team is None:
+            return None
+        return GROUP_DISPLAY_NAMES.get(obj.assigned_team.name, obj.assigned_team.name)
 
     class Meta:
         model = NCR
@@ -153,7 +159,12 @@ class NCRDetailSerializer(serializers.ModelSerializer):
     created_by_name = serializers.CharField(source='created_by.get_full_name', read_only=True)
     detected_by_name = serializers.CharField(source='detected_by.get_full_name', read_only=True)
     job_order_title = serializers.CharField(source='job_order.title', read_only=True)
-    assigned_team_name = serializers.CharField(source='assigned_team.name', read_only=True, default=None)
+    assigned_team_name = serializers.SerializerMethodField()
+
+    def get_assigned_team_name(self, obj):
+        if obj.assigned_team is None:
+            return None
+        return GROUP_DISPLAY_NAMES.get(obj.assigned_team.name, obj.assigned_team.name)
     assigned_members_data = serializers.SerializerMethodField()
 
     class Meta:

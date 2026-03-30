@@ -444,8 +444,6 @@ def send_revision_completed_notifications(new_release, new_topic, old_revision_t
             source_id=new_release.id,
         )
 
-    # Notify all department task assignees (job resumed)
-    send_job_resumed_notifications(job_order, new_topic, new_release)
 
 
 def send_job_resumed_notifications(job_order, topic=None, release=None):
