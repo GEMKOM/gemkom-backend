@@ -62,7 +62,15 @@ class SubcontractorStatementLineInline(admin.TabularInline):
 class SubcontractorStatementAdjustmentInline(admin.TabularInline):
     model = SubcontractorStatementAdjustment
     extra = 0
-    fields = ['adjustment_type', 'amount', 'reason', 'description', 'job_order']
+    fields = ['adjustment_type', 'amount', 'weight_kg', 'reason', 'description', 'job_order']
+
+
+@admin.register(SubcontractorStatementAdjustment)
+class SubcontractorStatementAdjustmentAdmin(admin.ModelAdmin):
+    list_display = ['statement', 'adjustment_type', 'amount', 'weight_kg', 'job_order', 'reason', 'created_by', 'created_at']
+    list_filter = ['adjustment_type', 'statement__subcontractor']
+    search_fields = ['statement__subcontractor__name', 'reason', 'description', 'job_order__job_no']
+    readonly_fields = ['created_at', 'created_by']
 
 
 @admin.register(SubcontractorStatement)

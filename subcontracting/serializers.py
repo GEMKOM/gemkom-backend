@@ -228,7 +228,7 @@ class SubcontractorStatementAdjustmentSerializer(serializers.ModelSerializer):
         model = SubcontractorStatementAdjustment
         fields = [
             'id', 'statement', 'adjustment_type', 'amount',
-            'reason', 'description', 'job_order',
+            'reason', 'description', 'job_order', 'weight_kg',
             'created_at', 'created_by',
         ]
         read_only_fields = ['created_at', 'created_by', 'statement']
@@ -287,7 +287,7 @@ class SubcontractorStatementSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'subcontractor', 'subcontractor_name', 'year', 'month', 'status',
             'currency', 'work_total', 'adjustment_total', 'grand_total',
-            'notes', 'line_items', 'adjustments',
+            'notes', 'employee_count', 'line_items', 'adjustments',
             'created_at', 'created_by', 'updated_at', 'submitted_at', 'approved_at', 'paid_at',
             'approval_workflow',
         ]
@@ -324,6 +324,7 @@ class SubcontractorStatementListSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'subcontractor', 'subcontractor_name', 'year', 'month', 'status',
             'currency', 'work_total', 'adjustment_total', 'grand_total',
+            'employee_count',
             'created_at', 'submitted_at', 'approved_at', 'paid_at',
         ]
 

@@ -101,6 +101,7 @@ INSTALLED_APPS = [
     'subcontracting.apps.SubcontractingConfig',
     'quality_control',
     'notifications',
+    'reports',
 ]
 
 MIDDLEWARE = [

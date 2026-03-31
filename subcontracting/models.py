@@ -264,6 +264,10 @@ class SubcontractorStatement(models.Model):
     grand_total = models.DecimalField(max_digits=16, decimal_places=2, default=Decimal('0.00'))
 
     notes = models.TextField(blank=True)
+    employee_count = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text='Number of employees working on this statement period (entered manually after creation)'
+    )
 
     # Approval engine hook — uses GenericForeignKey in ApprovalWorkflow
     approvals = GenericRelation('approvals.ApprovalWorkflow')
