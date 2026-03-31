@@ -741,13 +741,21 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         'count' in the pagination envelope is the total number of roots.
         Filters promote jobs to roots when their parent is excluded.
         """
+        ordering_param = request.query_params.get('ordering', 'job_no')
+        db_ordering = {
+            'job_no': 'job_no', '-job_no': '-job_no',
+            'actual_cost': 'cost_summary__actual_total_cost',
+            '-actual_cost': '-cost_summary__actual_total_cost',
+        }
+        db_order = db_ordering.get(ordering_param, 'job_no')
+
         base_qs = (
             JobOrder.objects
             .select_related('cost_summary', 'customer', 'source_offer')
             .prefetch_related('source_offer__price_revisions')
             .exclude(job_no='LEGACY-ARCHIVE')
             .exclude(cost_summary__cost_not_applicable=True)
-            .order_by('job_no')
+            .order_by(db_order)
         )
         filtered_qs = self.filter_queryset(base_qs)
 
@@ -759,6 +767,19 @@ class JobOrderViewSet(viewsets.ModelViewSet):
             m['job_no'] for m in job_meta
             if not m['parent_id'] or m['parent_id'] not in job_no_set
         ]
+
+        # Margin ordering requires serializing first (computed field), then sorting.
+        if ordering_param in ('margin_pct', '-margin_pct'):
+            root_jobs = list(filtered_qs.filter(job_no__in=root_nos)) if root_nos else []
+            order_map = {no: i for i, no in enumerate(root_nos)}
+            root_jobs.sort(key=lambda j: order_map[j.job_no])
+            data = self._serialize_cost_rows(root_jobs, jobs_with_children, self.get_serializer_context())
+            reverse = ordering_param == '-margin_pct'
+            data.sort(key=lambda r: float(r['margin_pct']) if r['margin_pct'] is not None else float('-inf'), reverse=reverse)
+            page = self.paginate_queryset(data)
+            if page is not None:
+                return self.get_paginated_response(page)
+            return Response(data)
 
         # Paginate the root list (DRF paginators accept Python lists).
         page = self.paginate_queryset(root_nos)

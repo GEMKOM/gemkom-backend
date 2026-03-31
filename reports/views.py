@@ -4,7 +4,7 @@ import datetime
 from calendar import monthrange
 from decimal import Decimal, ROUND_HALF_UP
 
-from django.db.models import Sum, Count, Avg, Q
+from django.db.models import Sum, Count, Avg, Q, F, ExpressionWrapper, BigIntegerField
 from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
@@ -369,28 +369,96 @@ def _procurement_section(date_from: datetime.date, date_to: datetime.date) -> di
 
 
 def _manufacturing_section(date_from: datetime.date, date_to: datetime.date) -> dict:
-    from projects.models import JobOrderDepartmentTask
+    from welding.models import WeldingTimeEntry
+    from tasks.models import Timer, Part, Operation
+    from django.contrib.contenttypes.models import ContentType
+    from cnc_cutting.models import CncTask
 
-    completed_qs = JobOrderDepartmentTask.objects.filter(
+    # ms range in UTC
+    date_from_ms = int(datetime.datetime(date_from.year, date_from.month, date_from.day, tzinfo=datetime.timezone.utc).timestamp() * 1000)
+    date_to_ms = int(datetime.datetime(date_to.year, date_to.month, date_to.day, 23, 59, 59, tzinfo=datetime.timezone.utc).timestamp() * 1000)
+
+    # ── Welding ───────────────────────────────────────────────────────────────
+    from projects.models import JobOrder
+    welding_qs = WeldingTimeEntry.objects.filter(date__gte=date_from, date__lte=date_to)
+    welding_hours = welding_qs.aggregate(total=Sum('hours'))['total'] or Decimal('0')
+    welding_users = welding_qs.values('employee').distinct().count()
+
+    welding_job_nos = welding_qs.values_list('job_no', flat=True).distinct()
+    welding_jobs_completed = JobOrder.objects.filter(
+        job_no__in=welding_job_nos,
+        status='completed',
         completed_at__date__gte=date_from,
         completed_at__date__lte=date_to,
-        status='completed',
+    ).count()
+    welding_jobs_remaining = JobOrder.objects.filter(
+        parent__isnull=True,
+        status='active',
+        department_tasks__task_type='welding',
+        department_tasks__status__in=['pending', 'in_progress'],
+    ).distinct().count()
+
+    # ── Machining (Parts + Operations) ────────────────────────────────────────
+    # Task counts: Part is the unit of work; Operation holds the timers
+    machining_parts_completed = Part.objects.filter(
+        completion_date__gte=date_from_ms,
+        completion_date__lte=date_to_ms,
+    ).count()
+    machining_parts_remaining = Part.objects.filter(completion_date__isnull=True).count()
+
+    op_ct = ContentType.objects.get_for_model(Operation)
+    machining_timer_qs = Timer.objects.filter(
+        content_type=op_ct,
+        timer_type='productive',
+        start_time__gte=date_from_ms,
+        start_time__lte=date_to_ms,
+        finish_time__isnull=False,
     )
+    machining_ms = machining_timer_qs.aggregate(total=Sum(ExpressionWrapper(
+        F('finish_time') - F('start_time'),
+        output_field=BigIntegerField(),
+    )))['total'] or 0
+    machining_hours = _q2(Decimal(machining_ms) / Decimal('3600000'))
+    machining_users = machining_timer_qs.values('user').distinct().count()
 
-    def _count(task_type):
-        return completed_qs.filter(task_type=task_type).count()
+    # ── CNC ───────────────────────────────────────────────────────────────────
+    cnc_ct = ContentType.objects.get_for_model(CncTask)
+    cnc_timer_qs = Timer.objects.filter(
+        content_type=cnc_ct,
+        timer_type='productive',
+        start_time__gte=date_from_ms,
+        start_time__lte=date_to_ms,
+        finish_time__isnull=False,
+    )
+    cnc_ms = cnc_timer_qs.aggregate(total=Sum(ExpressionWrapper(
+        F('finish_time') - F('start_time'),
+        output_field=BigIntegerField(),
+    )))['total'] or 0
+    cnc_hours = _q2(Decimal(cnc_ms) / Decimal('3600000'))
+    cnc_users = cnc_timer_qs.values('user').distinct().count()
 
-    tasks_in_progress = JobOrderDepartmentTask.objects.filter(status='in_progress').count()
-    tasks_blocked = JobOrderDepartmentTask.objects.filter(status='blocked').count()
+    cnc_completed = CncTask.objects.filter(
+        completion_date__gte=date_from_ms,
+        completion_date__lte=date_to_ms,
+    ).count()
+    cnc_remaining = CncTask.objects.filter(completion_date__isnull=True).count()
+
+    total_hours = _q2(Decimal(welding_hours) + Decimal(machining_hours) + Decimal(cnc_hours))
 
     return {
-        'tasks_completed_in_range': completed_qs.count(),
-        'welding_tasks_completed': _count('welding'),
-        'machining_tasks_completed': _count('part'),
-        'cnc_tasks_completed': _count('cnc_cutting'),
-        'subcontracting_tasks_completed': _count('subcontracting'),
-        'tasks_in_progress': tasks_in_progress,
-        'tasks_blocked': tasks_blocked,
+        'welding_hours': _q2(welding_hours),
+        'welding_active_users': welding_users,
+        'welding_jobs_completed': welding_jobs_completed,
+        'welding_jobs_remaining': welding_jobs_remaining,
+        'machining_hours': machining_hours,
+        'machining_active_users': machining_users,
+        'machining_parts_completed': machining_parts_completed,
+        'machining_parts_remaining': machining_parts_remaining,
+        'cnc_hours': cnc_hours,
+        'cnc_active_users': cnc_users,
+        'cnc_tasks_completed': cnc_completed,
+        'cnc_tasks_remaining': cnc_remaining,
+        'total_productive_hours': total_hours,
     }
 
 
@@ -499,6 +567,7 @@ def overview(request):
     preset = request.query_params.get('preset')
     date_from_str = request.query_params.get('date_from')
     date_to_str = request.query_params.get('date_to')
+    compare = request.query_params.get('compare') == 'true'
 
     if preset and preset not in VALID_PRESETS:
         return Response(
@@ -508,12 +577,15 @@ def overview(request):
 
     date_from, date_to, used_preset = _resolve_date_range(preset, date_from_str, date_to_str)
 
-    return Response({
-        'meta': {
-            'preset': used_preset,
-            'date_from': date_from.isoformat(),
-            'date_to': date_to.isoformat(),
-        },
+    meta = {
+        'preset': used_preset,
+        'date_from': date_from.isoformat(),
+        'date_to': date_to.isoformat(),
+        'compare': compare,
+    }
+
+    response_data = {
+        'meta': meta,
         'job_orders': _job_orders_section(date_from, date_to),
         'sales': _sales_section(date_from, date_to),
         'design_revisions': _design_revisions_section(date_from, date_to),
@@ -523,4 +595,69 @@ def overview(request):
         'manufacturing': _manufacturing_section(date_from, date_to),
         'quality': _quality_section(date_from, date_to),
         'overtime': _overtime_section(date_from, date_to),
+    }
+
+    if compare:
+        delta = date_to - date_from
+        prev_date_to = date_from - datetime.timedelta(days=1)
+        prev_date_from = prev_date_to - delta
+        meta['prev_date_from'] = prev_date_from.isoformat()
+        meta['prev_date_to'] = prev_date_to.isoformat()
+        response_data['previous_period'] = {
+            'job_orders': _job_orders_section(prev_date_from, prev_date_to),
+            'sales': _sales_section(prev_date_from, prev_date_to),
+            'manufacturing': _manufacturing_section(prev_date_from, prev_date_to),
+            'quality': _quality_section(prev_date_from, prev_date_to),
+            'costs': _costs_section(prev_date_from, prev_date_to),
+        }
+
+    return Response(response_data)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def snapshot(request):
+    from projects.models import JobOrder, JobOrderDepartmentTask
+    from overtime.models import OvertimeRequest
+    from procurement.models import PurchaseRequest, PaymentSchedule
+    from subcontracting.models import SubcontractorStatement
+    from quality_control.models import NCR
+
+    today = timezone.now().date()
+
+    active_qs = JobOrder.objects.filter(parent__isnull=True, status='active')
+
+    return Response({
+        'job_orders': {
+            'active': active_qs.count(),
+            'overdue': active_qs.filter(
+                target_completion_date__lt=today,
+                target_completion_date__isnull=False,
+            ).count(),
+            'on_hold_for_revision': JobOrder.objects.filter(
+                status='on_hold',
+                discussion_topics__topic_type='revision_request',
+                discussion_topics__revision_status='in_progress',
+                discussion_topics__is_deleted=False,
+            ).distinct().count(),
+        },
+        'approvals_pending': {
+            'overtime_requests': OvertimeRequest.objects.filter(status='submitted').count(),
+            'purchase_requests': PurchaseRequest.objects.filter(status='submitted').count(),
+            'subcontractor_statements': SubcontractorStatement.objects.filter(status='submitted').count(),
+        },
+        'alerts': {
+            'tasks_blocked': JobOrderDepartmentTask.objects.filter(status='blocked').count(),
+            'ncrs_critical_open': NCR.objects.exclude(
+                job_order__job_no='LEGACY-ARCHIVE'
+            ).filter(
+                severity='critical',
+            ).exclude(status='closed').count(),
+            'payments_overdue': PaymentSchedule.objects.filter(
+                due_date__lt=today,
+                is_paid=False,
+            ).count(),
+        },
     })
+
+

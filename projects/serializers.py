@@ -1935,6 +1935,7 @@ class CostTableRowSerializer(serializers.Serializer):
     estimated_cost = serializers.DecimalField(max_digits=16, decimal_places=2)
     general_expenses_rate = serializers.DecimalField(max_digits=10, decimal_places=4)
     total_weight_kg = serializers.DecimalField(max_digits=12, decimal_places=2, allow_null=True)
+    completion_pct = serializers.DecimalField(source='completion_percentage', max_digits=5, decimal_places=2)
 
     # From JobOrderCostSummary
     selling_price = serializers.SerializerMethodField()
