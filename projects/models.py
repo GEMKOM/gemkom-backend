@@ -2106,3 +2106,30 @@ class JobOrderShippingCostLine(models.Model):
 
     def __str__(self):
         return f"{self.job_order_id} - {self.description} - {self.amount} {self.currency}"
+
+
+class JobOrderTargetDateRevision(models.Model):
+    """Append-only audit log for every change to JobOrder.target_completion_date."""
+    job_order = models.ForeignKey(
+        JobOrder, on_delete=models.CASCADE, related_name='target_date_revisions'
+    )
+    previous_date = models.DateField(null=True, blank=True)
+    new_date = models.DateField(null=True, blank=True)
+    reason = models.TextField(blank=True)
+    changed_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='target_date_revisions_made'
+    )
+    changed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-changed_at']
+        verbose_name = 'Hedef Tarih Revizyonu'
+        verbose_name_plural = 'Hedef Tarih Revizyonları'
+
+    def __str__(self):
+        return (
+            f"{self.job_order_id}: "
+            f"{self.previous_date} -> {self.new_date} "
+            f"({self.changed_at:%Y-%m-%d})"
+        )

@@ -35,6 +35,38 @@ def capture_job_order_cost_fields(sender, instance, **kwargs):
         instance._old_total_weight_kg = None
 
 
+@receiver(pre_save, sender=JobOrder)
+def capture_job_order_target_date(sender, instance, **kwargs):
+    """Capture target_completion_date before saving so we can detect changes."""
+    if instance.pk:
+        try:
+            old = JobOrder.objects.values('target_completion_date').get(pk=instance.pk)
+            instance._old_target_completion_date = old['target_completion_date']
+        except JobOrder.DoesNotExist:
+            instance._old_target_completion_date = None
+    else:
+        instance._old_target_completion_date = None
+
+
+@receiver(post_save, sender=JobOrder)
+def on_job_order_target_date_changed(sender, instance, created, **kwargs):
+    """Write a JobOrderTargetDateRevision record when target_completion_date changes."""
+    if created:
+        return
+    old_date = getattr(instance, '_old_target_completion_date', None)
+    new_date = instance.target_completion_date
+    if old_date == new_date:
+        return
+    from .models import JobOrderTargetDateRevision
+    JobOrderTargetDateRevision.objects.create(
+        job_order=instance,
+        previous_date=old_date,
+        new_date=new_date,
+        reason=getattr(instance, '_date_change_reason', '') or '',
+        changed_by=getattr(instance, '_date_changed_by', None),
+    )
+
+
 @receiver(post_save, sender=JobOrder)
 def on_job_order_cost_fields_changed(sender, instance, created, **kwargs):
     """

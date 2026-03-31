@@ -8,7 +8,8 @@ from .models import (
     JobOrderDepartmentTask, JobOrderDepartmentTaskFile, DEPARTMENT_CHOICES,
     JobOrderDiscussionTopic, JobOrderDiscussionComment,
     DiscussionAttachment,
-    TechnicalDrawingRelease
+    TechnicalDrawingRelease,
+    JobOrderTargetDateRevision,
 )
 
 # Groups that should receive drawing release notifications
@@ -106,6 +107,14 @@ class JobOrderChildSerializer(serializers.ModelSerializer):
         return obj.children.count()
 
 
+class JobOrderTargetDateRevisionSerializer(serializers.ModelSerializer):
+    changed_by_name = serializers.CharField(source='changed_by.get_full_name', read_only=True, default='')
+
+    class Meta:
+        model = JobOrderTargetDateRevision
+        fields = ['id', 'previous_date', 'new_date', 'reason', 'changed_by', 'changed_by_name', 'changed_at']
+
+
 class JobOrderListSerializer(serializers.ModelSerializer):
     """Lightweight serializer for list views."""
     customer_name = serializers.CharField(source='customer.name', read_only=True)
@@ -117,13 +126,14 @@ class JobOrderListSerializer(serializers.ModelSerializer):
     hierarchy_level = serializers.SerializerMethodField()
     ncr_count = serializers.IntegerField(read_only=True)
     revision_count = serializers.IntegerField(read_only=True)
+    previous_target_date_revision = serializers.DateField(read_only=True, default=None)
 
     class Meta:
         model = JobOrder
         fields = [
             'job_no', 'title', 'quantity', 'customer', 'customer_name', 'customer_short_name', 'customer_code',
             'status', 'status_display', 'priority', 'priority_display',
-            'target_completion_date', 'completion_percentage',
+            'target_completion_date', 'previous_target_date_revision', 'completion_percentage',
             'parent', 'children_count', 'hierarchy_level',
             'ncr_count',
             'revision_count',
@@ -190,6 +200,7 @@ class JobOrderDetailSerializer(serializers.ModelSerializer):
     hierarchy_level = serializers.SerializerMethodField()
     files_count = serializers.SerializerMethodField()
     topics_count = serializers.SerializerMethodField()
+    target_date_revisions = serializers.SerializerMethodField()
 
     class Meta:
         model = JobOrder
@@ -203,7 +214,8 @@ class JobOrderDetailSerializer(serializers.ModelSerializer):
             'source_offer', 'source_offer_no',
             'files_count', 'topics_count',
             'created_at', 'created_by', 'created_by_name',
-            'updated_at', 'completed_by', 'completed_by_name'
+            'updated_at', 'completed_by', 'completed_by_name',
+            'target_date_revisions',
         ]
         read_only_fields = [
             'started_at', 'completed_at', 'completion_percentage',
@@ -227,6 +239,10 @@ class JobOrderDetailSerializer(serializers.ModelSerializer):
         if obj.parent is not None:
             return 0
         return obj.discussion_topics.filter(is_deleted=False).count()
+
+    def get_target_date_revisions(self, obj):
+        revisions = obj.target_date_revisions.select_related('changed_by').order_by('-changed_at')
+        return JobOrderTargetDateRevisionSerializer(revisions, many=True).data
 
 
 class JobOrderCreateSerializer(serializers.ModelSerializer):
@@ -286,13 +302,17 @@ class JobOrderUpdateSerializer(serializers.ModelSerializer):
         queryset=Customer.objects.all(),
         required=False,
     )
+    target_date_change_reason = serializers.CharField(
+        required=False, allow_blank=True, write_only=True, default=''
+    )
 
     class Meta:
         model = JobOrder
         fields = [
             'job_no', 'title', 'quantity', 'description', 'customer_order_no',
             'customer', 'priority', 'target_completion_date', 'incoterms',
-            'estimated_cost', 'total_weight_kg', 'general_expenses_rate'
+            'estimated_cost', 'total_weight_kg', 'general_expenses_rate',
+            'target_date_change_reason',
         ]
 
     def validate_job_no(self, value):

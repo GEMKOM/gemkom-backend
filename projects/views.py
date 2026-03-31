@@ -159,7 +159,11 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         return JobOrderDetailSerializer
 
     def get_queryset(self):
-        from django.db.models import Count, Q
+        from django.db.models import Count, Q, Subquery, OuterRef
+        from .models import JobOrderTargetDateRevision
+        latest_revision = JobOrderTargetDateRevision.objects.filter(
+            job_order=OuterRef('pk')
+        ).order_by('-changed_at')
         queryset = JobOrder.objects.select_related(
             'customer', 'parent', 'created_by', 'completed_by', 'source_offer'
         ).annotate(
@@ -170,6 +174,7 @@ class JobOrderViewSet(viewsets.ModelViewSet):
                 filter=Q(technical_drawing_releases__status='superseded'),
                 distinct=True
             ),
+            previous_target_date_revision=Subquery(latest_revision.values('new_date')[1:2]),
         ).exclude(job_no='LEGACY-ARCHIVE')
 
         # Filter by root only (no parent) if requested
@@ -224,6 +229,13 @@ class JobOrderViewSet(viewsets.ModelViewSet):
 
         detail_serializer = JobOrderDetailSerializer(serializer.instance)
         return Response(detail_serializer.data)
+
+    def perform_update(self, serializer):
+        reason = serializer.validated_data.pop('target_date_change_reason', '') or ''
+        instance = serializer.instance
+        instance._date_change_reason = reason
+        instance._date_changed_by = self.request.user
+        serializer.save()
 
     @action(detail=False, methods=['get'])
     def dropdown(self, request):

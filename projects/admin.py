@@ -2,7 +2,7 @@ from django.contrib import admin
 from .models import (
     Customer, JobOrder, JobOrderFile,
     DepartmentTaskTemplate, DepartmentTaskTemplateItem,
-    JobOrderDepartmentTask
+    JobOrderDepartmentTask, JobOrderTargetDateRevision,
 )
 
 
@@ -247,3 +247,11 @@ class JobOrderDepartmentTaskAdmin(admin.ModelAdmin):
         if not change:
             obj.created_by = request.user
         super().save_model(request, obj, form, change)
+
+
+@admin.register(JobOrderTargetDateRevision)
+class JobOrderTargetDateRevisionAdmin(admin.ModelAdmin):
+    list_display = ['job_order', 'previous_date', 'new_date', 'changed_by', 'changed_at']
+    list_filter = ['changed_at']
+    search_fields = ['job_order__job_no', 'job_order__title', 'reason']
+    readonly_fields = ['job_order', 'previous_date', 'new_date', 'reason', 'changed_by', 'changed_at']
