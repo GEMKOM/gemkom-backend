@@ -6,7 +6,7 @@ from django.db import transaction
 from django.db.models import Sum
 from rest_framework import serializers
 
-from approvals.serializers import WorkflowSerializer
+from approvals.serializers import MiniUserSerializer, WorkflowSerializer
 from approvals.services import get_workflow
 
 from .models import (
@@ -318,6 +318,7 @@ class SubcontractorStatementSerializer(serializers.ModelSerializer):
 class SubcontractorStatementListSerializer(serializers.ModelSerializer):
     """Lightweight list serializer (no nested line items)."""
     subcontractor_name = serializers.CharField(source='subcontractor.name', read_only=True)
+    current_approvers = serializers.SerializerMethodField()
 
     class Meta:
         model = SubcontractorStatement
@@ -326,7 +327,38 @@ class SubcontractorStatementListSerializer(serializers.ModelSerializer):
             'currency', 'work_total', 'adjustment_total', 'grand_total',
             'employee_count',
             'created_at', 'submitted_at', 'approved_at', 'paid_at',
+            'current_approvers',
         ]
+
+    def get_current_approvers(self, obj):
+        """Return approvers for the current active workflow stage."""
+        # Use prefetched approvals if available
+        workflows = getattr(obj, '_prefetched_objects_cache', {}).get('approvals')
+        if workflows is None:
+            workflows = list(obj.approvals.all())
+        # Find the active workflow
+        wf = next(
+            (w for w in workflows if not w.is_complete and not w.is_rejected and not w.is_cancelled),
+            None,
+        )
+        if wf is None:
+            return []
+        # Find the current stage instance
+        stage_instances = getattr(wf, '_prefetched_objects_cache', {}).get('stage_instances')
+        if stage_instances is None:
+            stage_instances = list(wf.stage_instances.all())
+        current_stage = next(
+            (s for s in stage_instances if s.order == wf.current_stage_order),
+            None,
+        )
+        if current_stage is None or not current_stage.approver_user_ids:
+            return []
+        from django.contrib.auth.models import User
+        users = User.objects.filter(id__in=current_stage.approver_user_ids).only(
+            'id', 'username', 'first_name', 'last_name'
+        )
+        by_id = {u.id: MiniUserSerializer(u).data for u in users}
+        return [by_id[uid] for uid in current_stage.approver_user_ids if uid in by_id]
 
 
 # ---------------------------------------------------------------------------

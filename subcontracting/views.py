@@ -387,6 +387,8 @@ class SubcontractorStatementViewSet(viewsets.ModelViewSet):
             qs = qs.filter(month=month)
         if status_param := params.get('status'):
             qs = qs.filter(status=status_param)
+        if self.action == 'list':
+            qs = qs.prefetch_related('approvals__stage_instances')
         return qs
 
     @action(detail=False, methods=['post'], url_path='generate')
