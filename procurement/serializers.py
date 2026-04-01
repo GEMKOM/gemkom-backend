@@ -72,10 +72,28 @@ class SupplierSerializer(serializers.ModelSerializer):
 class ItemSerializer(serializers.ModelSerializer):
     unit_label = serializers.CharField(source='get_unit_display', read_only=True)
     item_type_label = serializers.CharField(source='get_item_type_display', read_only=True)
+    latest_unit_price_eur = serializers.SerializerMethodField()
+    latest_unit_price_source = serializers.SerializerMethodField()
 
     class Meta:
         model = Item
-        fields = ['id', 'code', 'name', 'unit', 'unit_label', 'item_type', 'item_type_label', 'stock_quantity']
+        fields = ['id', 'code', 'name', 'unit', 'unit_label', 'item_type', 'item_type_label', 'stock_quantity',
+                  'latest_unit_price_eur', 'latest_unit_price_source']
+
+    def _resolve_price(self, obj):
+        from planning.price_utils import resolve_item_price
+        cache = getattr(obj, '_resolved_price', 'UNSET')
+        if cache == 'UNSET':
+            obj._resolved_price = resolve_item_price(obj)
+        return obj._resolved_price
+
+    def get_latest_unit_price_eur(self, obj):
+        result = self._resolve_price(obj)
+        return float(result['unit_price_eur']) if result else None
+
+    def get_latest_unit_price_source(self, obj):
+        result = self._resolve_price(obj)
+        return result['price_source'] if result else None
 
 class PurchaseRequestItemAllocationSerializer(serializers.ModelSerializer):
     class Meta:

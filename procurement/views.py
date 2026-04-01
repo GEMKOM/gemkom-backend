@@ -108,7 +108,6 @@ class SupplierViewSet(viewsets.ModelViewSet):
         return queryset
 
 class ItemViewSet(viewsets.ModelViewSet):
-    queryset = Item.objects.all()
     serializer_class = ItemSerializer
     permission_classes = [IsAuthenticated]
 
@@ -116,6 +115,18 @@ class ItemViewSet(viewsets.ModelViewSet):
     filterset_class = ItemFilter
     ordering_fields = ["code", "name"]
     search_fields = ["code", "name"]
+
+    def get_queryset(self):
+        from django.db.models import Prefetch
+        return Item.objects.prefetch_related(
+            Prefetch(
+                'requests',
+                queryset=PurchaseRequestItem.objects.prefetch_related(
+                    'po_lines__po',
+                    'offers__supplier_offer',
+                ).exclude(purchase_request__status='cancelled'),
+            )
+        )
 
     @action(detail=True, methods=['get'], url_path='purchase-requests')
     def purchase_requests(self, request, pk=None):

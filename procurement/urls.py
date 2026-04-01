@@ -10,7 +10,7 @@ from .views import (
 # Create router and register viewsets
 router = DefaultRouter()
 router.register(r'suppliers', SupplierViewSet)
-router.register(r'items', ItemViewSet)
+router.register(r'items', ItemViewSet, basename='item')
 router.register(r'purchase-requests', PurchaseRequestViewSet)
 router.register(r'purchase-request-items', PurchaseRequestItemViewSet)
 router.register(r'purchase-request-draft', PurchaseRequestDraftViewSet)

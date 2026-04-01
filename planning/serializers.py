@@ -356,6 +356,7 @@ class PlanningRequestItemListSerializer(serializers.ModelSerializer):
     item_stock_quantity = serializers.DecimalField(source='item.stock_quantity', read_only=True, max_digits=10, decimal_places=2)
     files_count = serializers.IntegerField(read_only=True)
     latest_unit_price_eur = serializers.SerializerMethodField()
+    latest_unit_price_source = serializers.SerializerMethodField()
     purchase_request_number = serializers.CharField(source='_pr_request_number', read_only=True, default=None)
     quantity_in_active_prs = serializers.SerializerMethodField()
     quantity_remaining_for_purchase = serializers.SerializerMethodField()
@@ -378,28 +379,26 @@ class PlanningRequestItemListSerializer(serializers.ModelSerializer):
             'is_converted', 'is_partially_converted', 'is_fully_from_inventory',
             'is_partially_from_inventory', 'is_available_for_purchase',
             'is_delivered', 'delivered_at', 'delivered_by', 'delivered_by_username',
-            'latest_unit_price_eur', 'purchase_request_number',
+            'latest_unit_price_eur', 'latest_unit_price_source', 'purchase_request_number',
             'planning_request', 'planning_request_number'
         ]
         read_only_fields = ['id', 'quantity_from_inventory', 'quantity_to_purchase',
                             'is_delivered', 'delivered_at', 'delivered_by']
 
-    def _get_latest_po_line(self, obj):
-        for pri in obj.purchase_request_items.all():
-            lines = getattr(pri, '_all_po_lines', None)
-            if lines:
-                return lines[0]
-        return None
+    def _resolve_price(self, obj):
+        from .price_utils import resolve_planning_item_price
+        cache = getattr(obj, '_resolved_price', 'UNSET')
+        if cache == 'UNSET':
+            obj._resolved_price = resolve_planning_item_price(obj)
+        return obj._resolved_price
 
     def get_latest_unit_price_eur(self, obj):
-        from procurement.reports.common import extract_rates, get_fallback_rates, to_eur
-        line = self._get_latest_po_line(obj)
-        if line is None:
-            return None
-        pr_rates = extract_rates(line.po.pr.currency_rates_snapshot or {})
-        fallback_rates = get_fallback_rates()
-        result = to_eur(line.unit_price, line.po.currency or 'TRY', pr_rates, fallback_rates)
-        return float(result) if result is not None else None
+        result = self._resolve_price(obj)
+        return float(result['unit_price_eur']) if result else None
+
+    def get_latest_unit_price_source(self, obj):
+        result = self._resolve_price(obj)
+        return result['price_source'] if result else None
 
     def _get_qty_in_prs(self, obj):
         """Read from queryset annotation, fall back to model property."""
@@ -449,6 +448,7 @@ class PlanningRequestItemSerializer(serializers.ModelSerializer):
     # For write operations
     item_id = serializers.IntegerField(write_only=True, required=False)
     latest_unit_price_eur = serializers.SerializerMethodField()
+    latest_unit_price_source = serializers.SerializerMethodField()
     converted_pr_number = serializers.CharField(source='_pr_request_number', read_only=True, default=None)
 
     class Meta:
@@ -462,7 +462,7 @@ class PlanningRequestItemSerializer(serializers.ModelSerializer):
             'is_converted', 'is_partially_converted', 'is_fully_from_inventory',
             'is_partially_from_inventory', 'is_available_for_purchase',
             'is_delivered', 'delivered_at', 'delivered_by', 'delivered_by_username',
-            'latest_unit_price_eur', 'converted_pr_number',
+            'latest_unit_price_eur', 'latest_unit_price_source', 'converted_pr_number',
             'purchase_request_info', 'planning_request', 'planning_request_number'
         ]
         read_only_fields = ['id', 'quantity_from_inventory', 'quantity_to_purchase',
@@ -519,20 +519,20 @@ class PlanningRequestItemSerializer(serializers.ModelSerializer):
 
         return list(result.values()) if result else None
 
+    def _resolve_price(self, obj):
+        from .price_utils import resolve_planning_item_price
+        cache = getattr(obj, '_resolved_price', 'UNSET')
+        if cache == 'UNSET':
+            obj._resolved_price = resolve_planning_item_price(obj)
+        return obj._resolved_price
+
     def get_latest_unit_price_eur(self, obj):
-        from procurement.reports.common import extract_rates, get_fallback_rates, to_eur
-        line = None
-        for pri in obj.purchase_request_items.all():
-            lines = getattr(pri, '_all_po_lines', None)
-            if lines:
-                line = lines[0]
-                break
-        if line is None:
-            return None
-        pr_rates = extract_rates(line.po.pr.currency_rates_snapshot or {})
-        fallback_rates = get_fallback_rates()
-        result = to_eur(line.unit_price, line.po.currency or 'TRY', pr_rates, fallback_rates)
-        return float(result) if result is not None else None
+        result = self._resolve_price(obj)
+        return float(result['unit_price_eur']) if result else None
+
+    def get_latest_unit_price_source(self, obj):
+        result = self._resolve_price(obj)
+        return result['price_source'] if result else None
 
 
 class PlanningRequestListSerializer(serializers.ModelSerializer):

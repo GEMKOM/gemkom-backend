@@ -777,7 +777,7 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
         from django.db.models import Count, Sum, OuterRef, Subquery, Q, Value
         from django.db.models.functions import Coalesce, Greatest
         from decimal import Decimal
-        from procurement.models import PurchaseRequestItem, PurchaseOrderLine
+        from procurement.models import PurchaseRequestItem, PurchaseOrderLine, ItemOffer
 
         # Subquery: request_number of the latest active PR linked via FK path
         pr_number_sq = PurchaseRequestItem.objects.filter(
@@ -787,12 +787,46 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
             Q(purchase_request__status='cancelled')
         ).order_by('-id').values('purchase_request__request_number')[:1]
 
-        # Prefetch: latest PurchaseOrderLine per planning item for EUR price conversion
-        latest_pol_prefetch = Prefetch(
-            'purchase_request_items__po_lines',
-            queryset=PurchaseOrderLine.objects.select_related('po__pr').order_by('-id'),
-            to_attr='_all_po_lines',
-        )
+        # Tier 2 subquery: latest PO line via M2M path (raw values for Python-side EUR conversion)
+        _pol_m2m_base = PurchaseOrderLine.objects.filter(
+            purchase_request_item__purchase_request__planning_request_items=OuterRef('pk'),
+            purchase_request_item__item_id=OuterRef('item_id'),
+        ).exclude(
+            Q(purchase_request_item__purchase_request__status='cancelled') |
+            Q(po__status='cancelled')
+        ).order_by('-po__ordered_at', '-po__created_at', '-id')
+        tier2_price_sq    = _pol_m2m_base.values('unit_price')[:1]
+        tier2_currency_sq = _pol_m2m_base.values('po__currency')[:1]
+        tier2_tax_sq      = _pol_m2m_base.values('po__tax_rate')[:1]
+        tier2_date_sq     = _pol_m2m_base.values('po__ordered_at')[:1]
+
+        # Tier 5 subquery: latest historical PO line for same item across any job
+        _pol_hist_base = PurchaseOrderLine.objects.filter(
+            purchase_request_item__item_id=OuterRef('item_id'),
+        ).exclude(
+            Q(purchase_request_item__purchase_request__status='cancelled') |
+            Q(po__status='cancelled')
+        ).order_by('-po__ordered_at', '-po__created_at', '-id')
+        tier5_price_sq    = _pol_hist_base.values('unit_price')[:1]
+        tier5_currency_sq = _pol_hist_base.values('po__currency')[:1]
+        tier5_tax_sq      = _pol_hist_base.values('po__tax_rate')[:1]
+        tier5_date_sq     = _pol_hist_base.values('po__ordered_at')[:1]
+
+        # Prefetch: PO lines and offers for tiers 1, 3, 4 (FK path — covered by prefetch)
+        price_prefetches = [
+            Prefetch(
+                'purchase_request_items',
+                queryset=PurchaseRequestItem.objects.select_related('purchase_request'),
+            ),
+            Prefetch(
+                'purchase_request_items__po_lines',
+                queryset=PurchaseOrderLine.objects.select_related('po').order_by('-id'),
+            ),
+            Prefetch(
+                'purchase_request_items__offers',
+                queryset=ItemOffer.objects.select_related('supplier_offer').order_by('-id'),
+            ),
+        ]
 
         # For list views, use minimal prefetching
         if self.action == 'list':
@@ -830,7 +864,7 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
                 qs = PlanningRequestItem.objects.select_related(
                     'planning_request', 'item', 'delivered_by'
                 ).prefetch_related(
-                    latest_pol_prefetch,
+                    *price_prefetches,
                 ).annotate(
                     files_count=Count('files'),
                     _qty_in_prs=Greatest(
@@ -838,6 +872,14 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
                         Coalesce(Subquery(qty_via_m2m), zero),
                     ),
                     _pr_request_number=Subquery(pr_number_sq),
+                    _t2_price=Subquery(tier2_price_sq),
+                    _t2_currency=Subquery(tier2_currency_sq),
+                    _t2_tax=Subquery(tier2_tax_sq),
+                    _t2_date=Subquery(tier2_date_sq),
+                    _t5_price=Subquery(tier5_price_sq),
+                    _t5_currency=Subquery(tier5_currency_sq),
+                    _t5_tax=Subquery(tier5_tax_sq),
+                    _t5_date=Subquery(tier5_date_sq),
                 )
         else:
             # For detail views, prefetch all related data
@@ -845,9 +887,17 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
                 'planning_request', 'item', 'delivered_by'
             ).prefetch_related(
                 Prefetch('files', queryset=FileAttachment.objects.select_related('asset', 'uploaded_by', 'source_attachment')),
-                latest_pol_prefetch,
+                *price_prefetches,
             ).annotate(
                 _pr_request_number=Subquery(pr_number_sq),
+                _t2_price=Subquery(tier2_price_sq),
+                _t2_currency=Subquery(tier2_currency_sq),
+                _t2_tax=Subquery(tier2_tax_sq),
+                _t2_date=Subquery(tier2_date_sq),
+                _t5_price=Subquery(tier5_price_sq),
+                _t5_currency=Subquery(tier5_currency_sq),
+                _t5_tax=Subquery(tier5_tax_sq),
+                _t5_date=Subquery(tier5_date_sq),
             )
 
         # Filter by planning_request param if provided

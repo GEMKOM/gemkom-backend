@@ -82,6 +82,11 @@ class PlanningRequestItemFilter(django_filters.FilterSet):
         label='Has inventory allocation (partial or full)'
     )
 
+    has_price = django_filters.BooleanFilter(
+        method='filter_has_price',
+        label='Has latest unit price (has at least one PO line)'
+    )
+
     class Meta:
         model = PlanningRequestItem
         fields = {
@@ -134,6 +139,49 @@ class PlanningRequestItemFilter(django_filters.FilterSet):
             return queryset.filter(quantity_to_purchase__gt=models.F('_qty_in_prs'))
         else:  # is_available=false - fully converted
             return queryset.filter(quantity_to_purchase__lte=models.F('_qty_in_prs'))
+
+    def filter_has_price(self, queryset, name, value):
+        from django.db.models import Exists, OuterRef, Q
+        from procurement.models import PurchaseOrderLine, ItemOffer
+
+        # Tier 1: PO line via FK
+        has_pol_fk = Exists(
+            PurchaseOrderLine.objects.filter(
+                purchase_request_item__planning_request_item=OuterRef('pk')
+            ).exclude(
+                Q(purchase_request_item__purchase_request__status='cancelled') |
+                Q(po__status='cancelled')
+            )
+        )
+        # Tier 2: PO line via M2M
+        has_pol_m2m = Exists(
+            PurchaseOrderLine.objects.filter(
+                purchase_request_item__purchase_request__planning_request_items=OuterRef('pk'),
+                purchase_request_item__item_id=OuterRef('item_id'),
+            ).exclude(
+                Q(purchase_request_item__purchase_request__status='cancelled') |
+                Q(po__status='cancelled')
+            )
+        )
+        # Tiers 3 & 4: any ItemOffer via FK
+        has_offer = Exists(
+            ItemOffer.objects.filter(
+                purchase_request_item__planning_request_item=OuterRef('pk')
+            ).exclude(
+                purchase_request_item__purchase_request__status='cancelled'
+            )
+        )
+        # Tier 5: historical PO line for same item (any job)
+        has_hist_pol = Exists(
+            PurchaseOrderLine.objects.filter(
+                purchase_request_item__item_id=OuterRef('item_id')
+            ).exclude(
+                Q(purchase_request_item__purchase_request__status='cancelled') |
+                Q(po__status='cancelled')
+            )
+        )
+        has_any_price = has_pol_fk | has_pol_m2m | has_offer | has_hist_pol
+        return queryset.filter(has_any_price) if value else queryset.exclude(has_any_price)
 
     def filter_from_inventory(self, queryset, name, value):
         from decimal import Decimal
