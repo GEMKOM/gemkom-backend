@@ -777,7 +777,22 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
         from django.db.models import Count, Sum, OuterRef, Subquery, Q, Value
         from django.db.models.functions import Coalesce, Greatest
         from decimal import Decimal
-        from procurement.models import PurchaseRequestItem
+        from procurement.models import PurchaseRequestItem, PurchaseOrderLine
+
+        # Subquery: request_number of the latest active PR linked via FK path
+        pr_number_sq = PurchaseRequestItem.objects.filter(
+            planning_request_item=OuterRef('pk')
+        ).exclude(
+            Q(purchase_request__status='rejected') |
+            Q(purchase_request__status='cancelled')
+        ).order_by('-id').values('purchase_request__request_number')[:1]
+
+        # Prefetch: latest PurchaseOrderLine per planning item for EUR price conversion
+        latest_pol_prefetch = Prefetch(
+            'purchase_request_items__po_lines',
+            queryset=PurchaseOrderLine.objects.select_related('po__pr').order_by('-id'),
+            to_attr='_all_po_lines',
+        )
 
         # For list views, use minimal prefetching
         if self.action == 'list':
@@ -814,19 +829,25 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
 
                 qs = PlanningRequestItem.objects.select_related(
                     'planning_request', 'item', 'delivered_by'
+                ).prefetch_related(
+                    latest_pol_prefetch,
                 ).annotate(
                     files_count=Count('files'),
                     _qty_in_prs=Greatest(
                         Coalesce(Subquery(qty_via_fk), zero),
                         Coalesce(Subquery(qty_via_m2m), zero),
                     ),
+                    _pr_request_number=Subquery(pr_number_sq),
                 )
         else:
             # For detail views, prefetch all related data
             qs = PlanningRequestItem.objects.select_related(
                 'planning_request', 'item', 'delivered_by'
             ).prefetch_related(
-                Prefetch('files', queryset=FileAttachment.objects.select_related('asset', 'uploaded_by', 'source_attachment'))
+                Prefetch('files', queryset=FileAttachment.objects.select_related('asset', 'uploaded_by', 'source_attachment')),
+                latest_pol_prefetch,
+            ).annotate(
+                _pr_request_number=Subquery(pr_number_sq),
             )
 
         # Filter by planning_request param if provided
