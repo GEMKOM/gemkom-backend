@@ -76,7 +76,7 @@ def resolve_planning_item_price(pri):
         t2_tax      = getattr(pri, '_t2_tax', None)
         t2_date_raw = getattr(pri, '_t2_date', None)
         net = _ex_tax(Decimal(str(t2_price)), t2_tax)
-        ref_date = t2_date_raw.date() if hasattr(t2_date_raw, 'date') else t2_date_raw
+        ref_date = t2_date_raw.date() if t2_date_raw and hasattr(t2_date_raw, 'date') else t2_date_raw
         return {
             'unit_price_eur': convert_to_eur(net, t2_currency, ref_date),
             'original_unit_price': net,

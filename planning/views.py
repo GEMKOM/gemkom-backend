@@ -798,7 +798,9 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
         tier2_price_sq    = _pol_m2m_base.values('unit_price')[:1]
         tier2_currency_sq = _pol_m2m_base.values('po__currency')[:1]
         tier2_tax_sq      = _pol_m2m_base.values('po__tax_rate')[:1]
-        tier2_date_sq     = _pol_m2m_base.values('po__ordered_at')[:1]
+        tier2_date_sq     = _pol_m2m_base.annotate(
+            _ref_date=Coalesce('po__ordered_at', 'po__created_at')
+        ).values('_ref_date')[:1]
 
         # Tier 5 subquery: latest historical PO line for same item across any job
         _pol_hist_base = PurchaseOrderLine.objects.filter(
@@ -810,9 +812,13 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
         tier5_price_sq    = _pol_hist_base.values('unit_price')[:1]
         tier5_currency_sq = _pol_hist_base.values('po__currency')[:1]
         tier5_tax_sq      = _pol_hist_base.values('po__tax_rate')[:1]
-        tier5_date_sq     = _pol_hist_base.values('po__ordered_at')[:1]
+        tier5_date_sq     = _pol_hist_base.annotate(
+            _ref_date=Coalesce('po__ordered_at', 'po__created_at')
+        ).values('_ref_date')[:1]
 
         # Prefetch: PO lines and offers for tiers 1, 3, 4 (FK path — covered by prefetch)
+        include_price = self.request.query_params.get('include_price') == 'true'
+
         price_prefetches = [
             Prefetch(
                 'purchase_request_items',
@@ -827,6 +833,17 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
                 queryset=ItemOffer.objects.select_related('supplier_offer').order_by('-id'),
             ),
         ]
+
+        price_annotations = dict(
+            _t2_price=Subquery(tier2_price_sq),
+            _t2_currency=Subquery(tier2_currency_sq),
+            _t2_tax=Subquery(tier2_tax_sq),
+            _t2_date=Subquery(tier2_date_sq),
+            _t5_price=Subquery(tier5_price_sq),
+            _t5_currency=Subquery(tier5_currency_sq),
+            _t5_tax=Subquery(tier5_tax_sq),
+            _t5_date=Subquery(tier5_date_sq),
+        )
 
         # For list views, use minimal prefetching
         if self.action == 'list':
@@ -863,8 +880,6 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
 
                 qs = PlanningRequestItem.objects.select_related(
                     'planning_request', 'item', 'delivered_by'
-                ).prefetch_related(
-                    *price_prefetches,
                 ).annotate(
                     files_count=Count('files'),
                     _qty_in_prs=Greatest(
@@ -872,33 +887,22 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
                         Coalesce(Subquery(qty_via_m2m), zero),
                     ),
                     _pr_request_number=Subquery(pr_number_sq),
-                    _t2_price=Subquery(tier2_price_sq),
-                    _t2_currency=Subquery(tier2_currency_sq),
-                    _t2_tax=Subquery(tier2_tax_sq),
-                    _t2_date=Subquery(tier2_date_sq),
-                    _t5_price=Subquery(tier5_price_sq),
-                    _t5_currency=Subquery(tier5_currency_sq),
-                    _t5_tax=Subquery(tier5_tax_sq),
-                    _t5_date=Subquery(tier5_date_sq),
                 )
+
+                if include_price:
+                    qs = qs.prefetch_related(*price_prefetches).annotate(**price_annotations)
         else:
             # For detail views, prefetch all related data
             qs = PlanningRequestItem.objects.select_related(
                 'planning_request', 'item', 'delivered_by'
             ).prefetch_related(
                 Prefetch('files', queryset=FileAttachment.objects.select_related('asset', 'uploaded_by', 'source_attachment')),
-                *price_prefetches,
             ).annotate(
                 _pr_request_number=Subquery(pr_number_sq),
-                _t2_price=Subquery(tier2_price_sq),
-                _t2_currency=Subquery(tier2_currency_sq),
-                _t2_tax=Subquery(tier2_tax_sq),
-                _t2_date=Subquery(tier2_date_sq),
-                _t5_price=Subquery(tier5_price_sq),
-                _t5_currency=Subquery(tier5_currency_sq),
-                _t5_tax=Subquery(tier5_tax_sq),
-                _t5_date=Subquery(tier5_date_sq),
             )
+
+            if include_price:
+                qs = qs.prefetch_related(*price_prefetches).annotate(**price_annotations)
 
         # Filter by planning_request param if provided
         pr_id = self.request.query_params.get('planning_request')

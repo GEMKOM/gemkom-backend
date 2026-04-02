@@ -385,7 +385,12 @@ class PlanningRequestItemListSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'quantity_from_inventory', 'quantity_to_purchase',
                             'is_delivered', 'delivered_at', 'delivered_by']
 
+    def _price_requested(self, obj):
+        return hasattr(obj, '_t2_price')
+
     def _resolve_price(self, obj):
+        if not self._price_requested(obj):
+            return None
         from .price_utils import resolve_planning_item_price
         cache = getattr(obj, '_resolved_price', 'UNSET')
         if cache == 'UNSET':
@@ -399,6 +404,13 @@ class PlanningRequestItemListSerializer(serializers.ModelSerializer):
     def get_latest_unit_price_source(self, obj):
         result = self._resolve_price(obj)
         return result['price_source'] if result else None
+
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+        if not self._price_requested(instance):
+            ret.pop('latest_unit_price_eur', None)
+            ret.pop('latest_unit_price_source', None)
+        return ret
 
     def _get_qty_in_prs(self, obj):
         """Read from queryset annotation, fall back to model property."""
@@ -519,7 +531,12 @@ class PlanningRequestItemSerializer(serializers.ModelSerializer):
 
         return list(result.values()) if result else None
 
+    def _price_requested(self, obj):
+        return hasattr(obj, '_t2_price')
+
     def _resolve_price(self, obj):
+        if not self._price_requested(obj):
+            return None
         from .price_utils import resolve_planning_item_price
         cache = getattr(obj, '_resolved_price', 'UNSET')
         if cache == 'UNSET':
@@ -533,6 +550,13 @@ class PlanningRequestItemSerializer(serializers.ModelSerializer):
     def get_latest_unit_price_source(self, obj):
         result = self._resolve_price(obj)
         return result['price_source'] if result else None
+
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+        if not self._price_requested(instance):
+            ret.pop('latest_unit_price_eur', None)
+            ret.pop('latest_unit_price_source', None)
+        return ret
 
 
 class PlanningRequestListSerializer(serializers.ModelSerializer):
