@@ -808,8 +808,8 @@ class JobOrderDepartmentTask(models.Model):
     # Weight for progress calculation (default: 10 points)
     weight = models.PositiveIntegerField(
         default=10,
-        validators=[MinValueValidator(1), MaxValueValidator(100)],
-        help_text='Görev ağırlığı (1-100 puan). Varsayılan: 10'
+        validators=[MinValueValidator(1)],
+        help_text='Görev ağırlığı (minimum 1). Taşeron atamalarında allocated_weight_kg kullanılır.'
     )
 
     # Manual progress for regular tasks (0-100)

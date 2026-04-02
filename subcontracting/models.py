@@ -136,6 +136,11 @@ class SubcontractingAssignment(models.Model):
         validators=[MinValueValidator(0), MaxValueValidator(100)]
     )
 
+    is_retired = models.BooleanField(
+        default=False,
+        help_text='Retired assignments are excluded from future statement generation.'
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     created_by = models.ForeignKey(
         User, on_delete=models.SET_NULL, null=True, blank=True, related_name='+'

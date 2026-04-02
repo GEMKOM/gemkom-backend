@@ -70,16 +70,8 @@ class SubcontractingPriceTierSerializer(serializers.ModelSerializer):
                 "İş emrinde toplam ağırlık (total_weight_kg) girilmeden fiyat kademesi oluşturulamaz."
             )
 
-        # Paint tier weight mirrors other tiers — exclude it from the cap check
-        from subcontracting.services.painting import PAINT_TIER_NAME
-        name = data.get('name', getattr(self.instance, 'name', ''))
-        if name == PAINT_TIER_NAME:
-            return data
-
-        # Sum of all other non-paint tiers for this job order
-        qs = SubcontractingPriceTier.objects.filter(
-            job_order=job_order
-        ).exclude(name=PAINT_TIER_NAME)
+        # Sum of all existing tiers for this job order (excluding self on update)
+        qs = SubcontractingPriceTier.objects.filter(job_order=job_order)
         if self.instance:
             qs = qs.exclude(pk=self.instance.pk)
         existing_total = qs.aggregate(t=Sum('allocated_weight_kg'))['t'] or Decimal('0')
@@ -103,6 +95,7 @@ class SubcontractingPriceTierSerializer(serializers.ModelSerializer):
 class SubcontractingAssignmentSerializer(serializers.ModelSerializer):
     unbilled_progress = serializers.DecimalField(max_digits=5, decimal_places=2, read_only=True)
     current_progress = serializers.DecimalField(max_digits=5, decimal_places=2, read_only=True)
+    is_retired = serializers.BooleanField(read_only=True)
     current_cost_eur = serializers.SerializerMethodField()
     unbilled_cost_eur = serializers.SerializerMethodField()
     projected_cost = serializers.SerializerMethodField()
@@ -169,10 +162,12 @@ class SubcontractingAssignmentSerializer(serializers.ModelSerializer):
             'last_billed_progress', 'current_progress',
             'unbilled_progress', 'unbilled_cost_eur',
             'projected_cost',
+            'is_retired',
             'created_at', 'created_by', 'updated_at',
         ]
         read_only_fields = [
             'current_cost', 'cost_currency', 'last_billed_progress',
+            'is_retired',
             'created_at', 'created_by', 'updated_at',
         ]
 
@@ -181,18 +176,16 @@ class SubcontractingAssignmentSerializer(serializers.ModelSerializer):
         price_tier = data.get('price_tier', getattr(self.instance, 'price_tier', None))
         allocated = data.get('allocated_weight_kg', getattr(self.instance, 'allocated_weight_kg', Decimal('0')))
 
-        # Painting tasks are direct subtasks auto-assigned by the system — skip parent check.
-        # All other assignments must be subtasks under a 'Kaynaklı İmalat' (welding) parent.
-        if dept_task.task_type != 'painting':
-            if dept_task.parent_id is None:
-                raise serializers.ValidationError(
-                    "Taşeron ataması yalnızca alt görevlere yapılabilir, ana göreve yapılamaz."
-                )
-            parent = dept_task.parent
-            if parent.task_type != 'welding':
-                raise serializers.ValidationError(
-                    "Taşeron ataması yalnızca 'Kaynaklı İmalat' alt görevi altındaki görevlere yapılabilir."
-                )
+        # Assignments must be on subtasks under a 'Kaynaklı İmalat' (welding) or 'Boya' (painting) parent.
+        if dept_task.parent_id is None:
+            raise serializers.ValidationError(
+                "Taşeron ataması yalnızca alt görevlere yapılabilir, ana göreve yapılamaz."
+            )
+        parent = dept_task.parent
+        if parent.task_type not in ('welding', 'painting'):
+            raise serializers.ValidationError(
+                "Taşeron ataması yalnızca 'Kaynaklı İmalat' veya 'Boya' alt görevi altındaki görevlere yapılabilir."
+            )
 
         # Price tier must belong to the same job order
         if price_tier.job_order_id != dept_task.job_order_id:

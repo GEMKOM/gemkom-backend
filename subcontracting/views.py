@@ -157,36 +157,39 @@ class SubcontractingAssignmentViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['post'], url_path='create-with-subtask')
     def create_with_subtask(self, request):
         """
-        Atomically create a subtask under a 'Kaynaklı İmalat' task and assign
-        a subcontractor to it in one step.
+        Atomically create a subtask and assignment in one step.
 
         POST /subcontracting/assignments/create-with-subtask/
-        Body:
+
+        For welding parents (task_type='welding'):
           kaynak_task_id      – ID of the 'Kaynaklı İmalat' JobOrderDepartmentTask
           subcontractor       – Subcontractor ID
           price_tier          – SubcontractingPriceTier ID
-          allocated_weight_kg – weight to assign (must fit in tier's remaining)
+          allocated_weight_kg – weight to assign (must fit in tier's remaining capacity)
           title               – (optional) subtask title; defaults to subcontractor name
-          weight              – (optional) subtask weight for progress calc, default 10
+
+        For painting parents (task_type='painting'):
+          kaynak_task_id      – ID of the 'Boya' JobOrderDepartmentTask
+          subcontractor       – must be the paint subcontractor (ID 9)
+          price_per_kg        – price per kg for this assignment (a dedicated tier is auto-created)
+          allocated_weight_kg – weight to assign (validated against job order total_weight_kg)
+          title               – (optional) subtask title; defaults to 'Boya'
+
+        The subtask's progress weight is set to round(allocated_weight_kg) so that
+        siblings with more kg contribute proportionally more to the parent's progress.
         """
         from projects.models import JobOrderDepartmentTask
 
         kaynak_task_id      = request.data.get('kaynak_task_id')
         subcontractor_id    = request.data.get('subcontractor')
         price_tier_id       = request.data.get('price_tier')
+        price_per_kg        = request.data.get('price_per_kg')
         allocated_weight_kg = request.data.get('allocated_weight_kg')
-        subtask_weight      = int(request.data.get('weight', 10))
         subtask_title       = request.data.get('title', '').strip()
 
-        missing = [k for k, v in {
-            'kaynak_task_id': kaynak_task_id,
-            'subcontractor': subcontractor_id,
-            'price_tier': price_tier_id,
-            'allocated_weight_kg': allocated_weight_kg,
-        }.items() if not v]
-        if missing:
+        if not all([kaynak_task_id, subcontractor_id, allocated_weight_kg]):
             return Response(
-                {'detail': f'Şu alanlar gereklidir: {", ".join(missing)}'},
+                {'detail': 'Şu alanlar gereklidir: kaynak_task_id, subcontractor, allocated_weight_kg'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -196,26 +199,49 @@ class SubcontractingAssignmentViewSet(viewsets.ModelViewSet):
             )
         except JobOrderDepartmentTask.DoesNotExist:
             return Response(
-                {'detail': 'Kaynaklı İmalat görevi bulunamadı.'},
+                {'detail': 'Üst görev bulunamadı.'},
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        if kaynak_task.task_type != 'welding':
+        if kaynak_task.task_type not in ('welding', 'painting'):
             return Response(
-                {'detail': "Bu işlem yalnızca 'Kaynaklı İmalat' görevi üzerinde yapılabilir."},
+                {'detail': "Bu işlem yalnızca 'Kaynaklı İmalat' veya 'Boya' görevi üzerinde yapılabilir."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if not subtask_title:
-            try:
-                subtask_title = Subcontractor.objects.get(pk=subcontractor_id).name
-            except Subcontractor.DoesNotExist:
+        is_paint = kaynak_task.task_type == 'painting'
+
+        if is_paint:
+            if int(subcontractor_id) != PAINT_SUBCONTRACTOR_ID:
                 return Response(
-                    {'detail': 'Taşeron bulunamadı.'},
-                    status=status.HTTP_404_NOT_FOUND,
+                    {'detail': 'Boya görevi için yalnızca boya taşeronu seçilebilir.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if not price_per_kg:
+                return Response(
+                    {'detail': 'Boya ataması için price_per_kg gereklidir.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        else:
+            if not price_tier_id:
+                return Response(
+                    {'detail': 'Kaynaklı İmalat ataması için price_tier gereklidir.'},
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
 
-        subtask_weight = max(1, min(subtask_weight, 100))
+        if not subtask_title:
+            if is_paint:
+                subtask_title = 'Boya'
+            else:
+                try:
+                    subtask_title = Subcontractor.objects.get(pk=subcontractor_id).name
+                except Subcontractor.DoesNotExist:
+                    return Response(
+                        {'detail': 'Taşeron bulunamadı.'},
+                        status=status.HTTP_404_NOT_FOUND,
+                    )
+
+        subtask_weight = max(1, round(Decimal(str(allocated_weight_kg))))
         next_sequence = (
             kaynak_task.subtasks.aggregate(m=models.Max('sequence'))['m'] or 0
         ) + 1
@@ -233,6 +259,19 @@ class SubcontractingAssignmentViewSet(viewsets.ModelViewSet):
                     sequence=next_sequence,
                     created_by=request.user,
                 )
+
+                if is_paint:
+                    # Auto-create a dedicated price tier for this paint assignment.
+                    # Tier name includes the subtask sequence so each is unique per job order.
+                    tier_name = f'Boya {next_sequence}'
+                    paint_tier = SubcontractingPriceTier.objects.create(
+                        job_order=kaynak_task.job_order,
+                        name=tier_name,
+                        price_per_kg=Decimal(str(price_per_kg)),
+                        allocated_weight_kg=Decimal(str(allocated_weight_kg)),
+                        created_by=request.user,
+                    )
+                    price_tier_id = paint_tier.pk
 
                 serializer = SubcontractingAssignmentSerializer(
                     data={
@@ -268,9 +307,8 @@ class SubcontractingAssignmentViewSet(viewsets.ModelViewSet):
         Body (all optional):
           subcontractor       – new Subcontractor ID
           price_tier          – new SubcontractingPriceTier ID
-          allocated_weight_kg – new weight allocation
+          allocated_weight_kg – new weight allocation (also syncs subtask weight)
           title               – new subtask title
-          weight              – new subtask weight (1-100)
         """
         from decimal import Decimal
         from projects.models import JobOrderDepartmentTask
@@ -287,7 +325,6 @@ class SubcontractingAssignmentViewSet(viewsets.ModelViewSet):
         price_tier_id       = request.data.get('price_tier')
         allocated_weight_kg = request.data.get('allocated_weight_kg')
         new_title           = request.data.get('title', '').strip() or None
-        new_weight          = request.data.get('weight')
 
         try:
             with db_transaction.atomic():
@@ -347,8 +384,9 @@ class SubcontractingAssignmentViewSet(viewsets.ModelViewSet):
                 if new_title:
                     subtask.title = new_title
                     subtask_fields.append('title')
-                if new_weight is not None:
-                    subtask.weight = max(1, min(int(new_weight), 100))
+                # Sync subtask weight from allocated_weight_kg whenever it changes
+                if allocated_weight_kg is not None:
+                    subtask.weight = max(1, round(assignment.allocated_weight_kg))
                     subtask_fields.append('weight')
                 if subtask_fields:
                     subtask.save(update_fields=subtask_fields)

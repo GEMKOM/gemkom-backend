@@ -50,10 +50,10 @@ def generate_or_refresh_statement(
     # Adjustments are intentionally kept.
     statement.line_items.all().delete()
 
-    # All assignments for this subcontractor that have any unbilled progress.
+    # All non-retired assignments for this subcontractor that have any unbilled progress.
     assignments = (
         SubcontractingAssignment.objects
-        .filter(subcontractor_id=subcontractor_id)
+        .filter(subcontractor_id=subcontractor_id, is_retired=False)
         .select_related('department_task__job_order', 'price_tier')
     )
 
