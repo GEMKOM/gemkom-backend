@@ -58,13 +58,42 @@ def on_job_order_target_date_changed(sender, instance, created, **kwargs):
     if old_date == new_date:
         return
     from .models import JobOrderTargetDateRevision
+    changed_by = getattr(instance, '_date_changed_by', None)
+    reason = getattr(instance, '_date_change_reason', '') or ''
     JobOrderTargetDateRevision.objects.create(
         job_order=instance,
         previous_date=old_date,
         new_date=new_date,
-        reason=getattr(instance, '_date_change_reason', '') or '',
-        changed_by=getattr(instance, '_date_changed_by', None),
+        reason=reason,
+        changed_by=changed_by,
     )
+
+    def _send_notification():
+        from notifications.service import bulk_notify, get_route, render_notification
+        route_users, route_link = get_route(Notification.JOB_DATE_CHANGED)
+        if not route_users.exists():
+            return
+        actor = changed_by.get_full_name() if changed_by else 'Sistem'
+        ctx = {
+            'job_no':        instance.job_no,
+            'job_title':     instance.title,
+            'previous_date': str(old_date) if old_date else '—',
+            'new_date':      str(new_date) if new_date else '—',
+            'actor':         actor,
+            'reason':        f'Neden: {reason}\n\n' if reason else '',
+        }
+        title, body, link = render_notification(Notification.JOB_DATE_CHANGED, ctx, route_link)
+        bulk_notify(
+            users=route_users,
+            notification_type=Notification.JOB_DATE_CHANGED,
+            title=title,
+            body=body,
+            link=link,
+            source_type='job_order',
+            source_id=instance.job_no,
+        )
+
+    transaction.on_commit(_send_notification)
 
 
 @receiver(post_save, sender=JobOrder)

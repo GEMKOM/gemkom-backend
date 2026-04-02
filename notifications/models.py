@@ -50,6 +50,7 @@ class Notification(models.Model):
     REVISION_REJECTED        = 'revision_rejected'
     JOB_ON_HOLD              = 'job_on_hold'
     JOB_RESUMED              = 'job_resumed'
+    JOB_DATE_CHANGED         = 'job_date_changed'
     # Discussions
     TOPIC_MENTION            = 'topic_mention'
     COMMENT_MENTION          = 'comment_mention'
@@ -109,6 +110,7 @@ class Notification(models.Model):
         OT_REJECTED:              CATEGORY_GENERAL,
         JOB_ON_HOLD:              CATEGORY_GENERAL,
         JOB_RESUMED:              CATEGORY_GENERAL,
+        JOB_DATE_CHANGED:         CATEGORY_GENERAL,
         TASK_ASSIGNED:            CATEGORY_GENERAL,
         SALES_CONSULT_COMPLETED:  CATEGORY_SALES,
         PASSWORD_RESET:           CATEGORY_GENERAL,
@@ -159,6 +161,7 @@ class Notification(models.Model):
         (REVISION_REJECTED,        'Revizyon Reddedildi'),
         (JOB_ON_HOLD,              'İş Beklemede'),
         (JOB_RESUMED,              'İş Devam Ediyor'),
+        (JOB_DATE_CHANGED,         'İş Emri Tarihi Değişti'),
         (TOPIC_MENTION,            'Konuda Etiketlendiniz'),
         (COMMENT_MENTION,          'Yorumda Etiketlendiniz'),
         (NEW_COMMENT,              'Yeni Yorum'),
@@ -238,6 +241,7 @@ class NotificationConfig(models.Model):
         Notification.SALES_CONSULTATION,
         Notification.JOB_ON_HOLD,
         Notification.JOB_RESUMED,
+        Notification.JOB_DATE_CHANGED,
         Notification.DRAWING_RELEASED,
         Notification.REVISION_REQUESTED,
         Notification.REVISION_APPROVED,

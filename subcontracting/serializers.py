@@ -274,6 +274,7 @@ class SubcontractorStatementSerializer(serializers.ModelSerializer):
     adjustments = SubcontractorStatementAdjustmentSerializer(many=True, read_only=True)
     subcontractor_name = serializers.CharField(source='subcontractor.name', read_only=True)
     approval_workflow = serializers.SerializerMethodField()
+    paint_input = serializers.SerializerMethodField()
 
     def get_approval_workflow(self, obj):
         try:
@@ -282,12 +283,23 @@ class SubcontractorStatementSerializer(serializers.ModelSerializer):
             return None
         return WorkflowSerializer(wf, context=self.context).data
 
+    def get_paint_input(self, obj):
+        from subcontracting.services.painting import PAINT_SUBCONTRACTOR_ID
+        if obj.subcontractor_id != PAINT_SUBCONTRACTOR_ID:
+            return None
+        try:
+            pi = MonthlyPaintInput.objects.get(year=obj.year, month=obj.month)
+        except MonthlyPaintInput.DoesNotExist:
+            return None
+        return MonthlyPaintInputSerializer(pi).data
+
     class Meta:
         model = SubcontractorStatement
         fields = [
             'id', 'subcontractor', 'subcontractor_name', 'year', 'month', 'status',
             'currency', 'work_total', 'adjustment_total', 'grand_total',
             'notes', 'employee_count', 'line_items', 'adjustments',
+            'paint_input',
             'created_at', 'created_by', 'updated_at', 'submitted_at', 'approved_at', 'paid_at',
             'approval_workflow',
         ]

@@ -62,6 +62,7 @@ NOTIFICATION_DEFAULTS: dict[str, tuple[bool, bool]] = {
     Notification.REVISION_REJECTED:        (True,  True),
     Notification.JOB_ON_HOLD:              (True,  True),
     Notification.JOB_RESUMED:              (False, True),
+    Notification.JOB_DATE_CHANGED:         (True,  True),
     Notification.TOPIC_MENTION:            (True,  True),
     Notification.COMMENT_MENTION:          (True,  True),
     Notification.NEW_COMMENT:              (False, True),
@@ -193,6 +194,19 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
         ),
         'link': f'{_BASE_URL}/projects/project-tracking/?job_no={{job_no}}',
         'vars': ['job_no', 'revision', 'link'],
+    },
+    Notification.JOB_DATE_CHANGED: {
+        'title': '[Termin Tarihi Değişti] {job_no}',
+        'body': (
+            '{job_no} - {job_title} iş emrinin termin tarihi güncellendi.\n'
+            'Eski Tarih: {previous_date}\n'
+            'Yeni Tarih: {new_date}\n'
+            'Değiştiren: {actor}\n\n'
+            '{reason}'
+            '{link}'
+        ),
+        'link': f'{_BASE_URL}/projects/project-tracking/?job_no={{job_no}}',
+        'vars': ['job_no', 'job_title', 'previous_date', 'new_date', 'actor', 'reason', 'link'],
     },
     Notification.SALES_APPROVAL_REQUESTED: {
         'title': '[Onay Gerekli] Satış Teklifi: {offer_no}',
