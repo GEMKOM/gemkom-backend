@@ -118,34 +118,35 @@ def _job_orders_section(date_from: datetime.date, date_to: datetime.date) -> dic
 
 def _sales_section(date_from: datetime.date, date_to: datetime.date) -> dict:
     from sales.models import SalesOffer, SalesOfferPriceRevision
+    from projects.models import JobOrderDepartmentTask
 
     created_qs = SalesOffer.objects.filter(
         created_at__date__gte=date_from,
         created_at__date__lte=date_to,
     )
+    # won + converted both count as won
     won_qs = SalesOffer.objects.filter(
         won_at__date__gte=date_from,
         won_at__date__lte=date_to,
+        status__in=['won', 'converted'],
     )
     lost_qs = SalesOffer.objects.filter(
         lost_at__date__gte=date_from,
         lost_at__date__lte=date_to,
     )
 
-    # Sum won offer amounts from current price revisions (EUR)
-    won_value = (
-        SalesOfferPriceRevision.objects
-        .filter(
-            offer__in=won_qs,
-            is_current=True,
-            currency='EUR',
-        )
-        .aggregate(total=Sum('amount'))['total'] or Decimal('0')
-    )
+    pipeline_statuses = ['draft', 'consultation', 'pricing', 'pending_approval', 'approved', 'submitted_customer']
+    pending_qs = SalesOffer.objects.filter(status__in=pipeline_statuses)
 
-    pipeline_statuses = ['consultation', 'pricing', 'pending_approval', 'submitted_customer']
+    def _offer_value_eur(offer_qs):
+        return (
+            SalesOfferPriceRevision.objects
+            .filter(offer__in=offer_qs, is_current=True, currency='EUR')
+            .aggregate(total=Sum('amount'))['total'] or Decimal('0')
+        )
+
     pipeline = dict(
-        SalesOffer.objects.filter(status__in=pipeline_statuses)
+        pending_qs
         .values('status')
         .annotate(n=Count('pk'))
         .values_list('status', 'n')
@@ -153,12 +154,28 @@ def _sales_section(date_from: datetime.date, date_to: datetime.date) -> dict:
     for s in pipeline_statuses:
         pipeline.setdefault(s, 0)
 
+    # Sales consult tasks created in range, grouped by department
+    consults_by_dept = dict(
+        JobOrderDepartmentTask.objects.filter(
+            task_type='sales_consult',
+            parent__isnull=True,
+            created_at__date__gte=date_from,
+            created_at__date__lte=date_to,
+        )
+        .values('department')
+        .annotate(n=Count('pk'))
+        .values_list('department', 'n')
+    )
+
     return {
         'offers_created_in_range': created_qs.count(),
         'offers_won_in_range': won_qs.count(),
         'offers_lost_in_range': lost_qs.count(),
-        'total_won_value_eur': _q2(won_value),
+        'total_won_value_eur': _q2(_offer_value_eur(won_qs)),
+        'total_lost_value_eur': _q2(_offer_value_eur(lost_qs)),
+        'total_pending_value_eur': _q2(_offer_value_eur(pending_qs)),
         'pipeline_by_stage': pipeline,
+        'sales_consults_by_department': consults_by_dept,
     }
 
 

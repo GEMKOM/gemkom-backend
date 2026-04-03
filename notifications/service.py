@@ -61,6 +61,7 @@ NOTIFICATION_DEFAULTS: dict[str, tuple[bool, bool]] = {
     Notification.REVISION_COMPLETED:       (True,  True),
     Notification.REVISION_REJECTED:        (True,  True),
     Notification.JOB_ON_HOLD:              (True,  True),
+    Notification.JOB_ON_HOLD_REVISION:     (True,  True),
     Notification.JOB_RESUMED:              (False, True),
     Notification.JOB_DATE_CHANGED:         (True,  True),
     Notification.TOPIC_MENTION:            (True,  True),
@@ -178,6 +179,17 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
         'body': (
             '{job_no} numaralı iş emri beklemeye alınmıştır.\n'
             'Tamamlanana kadar bu iş emri üzerindeki çalışmalara devam etmeyiniz.\n\n'
+            'Neden: {reason}\n\n'
+            '{link}'
+        ),
+        'link': f'{_BASE_URL}/projects/project-tracking/?job_no={{job_no}}',
+        'vars': ['job_no', 'reason', 'link'],
+    },
+    Notification.JOB_ON_HOLD_REVISION: {
+        'title': '[İş Emri Revizyonda] {job_no}',
+        'body': (
+            '{job_no} numaralı iş emri teknik çizim revizyonu nedeniyle beklemeye alınmıştır.\n'
+            'Revizyon tamamlanana kadar bu iş emri üzerindeki çalışmalara devam etmeyiniz.\n\n'
             'Neden: {reason}\n\n'
             '{link}'
         ),

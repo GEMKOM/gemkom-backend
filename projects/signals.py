@@ -376,8 +376,8 @@ def send_revision_approved_notifications(release, topic, approver):
             source_id=release.id,
         )
 
-    # Notify all department task assignees (job on hold)
-    send_job_on_hold_notifications(job_order, release, f"Revizyon onaylandi: {topic.title}")
+    # Notify all department task assignees (job on hold for revision)
+    send_job_on_hold_notifications(job_order, f"Revizyon onaylandı: {topic.title}", notification_type=Notification.JOB_ON_HOLD_REVISION)
 
 
 def send_self_revision_notifications(release, reason, initiator):
@@ -420,19 +420,21 @@ def send_self_revision_notifications(release, reason, initiator):
                 source_id=release.id,
             )
 
-    # Notify all department task assignees (job on hold)
-    send_job_on_hold_notifications(job_order, reason, release=release)
+    # Notify all department task assignees (job on hold for revision)
+    send_job_on_hold_notifications(job_order, reason, notification_type=Notification.JOB_ON_HOLD_REVISION)
 
 
-def send_job_on_hold_notifications(job_order, reason, release=None):
+def send_job_on_hold_notifications(job_order, reason, release=None, notification_type=None):
     """Send notifications to department task assignees + route users when job is on hold."""
     from django.contrib.auth.models import User
+    if notification_type is None:
+        notification_type = Notification.JOB_ON_HOLD
     assignee_ids = set(
         job_order.department_tasks
         .filter(assigned_to__isnull=False)
         .values_list('assigned_to_id', flat=True)
     )
-    route_users, route_link = get_route(Notification.JOB_ON_HOLD)
+    route_users, route_link = get_route(notification_type)
     route_ids = set(route_users.values_list('id', flat=True))
     all_ids = assignee_ids | route_ids
     if not all_ids:
@@ -442,10 +444,10 @@ def send_job_on_hold_notifications(job_order, reason, release=None):
         'job_no': job_order.job_no,
         'reason': reason,
     }
-    title, body, link = render_notification(Notification.JOB_ON_HOLD, ctx, route_link)
+    title, body, link = render_notification(notification_type, ctx, route_link)
     bulk_notify(
         users=users,
-        notification_type=Notification.JOB_ON_HOLD,
+        notification_type=notification_type,
         title=title,
         body=body,
         link=link,

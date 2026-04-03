@@ -70,6 +70,7 @@ ALWAYS_NOTIFIED = {
     Notification.REVISION_COMPLETED:     'Orijinal revizyon talepcisi ve yeni sürüm konusunda @bahsedilen kullanıcılar',
     Notification.REVISION_REJECTED:      'Revizyon talebini açan kişi',
     Notification.JOB_ON_HOLD:            'İş emrindeki tüm görev sorumluları',
+    Notification.JOB_ON_HOLD_REVISION:   'İş emrindeki tüm görev sorumluları',
     Notification.JOB_RESUMED:            'İş emrindeki tüm görev sorumluları',
     # Approvals — requestor/submitter always notified of outcome
     Notification.PR_APPROVAL_REQUESTED:  'Onay aşamasındaki onaylayıcılar',
