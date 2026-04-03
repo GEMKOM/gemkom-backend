@@ -741,13 +741,64 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         'count' in the pagination envelope is the total number of roots.
         Filters promote jobs to roots when their parent is excluded.
         """
+        from django.db.models import ExpressionWrapper, DecimalField, F, Value
+        from django.db.models.functions import NullIf
+        from django.db.models import OrderBy
+
         ordering_param = request.query_params.get('ordering', 'job_no')
+
+        # Expressions for computed ordering fields
+        margin_eur_expr = ExpressionWrapper(
+            F('cost_summary__selling_price') - F('cost_summary__actual_total_cost'),
+            output_field=DecimalField(max_digits=16, decimal_places=2),
+        )
+        margin_pct_expr = ExpressionWrapper(
+            (F('cost_summary__selling_price') - F('cost_summary__actual_total_cost'))
+            / NullIf(F('cost_summary__selling_price'), Value(0)) * Value(100),
+            output_field=DecimalField(max_digits=10, decimal_places=4),
+        )
+        price_per_kg_expr = ExpressionWrapper(
+            F('cost_summary__actual_total_cost')
+            / NullIf(F('total_weight_kg'), Value(0)),
+            output_field=DecimalField(max_digits=16, decimal_places=2),
+        )
+
         db_ordering = {
-            'job_no': 'job_no', '-job_no': '-job_no',
-            'actual_cost': 'cost_summary__actual_total_cost',
-            '-actual_cost': '-cost_summary__actual_total_cost',
+            'job_no':          ('job_no',),
+            '-job_no':         ('-job_no',),
+            'title':           ('title',),
+            '-title':          ('-title',),
+            'weight':          ('total_weight_kg',),
+            '-weight':         ('-total_weight_kg',),
+            'actual_cost':     ('cost_summary__actual_total_cost',),
+            '-actual_cost':    ('-cost_summary__actual_total_cost',),
+            'selling_price':   ('cost_summary__selling_price',),
+            '-selling_price':  ('-cost_summary__selling_price',),
+            'completion_pct':  ('completion_percentage',),
+            '-completion_pct': ('-completion_percentage',),
+            'date':            (OrderBy(F('target_completion_date'), nulls_last=True),),
+            '-date':           (OrderBy(F('target_completion_date'), descending=True, nulls_last=True),),
+            'created_at':      ('created_at',),
+            '-created_at':     ('-created_at',),
+            'last_updated':    ('cost_summary__last_updated',),
+            '-last_updated':   ('-cost_summary__last_updated',),
+            # Computed via annotated expressions (applied below)
+            'margin_eur':      None,
+            '-margin_eur':     None,
+            'margin_pct':      None,
+            '-margin_pct':     None,
+            'price_per_kg':    None,
+            '-price_per_kg':   None,
         }
-        db_order = db_ordering.get(ordering_param, 'job_no')
+
+        annotation_ordering = {
+            'margin_eur':   ('margin_eur_order',  margin_eur_expr,  False),
+            '-margin_eur':  ('margin_eur_order',  margin_eur_expr,  True),
+            'margin_pct':   ('margin_pct_order',  margin_pct_expr,  False),
+            '-margin_pct':  ('margin_pct_order',  margin_pct_expr,  True),
+            'price_per_kg': ('price_per_kg_order', price_per_kg_expr, False),
+            '-price_per_kg':('price_per_kg_order', price_per_kg_expr, True),
+        }
 
         base_qs = (
             JobOrder.objects
@@ -755,31 +806,34 @@ class JobOrderViewSet(viewsets.ModelViewSet):
             .prefetch_related('source_offer__price_revisions')
             .exclude(job_no='LEGACY-ARCHIVE')
             .exclude(cost_summary__cost_not_applicable=True)
-            .order_by(db_order)
         )
+
+        facility = request.query_params.get('facility')
+        if facility == 'rolling_mill':
+            base_qs = base_qs.filter(job_no__istartswith='RM')
+        elif facility == 'meltshop':
+            base_qs = base_qs.exclude(job_no__istartswith='RM')
+
+        if ordering_param in annotation_ordering:
+            ann_name, ann_expr, descending = annotation_ordering[ordering_param]
+            base_qs = base_qs.annotate(**{ann_name: ann_expr})
+            db_order = f'-{ann_name}' if descending else ann_name
+        else:
+            db_order = db_ordering.get(ordering_param, ('job_no',))[0]
+
+        base_qs = base_qs.order_by(db_order)
         filtered_qs = self.filter_queryset(base_qs)
 
         # One lightweight query to learn the full parent/child structure.
-        job_meta = list(filtered_qs.values('job_no', 'parent_id'))
-        job_no_set = {m['job_no'] for m in job_meta}
-        jobs_with_children = {m['parent_id'] for m in job_meta if m['parent_id'] in job_no_set}
+        # Use values_list to get an ordered list of (job_no, parent_id) pairs;
+        # the queryset already has order_by applied so DB returns them sorted.
+        job_meta = list(filtered_qs.values_list('job_no', 'parent_id'))
+        job_no_set = {m[0] for m in job_meta}
+        jobs_with_children = {m[1] for m in job_meta if m[1] in job_no_set}
         root_nos = [
-            m['job_no'] for m in job_meta
-            if not m['parent_id'] or m['parent_id'] not in job_no_set
+            m[0] for m in job_meta
+            if not m[1] or m[1] not in job_no_set
         ]
-
-        # Margin ordering requires serializing first (computed field), then sorting.
-        if ordering_param in ('margin_pct', '-margin_pct'):
-            root_jobs = list(filtered_qs.filter(job_no__in=root_nos)) if root_nos else []
-            order_map = {no: i for i, no in enumerate(root_nos)}
-            root_jobs.sort(key=lambda j: order_map[j.job_no])
-            data = self._serialize_cost_rows(root_jobs, jobs_with_children, self.get_serializer_context())
-            reverse = ordering_param == '-margin_pct'
-            data.sort(key=lambda r: float(r['margin_pct']) if r['margin_pct'] is not None else float('-inf'), reverse=reverse)
-            page = self.paginate_queryset(data)
-            if page is not None:
-                return self.get_paginated_response(page)
-            return Response(data)
 
         # Paginate the root list (DRF paginators accept Python lists).
         page = self.paginate_queryset(root_nos)
