@@ -258,6 +258,20 @@ class JobOrder(models.Model):
             children.extend(child.get_all_children())
         return children
 
+    def _log_progress_change(self, old_pct):
+        """Write a JobOrderProgressLog entry if completion_percentage actually changed."""
+        if self.completion_percentage == old_pct:
+            return
+        delta = None
+        if self.total_weight_kg is not None:
+            delta = self.total_weight_kg * (self.completion_percentage - old_pct) / Decimal('100')
+        JobOrderProgressLog.objects.create(
+            job_order=self,
+            old_pct=old_pct,
+            new_pct=self.completion_percentage,
+            delta_weight_kg=delta,
+        )
+
     def update_completion_percentage(self):
         """
         Calculate completion based on department task progress using nested weights.
@@ -277,6 +291,7 @@ class JobOrder(models.Model):
         Skipped main tasks are excluded from the total weight calculation.
         """
         from django.db.models import Sum
+        _old_pct = self.completion_percentage
 
         # Only count main tasks (no parent), excluding skipped and cancelled
         main_tasks = self.department_tasks.filter(parent__isnull=True).exclude(status__in=['skipped', 'cancelled'])
@@ -365,6 +380,7 @@ class JobOrder(models.Model):
                 self.completion_percentage = Decimal('0.00')
 
         self.save(update_fields=['completion_percentage'])
+        self._log_progress_change(_old_pct)
 
         # Update parent if exists
         if self.parent:
@@ -375,6 +391,8 @@ class JobOrder(models.Model):
         if not self.children.exists():
             return
 
+        _old_pct = self.completion_percentage
+
         # Average of children completion
         from django.db.models import Avg
         child_avg = self.children.aggregate(avg=Avg('completion_percentage'))['avg'] or Decimal('0.00')
@@ -384,6 +402,7 @@ class JobOrder(models.Model):
             pct = min(pct, Decimal('99.00'))
         self.completion_percentage = pct
         self.save(update_fields=['completion_percentage'])
+        self._log_progress_change(_old_pct)
 
         # Recursively update parent
         if self.parent:
@@ -464,11 +483,13 @@ class JobOrder(models.Model):
                     f"İş tamamlanamaz: {incomplete_children} alt iş hala tamamlanmadı."
                 )
 
+        _old_pct = self.completion_percentage
         self.status = 'completed'
         self.completed_at = timezone.now()
         self.completed_by = user
         self.completion_percentage = Decimal('100.00')
         self.save(update_fields=['status', 'completed_at', 'completed_by', 'completion_percentage'])
+        self._log_progress_change(_old_pct)
 
         # Update parent status if all siblings complete
         if self.parent:
@@ -2106,6 +2127,36 @@ class JobOrderShippingCostLine(models.Model):
 
     def __str__(self):
         return f"{self.job_order_id} - {self.description} - {self.amount} {self.currency}"
+
+
+class JobOrderProgressLog(models.Model):
+    """
+    Append-only log written whenever completion_percentage changes on a JobOrder.
+    Enables time-range queries for manufactured tonnage:
+        SUM(delta_weight_kg) WHERE logged_at BETWEEN date_from AND date_to
+    """
+    job_order = models.ForeignKey(
+        JobOrder, on_delete=models.CASCADE, related_name='progress_logs'
+    )
+    old_pct = models.DecimalField(max_digits=5, decimal_places=2)
+    new_pct = models.DecimalField(max_digits=5, decimal_places=2)
+    delta_weight_kg = models.DecimalField(
+        max_digits=14, decimal_places=4,
+        null=True, blank=True,
+        help_text='total_weight_kg × (new_pct - old_pct) / 100; null when total_weight_kg is unset'
+    )
+    logged_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ['-logged_at']
+        indexes = [
+            models.Index(fields=['job_order', 'logged_at']),
+        ]
+        verbose_name = 'İlerleme Kaydı'
+        verbose_name_plural = 'İlerleme Kayıtları'
+
+    def __str__(self):
+        return f"{self.job_order_id}: {self.old_pct}% -> {self.new_pct}% ({self.logged_at:%Y-%m-%d})"
 
 
 class JobOrderTargetDateRevision(models.Model):

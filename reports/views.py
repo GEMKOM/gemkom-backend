@@ -256,7 +256,10 @@ def _costs_section(date_from: datetime.date, date_to: datetime.date) -> dict:
 
 
 def _subcontracting_section(date_from: datetime.date, date_to: datetime.date) -> dict:
-    from subcontracting.models import SubcontractorStatement, SubcontractingAssignment
+    from subcontracting.models import (
+        SubcontractorStatement, SubcontractorStatementLine,
+        SubcontractorStatementAdjustment, SubcontractingAssignment,
+    )
 
     approved_qs = SubcontractorStatement.objects.filter(
         status='approved',
@@ -273,22 +276,60 @@ def _subcontracting_section(date_from: datetime.date, date_to: datetime.date) ->
     approved_agg = approved_qs.aggregate(total=Sum('grand_total'))
     paid_agg = paid_qs.aggregate(total=Sum('grand_total'))
 
-    # Per-subcontractor breakdown for approved statements in range
-    by_sub = list(
-        approved_qs
-        .values('subcontractor__name', 'currency')
-        .annotate(approved_total=Sum('grand_total'))
-        .order_by('-approved_total')
-        .values('subcontractor__name', 'approved_total', 'currency')[:10]
+    # Total awarded tonnage in range: line item weight + adjustment weight
+    total_work_weight = (
+        SubcontractorStatementLine.objects
+        .filter(statement__in=approved_qs)
+        .aggregate(total=Sum('effective_weight_kg'))['total'] or Decimal('0')
     )
-    by_sub_out = [
-        {
-            'name': row['subcontractor__name'],
-            'approved_total': _q2(row['approved_total']),
-            'currency': row['currency'],
-        }
-        for row in by_sub
-    ]
+    total_adj_weight = (
+        SubcontractorStatementAdjustment.objects
+        .filter(statement__in=approved_qs)
+        .aggregate(total=Sum('weight_kg'))['total'] or Decimal('0')
+    )
+
+    # Per-subcontractor breakdown: financial total + tonnage, merged from lines and adjustments
+    line_rows = {
+        row['statement__subcontractor__name']: row
+        for row in SubcontractorStatementLine.objects.filter(
+            statement__in=approved_qs,
+        ).values('statement__subcontractor__name').annotate(
+            work_weight_kg=Sum('effective_weight_kg'),
+            work_total=Sum('cost_amount'),
+        )
+    }
+    adj_rows = {}
+    for row in SubcontractorStatementAdjustment.objects.filter(
+        statement__in=approved_qs,
+    ).values('statement__subcontractor__name').annotate(
+        adj_weight_kg=Sum('weight_kg'),
+        adj_total=Sum('amount'),
+    ):
+        adj_rows[row['statement__subcontractor__name']] = row
+
+    # Currency comes from the statement; fetch it separately for the breakdown
+    currency_by_sub = dict(
+        approved_qs.values_list('subcontractor__name', 'currency').distinct()
+    )
+
+    all_names = set(line_rows.keys()) | set(adj_rows.keys())
+    by_sub_out = []
+    for name in all_names:
+        lin = line_rows.get(name, {})
+        adj = adj_rows.get(name, {})
+        work_weight = lin.get('work_weight_kg') or Decimal('0')
+        adj_weight = adj.get('adj_weight_kg') or Decimal('0')
+        approved_total = (lin.get('work_total') or Decimal('0')) + (adj.get('adj_total') or Decimal('0'))
+        by_sub_out.append({
+            'name': name,
+            'approved_total': _q2(approved_total),
+            'currency': currency_by_sub.get(name, ''),
+            'work_weight_kg': _q2(work_weight),
+            'adjustment_weight_kg': _q2(adj_weight),
+            'total_awarded_weight_kg': _q2(work_weight + adj_weight),
+        })
+    by_sub_out.sort(key=lambda x: x['approved_total'], reverse=True)
+    by_sub_out = by_sub_out[:10]
 
     # Unbilled accrual — sum unbilled_cost property across all active assignments.
     # Computed in Python (property, not DB field); only active (non-painting) assignments.
@@ -311,6 +352,7 @@ def _subcontracting_section(date_from: datetime.date, date_to: datetime.date) ->
         'total_paid_value': _q2(paid_agg['total']),
         'pending_statements': pending_count,
         'total_unbilled_accrual_eur': _q2(total_unbilled),
+        'total_awarded_weight_kg': _q2(total_work_weight + total_adj_weight),
         'by_subcontractor': by_sub_out,
     }
 
@@ -445,6 +487,18 @@ def _manufacturing_section(date_from: datetime.date, date_to: datetime.date) -> 
 
     total_hours = _q2(Decimal(welding_hours) + Decimal(machining_hours) + Decimal(cnc_hours))
 
+    # ── Manufactured Tonnage ──────────────────────────────────────────────────
+    # Summed from JobOrderProgressLog: delta_weight_kg = total_weight_kg × Δ% / 100
+    # Only positive deltas (forward progress). Entries with no total_weight_kg are excluded.
+    from projects.models import JobOrderProgressLog
+    tonnage_agg = JobOrderProgressLog.objects.filter(
+        logged_at__date__gte=date_from,
+        logged_at__date__lte=date_to,
+        delta_weight_kg__isnull=False,
+        delta_weight_kg__gt=0,
+    ).aggregate(total=Sum('delta_weight_kg'))
+    manufactured_tonnage_kg = _q2(tonnage_agg['total'] or Decimal('0'))
+
     return {
         'welding_hours': _q2(welding_hours),
         'welding_active_users': welding_users,
@@ -459,6 +513,7 @@ def _manufacturing_section(date_from: datetime.date, date_to: datetime.date) -> 
         'cnc_tasks_completed': cnc_completed,
         'cnc_tasks_remaining': cnc_remaining,
         'total_productive_hours': total_hours,
+        'manufactured_tonnage_kg': manufactured_tonnage_kg,
     }
 
 
