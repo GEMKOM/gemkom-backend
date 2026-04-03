@@ -421,24 +421,9 @@ def _manufacturing_section(date_from: datetime.date, date_to: datetime.date) -> 
     date_to_ms = int(datetime.datetime(date_to.year, date_to.month, date_to.day, 23, 59, 59, tzinfo=datetime.timezone.utc).timestamp() * 1000)
 
     # ── Welding ───────────────────────────────────────────────────────────────
-    from projects.models import JobOrder
     welding_qs = WeldingTimeEntry.objects.filter(date__gte=date_from, date__lte=date_to)
     welding_hours = welding_qs.aggregate(total=Sum('hours'))['total'] or Decimal('0')
     welding_users = welding_qs.values('employee').distinct().count()
-
-    welding_job_nos = welding_qs.values_list('job_no', flat=True).distinct()
-    welding_jobs_completed = JobOrder.objects.filter(
-        job_no__in=welding_job_nos,
-        status='completed',
-        completed_at__date__gte=date_from,
-        completed_at__date__lte=date_to,
-    ).count()
-    welding_jobs_remaining = JobOrder.objects.filter(
-        parent__isnull=True,
-        status='active',
-        department_tasks__task_type='welding',
-        department_tasks__status__in=['pending', 'in_progress'],
-    ).distinct().count()
 
     # ── Machining (Parts + Operations) ────────────────────────────────────────
     # Task counts: Part is the unit of work; Operation holds the timers
@@ -502,8 +487,6 @@ def _manufacturing_section(date_from: datetime.date, date_to: datetime.date) -> 
     return {
         'welding_hours': _q2(welding_hours),
         'welding_active_users': welding_users,
-        'welding_jobs_completed': welding_jobs_completed,
-        'welding_jobs_remaining': welding_jobs_remaining,
         'machining_hours': machining_hours,
         'machining_active_users': machining_users,
         'machining_parts_completed': machining_parts_completed,
@@ -574,27 +557,21 @@ def _quality_section(date_from: datetime.date, date_to: datetime.date) -> dict:
 def _overtime_section(date_from: datetime.date, date_to: datetime.date) -> dict:
     from overtime.models import OvertimeRequest, OvertimeEntry
 
-    submitted_qs = OvertimeRequest.objects.filter(
-        created_at__date__gte=date_from,
-        created_at__date__lte=date_to,
+    # Filter by start_at (when overtime occurred), not created_at (when filed)
+    in_range_qs = OvertimeRequest.objects.filter(
+        start_at__date__gte=date_from,
+        start_at__date__lte=date_to,
     )
-    approved_qs = submitted_qs.filter(status='approved')
+    approved_qs = in_range_qs.filter(status='approved')
 
     total_hours = (
-        OvertimeEntry.objects
-        .filter(
-            request__in=approved_qs,
-            approved_hours__isnull=False,
-        )
-        .aggregate(total=Sum('approved_hours'))['total'] or Decimal('0')
+        approved_qs.aggregate(total=Sum('duration_hours'))['total'] or Decimal('0')
     )
 
     by_team = list(
         approved_qs
         .values('team')
-        .annotate(
-            total_hours=Sum('entries__approved_hours')
-        )
+        .annotate(total_hours=Sum('duration_hours'))
         .order_by('-total_hours')
         .values('team', 'total_hours')
     )
@@ -605,27 +582,91 @@ def _overtime_section(date_from: datetime.date, date_to: datetime.date) -> dict:
     ]
 
     return {
-        'requests_submitted_in_range': submitted_qs.count(),
+        'requests_in_range': in_range_qs.count(),
         'requests_approved_in_range': approved_qs.count(),
         'total_approved_hours': _q2(total_hours),
         'by_team': by_team_out,
     }
 
 
+def _maintenance_section(date_from: datetime.date, date_to: datetime.date) -> dict:
+    from machines.models import MachineFault
+    from tasks.models import Timer
+
+    date_from_ms = int(datetime.datetime(date_from.year, date_from.month, date_from.day, tzinfo=datetime.timezone.utc).timestamp() * 1000)
+    date_to_ms = int(datetime.datetime(date_to.year, date_to.month, date_to.day, 23, 59, 59, tzinfo=datetime.timezone.utc).timestamp() * 1000)
+
+    reported_qs = MachineFault.objects.filter(
+        reported_at__date__gte=date_from,
+        reported_at__date__lte=date_to,
+    )
+    resolved_qs = MachineFault.objects.filter(
+        resolved_at__date__gte=date_from,
+        resolved_at__date__lte=date_to,
+    )
+    open_qs = MachineFault.objects.filter(resolved_at__isnull=True)
+
+    # Downtime hours for faults resolved in range (both fields must be set)
+    downtime_ms = resolved_qs.filter(
+        downtime_start_ms__isnull=False,
+        downtime_end_ms__isnull=False,
+    ).aggregate(
+        total=Sum(ExpressionWrapper(
+            F('downtime_end_ms') - F('downtime_start_ms'),
+            output_field=BigIntegerField(),
+        ))
+    )['total'] or 0
+    downtime_hours = _q2(Decimal(downtime_ms) / Decimal('3600000'))
+
+    # Maintenance work hours: productive timers linked to MachineFault via GFK
+    from django.contrib.contenttypes.models import ContentType
+    fault_ct = ContentType.objects.get_for_model(MachineFault)
+    maintenance_timer_qs = Timer.objects.filter(
+        content_type=fault_ct,
+        timer_type='productive',
+        start_time__gte=date_from_ms,
+        start_time__lte=date_to_ms,
+        finish_time__isnull=False,
+    )
+    maintenance_ms = maintenance_timer_qs.aggregate(
+        total=Sum(ExpressionWrapper(
+            F('finish_time') - F('start_time'),
+            output_field=BigIntegerField(),
+        ))
+    )['total'] or 0
+    maintenance_hours = _q2(Decimal(maintenance_ms) / Decimal('3600000'))
+    maintenance_active_users = maintenance_timer_qs.values('user').distinct().count()
+
+    return {
+        'faults_reported_in_range': reported_qs.count(),
+        'faults_reported_breaking': reported_qs.filter(is_breaking=True).count(),
+        'faults_reported_maintenance': reported_qs.filter(is_maintenance=True).count(),
+        'faults_resolved_in_range': resolved_qs.count(),
+        'faults_open': open_qs.count(),
+        'faults_open_breaking': open_qs.filter(is_breaking=True).count(),
+        'downtime_hours_in_range': downtime_hours,
+        'maintenance_hours': maintenance_hours,
+        'maintenance_active_users': maintenance_active_users,
+    }
+
+
 # ---------------------------------------------------------------------------
-# Main view
+# Shared request parsing helper
 # ---------------------------------------------------------------------------
 
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def overview(request):
+def _parse_request(request):
+    """
+    Parse preset/date_from/date_to/compare from a request.
+    Returns (date_from, date_to, meta, compare, prev_date_from, prev_date_to)
+    or raises Response on bad input.
+    """
     preset = request.query_params.get('preset')
     date_from_str = request.query_params.get('date_from')
     date_to_str = request.query_params.get('date_to')
     compare = request.query_params.get('compare') == 'true'
 
     if preset and preset not in VALID_PRESETS:
-        return Response(
+        return None, None, None, None, None, None, Response(
             {'detail': f"Invalid preset. Choose from: {', '.join(sorted(VALID_PRESETS))}"},
             status=status.HTTP_400_BAD_REQUEST,
         )
@@ -639,34 +680,125 @@ def overview(request):
         'compare': compare,
     }
 
-    response_data = {
-        'meta': meta,
-        'job_orders': _job_orders_section(date_from, date_to),
-        'sales': _sales_section(date_from, date_to),
-        'design_revisions': _design_revisions_section(date_from, date_to),
-        'costs': _costs_section(date_from, date_to),
-        'subcontracting': _subcontracting_section(date_from, date_to),
-        'procurement': _procurement_section(date_from, date_to),
-        'manufacturing': _manufacturing_section(date_from, date_to),
-        'quality': _quality_section(date_from, date_to),
-        'overtime': _overtime_section(date_from, date_to),
-    }
-
+    prev_date_from = prev_date_to = None
     if compare:
         delta = date_to - date_from
         prev_date_to = date_from - datetime.timedelta(days=1)
         prev_date_from = prev_date_to - delta
         meta['prev_date_from'] = prev_date_from.isoformat()
         meta['prev_date_to'] = prev_date_to.isoformat()
-        response_data['previous_period'] = {
-            'job_orders': _job_orders_section(prev_date_from, prev_date_to),
-            'sales': _sales_section(prev_date_from, prev_date_to),
-            'manufacturing': _manufacturing_section(prev_date_from, prev_date_to),
-            'quality': _quality_section(prev_date_from, prev_date_to),
-            'costs': _costs_section(prev_date_from, prev_date_to),
-        }
 
-    return Response(response_data)
+    return date_from, date_to, meta, compare, prev_date_from, prev_date_to, None
+
+
+# ---------------------------------------------------------------------------
+# Individual section endpoints
+# ---------------------------------------------------------------------------
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def operations_report(request):
+    """GET /reports/operations/ — manufacturing, maintenance, overtime, quality, design_revisions"""
+    date_from, date_to, meta, compare, prev_from, prev_to, err = _parse_request(request)
+    if err:
+        return err
+
+    data = {
+        'meta': meta,
+        'manufacturing': _manufacturing_section(date_from, date_to),
+        'maintenance': _maintenance_section(date_from, date_to),
+        'overtime': _overtime_section(date_from, date_to),
+        'quality': _quality_section(date_from, date_to),
+        'design_revisions': _design_revisions_section(date_from, date_to),
+    }
+    if compare:
+        data['previous_period'] = {
+            'manufacturing': _manufacturing_section(prev_from, prev_to),
+            'maintenance': _maintenance_section(prev_from, prev_to),
+            'overtime': _overtime_section(prev_from, prev_to),
+            'quality': _quality_section(prev_from, prev_to),
+            'design_revisions': _design_revisions_section(prev_from, prev_to),
+        }
+    return Response(data)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def subcontracting_report(request):
+    """GET /reports/subcontracting/"""
+    date_from, date_to, meta, compare, prev_from, prev_to, err = _parse_request(request)
+    if err:
+        return err
+
+    data = {
+        'meta': meta,
+        'subcontracting': _subcontracting_section(date_from, date_to),
+    }
+    if compare:
+        data['previous_period'] = {
+            'subcontracting': _subcontracting_section(prev_from, prev_to),
+        }
+    return Response(data)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def procurement_report(request):
+    """GET /reports/procurement/"""
+    date_from, date_to, meta, compare, prev_from, prev_to, err = _parse_request(request)
+    if err:
+        return err
+
+    data = {
+        'meta': meta,
+        'procurement': _procurement_section(date_from, date_to),
+    }
+    if compare:
+        data['previous_period'] = {
+            'procurement': _procurement_section(prev_from, prev_to),
+        }
+    return Response(data)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def sales_report(request):
+    """GET /reports/sales/"""
+    date_from, date_to, meta, compare, prev_from, prev_to, err = _parse_request(request)
+    if err:
+        return err
+
+    data = {
+        'meta': meta,
+        'sales': _sales_section(date_from, date_to),
+    }
+    if compare:
+        data['previous_period'] = {
+            'sales': _sales_section(prev_from, prev_to),
+        }
+    return Response(data)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def job_orders_report(request):
+    """GET /reports/job-orders/ — job_orders + costs"""
+    date_from, date_to, meta, compare, prev_from, prev_to, err = _parse_request(request)
+    if err:
+        return err
+
+    data = {
+        'meta': meta,
+        'job_orders': _job_orders_section(date_from, date_to),
+        'costs': _costs_section(date_from, date_to),
+    }
+    if compare:
+        data['previous_period'] = {
+            'job_orders': _job_orders_section(prev_from, prev_to),
+            'costs': _costs_section(prev_from, prev_to),
+        }
+    return Response(data)
+
 
 
 @api_view(['GET'])

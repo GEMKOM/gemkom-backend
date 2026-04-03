@@ -48,6 +48,10 @@ class WeldingTimeEntry(models.Model):
         null=True,
         help_text="Optional notes about the work performed"
     )
+    deduct_from_subcontractor = models.BooleanField(
+        default=False,
+        help_text="If true, this time entry will be deducted from the subcontractor"
+    )
 
     # Audit fields
     created_at = models.DateTimeField(auto_now_add=True)
