@@ -208,6 +208,7 @@ class SalesOfferListSerializer(serializers.ModelSerializer):
         source='created_by.get_full_name', read_only=True, default=''
     )
     payment_terms_detail = PaymentTermsMinimalSerializer(source='payment_terms', read_only=True)
+    needs_my_approval = serializers.BooleanField(read_only=True, default=False)
 
     class Meta:
         model = SalesOffer
@@ -220,6 +221,7 @@ class SalesOfferListSerializer(serializers.ModelSerializer):
             'current_price', 'item_count',
             'total_price', 'total_weight_kg',
             'approval_round',
+            'needs_my_approval',
             'created_by', 'created_by_name', 'created_at', 'updated_at',
         ]
 

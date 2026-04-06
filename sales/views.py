@@ -1,4 +1,6 @@
 from django.utils import timezone
+from django.db.models import Exists, OuterRef
+from django.contrib.contenttypes.models import ContentType
 from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action
 from rest_framework.filters import SearchFilter, OrderingFilter
@@ -184,12 +186,41 @@ class SalesOfferViewSet(viewsets.ModelViewSet):
     filterset_fields = {
         'status': ['exact', 'in'],
         'customer': ['exact'],
+        'created_by': ['exact'],
     }
 
     def get_queryset(self):
-        return SalesOffer.objects.select_related(
-            'customer', 'created_by', 'converted_job_order'
-        ).prefetch_related('items', 'price_revisions', 'job_orders')
+        from approvals.models import ApprovalWorkflow, ApprovalStageInstance
+        user = self.request.user
+        ct = ContentType.objects.get_for_model(SalesOffer)
+
+        pending_for_me = ApprovalStageInstance.objects.filter(
+            workflow__content_type=ct,
+            workflow__object_id=OuterRef('pk'),
+            workflow__is_complete=False,
+            workflow__is_rejected=False,
+            workflow__is_cancelled=False,
+            is_complete=False,
+            is_rejected=False,
+            approver_user_ids__contains=[user.id],
+        )
+
+        return (
+            SalesOffer.objects
+            .select_related('customer', 'created_by', 'converted_job_order')
+            .prefetch_related('items', 'price_revisions', 'job_orders')
+            .annotate(needs_my_approval=Exists(pending_for_me))
+            .order_by('-needs_my_approval', '-created_at')
+        )
+
+    def filter_queryset(self, queryset):
+        queryset = super().filter_queryset(queryset)
+        # Always surface offers awaiting the current user's approval at the top,
+        # regardless of whatever ordering the frontend requested.
+        current_ordering = queryset.query.order_by
+        if current_ordering and current_ordering[0] != '-needs_my_approval':
+            queryset = queryset.order_by('-needs_my_approval', *current_ordering)
+        return queryset
 
     def get_serializer_class(self):
         if self.action == 'list':
