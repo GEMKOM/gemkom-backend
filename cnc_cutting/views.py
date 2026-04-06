@@ -572,6 +572,14 @@ class CncUserReportView(APIView):
         tz_business = _get_business_tz()
         now_ms = int(timezone.now().timestamp() * 1000)
 
+        # Fetch all cutting team users upfront so those with no timers still appear
+        users = User.objects.filter(groups__name='cutting_team', is_active=True).select_related('profile')
+        users_by_id = {u.id: u for u in users}
+        if not users_by_id:
+            return Response({"start_date": start_date.isoformat(), "end_date": end_date.isoformat(), "users": []})
+
+        all_user_ids = set(users_by_id.keys())
+
         user_work_ms = defaultdict(int)
         user_hold_ms = defaultdict(int)
         user_idle_ms = defaultdict(int)
@@ -581,6 +589,14 @@ class CncUserReportView(APIView):
         while current_date <= end_date:
             work_start_ms, work_end_ms = _cnc_get_working_hours_for_date(current_date, tz_business)
             day_user_timers, _, _ = _cnc_get_day_timers(current_date, tz_business, now_ms)
+
+            # Full working day idle for users with no timers on this weekday
+            if work_start_ms and work_end_ms:
+                window_ms = min(work_end_ms, now_ms) - work_start_ms
+                LUNCH_MS = 60 * 60 * 1000
+                for uid in all_user_ids:
+                    if uid not in day_user_timers:
+                        user_idle_ms[uid] += max(window_ms - LUNCH_MS, 0)
 
             for uid, timer_list in day_user_timers.items():
                 work_ms, hold_ms, idle_ms, task_keys = _cnc_compute_day_totals(
@@ -592,16 +608,6 @@ class CncUserReportView(APIView):
                 user_task_keys[uid].update(task_keys)
 
             current_date += timedelta(days=1)
-
-        all_user_ids = set(user_work_ms.keys()) | set(user_hold_ms.keys())
-        if not all_user_ids:
-            return Response({"start_date": start_date.isoformat(), "end_date": end_date.isoformat(), "users": []})
-
-        users = User.objects.filter(
-            id__in=all_user_ids,
-            groups__name='cutting_team',
-        ).select_related('profile')
-        users_by_id = {u.id: u for u in users}
 
         range_start_ms = int(datetime.combine(start_date, dt_time(0, 0), tz_business).timestamp() * 1000)
         range_end_ms = int(datetime.combine(end_date, dt_time(23, 59, 59), tz_business).timestamp() * 1000)
@@ -684,6 +690,9 @@ class CncUserTaskDetailView(APIView):
               "material": "S355",
               "thickness_mm": 20.0,
               "parts_count": 48,
+              "status": "completed",
+              "completed_by": {"id": 3, "username": "jane", "first_name": "Jane", "last_name": "Doe"},
+              "completion_date": 1705316400000,
               "start_time": 1705312800000,
               "finish_time": 1705316400000,
               "duration_minutes": 60,
@@ -748,8 +757,27 @@ class CncUserTaskDetailView(APIView):
                     all_task_keys.add(t['task_key'])
             current_date += timedelta(days=1)
 
-        # Bulk-fetch part counts per task
+        # Bulk-fetch part counts and task completion/estimate info
         parts_map = _cnc_parts_totals(all_task_keys)
+        task_info_map = {}
+        if all_task_keys:
+            tasks_qs = CncTask.objects.filter(key__in=all_task_keys).select_related('completed_by').prefetch_related('timers')
+            for t in tasks_qs:
+                finished_timers = [
+                    tmr for tmr in t.timers.all()
+                    if tmr.start_time and tmr.finish_time and tmr.finish_time > tmr.start_time
+                ]
+                total_ms = sum(tmr.finish_time - tmr.start_time for tmr in finished_timers)
+                task_info_map[t.key] = {
+                    "status": "completed" if t.completion_date else "in_progress",
+                    "completed_by_id": t.completed_by_id,
+                    "completed_by_username": t.completed_by.username if t.completed_by else None,
+                    "completed_by_first_name": t.completed_by.first_name if t.completed_by else None,
+                    "completed_by_last_name": t.completed_by.last_name if t.completed_by else None,
+                    "completion_date": t.completion_date,
+                    "estimated_hours": float(t.estimated_hours) if t.estimated_hours else None,
+                    "total_hours_spent": round(total_ms / 3600000.0, 2) if total_ms > 0 else 0.0,
+                }
 
         days_data = []
         current_date = start_date
@@ -761,6 +789,7 @@ class CncUserTaskDetailView(APIView):
             enriched_hold_tasks = []
             for td in timer_list:
                 task_key = td.get('task_key')
+                info = task_info_map.get(task_key, {}) if task_key else {}
                 enriched = {
                     "timer_id": td["timer_id"],
                     "start_time": td["start_time"],
@@ -771,6 +800,16 @@ class CncUserTaskDetailView(APIView):
                     "material": td["material"],
                     "thickness_mm": td["thickness_mm"],
                     "parts_count": parts_map.get(task_key, 0) if task_key else 0,
+                    "estimated_hours": info.get("estimated_hours"),
+                    "total_hours_spent": info.get("total_hours_spent", 0.0),
+                    "status": info.get("status"),
+                    "completed_by": {
+                        "id": info["completed_by_id"],
+                        "username": info["completed_by_username"],
+                        "first_name": info["completed_by_first_name"],
+                        "last_name": info["completed_by_last_name"],
+                    } if info.get("completed_by_id") else None,
+                    "completion_date": info.get("completion_date"),
                     "duration_minutes": td["duration_minutes"],
                     "comment": td["comment"],
                     "machine_name": td["machine_name"],

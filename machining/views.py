@@ -1119,6 +1119,14 @@ class UserReportView(APIView):
         tz_business = _get_business_tz()
         now_ms = int(timezone.now().timestamp() * 1000)
 
+        # Fetch all machining team users upfront so those with no timers still appear
+        users = User.objects.filter(groups__name='machining_team', is_active=True).select_related('profile')
+        users_by_id = {u.id: u for u in users}
+        if not users_by_id:
+            return Response({"start_date": start_date.isoformat(), "end_date": end_date.isoformat(), "users": []})
+
+        all_user_ids = set(users_by_id.keys())
+
         # Accumulate per-user totals across all days in range
         user_work_ms = defaultdict(int)
         user_hold_ms = defaultdict(int)
@@ -1130,6 +1138,14 @@ class UserReportView(APIView):
             work_start_ms, work_end_ms = self._get_working_hours_for_date(current_date, tz_business)
             day_user_timers, day_start_ms, day_end_ms = self._get_day_timers(current_date, tz_business, now_ms)
 
+            # Full working day idle for users with no timers on this weekday
+            if work_start_ms and work_end_ms:
+                window_ms = min(work_end_ms, now_ms) - work_start_ms
+                LUNCH_MS = 60 * 60 * 1000
+                for uid in all_user_ids:
+                    if uid not in day_user_timers:
+                        user_idle_ms[uid] += max(window_ms - LUNCH_MS, 0)
+
             for uid, timer_list in day_user_timers.items():
                 work_ms, hold_ms, idle_ms, task_keys = self._compute_day_totals(
                     timer_list, work_start_ms, work_end_ms, now_ms
@@ -1140,16 +1156,6 @@ class UserReportView(APIView):
                 user_task_keys[uid].update(task_keys)
 
             current_date += timedelta(days=1)
-
-        all_user_ids = set(user_work_ms.keys()) | set(user_hold_ms.keys())
-        if not all_user_ids:
-            return Response({"start_date": start_date.isoformat(), "end_date": end_date.isoformat(), "users": []})
-
-        users = User.objects.filter(
-            id__in=all_user_ids,
-            groups__name='machining_team',
-        ).select_related('profile')
-        users_by_id = {u.id: u for u in users}
 
         # Tasks completed in the range
         from datetime import time as dt_time
