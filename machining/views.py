@@ -448,16 +448,21 @@ class JobHoursReportView(APIView):
 
 class DailyEfficiencyReportView(APIView):
     """
-    GET /machining/reports/daily-efficiency/?date=2024-01-15
+    GET /machining/reports/daily-efficiency/?date=2024-01-15[&include_worked=true]
 
-    Returns a daily efficiency report showing tasks each user worked on during the selected date.
+    Query params:
+      date           — report date (default: today), format YYYY-MM-DD
+      include_worked — when true, shows ALL tasks worked on that day (original behaviour);
+                       each task gains a `completed_on_date` boolean flag.
+                       Default (false): only tasks whose completion_date falls on the selected date.
+
     For each task, displays:
     - Duration worked on the selected date
     - Total hours spent up to and including the selected date
     - Estimated hours
-    - Efficiency (estimated_hours / total_hours_spent)
+    - Efficiency (estimated_hours / total_hours_spent * 100)
+    - completed_on_date (only present when include_worked=true)
 
-    Only shows tasks that were worked on during the selected date.
     Total hours spent and efficiency are calculated based on timers up to and including the selected date.
     Only includes users with team='machining'.
 
@@ -479,7 +484,8 @@ class DailyEfficiencyReportView(APIView):
               "daily_duration_hours": 2.5,
               "estimated_hours": 5.0,
               "total_hours_spent": 6.0,
-              "efficiency": 0.83
+              "efficiency": 83.0,
+              "completed_on_date": true   // only present when include_worked=true
             }
           ],
           "total_daily_hours": 8.5
@@ -504,6 +510,10 @@ class DailyEfficiencyReportView(APIView):
                 return Response({"error": "Invalid date format. Use YYYY-MM-DD"}, status=400)
         else:
             report_date = timezone.now().date()
+
+        # include_worked=true → show all tasks worked on the day (original behaviour) + completed_on_date flag
+        # default (false) → only show tasks completed on the selected date
+        include_worked = request.query_params.get('include_worked', '').lower() in ('1', 'true', 'yes')
 
         # Get timezone using existing utility
         tz_business = _get_business_tz()
@@ -590,6 +600,7 @@ class DailyEfficiencyReportView(APIView):
                     "total_hours_spent": total_hours,
                     "name": operation.name,
                     "job_no": operation.part.job_no if operation.part else None,
+                    "completion_date": operation.completion_date,
                 }
 
         # Build response for each user
@@ -612,6 +623,17 @@ class DailyEfficiencyReportView(APIView):
             for task_key, timer_list in tasks_dict.items():
                 task_info = task_totals.get(task_key, {})
 
+                # Determine whether this task was completed on the selected date
+                completion_date_ms = task_info.get("completion_date")
+                completed_on_date = (
+                    completion_date_ms is not None
+                    and day_start_ms <= completion_date_ms <= day_end_ms
+                )
+
+                # Default mode: only show tasks completed on the selected date
+                if not include_worked and not completed_on_date:
+                    continue
+
                 # Sum up duration for this task on the selected date
                 daily_duration_ms = sum(t["duration_ms"] for t in timer_list)
                 daily_duration_hours = round(daily_duration_ms / 3600000.0, 2)
@@ -628,7 +650,7 @@ class DailyEfficiencyReportView(APIView):
                 if estimated_hours and total_hours_spent and total_hours_spent > 0:
                     efficiency = round(estimated_hours / total_hours_spent, 2) * 100
 
-                tasks_list.append({
+                task_entry = {
                     "task_key": task_key,
                     "task_name": task_info.get("name"),
                     "job_no": task_info.get("job_no"),
@@ -637,7 +659,14 @@ class DailyEfficiencyReportView(APIView):
                     "estimated_hours": estimated_hours,
                     "total_hours_spent": total_hours_spent,
                     "efficiency": efficiency,
-                })
+                }
+                if include_worked:
+                    task_entry["completed_on_date"] = completed_on_date
+                tasks_list.append(task_entry)
+
+            # Skip users with no qualifying tasks
+            if not tasks_list:
+                continue
 
             # Sort tasks by task_key
             tasks_list.sort(key=lambda x: x["task_key"])

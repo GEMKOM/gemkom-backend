@@ -278,20 +278,26 @@ def _subcontracting_section(date_from: datetime.date, date_to: datetime.date) ->
         SubcontractorStatementAdjustment, SubcontractingAssignment,
     )
 
-    approved_qs = SubcontractorStatement.objects.filter(
-        status='approved',
-        approved_at__date__gte=date_from,
-        approved_at__date__lte=date_to,
-    )
-    paid_qs = SubcontractorStatement.objects.filter(
-        status='paid',
-        paid_at__date__gte=date_from,
-        paid_at__date__lte=date_to,
-    )
-    pending_count = SubcontractorStatement.objects.filter(status='submitted').count()
+    # Filter statements by their assigned year/month, not by creation/approval date.
+    # date_from and date_to may span multiple months; include any month that overlaps.
+    from_ym = (date_from.year, date_from.month)
+    to_ym = (date_to.year, date_to.month)
 
+    def _in_month_range(qs):
+        return qs.annotate(
+            _ym=ExpressionWrapper(
+                F('year') * 100 + F('month'),
+                output_field=BigIntegerField(),
+            )
+        ).filter(
+            _ym__gte=from_ym[0] * 100 + from_ym[1],
+            _ym__lte=to_ym[0] * 100 + to_ym[1],
+        )
+
+    approved_qs = _in_month_range(
+        SubcontractorStatement.objects.filter(status='approved')
+    )
     approved_agg = approved_qs.aggregate(total=Sum('grand_total'))
-    paid_agg = paid_qs.aggregate(total=Sum('grand_total'))
 
     # Total awarded tonnage in range: line item weight + adjustment weight
     total_work_weight = (
@@ -363,11 +369,7 @@ def _subcontracting_section(date_from: datetime.date, date_to: datetime.date) ->
                 total_unbilled += eur
 
     return {
-        'statements_approved_in_range': approved_qs.count(),
-        'statements_paid_in_range': paid_qs.count(),
         'total_approved_value': _q2(approved_agg['total']),
-        'total_paid_value': _q2(paid_agg['total']),
-        'pending_statements': pending_count,
         'total_unbilled_accrual_eur': _q2(total_unbilled),
         'total_awarded_weight_kg': _q2(total_work_weight + total_adj_weight),
         'by_subcontractor': by_sub_out,
@@ -375,7 +377,7 @@ def _subcontracting_section(date_from: datetime.date, date_to: datetime.date) ->
 
 
 def _procurement_section(date_from: datetime.date, date_to: datetime.date) -> dict:
-    from procurement.models import PurchaseRequest, PurchaseOrder, PaymentSchedule
+    from procurement.models import PurchaseRequest, PurchaseOrder, PurchaseOrderLine, PurchaseOrderLineAllocation, PaymentSchedule
 
     pr_count = PurchaseRequest.objects.filter(
         created_at__date__gte=date_from,
@@ -417,6 +419,92 @@ def _procurement_section(date_from: datetime.date, date_to: datetime.date) -> di
         if eur is not None:
             total_due_eur += eur
 
+    # ── Top 5 items by quantity ───────────────────────────────────────────────
+    item_qty_rows = (
+        PurchaseOrderLine.objects
+        .filter(po__in=po_qs)
+        .values(
+            item_id=F('purchase_request_item__item__id'),
+            item_code=F('purchase_request_item__item__code'),
+            item_name=F('purchase_request_item__item__name'),
+            item_unit=F('purchase_request_item__item__unit'),
+        )
+        .annotate(total_quantity=Sum('quantity'))
+        .order_by('-total_quantity')[:5]
+    )
+    top_items_by_quantity = [
+        {
+            'item_id': r['item_id'],
+            'item_code': r['item_code'],
+            'item_name': r['item_name'],
+            'unit': r['item_unit'],
+            'total_quantity': _q2(r['total_quantity']),
+        }
+        for r in item_qty_rows
+    ]
+
+    # ── Top 5 items by cost (EUR) ─────────────────────────────────────────────
+    # Fetch per-item totals per currency, then convert in Python
+    item_cost_rows = (
+        PurchaseOrderLine.objects
+        .filter(po__in=po_qs)
+        .values(
+            item_id=F('purchase_request_item__item__id'),
+            item_code=F('purchase_request_item__item__code'),
+            item_name=F('purchase_request_item__item__name'),
+            currency=F('po__currency'),
+        )
+        .annotate(subtotal=Sum('total_price'))
+    )
+    item_cost_eur: dict[int, dict] = {}
+    for r in item_cost_rows:
+        eur = to_eur(r['subtotal'], r['currency'], {}, fallback_rates) or Decimal('0')
+        iid = r['item_id']
+        if iid not in item_cost_eur:
+            item_cost_eur[iid] = {'item_code': r['item_code'], 'item_name': r['item_name'], 'total_cost_eur': Decimal('0')}
+        item_cost_eur[iid]['total_cost_eur'] += eur
+    top_items_by_cost = sorted(item_cost_eur.values(), key=lambda x: x['total_cost_eur'], reverse=True)[:5]
+    top_items_by_cost = [
+        {**r, 'total_cost_eur': _q2(r['total_cost_eur'])}
+        for r in top_items_by_cost
+    ]
+
+    # ── Top 5 suppliers by cost (EUR) ─────────────────────────────────────────
+    supplier_cost_rows = (
+        po_qs
+        .values('supplier_id', 'supplier__name', 'currency')
+        .annotate(subtotal=Sum('total_amount'))
+    )
+    supplier_cost_eur: dict[int, dict] = {}
+    for r in supplier_cost_rows:
+        eur = to_eur(r['subtotal'], r['currency'], {}, fallback_rates) or Decimal('0')
+        sid = r['supplier_id']
+        if sid not in supplier_cost_eur:
+            supplier_cost_eur[sid] = {'supplier_name': r['supplier__name'], 'total_cost_eur': Decimal('0')}
+        supplier_cost_eur[sid]['total_cost_eur'] += eur
+    top_suppliers_by_cost = sorted(supplier_cost_eur.values(), key=lambda x: x['total_cost_eur'], reverse=True)[:5]
+    top_suppliers_by_cost = [
+        {**r, 'total_cost_eur': _q2(r['total_cost_eur'])}
+        for r in top_suppliers_by_cost
+    ]
+
+    # ── Top 5 job orders by cost (EUR) ────────────────────────────────────────
+    job_cost_rows = (
+        PurchaseOrderLineAllocation.objects
+        .filter(po_line__po__in=po_qs)
+        .values('job_no', 'po_line__po__currency')
+        .annotate(subtotal=Sum('amount'))
+    )
+    job_cost_eur: dict[str, Decimal] = {}
+    for r in job_cost_rows:
+        eur = to_eur(r['subtotal'], r['po_line__po__currency'], {}, fallback_rates) or Decimal('0')
+        job_cost_eur[r['job_no']] = job_cost_eur.get(r['job_no'], Decimal('0')) + eur
+    top_job_orders_by_cost = sorted(job_cost_eur.items(), key=lambda x: x[1], reverse=True)[:5]
+    top_job_orders_by_cost = [
+        {'job_no': job_no, 'total_cost_eur': _q2(cost)}
+        for job_no, cost in top_job_orders_by_cost
+    ]
+
     return {
         'requests_submitted_in_range': pr_count,
         'orders_created_in_range': po_count,
@@ -424,6 +512,10 @@ def _procurement_section(date_from: datetime.date, date_to: datetime.date) -> di
         'payments_due_in_range': payments_due.count(),
         'payments_overdue': payments_overdue.count(),
         'total_payments_due_eur': _q2(total_due_eur),
+        'top_items_by_quantity': top_items_by_quantity,
+        'top_items_by_cost': top_items_by_cost,
+        'top_suppliers_by_cost': top_suppliers_by_cost,
+        'top_job_orders_by_cost': top_job_orders_by_cost,
     }
 
 

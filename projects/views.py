@@ -1001,7 +1001,7 @@ class JobOrderViewSet(viewsets.ModelViewSet):
             for adj in adjustments
         ]
 
-        total_eur = sum(Decimal(r['cost_amount_eur']) for r in line_data + adj_data)
+        total_eur = sum((Decimal(r['cost_amount_eur']) for r in line_data + adj_data), Decimal('0'))
 
         return Response({
             'job_no': job_order.job_no,
