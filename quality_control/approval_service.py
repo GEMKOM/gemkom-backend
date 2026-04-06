@@ -63,6 +63,23 @@ def _user_in_team(user, team_code: str) -> bool:
     return user.groups.filter(name=group_name).exists()
 
 
+def _create_review_discussion_topic(review: QCReview) -> None:
+    """Create a dedicated discussion topic for a QCReview and link it back."""
+    from projects.models import JobOrderDiscussionTopic
+    task = review.task
+    topic = JobOrderDiscussionTopic.objects.create(
+        job_order=task.job_order,
+        task=None,
+        title=f'KK İncelemesi #{review.id}: {task.title}',
+        content='',
+        topic_type='general',
+        priority='normal',
+        created_by=review.submitted_by,
+    )
+    review.discussion_topic = topic
+    review.save(update_fields=['discussion_topic'])
+
+
 def submit_for_qc_review(task, submitted_by, part_data=None) -> QCReview:
     if not task.qc_required:
         raise ValueError(
@@ -83,6 +100,7 @@ def submit_for_qc_review(task, submitted_by, part_data=None) -> QCReview:
             'job_order': task.job_order_id, 'submitted_by': submitted_by.id,
         }
         create_workflow(review, policy, snapshot=snapshot, approver_user_ids_builder=_qc_team_builder)
+        _create_review_discussion_topic(review)
 
     _notify_qc_team_review_submitted(review)
     return review
@@ -111,6 +129,7 @@ def bulk_submit_for_qc_review(task, submitted_by, part_data_list: list) -> list:
                 'job_order': task.job_order_id, 'submitted_by': submitted_by.id,
             }
             create_workflow(review, policy, snapshot=snapshot, approver_user_ids_builder=_qc_team_builder)
+            _create_review_discussion_topic(review)
             reviews.append(review)
 
     _notify_qc_team_bulk_reviews_submitted(reviews, task, submitted_by)

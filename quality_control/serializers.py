@@ -8,6 +8,81 @@ User = get_user_model()
 
 
 # =============================================================================
+# Inline discussion serializers (used inside QCReviewDetailSerializer)
+# =============================================================================
+
+class _CommentSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    content = serializers.CharField()
+    created_by = serializers.IntegerField(source='created_by_id')
+    created_by_name = serializers.CharField(source='created_by.get_full_name')
+    created_by_username = serializers.CharField(source='created_by.username')
+    mentioned_users_data = serializers.SerializerMethodField()
+    attachments_data = serializers.SerializerMethodField()
+    is_edited = serializers.BooleanField()
+    edited_at = serializers.DateTimeField()
+    created_at = serializers.DateTimeField()
+
+    def get_mentioned_users_data(self, obj):
+        return [
+            {'id': u.id, 'username': u.username, 'full_name': u.get_full_name()}
+            for u in obj.mentioned_users.all()
+        ]
+
+    def get_attachments_data(self, obj):
+        return [
+            {
+                'id': a.id, 'name': a.name, 'size': a.size,
+                'file_url': a.file.url if a.file else None,
+                'uploaded_by': a.uploaded_by.get_full_name() if a.uploaded_by else '',
+                'uploaded_at': a.uploaded_at,
+            }
+            for a in obj.attachments.all()
+        ]
+
+
+class _DiscussionTopicSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    title = serializers.CharField()
+    content = serializers.CharField()
+    priority = serializers.CharField()
+    priority_display = serializers.CharField(source='get_priority_display')
+    topic_type = serializers.CharField()
+    topic_type_display = serializers.CharField(source='get_topic_type_display')
+    created_by = serializers.IntegerField(source='created_by_id')
+    created_by_name = serializers.CharField(source='created_by.get_full_name')
+    created_by_username = serializers.CharField(source='created_by.username')
+    mentioned_users_data = serializers.SerializerMethodField()
+    attachments_data = serializers.SerializerMethodField()
+    comments = serializers.SerializerMethodField()
+    is_edited = serializers.BooleanField()
+    edited_at = serializers.DateTimeField()
+    created_at = serializers.DateTimeField()
+    updated_at = serializers.DateTimeField()
+
+    def get_mentioned_users_data(self, obj):
+        return [
+            {'id': u.id, 'username': u.username, 'full_name': u.get_full_name()}
+            for u in obj.mentioned_users.all()
+        ]
+
+    def get_attachments_data(self, obj):
+        return [
+            {
+                'id': a.id, 'name': a.name, 'size': a.size,
+                'file_url': a.file.url if a.file else None,
+                'uploaded_by': a.uploaded_by.get_full_name() if a.uploaded_by else '',
+                'uploaded_at': a.uploaded_at,
+            }
+            for a in obj.attachments.all()
+        ]
+
+    def get_comments(self, obj):
+        comments = [c for c in obj.comments.all() if not c.is_deleted]
+        return _CommentSerializer(comments, many=True).data
+
+
+# =============================================================================
 # QCReview serializers
 # =============================================================================
 
@@ -38,6 +113,7 @@ class QCReviewDetailSerializer(serializers.ModelSerializer):
     job_order = serializers.CharField(source='task.job_order_id', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     ncr_number = serializers.CharField(source='ncr.ncr_number', read_only=True, default=None)
+    discussion_topic_data = serializers.SerializerMethodField()
 
     class Meta:
         model = QCReview
@@ -47,10 +123,18 @@ class QCReviewDetailSerializer(serializers.ModelSerializer):
             'status', 'status_display',
             'reviewed_by', 'reviewed_by_name', 'reviewed_at',
             'comment', 'part_data', 'ncr', 'ncr_number',
+            'discussion_topic', 'discussion_topic_data',
         ]
         read_only_fields = [
             'submitted_by', 'submitted_at', 'reviewed_by', 'reviewed_at', 'status', 'ncr',
+            'discussion_topic',
         ]
+
+    def get_discussion_topic_data(self, obj):
+        topic = obj.discussion_topic
+        if topic is None or topic.is_deleted:
+            return None
+        return _DiscussionTopicSerializer(topic).data
 
 
 class QCReviewSubmitSerializer(serializers.Serializer):

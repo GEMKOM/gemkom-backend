@@ -61,6 +61,15 @@ class QCReview(models.Model):
         related_name='source_reviews'
     )
 
+    # Discussion topic auto-created when the review is submitted
+    discussion_topic = models.ForeignKey(
+        'projects.JobOrderDiscussionTopic',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='qc_reviews',
+    )
+
     # Generic relation so the approval engine can find this review's workflow
     approvals = GenericRelation(
         ApprovalWorkflow,

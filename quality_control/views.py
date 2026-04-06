@@ -50,7 +50,14 @@ class QCReviewViewSet(viewsets.ReadOnlyModelViewSet):
     POST /qc-reviews/{id}/decide/   — QC team approve/reject
     """
     queryset = QCReview.objects.select_related(
-        'task', 'task__job_order', 'submitted_by', 'reviewed_by', 'ncr'
+        'task', 'task__job_order', 'submitted_by', 'reviewed_by', 'ncr',
+        'discussion_topic', 'discussion_topic__created_by',
+    ).prefetch_related(
+        'discussion_topic__mentioned_users',
+        'discussion_topic__attachments',
+        'discussion_topic__comments__created_by',
+        'discussion_topic__comments__mentioned_users',
+        'discussion_topic__comments__attachments',
     ).order_by('-submitted_at')
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     filterset_fields = {
