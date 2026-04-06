@@ -19,7 +19,8 @@ from .views import (
     PlanningBulkSaveView,
     RemnantPlateViewSet,
     CncPartSearchView,
-
+    CncUserReportView,
+    CncUserTaskDetailView,
 )
 
 app_name = 'cnc_cutting'
@@ -51,6 +52,10 @@ urlpatterns = [ # Custom task actions first
 
     # CNC Part Search URL
     path('parts/search/', CncPartSearchView.as_view(), name='parts-search'),
+
+    # Reports
+    path('reports/user-report/', CncUserReportView.as_view(), name='cnc-user-report'),
+    path('reports/user-task-detail/', CncUserTaskDetailView.as_view(), name='cnc-user-task-detail'),
 ]
 
 urlpatterns += router.urls # Router URLs last

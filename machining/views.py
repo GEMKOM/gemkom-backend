@@ -888,53 +888,31 @@ class MachiningJobEntriesReportView(APIView):
         })
 
 
-class DailyUserReportView(APIView):
+class UserReportView(APIView):
     """
-    GET /machining/reports/daily-user-report/?date=2024-01-15
-    
-    Returns a daily report showing what each user did during the day:
-    - Tasks they worked on (with duration in minutes, estimated hours, and total hours spent)
-    - Idle time (gaps between timers within working hours)
-    - Total working time and idle time
-    - Total tasks completed by the user
-    
-    Only includes users with team='machining'.
-    
+    GET /machining/reports/user-report/?start_date=2024-01-15&end_date=2024-01-19
+
+    Returns a summary report for each machining user over a date range:
+    - Total work hours, hold hours, idle hours
+    - Total tasks completed and total distinct tasks worked on
+
+    No task-level detail — use /machining/reports/user-task-detail/ for that.
+
     Response shape:
     {
-      "date": "2024-01-15",
+      "start_date": "2024-01-15",
+      "end_date": "2024-01-19",
       "users": [
         {
           "user_id": 1,
           "username": "john",
           "first_name": "John",
           "last_name": "Doe",
-          "tasks": [
-            {
-              "timer_id": 123,
-              "task_key": "TI-001",
-              "task_name": "Task 1",
-              "job_no": "J-100",
-              "start_time": 1705312800000,
-              "finish_time": 1705316400000,
-              "duration_minutes": 60,
-              "estimated_hours": 8.0,
-              "total_hours_spent": 3.5,
-              "comment": "Worked on task",
-              "machine_name": "Doosan DBC130L II",
-              "manual_entry": false
-            }
-          ],
-          "idle_periods": [
-            {
-              "start_time": 1705316400000,
-              "finish_time": 1705318200000,
-              "duration_minutes": 30
-            }
-          ],
-          "total_work_hours": 8.0,
-          "total_idle_hours": 1.5,
-          "total_tasks_completed": 15
+          "total_work_hours": 32.5,
+          "total_hold_hours": 2.0,
+          "total_idle_hours": 4.5,
+          "total_tasks_completed": 15,
+          "total_tasks_worked_on": 20
         }
       ]
     }
@@ -1027,240 +1005,344 @@ class DailyUserReportView(APIView):
         
         return idle_periods
 
-    def get(self, request):
-        from datetime import datetime, date, time
-        from django.contrib.auth.models import User
-        from django.utils import timezone
-        from collections import defaultdict
-        
-        # Parse date parameter (default to today)
-        date_str = request.query_params.get('date')
-        if date_str:
-            try:
-                report_date = datetime.strptime(date_str, '%Y-%m-%d').date()
-            except ValueError:
-                return Response({"error": "Invalid date format. Use YYYY-MM-DD"}, status=400)
-        else:
-            report_date = timezone.now().date()
-        
-        # Get timezone using existing utility
-        tz_business = _get_business_tz()
-        
-        # Calculate day boundaries in UTC (epoch ms)
-        day_start_dt = datetime.combine(report_date, time(0, 0), tz_business)
-        day_end_dt = datetime.combine(report_date, time(23, 59, 59), tz_business)
+    def _get_day_timers(self, report_date, tz_business, now_ms, user_filter=None):
+        """
+        Fetch and return timers for a single day, grouped by user_id.
+        Each entry is a dict with timer data plus '_task_obj'.
+        If user_filter (user_id) is given, only fetch timers for that user.
+        """
+        from datetime import datetime, time as dt_time
+
+        day_start_dt = datetime.combine(report_date, dt_time(0, 0), tz_business)
+        day_end_dt = datetime.combine(report_date, dt_time(23, 59, 59), tz_business)
         day_start_ms = int(day_start_dt.timestamp() * 1000)
         day_end_ms = int(day_end_dt.timestamp() * 1000)
-        now_ms = int(timezone.now().timestamp() * 1000)
-        
-        # Get working hours for this date
-        work_start_ms, work_end_ms = self._get_working_hours_for_date(report_date, tz_business)
-        
-        # Get all timers for this day from users with team='machining'
-        # Note: issue_key is a GenericForeignKey, so it can't be used with select_related
-        timers = (
+
+        qs = (
             Timer.objects
             .select_related('user', 'machine_fk', 'user__profile')
             .prefetch_related('issue_key')
             .filter(
                 start_time__gte=day_start_ms,
-                start_time__lt=day_end_ms + 86400000,  # Include next day start for finish_time
-                user__groups__name='machining_team'  # Only machining team users
+                start_time__lt=day_end_ms + 86400000,
+                user__groups__name='machining_team',
             )
             .order_by('user_id', 'start_time')
         )
-        
-        # Group timers by user and collect task keys for bulk query
+        if user_filter is not None:
+            qs = qs.filter(user_id=user_filter)
+
         user_timers = defaultdict(list)
-        task_keys_set = set()
-        
-        for timer in timers:
-            # Only include timers that actually overlap with the report date
+        for timer in qs:
             timer_end = timer.finish_time or now_ms
             if timer_end < day_start_ms or timer.start_time > day_end_ms:
                 continue
-            
-            # Clip timer to day boundaries
             timer_start = max(timer.start_time, day_start_ms)
             timer_end_clipped = min(timer_end, day_end_ms, now_ms)
-            
             if timer_end_clipped <= timer_start:
                 continue
-            
+
             task = timer.issue_key
             task_key = getattr(task, 'key', None) if task else None
-            if task_key:
-                task_keys_set.add(task_key)
-
             task_name = getattr(task, 'name', None) if task else None
-            # For Operation, job_no is accessed through operation.part.job_no
             job_no = getattr(getattr(task, 'part', None), 'job_no', None) if task else None
-            
             duration_ms = timer_end_clipped - timer_start
-            duration_minutes = round(duration_ms / 60000.0, 0)
-            
-            # Store whether timer actually finished and its actual end time for idle calculation
             timer_finished = timer.finish_time is not None
-            actual_timer_end = timer.finish_time if timer_finished else None
-            
+
             user_timers[timer.user_id].append({
-                "timer_id": timer.id,  # Store timer ID
+                "timer_id": timer.id,
                 "start_time": timer_start,
                 "finish_time": timer_end_clipped,
-                "timer_finished": timer_finished,  # Track if timer actually finished
-                "actual_finish_time": actual_timer_end,  # Store actual end time (None if still running)
+                "timer_finished": timer_finished,
+                "actual_finish_time": timer.finish_time if timer_finished else None,
                 "task_key": task_key,
                 "task_name": task_name,
                 "job_no": job_no,
-                "duration_minutes": duration_minutes,
+                "duration_minutes": round(duration_ms / 60000.0, 0),
                 "comment": timer.comment,
                 "machine_name": timer.machine_fk.name if timer.machine_fk else None,
                 "manual_entry": timer.manual_entry,
-                "_task_obj": task,  # Store task object for later use
+                "_task_obj": task,
             })
-        
-        # Pre-calculate total_hours_spent for all operations (bulk query for performance)
+        return user_timers, day_start_ms, day_end_ms
+
+    def _compute_day_totals(self, timer_list, work_start_ms, work_end_ms, now_ms):
+        """
+        Given a list of timer dicts for one user on one day, return
+        (total_work_ms, total_hold_ms, total_idle_ms_adjusted, task_keys_set).
+        """
+        regular = [t for t in timer_list if not (t.get("_task_obj") and getattr(t["_task_obj"], 'is_hold_task', False))]
+        hold = [t for t in timer_list if t.get("_task_obj") and getattr(t["_task_obj"], 'is_hold_task', False)]
+
+        total_work_ms = 0
+        if work_start_ms and work_end_ms:
+            for t in regular:
+                overlap_start = max(t['start_time'], work_start_ms)
+                overlap_end = min(t['finish_time'], work_end_ms)
+                if overlap_end > overlap_start:
+                    total_work_ms += (overlap_end - overlap_start)
+
+        total_hold_ms = 0
+        if work_start_ms and work_end_ms:
+            for t in hold:
+                overlap_start = max(t['start_time'], work_start_ms)
+                overlap_end = min(t['finish_time'], work_end_ms)
+                if overlap_end > overlap_start:
+                    total_hold_ms += (overlap_end - overlap_start)
+
+        idle_periods = self._calculate_idle_periods(timer_list, work_start_ms, work_end_ms, now_ms)
+        total_idle_ms = sum((p['finish_time'] - p['start_time']) for p in idle_periods)
+        LUNCH_TIME_MS = 60 * 60 * 1000
+        total_idle_ms_adjusted = total_idle_ms - LUNCH_TIME_MS
+
+        task_keys = {t['task_key'] for t in timer_list if t.get('task_key')}
+        return total_work_ms, total_hold_ms, total_idle_ms_adjusted, task_keys
+
+    def get(self, request):
+        from datetime import datetime, timedelta
+        from django.contrib.auth.models import User
+        from django.utils import timezone
+        from django.db.models import Count
         from tasks.models import Operation
-        task_totals = {}
-        if task_keys_set:
-            operations_with_timers = Operation.objects.filter(key__in=task_keys_set).prefetch_related('timers')
-            for operation in operations_with_timers:
-                # Calculate total hours spent across all timers for this operation
-                operation_timers = operation.timers.exclude(finish_time__isnull=True)
-                total_ms = sum(
-                    (t.finish_time - t.start_time)
-                    for t in operation_timers
-                    if t.start_time is not None and t.finish_time is not None and t.finish_time > t.start_time
+
+        start_str = request.query_params.get('start_date')
+        end_str = request.query_params.get('end_date')
+        try:
+            start_date = datetime.strptime(start_str, '%Y-%m-%d').date() if start_str else timezone.now().date()
+            end_date = datetime.strptime(end_str, '%Y-%m-%d').date() if end_str else start_date
+        except ValueError:
+            return Response({"error": "Invalid date format. Use YYYY-MM-DD"}, status=400)
+
+        if end_date < start_date:
+            return Response({"error": "end_date must be >= start_date"}, status=400)
+
+        tz_business = _get_business_tz()
+        now_ms = int(timezone.now().timestamp() * 1000)
+
+        # Accumulate per-user totals across all days in range
+        user_work_ms = defaultdict(int)
+        user_hold_ms = defaultdict(int)
+        user_idle_ms = defaultdict(int)
+        user_task_keys = defaultdict(set)  # distinct tasks worked on
+
+        current_date = start_date
+        while current_date <= end_date:
+            work_start_ms, work_end_ms = self._get_working_hours_for_date(current_date, tz_business)
+            day_user_timers, day_start_ms, day_end_ms = self._get_day_timers(current_date, tz_business, now_ms)
+
+            for uid, timer_list in day_user_timers.items():
+                work_ms, hold_ms, idle_ms, task_keys = self._compute_day_totals(
+                    timer_list, work_start_ms, work_end_ms, now_ms
                 )
-                total_hours = round(total_ms / 3600000.0, 2) if total_ms > 0 else 0.0
-                task_totals[operation.key] = {
-                    "estimated_hours": float(operation.estimated_hours) if operation.estimated_hours else None,
-                    "total_hours_spent": total_hours,
-                }
-        
-        # Build response for each user
-        # Filter to only include users with team=machining
-        users_data = []
-        user_ids = list(user_timers.keys())
+                user_work_ms[uid] += work_ms
+                user_hold_ms[uid] += hold_ms
+                user_idle_ms[uid] += idle_ms
+                user_task_keys[uid].update(task_keys)
+
+            current_date += timedelta(days=1)
+
+        all_user_ids = set(user_work_ms.keys()) | set(user_hold_ms.keys())
+        if not all_user_ids:
+            return Response({"start_date": start_date.isoformat(), "end_date": end_date.isoformat(), "users": []})
+
         users = User.objects.filter(
-            id__in=user_ids,
-            groups__name='machining_team'
+            id__in=all_user_ids,
+            groups__name='machining_team',
         ).select_related('profile')
         users_by_id = {u.id: u for u in users}
-        
-        # Pre-calculate total operations completed on this day for all machining users
-        completed_task_counts = {}
-        if users_by_id:
-            from django.db.models import Count
-            from tasks.models import Operation
-            completed_counts = (
-                Operation.objects
-                .filter(
-                    completed_by_id__in=users_by_id.keys(),
-                    completion_date__gte=day_start_ms,
-                    completion_date__lt=day_end_ms + 86400000  # Include up to end of day
-                )
-                .values('completed_by_id')
-                .annotate(count=Count('key'))
+
+        # Tasks completed in the range
+        from datetime import time as dt_time
+        range_start_ms = int(datetime.combine(start_date, dt_time(0, 0), tz_business).timestamp() * 1000)
+        range_end_ms = int(datetime.combine(end_date, dt_time(23, 59, 59), tz_business).timestamp() * 1000)
+
+        completed_counts = (
+            Operation.objects
+            .filter(
+                completed_by_id__in=all_user_ids,
+                completion_date__gte=range_start_ms,
+                completion_date__lte=range_end_ms,
             )
-            completed_task_counts = {item['completed_by_id']: item['count'] for item in completed_counts}
-        
-        for user_id, timer_list in user_timers.items():
-            user = users_by_id.get(user_id)
-            if not user:
-                continue
-            
-            # Enrich timer list with task totals and remove internal _task_obj
-            enriched_tasks = []
-            enriched_hold_tasks = []
-            for timer_data in timer_list:
-                task_key = timer_data.get("task_key")
-                task_info = task_totals.get(task_key, {}) if task_key else {}
-                
-                enriched_task = {
-                    "timer_id": timer_data.get("timer_id"),
-                    "start_time": timer_data["start_time"],
-                    "finish_time": timer_data["finish_time"],
-                    "task_key": timer_data["task_key"],
-                    "task_name": timer_data["task_name"],
-                    "job_no": timer_data["job_no"],
-                    "duration_minutes": timer_data["duration_minutes"],
-                    "estimated_hours": task_info.get("estimated_hours"),
-                    "total_hours_spent": task_info.get("total_hours_spent", 0.0),
-                    "comment": timer_data["comment"],
-                    "machine_name": timer_data["machine_name"],
-                    "manual_entry": timer_data["manual_entry"],
-                }
+            .values('completed_by_id')
+            .annotate(count=Count('key'))
+        )
+        completed_task_counts = {item['completed_by_id']: item['count'] for item in completed_counts}
 
-                task_obj = timer_data.get("_task_obj")
-                if task_obj and getattr(task_obj, 'is_hold_task', False):
-                    enriched_hold_tasks.append(enriched_task)
-                else:
-                    enriched_tasks.append(enriched_task)
-            
-            # Calculate idle periods
-            idle_periods = self._calculate_idle_periods(
-                timer_list, 
-                work_start_ms, 
-                work_end_ms, 
-                now_ms
-            )
-            
-            # Calculate totals
-            regular_task_timers = [t for t in timer_list if not (t.get("_task_obj") and getattr(t.get("_task_obj"), 'is_hold_task', False))]
-            hold_task_timers = [t for t in timer_list if t.get("_task_obj") and getattr(t.get("_task_obj"), 'is_hold_task', False)]
-            
-            total_work_ms = 0
-            if work_start_ms and work_end_ms:
-                for t in regular_task_timers:
-                    overlap_start = max(t['start_time'], work_start_ms)
-                    overlap_end = min(t['finish_time'], work_end_ms)
-                    if overlap_end > overlap_start:
-                        total_work_ms += (overlap_end - overlap_start)
-
-            total_work_hours = round(total_work_ms / 3600000.0, 2)
-
-            total_hold_ms = 0
-            if work_start_ms and work_end_ms:
-                for t in hold_task_timers:
-                    overlap_start = max(t['start_time'], work_start_ms)
-                    overlap_end = min(t['finish_time'], work_end_ms)
-                    if overlap_end > overlap_start:
-                        total_hold_ms += (overlap_end - overlap_start)
-
-            total_hold_hours = round(total_hold_ms / 3600000.0, 2)
-            
-            total_idle_ms = sum(
-                (p['finish_time'] - p['start_time']) 
-                for p in idle_periods
-            )
-            # Subtract 60 minutes (lunch time) from total idle time
-            # Negative values indicate they kept the timer open during lunch
-            LUNCH_TIME_MS = 60 * 60 * 1000  # 60 minutes in milliseconds
-            total_idle_ms_adjusted = total_idle_ms - LUNCH_TIME_MS
-            total_idle_hours = round(total_idle_ms_adjusted / 3600000.0, 2)
-            
-            # Get total tasks completed by this user
-            total_tasks_completed = completed_task_counts.get(user.id, 0)
-            
+        users_data = []
+        for uid, user in users_by_id.items():
             users_data.append({
                 "user_id": user.id,
                 "username": user.username,
                 "first_name": user.first_name or "",
                 "last_name": user.last_name or "",
-                "tasks": enriched_tasks,
-                "hold_tasks": enriched_hold_tasks,
-                "idle_periods": idle_periods,
-                "total_work_hours": total_work_hours,
-                "total_hold_hours": total_hold_hours,
-                "total_idle_hours": total_idle_hours,
-                "total_tasks_completed": total_tasks_completed,
+                "total_work_hours": round(user_work_ms[uid] / 3600000.0, 2),
+                "total_hold_hours": round(user_hold_ms[uid] / 3600000.0, 2),
+                "total_idle_hours": round(user_idle_ms[uid] / 3600000.0, 2),
+                "total_tasks_completed": completed_task_counts.get(uid, 0),
+                "total_tasks_worked_on": len(user_task_keys[uid]),
             })
-        
-        # Sort by username
+
         users_data.sort(key=lambda x: x['username'])
-        
+
         return Response({
-            "date": report_date.isoformat(),
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
             "users": users_data,
         }, status=200)
+
+
+class UserTaskDetailView(APIView):
+    """
+    GET /machining/reports/user-task-detail/?user_id=1&start_date=2024-01-15&end_date=2024-01-19
+
+    Returns the full list of timer/task entries for a specific machining user
+    over a date range, including idle periods per day.
+
+    Response shape:
+    {
+      "user_id": 1,
+      "username": "john",
+      "first_name": "John",
+      "last_name": "Doe",
+      "start_date": "2024-01-15",
+      "end_date": "2024-01-19",
+      "days": [
+        {
+          "date": "2024-01-15",
+          "tasks": [...],
+          "hold_tasks": [...],
+          "idle_periods": [...]
+        }
+      ]
+    }
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from datetime import datetime, timedelta, time as dt_time
+        from django.contrib.auth.models import User
+        from django.utils import timezone
+        from tasks.models import Operation
+
+        user_id_str = request.query_params.get('user_id')
+        start_str = request.query_params.get('start_date')
+        end_str = request.query_params.get('end_date')
+
+        if not user_id_str:
+            return Response({"error": "user_id is required"}, status=400)
+        try:
+            user_id = int(user_id_str)
+        except ValueError:
+            return Response({"error": "user_id must be an integer"}, status=400)
+
+        try:
+            start_date = datetime.strptime(start_str, '%Y-%m-%d').date() if start_str else timezone.now().date()
+            end_date = datetime.strptime(end_str, '%Y-%m-%d').date() if end_str else start_date
+        except ValueError:
+            return Response({"error": "Invalid date format. Use YYYY-MM-DD"}, status=400)
+
+        if end_date < start_date:
+            return Response({"error": "end_date must be >= start_date"}, status=400)
+
+        try:
+            user = User.objects.select_related('profile').get(
+                id=user_id, groups__name='machining_team'
+            )
+        except User.DoesNotExist:
+            return Response({"error": "User not found or not in machining team"}, status=404)
+
+        tz_business = _get_business_tz()
+        now_ms = int(timezone.now().timestamp() * 1000)
+
+        # Collect all task keys across all days for bulk enrichment
+        all_timer_lists_by_date = {}
+        all_task_keys = set()
+
+        current_date = start_date
+        while current_date <= end_date:
+            day_user_timers, _, _ = self._get_day_timers(current_date, tz_business, now_ms, user_filter=user_id)
+            timer_list = day_user_timers.get(user_id, [])
+            all_timer_lists_by_date[current_date] = timer_list
+            for t in timer_list:
+                if t.get('task_key'):
+                    all_task_keys.add(t['task_key'])
+            current_date += timedelta(days=1)
+
+        # Bulk-fetch task totals
+        task_totals = {}
+        if all_task_keys:
+            operations = Operation.objects.filter(key__in=all_task_keys).prefetch_related('timers')
+            for op in operations:
+                op_timers = op.timers.exclude(finish_time__isnull=True)
+                total_ms = sum(
+                    (t.finish_time - t.start_time)
+                    for t in op_timers
+                    if t.start_time and t.finish_time and t.finish_time > t.start_time
+                )
+                task_totals[op.key] = {
+                    "estimated_hours": float(op.estimated_hours) if op.estimated_hours else None,
+                    "total_hours_spent": round(total_ms / 3600000.0, 2) if total_ms > 0 else 0.0,
+                }
+
+        days_data = []
+        current_date = start_date
+        while current_date <= end_date:
+            timer_list = all_timer_lists_by_date[current_date]
+            work_start_ms, work_end_ms = self._get_working_hours_for_date(current_date, tz_business)
+
+            enriched_tasks = []
+            enriched_hold_tasks = []
+            for td in timer_list:
+                task_key = td.get('task_key')
+                task_info = task_totals.get(task_key, {}) if task_key else {}
+                enriched = {
+                    "timer_id": td["timer_id"],
+                    "start_time": td["start_time"],
+                    "finish_time": td["finish_time"],
+                    "task_key": task_key,
+                    "task_name": td["task_name"],
+                    "job_no": td["job_no"],
+                    "duration_minutes": td["duration_minutes"],
+                    "estimated_hours": task_info.get("estimated_hours"),
+                    "total_hours_spent": task_info.get("total_hours_spent", 0.0),
+                    "comment": td["comment"],
+                    "machine_name": td["machine_name"],
+                    "manual_entry": td["manual_entry"],
+                }
+                task_obj = td.get("_task_obj")
+                if task_obj and getattr(task_obj, 'is_hold_task', False):
+                    enriched_hold_tasks.append(enriched)
+                else:
+                    enriched_tasks.append(enriched)
+
+            idle_periods = self._calculate_idle_periods(timer_list, work_start_ms, work_end_ms, now_ms)
+
+            if enriched_tasks or enriched_hold_tasks or idle_periods:
+                days_data.append({
+                    "date": current_date.isoformat(),
+                    "tasks": enriched_tasks,
+                    "hold_tasks": enriched_hold_tasks,
+                    "idle_periods": idle_periods,
+                })
+
+            current_date += timedelta(days=1)
+
+        return Response({
+            "user_id": user.id,
+            "username": user.username,
+            "first_name": user.first_name or "",
+            "last_name": user.last_name or "",
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "days": days_data,
+        }, status=200)
+
+    # Delegate shared helpers to UserReportView
+    def _get_working_hours_for_date(self, date_obj, tz):
+        return UserReportView._get_working_hours_for_date(self, date_obj, tz)
+
+    def _calculate_idle_periods(self, timers, work_start_ms, work_end_ms, now_ms):
+        return UserReportView._calculate_idle_periods(self, timers, work_start_ms, work_end_ms, now_ms)
+
+    def _get_day_timers(self, report_date, tz_business, now_ms, user_filter=None):
+        return UserReportView._get_day_timers(self, report_date, tz_business, now_ms, user_filter=user_filter)
