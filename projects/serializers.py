@@ -1934,7 +1934,7 @@ class CostTableRowSerializer(serializers.Serializer):
     # From JobOrder
     estimated_cost = serializers.DecimalField(max_digits=16, decimal_places=2)
     general_expenses_rate = serializers.DecimalField(max_digits=10, decimal_places=4)
-    total_weight_kg = serializers.DecimalField(max_digits=12, decimal_places=2, allow_null=True)
+    total_weight_kg = serializers.SerializerMethodField()
     completion_pct = serializers.DecimalField(source='completion_percentage', max_digits=5, decimal_places=2)
     target_completion_date = serializers.DateField(allow_null=True)
     created_at = serializers.DateTimeField()
@@ -1946,6 +1946,16 @@ class CostTableRowSerializer(serializers.Serializer):
     margin_eur = serializers.SerializerMethodField()
     margin_pct = serializers.SerializerMethodField()
     last_updated = serializers.SerializerMethodField()
+
+    def _effective_weight(self, obj):
+        """Own total_weight_kg, or aggregated descendants' weight for parent jobs."""
+        if obj.total_weight_kg:
+            return obj.total_weight_kg
+        return self.context.get('aggregated_weights', {}).get(obj.job_no)
+
+    def get_total_weight_kg(self, obj):
+        weight = self._effective_weight(obj)
+        return str(weight) if weight else None
 
     def _summary(self, obj):
         try:
@@ -2026,7 +2036,7 @@ class CostTableRowSerializer(serializers.Serializer):
     def get_price_per_kg(self, obj):
         """actual_total_cost ÷ total_weight_kg (null if weight is zero or missing)."""
         from decimal import Decimal
-        weight = obj.total_weight_kg
+        weight = self._effective_weight(obj)
         if not weight:
             return None
         total = Decimal(self.get_actual_total_cost(obj))

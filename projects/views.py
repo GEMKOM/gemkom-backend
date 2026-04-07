@@ -717,6 +717,43 @@ class JobOrderViewSet(viewsets.ModelViewSet):
     # -------------------------------------------------------------------------
 
     @staticmethod
+    def _compute_aggregated_weights(parent_nos):
+        """
+        For each job_no in parent_nos, recursively sum total_weight_kg of all
+        descendants and return a {job_no: Decimal} map.  Only entries with a
+        non-zero total are included.
+        """
+        from decimal import Decimal
+        if not parent_nos:
+            return {}
+
+        child_map = {}   # parent_no -> [child_nos]
+        weight_map = {}  # child job_no -> own weight
+        frontier = set(parent_nos)
+        all_known = set(parent_nos)
+
+        while frontier:
+            rows = list(
+                JobOrder.objects
+                .filter(parent_id__in=frontier)
+                .values_list('job_no', 'parent_id', 'total_weight_kg')
+            )
+            frontier = set()
+            for jno, pid, weight in rows:
+                weight_map[jno] = weight or Decimal(0)
+                child_map.setdefault(pid, []).append(jno)
+                if jno not in all_known:
+                    frontier.add(jno)
+                    all_known.add(jno)
+
+        def subtree_weight(jno):
+            return weight_map.get(jno, Decimal(0)) + sum(
+                subtree_weight(c) for c in child_map.get(jno, [])
+            )
+
+        return {jno: val for jno in parent_nos if (val := subtree_weight(jno))}
+
+    @staticmethod
     def _serialize_cost_rows(jobs, jobs_with_children, context):
         """
         Serialize a list of JobOrder instances with CostTableRowSerializer and
@@ -844,7 +881,10 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         order_map = {no: i for i, no in enumerate(root_page_nos)}
         root_jobs.sort(key=lambda j: order_map[j.job_no])
 
-        data = self._serialize_cost_rows(root_jobs, jobs_with_children, self.get_serializer_context())
+        parent_root_nos = {j.job_no for j in root_jobs if j.job_no in jobs_with_children}
+        aggregated_weights = self._compute_aggregated_weights(parent_root_nos)
+        ctx = {**self.get_serializer_context(), 'aggregated_weights': aggregated_weights}
+        data = self._serialize_cost_rows(root_jobs, jobs_with_children, ctx)
 
         if page is not None:
             return self.get_paginated_response(data)
@@ -872,7 +912,9 @@ class JobOrderViewSet(viewsets.ModelViewSet):
             .values_list('parent_id', flat=True)
             .distinct()
         )
-        data = self._serialize_cost_rows(children, grandchild_parent_nos, self.get_serializer_context())
+        aggregated_weights = self._compute_aggregated_weights(grandchild_parent_nos)
+        ctx = {**self.get_serializer_context(), 'aggregated_weights': aggregated_weights}
+        data = self._serialize_cost_rows(children, grandchild_parent_nos, ctx)
         return Response(data)
 
     @action(detail=True, methods=['get', 'patch'], url_path='cost_summary', permission_classes=[IsCostAuthorized])
