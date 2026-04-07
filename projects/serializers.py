@@ -127,6 +127,7 @@ class JobOrderListSerializer(serializers.ModelSerializer):
     ncr_count = serializers.IntegerField(read_only=True)
     revision_count = serializers.IntegerField(read_only=True)
     previous_target_date_revision = serializers.DateField(read_only=True, default=None)
+    target_date_revisions_count = serializers.IntegerField(read_only=True)
 
     class Meta:
         model = JobOrder
@@ -137,6 +138,7 @@ class JobOrderListSerializer(serializers.ModelSerializer):
             'parent', 'children_count', 'hierarchy_level',
             'ncr_count',
             'revision_count',
+            'target_date_revisions_count',
             'general_expenses_rate',
             'source_offer',
             'created_at'

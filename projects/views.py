@@ -174,7 +174,8 @@ class JobOrderViewSet(viewsets.ModelViewSet):
                 filter=Q(technical_drawing_releases__status='superseded'),
                 distinct=True
             ),
-            previous_target_date_revision=Subquery(latest_revision.values('new_date')[1:2]),
+            target_date_revisions_count=Count('target_date_revisions', distinct=True),
+            previous_target_date_revision=Subquery(latest_revision.values('previous_date')[:1]),
         ).exclude(job_no='LEGACY-ARCHIVE')
 
         # Filter by root only (no parent) if requested
