@@ -716,11 +716,12 @@ class SubcontractorStatementViewSet(viewsets.ModelViewSet):
                 adj_abs = abs(adj.amount)
                 if not adj_abs:
                     continue
+                sign = Decimal('-1') if adj.amount < 0 else Decimal('1')
                 if adj.weight_kg and adj.weight_kg > Decimal('0'):
-                    amount = adj.weight_kg
+                    amount = adj.weight_kg * sign
                     unit_price = (adj_abs / adj.weight_kg).quantize(Decimal('0.0001'))
                 else:
-                    amount = Decimal('1')
+                    amount = sign
                     unit_price = adj_abs
                 rows.append({
                     'stock_code': _accounting_stock_code(
@@ -728,7 +729,7 @@ class SubcontractorStatementViewSet(viewsets.ModelViewSet):
                     ),
                     'amount': str(amount),
                     'unit_price': str(unit_price),
-                    'total_price': str(adj_abs),
+                    'total_price': str(adj.amount),
                     'job_no': adj.job_order.job_no,
                     'subcontractor_name': stmt.subcontractor.name,
                     'description': adj.reason,

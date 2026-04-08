@@ -455,6 +455,7 @@ class GroupListView(APIView):
 
         data = [
             {
+                'id': g.id,
                 'name': g.name,
                 'display_name': GROUP_DISPLAY_NAMES[g.name],
                 'member_count': g.user_set.count(),
