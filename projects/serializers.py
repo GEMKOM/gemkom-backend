@@ -1711,6 +1711,7 @@ class JobOrderCostSummarySerializer(serializers.ModelSerializer):
                 department_task__job_order_id=obj.job_order_id,
                 price_tier__isnull=False,
                 allocated_weight_kg__gt=0,
+                is_retired=False,
             )
             .exclude(department_task__task_type='painting')
             .select_related('price_tier')
@@ -1734,6 +1735,7 @@ class JobOrderCostSummarySerializer(serializers.ModelSerializer):
                 department_task__task_type='painting',
                 price_tier__isnull=False,
                 allocated_weight_kg__gt=0,
+                is_retired=False,
             )
             .select_related('price_tier')
         )

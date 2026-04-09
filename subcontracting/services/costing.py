@@ -17,7 +17,7 @@ def recompute_subcontractor_cost(job_no: str) -> Decimal:
     """
     assignments = list(
         SubcontractingAssignment.objects
-        .filter(department_task__job_order_id=job_no)
+        .filter(department_task__job_order_id=job_no, is_retired=False)
         .select_related('price_tier', 'department_task')
     )
 

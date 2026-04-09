@@ -143,6 +143,7 @@ def recompute_job_cost_summary(job_no: str) -> None:
             department_task__job_order_id=job_no,
             price_tier__isnull=False,
             allocated_weight_kg__gt=0,
+            is_retired=False,
         )
         .exclude(department_task__task_type='painting')
         .select_related('price_tier', 'department_task')
@@ -196,6 +197,7 @@ def recompute_job_cost_summary(job_no: str) -> None:
             department_task__task_type='painting',
             price_tier__isnull=False,
             allocated_weight_kg__gt=0,
+            is_retired=False,
         )
         .select_related('price_tier', 'department_task')
     )

@@ -360,11 +360,11 @@ def _subcontracting_section(date_from: datetime.date, date_to: datetime.date) ->
     total_unbilled = Decimal('0')
     assignments = SubcontractingAssignment.objects.select_related(
         'price_tier', 'department_task'
-    ).filter(price_tier__price_per_kg__gt=0)
+    ).filter(price_tier__price_per_kg__gt=0, is_retired=False)
     for a in assignments:
         unbilled = a.unbilled_cost
         if unbilled > 0:
-            eur = to_eur(unbilled, a.cost_currency, {}, fallback_rates)
+            eur = to_eur(unbilled, a.price_tier.currency, {}, fallback_rates)
             if eur is not None:
                 total_unbilled += eur
 
