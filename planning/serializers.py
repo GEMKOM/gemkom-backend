@@ -947,6 +947,19 @@ class PlanningRequestUpdateSerializer(serializers.Serializer):
                 created_items = list(instance.items.all().order_by('order'))
 
             # Process flexible file attachments
+            # Track (content_type_id, object_id, asset_id) tuples that should exist after update
+            desired_attachments = set()
+
+            # Snapshot existing attachments to avoid get_or_create issues with pre-existing duplicates.
+            # We'll deduplicate stale duplicates during the deletion pass below.
+            item_ids_for_snapshot = [i.id for i in created_items]
+            existing_attachment_keys = set(
+                FileAttachment.objects.filter(
+                    content_type__in=[ct_pr, ct_item],
+                    object_id__in=[instance.id] + item_ids_for_snapshot,
+                ).values_list('content_type_id', 'object_id', 'asset_id')
+            )
+
             for file_data in files_data:
                 # Determine the asset to use
                 if 'file' in file_data:
@@ -966,27 +979,65 @@ class PlanningRequestUpdateSerializer(serializers.Serializer):
                             "files": f"FileAsset with id {asset_id} not found"
                         })
 
-                # Attach to each target
+                # Attach to each target (deduplicated)
+                seen_targets = set()
                 for target in file_data['attach_to']:
+                    if target in seen_targets:
+                        continue
+                    seen_targets.add(target)
+
                     if target == "request":
-                        # Attach to the planning request
-                        FileAttachment.objects.create(
-                            asset=asset,
-                            uploaded_by=user,
-                            description=file_data.get('description', ''),
-                            content_type=ct_pr,
-                            object_id=instance.id,
-                        )
-                    elif isinstance(target, int):
-                        # Attach to the item at this index
-                        if target < len(created_items):
+                        key = (ct_pr.id, instance.id, asset.id)
+                        desired_attachments.add(key)
+                        if key not in existing_attachment_keys:
                             FileAttachment.objects.create(
                                 asset=asset,
                                 uploaded_by=user,
                                 description=file_data.get('description', ''),
-                                content_type=ct_item,
-                                object_id=created_items[target].id,
+                                content_type=ct_pr,
+                                object_id=instance.id,
                             )
+                    elif isinstance(target, int):
+                        if target < len(created_items):
+                            item_obj = created_items[target]
+                            key = (ct_item.id, item_obj.id, asset.id)
+                            desired_attachments.add(key)
+                            if key not in existing_attachment_keys:
+                                FileAttachment.objects.create(
+                                    asset=asset,
+                                    uploaded_by=user,
+                                    description=file_data.get('description', ''),
+                                    content_type=ct_item,
+                                    object_id=item_obj.id,
+                                )
+
+            # Delete file attachments that were removed from the payload.
+            # Only do this when files were explicitly provided in the request
+            # (either as JSON 'files' key or as multipart 'files[N].*' keys).
+            raw = self.initial_data
+            files_explicitly_provided = (
+                'files' in raw
+                or any(k.startswith('files[') for k in raw.keys())
+            )
+            if files_explicitly_provided:
+                item_ids = [i.id for i in created_items]
+                all_fas = list(FileAttachment.objects.filter(
+                    content_type__in=[ct_pr, ct_item],
+                    object_id__in=[instance.id] + item_ids,
+                ).order_by('id'))
+
+                seen_keys = set()
+                ids_to_delete = []
+                for fa in all_fas:
+                    key = (fa.content_type_id, fa.object_id, fa.asset_id)
+                    if key not in desired_attachments or key in seen_keys:
+                        # Either not wanted at all, or a duplicate of one we're keeping
+                        ids_to_delete.append(fa.id)
+                    else:
+                        seen_keys.add(key)
+
+                if ids_to_delete:
+                    FileAttachment.objects.filter(id__in=ids_to_delete).delete()
 
         return instance
 
