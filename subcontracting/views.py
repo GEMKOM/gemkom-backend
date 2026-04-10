@@ -266,6 +266,7 @@ class SubcontractingAssignmentViewSet(viewsets.ModelViewSet):
                     tier_name = f'Boya {next_sequence}'
                     paint_tier = SubcontractingPriceTier.objects.create(
                         job_order=kaynak_task.job_order,
+                        tier_type=SubcontractingPriceTier.TIER_TYPE_PAINT,
                         name=tier_name,
                         price_per_kg=Decimal(str(price_per_kg)),
                         allocated_weight_kg=Decimal(str(allocated_weight_kg)),

@@ -52,10 +52,20 @@ class SubcontractingPriceTier(models.Model):
     Each tier defines a price_per_kg for a specific weight allocation.
     Multiple tiers allow different rates for different parts of the same job.
     """
+    TIER_TYPE_WELDING = 'welding'
+    TIER_TYPE_PAINT = 'paint'
+    TIER_TYPE_CHOICES = [
+        (TIER_TYPE_WELDING, 'Kaynaklı İmalat'),
+        (TIER_TYPE_PAINT, 'Boya'),
+    ]
+
     job_order = models.ForeignKey(
         'projects.JobOrder',
         on_delete=models.CASCADE,
         related_name='subcontracting_price_tiers'
+    )
+    tier_type = models.CharField(
+        max_length=10, choices=TIER_TYPE_CHOICES, default=TIER_TYPE_WELDING
     )
     name = models.CharField(max_length=200, help_text='e.g. "Ağır Plakalar", "Hafif Çerçeve"')
     price_per_kg = models.DecimalField(
@@ -328,7 +338,9 @@ class SubcontractorStatementLine(models.Model):
     )
     assignment = models.ForeignKey(
         SubcontractingAssignment,
-        on_delete=models.PROTECT,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
         related_name='statement_lines'
     )
 

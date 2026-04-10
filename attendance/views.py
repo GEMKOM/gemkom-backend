@@ -104,6 +104,8 @@ class CheckOutView(APIView):
         ser = CheckOutSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
 
+        checkout_override_reason = ser.validated_data.get('override_reason', '').strip()
+
         today = timezone.localdate()
         try:
             record = AttendanceRecord.objects.get(
@@ -115,6 +117,22 @@ class CheckOutView(APIView):
             return Response(
                 {'detail': 'No active check-in found for today.'},
                 status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # --- Checkout override path ---
+        if checkout_override_reason:
+            record.override_reason = (record.override_reason + ' | Çıkış: ' + checkout_override_reason).strip(' | ')
+            record.status = AttendanceRecord.STATUS_PENDING_CHECKOUT
+            record.save(update_fields=['override_reason', 'status', 'updated_at'])
+            _notify_hr_checkout_override(record)
+            return Response(AttendanceRecordSerializer(record).data, status=status.HTTP_200_OK)
+
+        # --- IP verification ---
+        success, reason = attempt_ip_checkin(request, request.user)
+        if not success:
+            return Response(
+                {'detail': 'Check-out failed.', 'reason': reason},
+                status=status.HTTP_403_FORBIDDEN,
             )
 
         now = timezone.now()
@@ -178,6 +196,9 @@ class HRRecordListCreateView(generics.ListCreateAPIView):
         user_id = params.get('user_id')
         username = params.get('username')
         name = params.get('name')
+        # Group filter: ?group_id=3 or ?group_name=Kaynak
+        group_id = params.get('group_id')
+        group_name = params.get('group_name')
 
         status_param = params.get('status')
         method_param = params.get('method')
@@ -200,12 +221,17 @@ class HRRecordListCreateView(generics.ListCreateAPIView):
                 models.Q(user__last_name__icontains=name)
             )
 
+        if group_id:
+            qs = qs.filter(user__groups__id=group_id)
+        if group_name:
+            qs = qs.filter(user__groups__name__icontains=group_name)
+
         if status_param:
             qs = qs.filter(status=status_param)
         if method_param:
             qs = qs.filter(method=method_param)
 
-        return qs
+        return qs.distinct()
 
     def perform_create(self, serializer):
         from .services import compute_overtime_hours
@@ -226,38 +252,117 @@ class HRRecordDetailView(generics.RetrieveUpdateAPIView):
 
 
 class HRApproveOverrideView(APIView):
+    """
+    Unified approve endpoint for both check-in and checkout overrides.
+
+    pending_override (check-in):
+      - Optional body: {"check_in_time": "..."}  — defaults to the existing check_in_time
+      - Sets status → active
+
+    pending_checkout_override (checkout):
+      - Optional body: {"check_out_time": "..."}  — defaults to now
+      - Sets check_out_time, computes overtime, sets status → complete
+    """
     permission_classes = [IsHROrAdmin]
 
     def post(self, request, pk):
         try:
-            record = AttendanceRecord.objects.get(pk=pk, status=AttendanceRecord.STATUS_PENDING)
+            record = AttendanceRecord.objects.get(
+                pk=pk,
+                status__in=[AttendanceRecord.STATUS_PENDING, AttendanceRecord.STATUS_PENDING_CHECKOUT],
+            )
         except AttendanceRecord.DoesNotExist:
             return Response(
-                {'detail': 'Record not found or not in pending_override status.'},
+                {'detail': 'Record not found or not in a pending override status.'},
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        record.status = AttendanceRecord.STATUS_ACTIVE
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        app_tz = ZoneInfo(settings.APP_DEFAULT_TZ)
+        now = timezone.now()
+        update_fields = ['status', 'reviewed_by', 'reviewed_at', 'updated_at']
+
+        def _parse_time(raw):
+            """
+            Parse datetime string. If naive (no tz offset), treat as APP_DEFAULT_TZ (Istanbul)
+            and convert to UTC-aware. If already tz-aware, keep as-is.
+            """
+            try:
+                dt = datetime.fromisoformat(str(raw))
+            except ValueError:
+                raise ValueError(f"Invalid datetime format: {raw}")
+            if timezone.is_naive(dt):
+                dt = dt.replace(tzinfo=app_tz)
+            return dt
+
+        if record.status == AttendanceRecord.STATUS_PENDING:
+            # Check-in override — optionally correct the check-in time
+            time_raw = (request.data or {}).get('check_in_time')
+            if time_raw:
+                try:
+                    record.check_in_time = _parse_time(time_raw)
+                    update_fields.append('check_in_time')
+                except Exception:
+                    return Response({'detail': 'Invalid check_in_time format.'}, status=status.HTTP_400_BAD_REQUEST)
+            record.status = AttendanceRecord.STATUS_ACTIVE
+
+        else:
+            # Checkout override — optionally set an explicit checkout time
+            time_raw = (request.data or {}).get('check_out_time')
+            if time_raw:
+                try:
+                    checkout_time = _parse_time(time_raw)
+                except Exception:
+                    return Response({'detail': 'Invalid check_out_time format.'}, status=status.HTTP_400_BAD_REQUEST)
+            else:
+                checkout_time = now
+
+            record.check_out_time = checkout_time
+            record.overtime_hours = compute_overtime_hours(record.user, record.check_in_time, checkout_time)
+            record.status = AttendanceRecord.STATUS_COMPLETE
+            update_fields += ['check_out_time', 'overtime_hours']
+
         record.reviewed_by = request.user
-        record.reviewed_at = timezone.now()
-        record.save(update_fields=['status', 'reviewed_by', 'reviewed_at', 'updated_at'])
+        record.reviewed_at = now
+        record.save(update_fields=update_fields)
 
         return Response(HRAttendanceRecordSerializer(record).data)
 
 
 class HRRejectOverrideView(APIView):
+    """
+    Unified reject endpoint for both check-in and checkout overrides.
+
+    pending_override (check-in):
+      - Sets status → override_rejected
+
+    pending_checkout_override (checkout):
+      - Reverts status → active (worker is still checked in, HR must resolve manually)
+
+    Optional body: {"notes": "..."}
+    """
     permission_classes = [IsHROrAdmin]
 
     def post(self, request, pk):
         try:
-            record = AttendanceRecord.objects.get(pk=pk, status=AttendanceRecord.STATUS_PENDING)
+            record = AttendanceRecord.objects.get(
+                pk=pk,
+                status__in=[AttendanceRecord.STATUS_PENDING, AttendanceRecord.STATUS_PENDING_CHECKOUT],
+            )
         except AttendanceRecord.DoesNotExist:
             return Response(
-                {'detail': 'Record not found or not in pending_override status.'},
+                {'detail': 'Record not found or not in a pending override status.'},
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        record.status = AttendanceRecord.STATUS_REJECTED
+        if record.status == AttendanceRecord.STATUS_PENDING:
+            record.status = AttendanceRecord.STATUS_REJECTED
+        else:
+            # Checkout rejection — revert to active so worker/HR can resolve
+            record.status = AttendanceRecord.STATUS_ACTIVE
+
         record.reviewed_by = request.user
         record.reviewed_at = timezone.now()
         notes = (request.data or {}).get('notes', '')
@@ -275,7 +380,10 @@ class HRPendingOverridesView(generics.ListAPIView):
     def get_queryset(self):
         return (
             AttendanceRecord.objects
-            .filter(status=AttendanceRecord.STATUS_PENDING)
+            .filter(status__in=[
+                AttendanceRecord.STATUS_PENDING,
+                AttendanceRecord.STATUS_PENDING_CHECKOUT,
+            ])
             .select_related('user', 'reviewed_by')
             .order_by('check_in_time')
         )
@@ -338,6 +446,56 @@ class DebugIPView(APIView):
 # ---------------------------------------------------------------------------
 # Internal helper
 # ---------------------------------------------------------------------------
+
+def _notify_hr_checkout_override(record: AttendanceRecord):
+    """Notify HR about a pending checkout override request."""
+    import threading
+
+    def _send():
+        try:
+            from django.contrib.auth import get_user_model
+            from users.permissions import user_has_role_perm
+
+            User = get_user_model()
+            hr_users = list(User.objects.filter(is_active=True, is_staff=True))
+            try:
+                for u in User.objects.filter(is_active=True, is_staff=False):
+                    if user_has_role_perm(u, 'manage_hr') and u not in hr_users:
+                        hr_users.append(u)
+            except Exception:
+                pass
+
+            if not hr_users:
+                return
+
+            user_display = record.user.get_full_name() or record.user.username
+            title = f"Çıkış Kaydı: Manuel Onay Gerekiyor — {user_display}"
+            body = (
+                f"{user_display} bugün ({record.date}) için manuel çıkış onayı talep etti.\n"
+                f"Neden: {record.override_reason or '—'}"
+            )
+            link = "/attendance/hr/pending-overrides/"
+
+            for u in hr_users:
+                try:
+                    from notifications.models import Notification as N
+                    N.objects.create(
+                        recipient=u,
+                        notification_type='attendance_checkout_override_requested',
+                        title=title,
+                        body=body,
+                        link=link,
+                    )
+                except Exception:
+                    pass
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning(
+                "attendance: failed to send HR checkout override notification: %s", exc
+            )
+
+    threading.Thread(target=_send, daemon=True).start()
+
 
 def _notify_hr_override(record: AttendanceRecord):
     """

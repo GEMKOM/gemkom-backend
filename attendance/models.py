@@ -66,22 +66,24 @@ class AttendanceRecord(models.Model):
     METHOD_HR = 'hr_manual'
 
     METHOD_CHOICES = [
-        (METHOD_IP, 'IP (Office Network)'),
-        (METHOD_GPS, 'GPS Geofence'),
-        (METHOD_OVERRIDE, 'Manual Override Request'),
-        (METHOD_HR, 'HR Manual Entry'),
+        (METHOD_IP, 'IP (Ofis Ağı)'),
+        (METHOD_GPS, 'GPS'),
+        (METHOD_OVERRIDE, 'Manuel Değişim Talebi'),
+        (METHOD_HR, 'Manuel'),
     ]
 
     STATUS_ACTIVE = 'active'
     STATUS_COMPLETE = 'complete'
     STATUS_PENDING = 'pending_override'
+    STATUS_PENDING_CHECKOUT = 'pending_checkout_override'
     STATUS_REJECTED = 'override_rejected'
 
     STATUS_CHOICES = [
-        (STATUS_ACTIVE, 'Active (Checked In)'),
-        (STATUS_COMPLETE, 'Complete (Checked Out)'),
-        (STATUS_PENDING, 'Pending HR Override Approval'),
-        (STATUS_REJECTED, 'Override Rejected'),
+        (STATUS_ACTIVE, 'Aktif (Giriş Yapıldı)'),
+        (STATUS_COMPLETE, 'Tamamlandı (Çıkış Yapıldı)'),
+        (STATUS_PENDING, 'İnsan Kaynakları Onayı Bekliyor (GİRİŞ)'),
+        (STATUS_PENDING_CHECKOUT, 'İnsan Kaynakları Onayı Bekliyor (ÇIKIŞ)'),
+        (STATUS_REJECTED, 'Reddedildi'),
     ]
 
     user = models.ForeignKey(User, on_delete=models.PROTECT, related_name='attendance_records')
@@ -91,7 +93,7 @@ class AttendanceRecord(models.Model):
     check_out_time = models.DateTimeField(null=True, blank=True)
 
     method = models.CharField(max_length=20, choices=METHOD_CHOICES)
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_ACTIVE)
+    status = models.CharField(max_length=30, choices=STATUS_CHOICES, default=STATUS_ACTIVE)
 
     # Audit coordinates (for future GPS support — stored but not enforced for IP check-ins)
     check_in_lat = models.DecimalField(max_digits=12, decimal_places=6, null=True, blank=True)
@@ -101,7 +103,7 @@ class AttendanceRecord(models.Model):
 
     client_ip = models.GenericIPAddressField(null=True, blank=True)
 
-    # Override fields
+    # Override fields — used for both check-in and checkout override reasons
     override_reason = models.TextField(blank=True)
     reviewed_by = models.ForeignKey(
         User, null=True, blank=True,

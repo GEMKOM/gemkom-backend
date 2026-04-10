@@ -104,6 +104,8 @@ def advance_billed_progress(statement: SubcontractorStatement) -> None:
     lines = statement.line_items.select_related('assignment').all()
     for line in lines:
         assignment = line.assignment
+        if assignment is None:
+            continue
         # Only advance — never go backwards (progress can't decrease, but be safe)
         if line.current_progress > assignment.last_billed_progress:
             assignment.last_billed_progress = line.current_progress

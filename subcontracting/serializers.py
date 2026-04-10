@@ -55,7 +55,7 @@ class SubcontractingPriceTierSerializer(serializers.ModelSerializer):
     class Meta:
         model = SubcontractingPriceTier
         fields = [
-            'id', 'job_order', 'name', 'price_per_kg', 'currency',
+            'id', 'job_order', 'tier_type', 'name', 'price_per_kg', 'currency',
             'allocated_weight_kg', 'used_weight_kg', 'remaining_weight_kg',
             'created_at', 'created_by', 'updated_at',
         ]
@@ -64,14 +64,22 @@ class SubcontractingPriceTierSerializer(serializers.ModelSerializer):
     def validate(self, data):
         job_order = data.get('job_order', getattr(self.instance, 'job_order', None))
         allocated = data.get('allocated_weight_kg', getattr(self.instance, 'allocated_weight_kg', Decimal('0')))
+        tier_type = data.get('tier_type', getattr(self.instance, 'tier_type', SubcontractingPriceTier.TIER_TYPE_WELDING))
+
+        # Paint tiers are not capped by total_weight_kg — each paint assignment
+        # is priced independently and does not compete with welding allocations.
+        if tier_type == SubcontractingPriceTier.TIER_TYPE_PAINT:
+            return data
 
         if not job_order.total_weight_kg:
             raise serializers.ValidationError(
                 "İş emrinde toplam ağırlık (total_weight_kg) girilmeden fiyat kademesi oluşturulamaz."
             )
 
-        # Sum of all existing tiers for this job order (excluding self on update)
-        qs = SubcontractingPriceTier.objects.filter(job_order=job_order)
+        # Sum of all existing welding tiers for this job order (excluding self on update)
+        qs = SubcontractingPriceTier.objects.filter(
+            job_order=job_order, tier_type=SubcontractingPriceTier.TIER_TYPE_WELDING
+        )
         if self.instance:
             qs = qs.exclude(pk=self.instance.pk)
         existing_total = qs.aggregate(t=Sum('allocated_weight_kg'))['t'] or Decimal('0')

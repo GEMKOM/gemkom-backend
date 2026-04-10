@@ -9,13 +9,15 @@ User = get_user_model()
 class AttendanceRecordSerializer(serializers.ModelSerializer):
     user_display = serializers.SerializerMethodField()
     reviewed_by_display = serializers.SerializerMethodField()
+    method_display = serializers.CharField(source='get_method_display', read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
 
     class Meta:
         model = AttendanceRecord
         fields = [
             'id', 'user', 'user_display', 'date',
             'check_in_time', 'check_out_time',
-            'method', 'status',
+            'method', 'method_display', 'status', 'status_display',
             'check_in_lat', 'check_in_lon',
             'check_out_lat', 'check_out_lon',
             'client_ip',
@@ -27,7 +29,7 @@ class AttendanceRecordSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = [
             'id', 'user', 'user_display', 'date',
-            'check_in_time', 'method', 'status',
+            'check_in_time', 'method', 'method_display', 'status', 'status_display',
             'client_ip',
             'reviewed_by', 'reviewed_by_display', 'reviewed_at',
             'overtime_hours',
@@ -55,8 +57,11 @@ class CheckInSerializer(serializers.Serializer):
 
 
 class CheckOutSerializer(serializers.Serializer):
-    """Payload for POST /attendance/check-out/ — no required fields for now."""
-    pass
+    """
+    Payload for POST /attendance/check-out/
+    override_reason signals a manual override request when IP check fails.
+    """
+    override_reason = serializers.CharField(required=False, allow_blank=True, default='')
 
 
 # ---------------------------------------------------------------------------
@@ -70,13 +75,15 @@ class HRAttendanceRecordSerializer(serializers.ModelSerializer):
     """
     user_display = serializers.SerializerMethodField()
     reviewed_by_display = serializers.SerializerMethodField()
+    method_display = serializers.CharField(source='get_method_display', read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
 
     class Meta:
         model = AttendanceRecord
         fields = [
             'id', 'user', 'user_display', 'date',
             'check_in_time', 'check_out_time',
-            'method', 'status',
+            'method', 'method_display', 'status', 'status_display',
             'check_in_lat', 'check_in_lon',
             'check_out_lat', 'check_out_lon',
             'client_ip',
