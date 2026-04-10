@@ -1,0 +1,178 @@
+"""
+Attendance service layer.
+
+Responsibilities:
+- Extract and validate client IP against AttendanceSite.allowed_ip_ranges
+- Compute overtime on check-out using the applicable ShiftRule
+- Get or resolve the active AttendanceSite config
+"""
+from __future__ import annotations
+
+import ipaddress
+import logging
+from datetime import date, datetime, timedelta
+from decimal import Decimal
+
+from django.utils import timezone
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# IP helpers
+# ---------------------------------------------------------------------------
+
+def get_client_ip(request) -> str | None:
+    """
+    Extract the real client IP from the request.
+    Respects X-Forwarded-For as set by Cloud Run / load balancers.
+    Returns the first (leftmost) address, which is the original client.
+    """
+    forwarded = request.META.get('HTTP_X_FORWARDED_FOR')
+    if forwarded:
+        return forwarded.split(',')[0].strip()
+    return request.META.get('REMOTE_ADDR')
+
+
+def ip_in_allowed_ranges(ip: str, allowed_ranges: list[str]) -> bool:
+    """
+    Return True if `ip` falls within any of the CIDR ranges in `allowed_ranges`.
+    Handles both IPv4 and IPv6 addresses gracefully.
+    """
+    if not ip or not allowed_ranges:
+        return False
+    try:
+        client = ipaddress.ip_address(ip)
+    except ValueError:
+        logger.warning("attendance: could not parse client IP %r", ip)
+        return False
+
+    for cidr in allowed_ranges:
+        try:
+            network = ipaddress.ip_network(cidr, strict=False)
+            if client in network:
+                return True
+        except ValueError:
+            logger.warning("attendance: invalid CIDR range %r in AttendanceSite config", cidr)
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Site config helper
+# ---------------------------------------------------------------------------
+
+def get_active_site():
+    """
+    Return the first AttendanceSite row. Returns None if none configured yet.
+    We use .first() — a single site is expected, but we don't enforce it at DB level.
+    """
+    from attendance.models import AttendanceSite
+    return AttendanceSite.objects.first()
+
+
+# ---------------------------------------------------------------------------
+# Overtime calculation
+# ---------------------------------------------------------------------------
+
+def compute_overtime_hours(
+    user,
+    check_in: datetime,
+    check_out: datetime,
+) -> Decimal:
+    """
+    Determine overtime hours for a completed attendance record.
+
+    1. Find the ShiftRule matching the user's work_location (or 'all').
+    2. Build expected_end as a timezone-aware datetime on the check_in date.
+    3. If worked time exceeds expected_end by more than threshold → flag overtime.
+
+    Returns Decimal hours (0 if no applicable rule or no overtime).
+    """
+    from attendance.models import ShiftRule
+
+    work_location = getattr(getattr(user, 'profile', None), 'work_location', None)
+
+    # Try to find a rule matching work_location first, fall back to 'all'
+    rule = (
+        ShiftRule.objects
+        .filter(is_active=True, work_location=work_location)
+        .first()
+    ) if work_location else None
+
+    if rule is None:
+        rule = ShiftRule.objects.filter(is_active=True, work_location='all').first()
+
+    if rule is None:
+        return Decimal('0')
+
+    # Build expected_end as an aware datetime on the same calendar date as check_in
+    tz = timezone.get_current_timezone()
+    local_check_in = timezone.localtime(check_in, tz)
+    expected_end_dt = timezone.make_aware(
+        datetime.combine(local_check_in.date(), rule.expected_end),
+        tz,
+    )
+
+    threshold = timedelta(minutes=rule.overtime_threshold_minutes)
+    overtime_delta = check_out - expected_end_dt
+
+    if overtime_delta > threshold:
+        hours = Decimal(str(round(overtime_delta.total_seconds() / 3600, 2)))
+        return hours
+
+    return Decimal('0')
+
+
+# ---------------------------------------------------------------------------
+# Check-in logic
+# ---------------------------------------------------------------------------
+
+def attempt_ip_checkin(request, user) -> tuple[bool, str | None]:
+    """
+    Try to check the user in via office IP.
+
+    Returns (success: bool, failure_reason: str | None).
+    failure_reason is None on success; one of:
+      - 'site_not_configured'
+      - 'no_ip_ranges_configured'
+      - 'not_on_office_network'
+    """
+    site = get_active_site()
+    if site is None:
+        return False, 'site_not_configured'
+
+    if not site.allowed_ip_ranges:
+        return False, 'no_ip_ranges_configured'
+
+    client_ip = get_client_ip(request)
+    if ip_in_allowed_ranges(client_ip, site.allowed_ip_ranges):
+        return True, None
+
+    return False, 'not_on_office_network'
+
+
+def create_checkin_record(user, method: str, client_ip: str | None = None, override_reason: str = '') -> 'AttendanceRecord':
+    """
+    Create and return an AttendanceRecord for a successful (or pending override) check-in.
+    Raises IntegrityError if a record already exists for today (caught in views).
+    """
+    from attendance.models import AttendanceRecord
+
+    now = timezone.now()
+    today = timezone.localdate()
+
+    status = (
+        AttendanceRecord.STATUS_PENDING
+        if method == AttendanceRecord.METHOD_OVERRIDE
+        else AttendanceRecord.STATUS_ACTIVE
+    )
+
+    return AttendanceRecord.objects.create(
+        user=user,
+        date=today,
+        check_in_time=now,
+        method=method,
+        status=status,
+        client_ip=client_ip,
+        override_reason=override_reason,
+    )

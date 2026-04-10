@@ -38,4 +38,5 @@ urlpatterns = [
     path('quality-control/', include('quality_control.urls')),
     path('notifications/', include('notifications.urls')),
     path('reports/', include('reports.urls')),
+    path('attendance/', include('attendance.urls')),
 ]

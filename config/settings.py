@@ -102,6 +102,7 @@ INSTALLED_APPS = [
     'quality_control',
     'notifications',
     'reports',
+    'attendance',
 ]
 
 MIDDLEWARE = [
