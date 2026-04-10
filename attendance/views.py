@@ -1,5 +1,5 @@
 from django.conf import settings
-from django.db import IntegrityError
+from django.db import IntegrityError, models
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
@@ -167,17 +167,43 @@ class HRRecordListCreateView(generics.ListCreateAPIView):
     def get_queryset(self):
         qs = AttendanceRecord.objects.select_related('user', 'reviewed_by').order_by('-date', '-check_in_time')
 
-        # Optional query params: ?date=2025-01-20 &user_id=5 &status=pending_override
-        date_param = self.request.query_params.get('date')
-        user_id = self.request.query_params.get('user_id')
-        status_param = self.request.query_params.get('status')
+        params = self.request.query_params
+
+        # Single date: ?date=2025-01-20
+        date_param = params.get('date')
+        # Date range: ?date_from=2025-01-01&date_to=2025-01-31
+        date_from = params.get('date_from')
+        date_to = params.get('date_to')
+        # User filters: ?user_id=5 or ?username=john or ?name=john (searches first+last name)
+        user_id = params.get('user_id')
+        username = params.get('username')
+        name = params.get('name')
+
+        status_param = params.get('status')
+        method_param = params.get('method')
 
         if date_param:
             qs = qs.filter(date=date_param)
+        else:
+            if date_from:
+                qs = qs.filter(date__gte=date_from)
+            if date_to:
+                qs = qs.filter(date__lte=date_to)
+
         if user_id:
             qs = qs.filter(user_id=user_id)
+        if username:
+            qs = qs.filter(user__username__icontains=username)
+        if name:
+            qs = qs.filter(
+                models.Q(user__first_name__icontains=name) |
+                models.Q(user__last_name__icontains=name)
+            )
+
         if status_param:
             qs = qs.filter(status=status_param)
+        if method_param:
+            qs = qs.filter(method=method_param)
 
         return qs
 
