@@ -31,17 +31,10 @@ class AttendanceSite(models.Model):
 
 class ShiftRule(models.Model):
     """
-    Expected working hours per work-location type.
-    Used to compute overtime on check-out.
+    Defines expected working hours for overtime calculation.
+    One rule can be marked as is_default — used when a user has no explicit assignment.
     """
-    LOCATION_CHOICES = [
-        ('workshop', 'Atölye'),
-        ('office', 'Ofis'),
-        ('all', 'Tümü'),
-    ]
-
     name = models.CharField(max_length=100)
-    work_location = models.CharField(max_length=10, choices=LOCATION_CHOICES, default='all')
     expected_start = models.TimeField(help_text="Shift start time (e.g. 08:00).")
     expected_end = models.TimeField(help_text="Shift end time (e.g. 17:00).")
     overtime_threshold_minutes = models.PositiveIntegerField(
@@ -49,14 +42,25 @@ class ShiftRule(models.Model):
         help_text="How many minutes past expected_end before overtime is flagged.",
     )
     is_active = models.BooleanField(default=True)
+    is_default = models.BooleanField(
+        default=False,
+        help_text="Used for users with no explicit shift rule assigned. Only one rule should be default.",
+    )
 
     class Meta:
         verbose_name = "Shift Rule"
         verbose_name_plural = "Shift Rules"
-        ordering = ['work_location', 'name']
+        ordering = ['name']
 
     def __str__(self):
-        return f"{self.name} ({self.work_location})"
+        default_tag = " [Varsayılan]" if self.is_default else ""
+        return f"{self.name}{default_tag}"
+
+    def save(self, *args, **kwargs):
+        # Ensure only one rule is default at a time
+        if self.is_default:
+            ShiftRule.objects.exclude(pk=self.pk).filter(is_default=True).update(is_default=False)
+        super().save(*args, **kwargs)
 
 
 class AttendanceRecord(models.Model):

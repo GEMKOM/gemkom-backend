@@ -23,6 +23,13 @@ class UserProfile(models.Model):
         ('office', 'Ofis'),
     ]
     work_location = models.CharField(max_length=10, choices=location_type, default='workshop')
+    shift_rule = models.ForeignKey(
+        'attendance.ShiftRule',
+        null=True, blank=True,
+        on_delete=models.SET_NULL,
+        related_name='assigned_users',
+        help_text="Explicit shift rule for this user. If blank, the default shift rule is used.",
+    )
 
     class Meta:
         default_permissions = ()  # suppress add/change/delete/view_userprofile

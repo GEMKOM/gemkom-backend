@@ -13,6 +13,7 @@ from .views import (
     AttendanceSiteView,
     ShiftRuleListCreateView,
     ShiftRuleDetailView,
+    ShiftRuleAssignView,
     DebugIPView,
 )
 
@@ -37,4 +38,5 @@ urlpatterns = [
     path('hr/site/', AttendanceSiteView.as_view(), name='attendance-hr-site'),
     path('hr/shift-rules/', ShiftRuleListCreateView.as_view(), name='attendance-hr-shift-rules'),
     path('hr/shift-rules/<int:pk>/', ShiftRuleDetailView.as_view(), name='attendance-hr-shift-rule-detail'),
+    path('hr/shift-rules/assign/', ShiftRuleAssignView.as_view(), name='attendance-hr-shift-rule-assign'),
 ]

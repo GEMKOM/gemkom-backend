@@ -10,9 +10,9 @@ class AttendanceSiteAdmin(admin.ModelAdmin):
 
 @admin.register(ShiftRule)
 class ShiftRuleAdmin(admin.ModelAdmin):
-    list_display = ['name', 'work_location', 'expected_start', 'expected_end',
-                    'overtime_threshold_minutes', 'is_active']
-    list_filter = ['work_location', 'is_active']
+    list_display = ['name', 'expected_start', 'expected_end',
+                    'overtime_threshold_minutes', 'is_active', 'is_default']
+    list_filter = ['is_active', 'is_default']
 
 
 @admin.register(AttendanceRecord)

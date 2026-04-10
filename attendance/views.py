@@ -17,6 +17,7 @@ from .serializers import (
     HRAttendanceRecordSerializer,
     AttendanceSiteSerializer,
     ShiftRuleSerializer,
+    UserShiftRuleAssignSerializer,
 )
 from .services import (
     attempt_ip_checkin,
@@ -423,6 +424,52 @@ class ShiftRuleDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsHROrAdmin]
     serializer_class = ShiftRuleSerializer
     queryset = ShiftRule.objects.all()
+
+
+class ShiftRuleAssignView(APIView):
+    """
+    Assign or unassign a shift rule for a user.
+    POST /attendance/hr/shift-rules/assign/
+    Body: {"user_id": 5, "shift_rule_id": 2}  — assign rule 2 to user 5
+    Body: {"user_id": 5, "shift_rule_id": null} — clear assignment, user falls back to default
+    """
+    permission_classes = [IsHROrAdmin]
+
+    def post(self, request):
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+
+        ser = UserShiftRuleAssignSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+
+        user_id = ser.validated_data['user_id']
+        shift_rule_id = ser.validated_data['shift_rule_id']
+
+        try:
+            user = User.objects.select_related('profile').get(pk=user_id)
+        except User.DoesNotExist:
+            return Response({'detail': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        if not hasattr(user, 'profile'):
+            return Response({'detail': 'User has no profile.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if shift_rule_id is not None:
+            try:
+                rule = ShiftRule.objects.get(pk=shift_rule_id, is_active=True)
+            except ShiftRule.DoesNotExist:
+                return Response({'detail': 'Shift rule not found or inactive.'}, status=status.HTTP_404_NOT_FOUND)
+            user.profile.shift_rule = rule
+        else:
+            user.profile.shift_rule = None
+
+        user.profile.save(update_fields=['shift_rule'])
+
+        return Response({
+            'user_id': user.id,
+            'user_display': user.get_full_name() or user.username,
+            'shift_rule_id': user.profile.shift_rule_id,
+            'shift_rule_name': user.profile.shift_rule.name if user.profile.shift_rule else None,
+        })
 
 
 # ---------------------------------------------------------------------------

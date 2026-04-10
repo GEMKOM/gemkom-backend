@@ -130,7 +130,18 @@ class AttendanceSiteSerializer(serializers.ModelSerializer):
 
 
 class ShiftRuleSerializer(serializers.ModelSerializer):
+    assigned_user_count = serializers.SerializerMethodField()
+
     class Meta:
         model = ShiftRule
-        fields = ['id', 'name', 'work_location', 'expected_start', 'expected_end',
-                  'overtime_threshold_minutes', 'is_active']
+        fields = ['id', 'name', 'expected_start', 'expected_end',
+                  'overtime_threshold_minutes', 'is_active', 'is_default', 'assigned_user_count']
+
+    def get_assigned_user_count(self, obj):
+        return obj.assigned_users.count()
+
+
+class UserShiftRuleAssignSerializer(serializers.Serializer):
+    """Assign or unassign a shift rule for a user. Pass shift_rule_id=null to clear."""
+    user_id = serializers.IntegerField()
+    shift_rule_id = serializers.IntegerField(allow_null=True)

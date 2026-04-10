@@ -82,25 +82,23 @@ def compute_overtime_hours(
     """
     Determine overtime hours for a completed attendance record.
 
-    1. Find the ShiftRule matching the user's work_location (or 'all').
-    2. Build expected_end as a timezone-aware datetime on the check_in date.
-    3. If worked time exceeds expected_end by more than threshold → flag overtime.
+    Lookup order:
+    1. User's explicitly assigned ShiftRule (UserProfile.shift_rule)
+    2. The default ShiftRule (is_default=True)
+    3. No rule found → 0 overtime
 
     Returns Decimal hours (0 if no applicable rule or no overtime).
     """
     from attendance.models import ShiftRule
 
-    work_location = getattr(getattr(user, 'profile', None), 'work_location', None)
+    profile = getattr(user, 'profile', None)
 
-    # Try to find a rule matching work_location first, fall back to 'all'
-    rule = (
-        ShiftRule.objects
-        .filter(is_active=True, work_location=work_location)
-        .first()
-    ) if work_location else None
+    # 1. Explicit per-user assignment
+    rule = getattr(profile, 'shift_rule', None)
 
-    if rule is None:
-        rule = ShiftRule.objects.filter(is_active=True, work_location='all').first()
+    # 2. Fall back to default rule
+    if rule is None or not rule.is_active:
+        rule = ShiftRule.objects.filter(is_active=True, is_default=True).first()
 
     if rule is None:
         return Decimal('0')
