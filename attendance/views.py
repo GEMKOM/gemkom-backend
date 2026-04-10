@@ -299,9 +299,9 @@ class DebugIPView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        if not settings.DEBUG:
-            from rest_framework.exceptions import NotFound
-            raise NotFound()
+        if not (request.user.is_superuser or request.user.is_staff):
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied()
         return Response({
             'REMOTE_ADDR': request.META.get('REMOTE_ADDR'),
             'HTTP_X_FORWARDED_FOR': request.META.get('HTTP_X_FORWARDED_FOR'),
