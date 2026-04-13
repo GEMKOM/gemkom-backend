@@ -13,7 +13,9 @@ import logging
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
+from django.conf import settings
 from django.utils import timezone
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
 
@@ -89,27 +91,14 @@ def compute_overtime_hours(
 
     Returns Decimal hours (0 if no applicable rule or no overtime).
     """
-    from attendance.models import ShiftRule
-
-    profile = getattr(user, 'profile', None)
-
-    # 1. Explicit per-user assignment
-    rule = getattr(profile, 'shift_rule', None)
-
-    # 2. Fall back to default rule
-    if rule is None or not rule.is_active:
-        rule = ShiftRule.objects.filter(is_active=True, is_default=True).first()
-
+    rule = _get_shift_rule(user)
     if rule is None:
         return Decimal('0')
 
     # Build expected_end as an aware datetime on the same calendar date as check_in
-    tz = timezone.get_current_timezone()
-    local_check_in = timezone.localtime(check_in, tz)
-    expected_end_dt = timezone.make_aware(
-        datetime.combine(local_check_in.date(), rule.expected_end),
-        tz,
-    )
+    tz = ZoneInfo(settings.APP_DEFAULT_TZ)
+    local_check_in = check_in.astimezone(tz)
+    expected_end_dt = datetime.combine(local_check_in.date(), rule.expected_end).replace(tzinfo=tz)
 
     threshold = timedelta(minutes=rule.overtime_threshold_minutes)
     overtime_delta = check_out - expected_end_dt
@@ -119,6 +108,49 @@ def compute_overtime_hours(
         return hours
 
     return Decimal('0')
+
+
+def _get_shift_rule(user):
+    """Shared helper — returns the applicable ShiftRule for a user or None."""
+    from attendance.models import ShiftRule
+    profile = getattr(user, 'profile', None)
+    rule = getattr(profile, 'shift_rule', None)
+    if rule is None or not rule.is_active:
+        rule = ShiftRule.objects.filter(is_active=True, is_default=True).first()
+    return rule
+
+
+def compute_shift_compliance(
+    user,
+    check_in: datetime,
+    check_out: datetime,
+) -> tuple[int, int]:
+    """
+    Compute lateness and early-leave against the user's ShiftRule.
+
+    Returns (late_minutes: int, early_leave_minutes: int).
+    Both are 0 if on time / no rule found.
+    """
+    rule = _get_shift_rule(user)
+    if rule is None:
+        return 0, 0
+
+    tz = ZoneInfo(settings.APP_DEFAULT_TZ)
+    local_check_in = check_in.astimezone(tz)
+    day = local_check_in.date()
+
+    expected_start_dt = datetime.combine(day, rule.expected_start).replace(tzinfo=tz)
+    expected_end_dt = datetime.combine(day, rule.expected_end).replace(tzinfo=tz)
+
+    # Late: checked in after expected_start
+    late_delta = check_in - expected_start_dt
+    late_minutes = max(0, int(late_delta.total_seconds() // 60))
+
+    # Early leave: checked out before expected_end
+    early_delta = expected_end_dt - check_out
+    early_leave_minutes = max(0, int(early_delta.total_seconds() // 60))
+
+    return late_minutes, early_leave_minutes
 
 
 # ---------------------------------------------------------------------------

@@ -63,6 +63,24 @@ class ShiftRule(models.Model):
         super().save(*args, **kwargs)
 
 
+class PublicHoliday(models.Model):
+    """
+    Turkish public holidays fetched from Nager.Date API and stored locally.
+    Seeded via: python manage.py seed_holidays
+    """
+    date = models.DateField(unique=True, db_index=True)
+    name = models.CharField(max_length=255, help_text="English name")
+    local_name = models.CharField(max_length=255, help_text="Turkish name")
+
+    class Meta:
+        verbose_name = "Public Holiday"
+        verbose_name_plural = "Public Holidays"
+        ordering = ['date']
+
+    def __str__(self):
+        return f"{self.date} — {self.local_name}"
+
+
 class AttendanceRecord(models.Model):
     METHOD_IP = 'ip'
     METHOD_GPS = 'gps'
@@ -117,6 +135,15 @@ class AttendanceRecord(models.Model):
     reviewed_at = models.DateTimeField(null=True, blank=True)
 
     overtime_hours = models.DecimalField(max_digits=5, decimal_places=2, default=0)
+    # Shift compliance — computed on checkout against the user's ShiftRule
+    late_minutes = models.IntegerField(
+        default=0,
+        help_text="Minutes after expected_start the user checked in. 0 = on time or early.",
+    )
+    early_leave_minutes = models.IntegerField(
+        default=0,
+        help_text="Minutes before expected_end the user checked out. 0 = stayed full shift or later.",
+    )
     notes = models.TextField(blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)

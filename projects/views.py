@@ -3001,7 +3001,7 @@ class JobOrderShippingCostLineViewSet(viewsets.ModelViewSet):
         from .serializers import JobOrderShippingCostLineSerializer
         return JobOrderShippingCostLineSerializer
 
-    @action(detail=False, methods=['post'], url_path='submit')
+    @action(detail=False, methods=['post'], url_path='submit', permission_classes=[permissions.IsAuthenticated])
     def submit(self, request):
         """Atomically replace all shipping cost lines for a job order."""
         from .serializers import ShippingLinesSubmitSerializer, JobOrderShippingCostLineSerializer

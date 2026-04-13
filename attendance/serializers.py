@@ -23,7 +23,7 @@ class AttendanceRecordSerializer(serializers.ModelSerializer):
             'client_ip',
             'override_reason',
             'reviewed_by', 'reviewed_by_display', 'reviewed_at',
-            'overtime_hours',
+            'overtime_hours', 'late_minutes', 'early_leave_minutes',
             'notes',
             'created_at', 'updated_at',
         ]
@@ -32,7 +32,7 @@ class AttendanceRecordSerializer(serializers.ModelSerializer):
             'check_in_time', 'method', 'method_display', 'status', 'status_display',
             'client_ip',
             'reviewed_by', 'reviewed_by_display', 'reviewed_at',
-            'overtime_hours',
+            'overtime_hours', 'late_minutes', 'early_leave_minutes',
             'created_at', 'updated_at',
         ]
 
@@ -89,7 +89,7 @@ class HRAttendanceRecordSerializer(serializers.ModelSerializer):
             'client_ip',
             'override_reason',
             'reviewed_by', 'reviewed_by_display', 'reviewed_at',
-            'overtime_hours',
+            'overtime_hours', 'late_minutes', 'early_leave_minutes',
             'notes',
             'created_at', 'updated_at',
         ]
@@ -105,6 +105,17 @@ class HRAttendanceRecordSerializer(serializers.ModelSerializer):
         u = obj.reviewed_by
         return u.get_full_name() or u.username
 
+    def update(self, instance, validated_data):
+        from attendance.services import compute_overtime_hours, compute_shift_compliance
+        instance = super().update(instance, validated_data)
+        # Recompute whenever both times are present and either was changed
+        time_fields = {'check_in_time', 'check_out_time'}
+        if time_fields & set(validated_data.keys()) and instance.check_in_time and instance.check_out_time:
+            instance.overtime_hours = compute_overtime_hours(instance.user, instance.check_in_time, instance.check_out_time)
+            instance.late_minutes, instance.early_leave_minutes = compute_shift_compliance(instance.user, instance.check_in_time, instance.check_out_time)
+            instance.save(update_fields=['overtime_hours', 'late_minutes', 'early_leave_minutes'])
+        return instance
+
 
 class HRAttendanceCreateSerializer(serializers.ModelSerializer):
     """HR manual entry — creates a complete record directly."""
@@ -117,6 +128,15 @@ class HRAttendanceCreateSerializer(serializers.ModelSerializer):
         if data.get('check_out_time') and data['check_out_time'] <= data['check_in_time']:
             raise serializers.ValidationError("check_out_time must be after check_in_time.")
         return data
+
+    def create(self, validated_data):
+        from attendance.services import compute_overtime_hours, compute_shift_compliance
+        obj = super().create(validated_data)
+        if obj.check_out_time:
+            obj.overtime_hours = compute_overtime_hours(obj.user, obj.check_in_time, obj.check_out_time)
+            obj.late_minutes, obj.early_leave_minutes = compute_shift_compliance(obj.user, obj.check_in_time, obj.check_out_time)
+            obj.save(update_fields=['overtime_hours', 'late_minutes', 'early_leave_minutes'])
+        return obj
 
 
 # ---------------------------------------------------------------------------

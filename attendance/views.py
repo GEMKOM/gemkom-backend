@@ -22,6 +22,7 @@ from .serializers import (
 from .services import (
     attempt_ip_checkin,
     compute_overtime_hours,
+    compute_shift_compliance,
     create_checkin_record,
     get_client_ip,
 )
@@ -138,11 +139,17 @@ class CheckOutView(APIView):
 
         now = timezone.now()
         overtime = compute_overtime_hours(request.user, record.check_in_time, now)
+        late_minutes, early_leave_minutes = compute_shift_compliance(request.user, record.check_in_time, now)
 
         record.check_out_time = now
         record.overtime_hours = overtime
+        record.late_minutes = late_minutes
+        record.early_leave_minutes = early_leave_minutes
         record.status = AttendanceRecord.STATUS_COMPLETE
-        record.save(update_fields=['check_out_time', 'overtime_hours', 'status', 'updated_at'])
+        record.save(update_fields=[
+            'check_out_time', 'overtime_hours', 'late_minutes',
+            'early_leave_minutes', 'status', 'updated_at',
+        ])
 
         return Response(AttendanceRecordSerializer(record).data)
 
@@ -235,15 +242,10 @@ class HRRecordListCreateView(generics.ListCreateAPIView):
         return qs.distinct()
 
     def perform_create(self, serializer):
-        from .services import compute_overtime_hours
-        obj = serializer.save(
+        serializer.save(
             method=AttendanceRecord.METHOD_HR,
             status=AttendanceRecord.STATUS_COMPLETE,
         )
-        # Compute overtime if both times are present
-        if obj.check_out_time:
-            obj.overtime_hours = compute_overtime_hours(obj.user, obj.check_in_time, obj.check_out_time)
-            obj.save(update_fields=['overtime_hours'])
 
 
 class HRRecordDetailView(generics.RetrieveUpdateAPIView):
@@ -320,10 +322,13 @@ class HRApproveOverrideView(APIView):
             else:
                 checkout_time = now
 
+            late_minutes, early_leave_minutes = compute_shift_compliance(record.user, record.check_in_time, checkout_time)
             record.check_out_time = checkout_time
             record.overtime_hours = compute_overtime_hours(record.user, record.check_in_time, checkout_time)
+            record.late_minutes = late_minutes
+            record.early_leave_minutes = early_leave_minutes
             record.status = AttendanceRecord.STATUS_COMPLETE
-            update_fields += ['check_out_time', 'overtime_hours']
+            update_fields += ['check_out_time', 'overtime_hours', 'late_minutes', 'early_leave_minutes']
 
         record.reviewed_by = request.user
         record.reviewed_at = now
@@ -469,6 +474,159 @@ class ShiftRuleAssignView(APIView):
             'user_display': user.get_full_name() or user.username,
             'shift_rule_id': user.profile.shift_rule_id,
             'shift_rule_name': user.profile.shift_rule.name if user.profile.shift_rule else None,
+        })
+
+
+# ---------------------------------------------------------------------------
+# Monthly summary
+# ---------------------------------------------------------------------------
+
+class MonthlySummaryView(APIView):
+    """
+    Returns a full day-by-day breakdown of a user's attendance for a given month.
+    Includes weekends, public holidays, and absent days.
+
+    GET /attendance/monthly-summary/?user_id=5&year=2026&month=4
+    HR can query any user. Employees can only query themselves.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from calendar import monthrange
+        from datetime import date, timedelta
+        from django.contrib.auth import get_user_model
+        from .models import PublicHoliday
+        from users.permissions import user_has_role_perm
+
+        User = get_user_model()
+
+        # --- Parse params ---
+        try:
+            year = int(request.query_params.get('year', timezone.localdate().year))
+            month = int(request.query_params.get('month', timezone.localdate().month))
+        except (ValueError, TypeError):
+            return Response({'detail': 'Invalid year or month.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not (1 <= month <= 12):
+            return Response({'detail': 'Month must be between 1 and 12.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        user_id = request.query_params.get('user_id')
+        is_hr = request.user.is_staff or request.user.is_superuser or user_has_role_perm(request.user, 'manage_hr')
+
+        if user_id and int(user_id) != request.user.id and not is_hr:
+            return Response({'detail': 'You can only view your own attendance.'}, status=status.HTTP_403_FORBIDDEN)
+
+        target_user_id = int(user_id) if user_id else request.user.id
+        try:
+            target_user = User.objects.select_related('profile').get(pk=target_user_id)
+        except User.DoesNotExist:
+            return Response({'detail': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        # --- Build date range ---
+        first_day = date(year, month, 1)
+        last_day = date(year, month, monthrange(year, month)[1])
+
+        # --- Fetch data ---
+        records = {
+            r.date: r for r in AttendanceRecord.objects.filter(
+                user=target_user, date__gte=first_day, date__lte=last_day
+            ).select_related('reviewed_by')
+        }
+        holidays = {
+            h.date: h for h in PublicHoliday.objects.filter(
+                date__gte=first_day, date__lte=last_day
+            )
+        }
+
+        # --- Build day-by-day response ---
+        days = []
+        current = first_day
+        total_working_days = 0
+        total_present = 0
+        total_absent = 0
+        total_overtime_hours = 0
+        total_late_minutes = 0
+        total_early_leave_minutes = 0
+
+        while current <= last_day:
+            is_weekend = current.weekday() >= 5  # Saturday=5, Sunday=6
+            holiday = holidays.get(current)
+            record = records.get(current)
+
+            if holiday:
+                day_type = 'public_holiday'
+            elif is_weekend:
+                day_type = 'weekend'
+            else:
+                day_type = 'working'
+                total_working_days += 1
+                if record and record.status in (AttendanceRecord.STATUS_ACTIVE, AttendanceRecord.STATUS_COMPLETE):
+                    total_present += 1
+                elif record and record.status == AttendanceRecord.STATUS_PENDING:
+                    total_present += 1  # pending check-in counts as present attempt
+                elif not record or record.status == AttendanceRecord.STATUS_REJECTED:
+                    # Only flag as absent if the day is in the past
+                    if current < timezone.localdate():
+                        total_absent += 1
+
+            day_data = {
+                'date': current.isoformat(),
+                'day_type': day_type,
+                'weekday': current.strftime('%A'),
+                'holiday_name': holiday.local_name if holiday else None,
+            }
+
+            if record:
+                day_data['record'] = AttendanceRecordSerializer(record).data
+                if record.overtime_hours:
+                    total_overtime_hours += float(record.overtime_hours)
+                if record.late_minutes:
+                    total_late_minutes += record.late_minutes
+                if record.early_leave_minutes:
+                    total_early_leave_minutes += record.early_leave_minutes
+            else:
+                day_data['record'] = None
+
+            # Absence flag — only for past working days with no valid record
+            if day_type == 'working' and current < timezone.localdate():
+                if not record or record.status == AttendanceRecord.STATUS_REJECTED:
+                    day_data['flag'] = 'absent'
+                elif record.status == AttendanceRecord.STATUS_PENDING:
+                    day_data['flag'] = 'pending_approval'
+                elif record.status == AttendanceRecord.STATUS_PENDING_CHECKOUT:
+                    day_data['flag'] = 'pending_checkout_approval'
+                else:
+                    day_data['flag'] = None
+            else:
+                day_data['flag'] = None
+
+            days.append(day_data)
+            current += timedelta(days=1)
+
+        from .services import _get_shift_rule
+        rule = _get_shift_rule(target_user)
+
+        return Response({
+            'user_id': target_user.id,
+            'user_display': target_user.get_full_name() or target_user.username,
+            'year': year,
+            'month': month,
+            'shift_rule': {
+                'id': rule.id,
+                'name': rule.name,
+                'expected_start': rule.expected_start.strftime('%H:%M'),
+                'expected_end': rule.expected_end.strftime('%H:%M'),
+                'overtime_threshold_minutes': rule.overtime_threshold_minutes,
+            } if rule else None,
+            'summary': {
+                'total_working_days': total_working_days,
+                'total_present': total_present,
+                'total_absent': total_absent,
+                'total_overtime_hours': round(total_overtime_hours, 2),
+                'total_late_minutes': total_late_minutes,
+                'total_early_leave_minutes': total_early_leave_minutes,
+            },
+            'days': days,
         })
 
 

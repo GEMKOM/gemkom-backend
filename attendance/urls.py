@@ -5,6 +5,7 @@ from .views import (
     CheckOutView,
     TodayRecordView,
     AttendanceHistoryView,
+    MonthlySummaryView,
     HRRecordListCreateView,
     HRRecordDetailView,
     HRApproveOverrideView,
@@ -23,6 +24,7 @@ urlpatterns = [
     path('check-out/', CheckOutView.as_view(), name='attendance-check-out'),
     path('today/', TodayRecordView.as_view(), name='attendance-today'),
     path('history/', AttendanceHistoryView.as_view(), name='attendance-history'),
+    path('monthly-summary/', MonthlySummaryView.as_view(), name='attendance-monthly-summary'),
 
     # HR — records
     path('hr/records/', HRRecordListCreateView.as_view(), name='attendance-hr-records'),

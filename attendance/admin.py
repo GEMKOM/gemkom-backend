@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import AttendanceSite, AttendanceRecord, ShiftRule
+from .models import AttendanceSite, AttendanceRecord, ShiftRule, PublicHoliday
 
 
 @admin.register(AttendanceSite)
@@ -13,6 +13,15 @@ class ShiftRuleAdmin(admin.ModelAdmin):
     list_display = ['name', 'expected_start', 'expected_end',
                     'overtime_threshold_minutes', 'is_active', 'is_default']
     list_filter = ['is_active', 'is_default']
+
+
+@admin.register(PublicHoliday)
+class PublicHolidayAdmin(admin.ModelAdmin):
+    list_display = ['date', 'local_name', 'name']
+    list_filter = ['date']
+    search_fields = ['local_name', 'name']
+    date_hierarchy = 'date'
+    ordering = ['date']
 
 
 @admin.register(AttendanceRecord)
