@@ -99,6 +99,7 @@ class AttendanceRecord(models.Model):
     STATUS_PENDING = 'pending_override'
     STATUS_PENDING_CHECKOUT = 'pending_checkout_override'
     STATUS_REJECTED = 'override_rejected'
+    STATUS_LEAVE = 'leave'
 
     STATUS_CHOICES = [
         (STATUS_ACTIVE, 'Aktif (Giriş Yapıldı)'),
@@ -106,12 +107,50 @@ class AttendanceRecord(models.Model):
         (STATUS_PENDING, 'İnsan Kaynakları Onayı Bekliyor (GİRİŞ)'),
         (STATUS_PENDING_CHECKOUT, 'İnsan Kaynakları Onayı Bekliyor (ÇIKIŞ)'),
         (STATUS_REJECTED, 'Reddedildi'),
+        (STATUS_LEAVE, 'İzinli'),
     ]
+
+    # Leave / absence day types — only set when status=leave
+    LEAVE_ANNUAL = 'annual_leave'
+    LEAVE_SICK = 'sick_leave'
+    LEAVE_MATERNITY = 'maternity_leave'
+    LEAVE_PATERNITY = 'paternity_leave'
+    LEAVE_BEREAVEMENT = 'bereavement_leave'
+    LEAVE_MARRIAGE = 'marriage_leave'
+    LEAVE_PUBLIC_DUTY = 'public_duty'
+    LEAVE_COMPENSATORY = 'compensatory_leave'
+    LEAVE_UNPAID = 'unpaid_leave'
+    LEAVE_UNAUTHORIZED = 'unauthorized_absence'
+    LEAVE_BUSINESS_TRIP = 'business_trip'
+    LEAVE_HALF_DAY = 'half_day'
+
+    LEAVE_TYPE_CHOICES = [
+        # Paid
+        (LEAVE_ANNUAL,       'Yıllık İzin'),
+        (LEAVE_SICK,         'Hastalık İzni'),
+        (LEAVE_MATERNITY,    'Doğum İzni'),
+        (LEAVE_PATERNITY,    'Babalık İzni'),
+        (LEAVE_BEREAVEMENT,  'Ölüm İzni'),
+        (LEAVE_MARRIAGE,     'Evlilik İzni'),
+        (LEAVE_PUBLIC_DUTY,  'Resmi Görev'),
+        (LEAVE_COMPENSATORY, 'Mazeret İzni'),
+        (LEAVE_BUSINESS_TRIP,'Görev Seyahati'),
+        (LEAVE_HALF_DAY,     'Yarım Gün'),
+        # Unpaid
+        (LEAVE_UNPAID,       'Ücretsiz İzin'),
+        (LEAVE_UNAUTHORIZED, 'İzinsiz Devamsızlık'),
+    ]
+
+    PAID_LEAVE_TYPES = {
+        LEAVE_ANNUAL, LEAVE_SICK, LEAVE_MATERNITY, LEAVE_PATERNITY,
+        LEAVE_BEREAVEMENT, LEAVE_MARRIAGE, LEAVE_PUBLIC_DUTY,
+        LEAVE_COMPENSATORY, LEAVE_BUSINESS_TRIP, LEAVE_HALF_DAY,
+    }
 
     user = models.ForeignKey(User, on_delete=models.PROTECT, related_name='attendance_records')
     date = models.DateField(db_index=True)
 
-    check_in_time = models.DateTimeField()
+    check_in_time = models.DateTimeField(null=True, blank=True)
     check_out_time = models.DateTimeField(null=True, blank=True)
 
     method = models.CharField(max_length=20, choices=METHOD_CHOICES)
@@ -124,6 +163,12 @@ class AttendanceRecord(models.Model):
     check_out_lon = models.DecimalField(max_digits=12, decimal_places=6, null=True, blank=True)
 
     client_ip = models.GenericIPAddressField(null=True, blank=True)
+
+    # Leave type — only set when status=leave
+    leave_type = models.CharField(
+        max_length=30, choices=LEAVE_TYPE_CHOICES,
+        null=True, blank=True,
+    )
 
     # Override fields — used for both check-in and checkout override reasons
     override_reason = models.TextField(blank=True)
@@ -163,5 +208,11 @@ class AttendanceRecord(models.Model):
             models.Index(fields=['status']),
         ]
 
+    @property
+    def is_paid_leave(self):
+        return self.leave_type in self.PAID_LEAVE_TYPES
+
     def __str__(self):
+        if self.leave_type:
+            return f"{self.user} | {self.date} | {self.get_leave_type_display()}"
         return f"{self.user} | {self.date} | {self.status}"

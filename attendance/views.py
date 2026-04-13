@@ -242,10 +242,16 @@ class HRRecordListCreateView(generics.ListCreateAPIView):
         return qs.distinct()
 
     def perform_create(self, serializer):
-        serializer.save(
-            method=AttendanceRecord.METHOD_HR,
-            status=AttendanceRecord.STATUS_COMPLETE,
-        )
+        # For leave records the serializer already sets status=leave and method=hr_manual.
+        # For normal attendance records, default to complete + hr_manual.
+        leave_type = serializer.validated_data.get('leave_type')
+        if leave_type:
+            serializer.save()
+        else:
+            serializer.save(
+                method=AttendanceRecord.METHOD_HR,
+                status=AttendanceRecord.STATUS_COMPLETE,
+            )
 
 
 class HRRecordDetailView(generics.RetrieveUpdateAPIView):
@@ -557,15 +563,18 @@ class MonthlySummaryView(APIView):
                 day_type = 'public_holiday'
             elif is_weekend:
                 day_type = 'weekend'
+            elif record and record.status == AttendanceRecord.STATUS_LEAVE:
+                day_type = 'leave'
             else:
                 day_type = 'working'
+
+            if day_type == 'working':
                 total_working_days += 1
                 if record and record.status in (AttendanceRecord.STATUS_ACTIVE, AttendanceRecord.STATUS_COMPLETE):
                     total_present += 1
                 elif record and record.status == AttendanceRecord.STATUS_PENDING:
-                    total_present += 1  # pending check-in counts as present attempt
+                    total_present += 1
                 elif not record or record.status == AttendanceRecord.STATUS_REJECTED:
-                    # Only flag as absent if the day is in the past
                     if current < timezone.localdate():
                         total_absent += 1
 
@@ -587,7 +596,7 @@ class MonthlySummaryView(APIView):
             else:
                 day_data['record'] = None
 
-            # Absence flag — only for past working days with no valid record
+            # Flag — only for past working days
             if day_type == 'working' and current < timezone.localdate():
                 if not record or record.status == AttendanceRecord.STATUS_REJECTED:
                     day_data['flag'] = 'absent'

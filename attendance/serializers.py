@@ -11,6 +11,8 @@ class AttendanceRecordSerializer(serializers.ModelSerializer):
     reviewed_by_display = serializers.SerializerMethodField()
     method_display = serializers.CharField(source='get_method_display', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
+    leave_type_display = serializers.CharField(source='get_leave_type_display', read_only=True)
+    is_paid_leave = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = AttendanceRecord
@@ -18,6 +20,7 @@ class AttendanceRecordSerializer(serializers.ModelSerializer):
             'id', 'user', 'user_display', 'date',
             'check_in_time', 'check_out_time',
             'method', 'method_display', 'status', 'status_display',
+            'leave_type', 'leave_type_display', 'is_paid_leave',
             'check_in_lat', 'check_in_lon',
             'check_out_lat', 'check_out_lon',
             'client_ip',
@@ -30,6 +33,7 @@ class AttendanceRecordSerializer(serializers.ModelSerializer):
         read_only_fields = [
             'id', 'user', 'user_display', 'date',
             'check_in_time', 'method', 'method_display', 'status', 'status_display',
+            'leave_type_display', 'is_paid_leave',
             'client_ip',
             'reviewed_by', 'reviewed_by_display', 'reviewed_at',
             'overtime_hours', 'late_minutes', 'early_leave_minutes',
@@ -77,6 +81,8 @@ class HRAttendanceRecordSerializer(serializers.ModelSerializer):
     reviewed_by_display = serializers.SerializerMethodField()
     method_display = serializers.CharField(source='get_method_display', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
+    leave_type_display = serializers.CharField(source='get_leave_type_display', read_only=True)
+    is_paid_leave = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = AttendanceRecord
@@ -84,6 +90,7 @@ class HRAttendanceRecordSerializer(serializers.ModelSerializer):
             'id', 'user', 'user_display', 'date',
             'check_in_time', 'check_out_time',
             'method', 'method_display', 'status', 'status_display',
+            'leave_type', 'leave_type_display', 'is_paid_leave',
             'check_in_lat', 'check_in_lon',
             'check_out_lat', 'check_out_lon',
             'client_ip',
@@ -118,21 +125,52 @@ class HRAttendanceRecordSerializer(serializers.ModelSerializer):
 
 
 class HRAttendanceCreateSerializer(serializers.ModelSerializer):
-    """HR manual entry — creates a complete record directly."""
+    """
+    HR manual entry — creates a complete attendance or leave record.
+
+    For normal attendance: provide check_in_time and check_out_time.
+    For leave: provide leave_type only — no times needed.
+    """
 
     class Meta:
         model = AttendanceRecord
-        fields = ['user', 'date', 'check_in_time', 'check_out_time', 'notes']
+        fields = ['user', 'date', 'check_in_time', 'check_out_time', 'leave_type', 'notes']
+        extra_kwargs = {
+            'check_in_time': {'required': False},
+            'check_out_time': {'required': False},
+        }
 
     def validate(self, data):
-        if data.get('check_out_time') and data['check_out_time'] <= data['check_in_time']:
-            raise serializers.ValidationError("check_out_time must be after check_in_time.")
+        leave_type = data.get('leave_type')
+        check_in = data.get('check_in_time')
+        check_out = data.get('check_out_time')
+
+        if leave_type:
+            # Leave record — times must not be provided
+            if check_in or check_out:
+                raise serializers.ValidationError(
+                    "check_in_time and check_out_time must not be set for leave records."
+                )
+        else:
+            # Normal attendance — check_in_time is required
+            if not check_in:
+                raise serializers.ValidationError("check_in_time is required for attendance records.")
+            if check_out and check_out <= check_in:
+                raise serializers.ValidationError("check_out_time must be after check_in_time.")
+
         return data
 
     def create(self, validated_data):
         from attendance.services import compute_overtime_hours, compute_shift_compliance
+        leave_type = validated_data.get('leave_type')
+
+        if leave_type:
+            validated_data['status'] = AttendanceRecord.STATUS_LEAVE
+            validated_data['method'] = AttendanceRecord.METHOD_HR
+
         obj = super().create(validated_data)
-        if obj.check_out_time:
+
+        if obj.check_in_time and obj.check_out_time:
             obj.overtime_hours = compute_overtime_hours(obj.user, obj.check_in_time, obj.check_out_time)
             obj.late_minutes, obj.early_leave_minutes = compute_shift_compliance(obj.user, obj.check_in_time, obj.check_out_time)
             obj.save(update_fields=['overtime_hours', 'late_minutes', 'early_leave_minutes'])
