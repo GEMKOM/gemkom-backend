@@ -695,7 +695,9 @@ class SubcontractorStatementViewSet(viewsets.ModelViewSet):
                 if not line.cost_amount:
                     continue
                 is_painting = (
-                    line.assignment.department_task.task_type == 'painting'
+                    line.assignment is not None
+                    and line.assignment.department_task is not None
+                    and line.assignment.department_task.task_type == 'painting'
                 )
                 if is_painting:
                     paint_job_weights[line.job_no] += line.effective_weight_kg
