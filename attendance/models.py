@@ -179,7 +179,7 @@ class AttendanceRecord(models.Model):
     )
     reviewed_at = models.DateTimeField(null=True, blank=True)
 
-    overtime_hours = models.DecimalField(max_digits=5, decimal_places=2, default=0)
+    overtime_minutes = models.IntegerField(default=0)
     # Shift compliance — computed on checkout against the user's ShiftRule
     late_minutes = models.IntegerField(
         default=0,

@@ -27,7 +27,7 @@ class PublicHolidayAdmin(admin.ModelAdmin):
 @admin.register(AttendanceRecord)
 class AttendanceRecordAdmin(admin.ModelAdmin):
     list_display = ['user', 'date', 'check_in_time', 'check_out_time',
-                    'method', 'status', 'overtime_hours']
+                    'method', 'status', 'overtime_minutes']
     list_filter = ['status', 'method', 'date']
     search_fields = ['user__username', 'user__first_name', 'user__last_name']
     raw_id_fields = ['user', 'reviewed_by']

@@ -26,7 +26,7 @@ class AttendanceRecordSerializer(serializers.ModelSerializer):
             'client_ip',
             'override_reason',
             'reviewed_by', 'reviewed_by_display', 'reviewed_at',
-            'overtime_hours', 'late_minutes', 'early_leave_minutes',
+            'overtime_minutes', 'late_minutes', 'early_leave_minutes',
             'notes',
             'created_at', 'updated_at',
         ]
@@ -36,7 +36,7 @@ class AttendanceRecordSerializer(serializers.ModelSerializer):
             'leave_type_display', 'is_paid_leave',
             'client_ip',
             'reviewed_by', 'reviewed_by_display', 'reviewed_at',
-            'overtime_hours', 'late_minutes', 'early_leave_minutes',
+            'overtime_minutes', 'late_minutes', 'early_leave_minutes',
             'created_at', 'updated_at',
         ]
 
@@ -96,7 +96,7 @@ class HRAttendanceRecordSerializer(serializers.ModelSerializer):
             'client_ip',
             'override_reason',
             'reviewed_by', 'reviewed_by_display', 'reviewed_at',
-            'overtime_hours', 'late_minutes', 'early_leave_minutes',
+            'overtime_minutes', 'late_minutes', 'early_leave_minutes',
             'notes',
             'created_at', 'updated_at',
         ]
@@ -113,14 +113,14 @@ class HRAttendanceRecordSerializer(serializers.ModelSerializer):
         return u.get_full_name() or u.username
 
     def update(self, instance, validated_data):
-        from attendance.services import compute_overtime_hours, compute_shift_compliance
+        from attendance.services import compute_overtime_minutes, compute_shift_compliance
         instance = super().update(instance, validated_data)
         # Recompute whenever both times are present and either was changed
         time_fields = {'check_in_time', 'check_out_time'}
         if time_fields & set(validated_data.keys()) and instance.check_in_time and instance.check_out_time:
-            instance.overtime_hours = compute_overtime_hours(instance.user, instance.check_in_time, instance.check_out_time)
+            instance.overtime_minutes = compute_overtime_minutes(instance.user, instance.check_in_time, instance.check_out_time)
             instance.late_minutes, instance.early_leave_minutes = compute_shift_compliance(instance.user, instance.check_in_time, instance.check_out_time)
-            instance.save(update_fields=['overtime_hours', 'late_minutes', 'early_leave_minutes'])
+            instance.save(update_fields=['overtime_minutes', 'late_minutes', 'early_leave_minutes'])
         return instance
 
 
@@ -161,7 +161,7 @@ class HRAttendanceCreateSerializer(serializers.ModelSerializer):
         return data
 
     def create(self, validated_data):
-        from attendance.services import compute_overtime_hours, compute_shift_compliance
+        from attendance.services import compute_overtime_minutes, compute_shift_compliance
         leave_type = validated_data.get('leave_type')
 
         if leave_type:
@@ -171,9 +171,9 @@ class HRAttendanceCreateSerializer(serializers.ModelSerializer):
         obj = super().create(validated_data)
 
         if obj.check_in_time and obj.check_out_time:
-            obj.overtime_hours = compute_overtime_hours(obj.user, obj.check_in_time, obj.check_out_time)
+            obj.overtime_minutes = compute_overtime_minutes(obj.user, obj.check_in_time, obj.check_out_time)
             obj.late_minutes, obj.early_leave_minutes = compute_shift_compliance(obj.user, obj.check_in_time, obj.check_out_time)
-            obj.save(update_fields=['overtime_hours', 'late_minutes', 'early_leave_minutes'])
+            obj.save(update_fields=['overtime_minutes', 'late_minutes', 'early_leave_minutes'])
         return obj
 
 

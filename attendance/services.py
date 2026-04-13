@@ -11,7 +11,6 @@ from __future__ import annotations
 import ipaddress
 import logging
 from datetime import date, datetime, timedelta
-from decimal import Decimal
 
 from django.conf import settings
 from django.utils import timezone
@@ -76,24 +75,24 @@ def get_active_site():
 # Overtime calculation
 # ---------------------------------------------------------------------------
 
-def compute_overtime_hours(
+def compute_overtime_minutes(
     user,
     check_in: datetime,
     check_out: datetime,
-) -> Decimal:
+) -> int:
     """
-    Determine overtime hours for a completed attendance record.
+    Determine overtime minutes for a completed attendance record.
 
     Lookup order:
     1. User's explicitly assigned ShiftRule (UserProfile.shift_rule)
     2. The default ShiftRule (is_default=True)
     3. No rule found → 0 overtime
 
-    Returns Decimal hours (0 if no applicable rule or no overtime).
+    Returns integer minutes (0 if no applicable rule or no overtime).
     """
     rule = _get_shift_rule(user)
     if rule is None:
-        return Decimal('0')
+        return 0
 
     # Build expected_end as an aware datetime on the same calendar date as check_in
     tz = ZoneInfo(settings.APP_DEFAULT_TZ)
@@ -104,10 +103,9 @@ def compute_overtime_hours(
     overtime_delta = check_out - expected_end_dt
 
     if overtime_delta > threshold:
-        hours = Decimal(str(round(overtime_delta.total_seconds() / 3600, 2)))
-        return hours
+        return int(overtime_delta.total_seconds() // 60)
 
-    return Decimal('0')
+    return 0
 
 
 def _get_shift_rule(user):

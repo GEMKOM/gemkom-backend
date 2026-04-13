@@ -21,7 +21,7 @@ from .serializers import (
 )
 from .services import (
     attempt_ip_checkin,
-    compute_overtime_hours,
+    compute_overtime_minutes,
     compute_shift_compliance,
     create_checkin_record,
     get_client_ip,
@@ -138,16 +138,16 @@ class CheckOutView(APIView):
             )
 
         now = timezone.now()
-        overtime = compute_overtime_hours(request.user, record.check_in_time, now)
+        overtime = compute_overtime_minutes(request.user, record.check_in_time, now)
         late_minutes, early_leave_minutes = compute_shift_compliance(request.user, record.check_in_time, now)
 
         record.check_out_time = now
-        record.overtime_hours = overtime
+        record.overtime_minutes = overtime
         record.late_minutes = late_minutes
         record.early_leave_minutes = early_leave_minutes
         record.status = AttendanceRecord.STATUS_COMPLETE
         record.save(update_fields=[
-            'check_out_time', 'overtime_hours', 'late_minutes',
+            'check_out_time', 'overtime_minutes', 'late_minutes',
             'early_leave_minutes', 'status', 'updated_at',
         ])
 
@@ -330,11 +330,11 @@ class HRApproveOverrideView(APIView):
 
             late_minutes, early_leave_minutes = compute_shift_compliance(record.user, record.check_in_time, checkout_time)
             record.check_out_time = checkout_time
-            record.overtime_hours = compute_overtime_hours(record.user, record.check_in_time, checkout_time)
+            record.overtime_minutes = compute_overtime_minutes(record.user, record.check_in_time, checkout_time)
             record.late_minutes = late_minutes
             record.early_leave_minutes = early_leave_minutes
             record.status = AttendanceRecord.STATUS_COMPLETE
-            update_fields += ['check_out_time', 'overtime_hours', 'late_minutes', 'early_leave_minutes']
+            update_fields += ['check_out_time', 'overtime_minutes', 'late_minutes', 'early_leave_minutes']
 
         record.reviewed_by = request.user
         record.reviewed_at = now
@@ -550,7 +550,7 @@ class MonthlySummaryView(APIView):
         total_working_days = 0
         total_present = 0
         total_absent = 0
-        total_overtime_hours = 0
+        total_overtime_minutes = 0
         total_late_minutes = 0
         total_early_leave_minutes = 0
 
@@ -587,8 +587,8 @@ class MonthlySummaryView(APIView):
 
             if record:
                 day_data['record'] = AttendanceRecordSerializer(record).data
-                if record.overtime_hours:
-                    total_overtime_hours += float(record.overtime_hours)
+                if record.overtime_minutes:
+                    total_overtime_minutes += record.overtime_minutes
                 if record.late_minutes:
                     total_late_minutes += record.late_minutes
                 if record.early_leave_minutes:
@@ -631,7 +631,7 @@ class MonthlySummaryView(APIView):
                 'total_working_days': total_working_days,
                 'total_present': total_present,
                 'total_absent': total_absent,
-                'total_overtime_hours': round(total_overtime_hours, 2),
+                'total_overtime_minutes': total_overtime_minutes,
                 'total_late_minutes': total_late_minutes,
                 'total_early_leave_minutes': total_early_leave_minutes,
             },
