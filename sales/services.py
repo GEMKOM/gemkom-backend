@@ -324,7 +324,7 @@ def rollback_to_pricing(offer: SalesOffer) -> None:
     offer.save(update_fields=['status', 'updated_at'])
 
 
-def submit_for_approval(offer: SalesOffer, user):
+def submit_for_approval(offer: SalesOffer, user, notes: str = ''):
     """
     Submit the offer for internal approval.
     Auto-calculates total price from item unit_prices (EUR).
@@ -353,6 +353,7 @@ def submit_for_approval(offer: SalesOffer, user):
             currency='EUR',
             approval_round=offer.approval_round + 1,
             is_current=True,
+            notes=notes or '',
             created_by=user,
         )
 

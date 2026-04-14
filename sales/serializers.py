@@ -381,7 +381,7 @@ class SendConsultationsSerializer(serializers.Serializer):
 
 
 class SubmitForApprovalSerializer(serializers.Serializer):
-    pass  # No fields needed — policy is auto-selected by name on the backend
+    notes = serializers.CharField(required=False, allow_blank=True, default='')
 
 
 class RecordApprovalDecisionSerializer(serializers.Serializer):
@@ -403,6 +403,61 @@ class AddItemsSerializer(serializers.Serializer):
     def validate_items(self, value):
         if not value:
             raise serializers.ValidationError("En az bir kalem girilmelidir.")
+        return value
+
+
+class SetPricesItemSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    unit_price = serializers.DecimalField(max_digits=16, decimal_places=2, required=False, allow_null=True)
+    quantity = serializers.IntegerField(min_value=1, required=False)
+    weight_kg = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, allow_null=True)
+    delivery_period = serializers.CharField(required=False, allow_blank=True)
+    notes = serializers.CharField(required=False, allow_blank=True)
+
+
+class SetPricesSerializer(serializers.Serializer):
+    pricing_mode = serializers.ChoiceField(choices=['flat', 'leaf'])
+    shipping_price = serializers.DecimalField(max_digits=16, decimal_places=2, required=False, allow_null=True)
+    items = SetPricesItemSerializer(many=True)
+
+    def validate_items(self, value):
+        if not value:
+            raise serializers.ValidationError("En az bir kalem girilmelidir.")
+        ids = [i['id'] for i in value]
+        if len(ids) != len(set(ids)):
+            raise serializers.ValidationError("Duplicate item IDs in request.")
+        return value
+
+
+class UpdateItemEntrySerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    title_override = serializers.CharField(required=False, allow_blank=True)
+    quantity = serializers.IntegerField(min_value=1, required=False)
+    unit_price = serializers.DecimalField(max_digits=16, decimal_places=2, required=False, allow_null=True)
+    weight_kg = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, allow_null=True)
+    delivery_period = serializers.CharField(required=False, allow_blank=True)
+    notes = serializers.CharField(required=False, allow_blank=True)
+    parent = serializers.IntegerField(required=False, allow_null=True)
+
+
+class BulkUpdateItemsSerializer(serializers.Serializer):
+    items = UpdateItemEntrySerializer(many=True)
+
+    def validate_items(self, value):
+        if not value:
+            raise serializers.ValidationError("En az bir kalem girilmelidir.")
+        ids = [i['id'] for i in value]
+        if len(ids) != len(set(ids)):
+            raise serializers.ValidationError("Duplicate item IDs in request.")
+        return value
+
+
+class BulkDeleteItemsSerializer(serializers.Serializer):
+    ids = serializers.ListField(child=serializers.IntegerField(), min_length=1)
+
+    def validate_ids(self, value):
+        if len(value) != len(set(value)):
+            raise serializers.ValidationError("Duplicate IDs in request.")
         return value
 
 

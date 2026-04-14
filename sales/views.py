@@ -1,4 +1,5 @@
 from django.utils import timezone
+from django.db import transaction
 from django.db.models import Exists, OuterRef
 from django.contrib.contenttypes.models import ContentType
 from rest_framework import viewsets, status, permissions
@@ -38,6 +39,9 @@ from .serializers import (
     SendConsultationsSerializer,
     SubmitForApprovalSerializer,
     RecordApprovalDecisionSerializer,
+    SetPricesSerializer,
+    BulkUpdateItemsSerializer,
+    BulkDeleteItemsSerializer,
     UpdateConsultationSerializer,
 )
 from . import services
@@ -420,6 +424,226 @@ class SalesOfferViewSet(viewsets.ModelViewSet):
 
     # ------------------------------------------------------------------ files
 
+    @action(detail=True, methods=['post'], url_path='set-prices')
+    def set_prices(self, request, pk=None):
+        """
+        Bulk-set prices, quantities, and pricing mode in one atomic request.
+
+        POST /sales/offers/{id}/set-prices/
+        {
+          "pricing_mode": "flat",
+          "shipping_price": 2500,
+          "items": [
+            { "id": 12, "unit_price": 120000, "quantity": 1, "weight_kg": 4500 },
+            { "id": 15, "unit_price": 45000,  "quantity": 2 }
+          ]
+        }
+        """
+        offer = self.get_object()
+        _TERMINAL = ('won', 'lost', 'cancelled', 'converted')
+        if offer.status in _TERMINAL:
+            return Response(
+                {'detail': 'Bu durumda teklif fiyatlandırılamaz.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        serializer = SetPricesSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        # Validate all item IDs belong to this offer
+        item_ids = [i['id'] for i in data['items']]
+        offer_item_ids = set(offer.items.values_list('id', flat=True))
+        unknown = set(item_ids) - offer_item_ids
+        if unknown:
+            return Response(
+                {'detail': f"Item IDs not found in this offer: {sorted(unknown)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with transaction.atomic():
+            # Update offer-level fields
+            offer_fields = ['updated_at']
+            offer.pricing_mode = data['pricing_mode']
+            offer_fields.append('pricing_mode')
+            if data.get('shipping_price') is not None:
+                offer.shipping_price = data['shipping_price']
+                offer_fields.append('shipping_price')
+            offer.save(update_fields=offer_fields)
+
+            # Bulk-update items
+            items_by_id = {i.id: i for i in offer.items.all()}
+            to_update = []
+            update_fields = set()
+            for item_data in data['items']:
+                item = items_by_id[item_data['id']]
+                if 'unit_price' in item_data:
+                    item.unit_price = item_data['unit_price']
+                    update_fields.add('unit_price')
+                if 'quantity' in item_data:
+                    item.quantity = item_data['quantity']
+                    update_fields.add('quantity')
+                if 'weight_kg' in item_data:
+                    item.weight_kg = item_data['weight_kg']
+                    update_fields.add('weight_kg')
+                if 'delivery_period' in item_data:
+                    item.delivery_period = item_data['delivery_period']
+                    update_fields.add('delivery_period')
+                if 'notes' in item_data:
+                    item.notes = item_data['notes']
+                    update_fields.add('notes')
+                to_update.append(item)
+
+            if to_update and update_fields:
+                SalesOfferItem.objects.bulk_update(to_update, list(update_fields))
+
+            # Advance status to pricing if still in draft/consultation
+            if offer.status in ('draft', 'consultation'):
+                offer.status = 'pricing'
+                offer.save(update_fields=['status', 'updated_at'])
+            elif offer.status in ('pending_approval', 'approved', 'submitted_customer'):
+                services.rollback_to_pricing(offer)
+
+        # Return fresh offer detail + items
+        offer.refresh_from_db()
+        return Response({
+            'offer': SalesOfferDetailSerializer(offer, context={'request': request}).data,
+            'items': SalesOfferItemSerializer(
+                offer.items.select_related('template_node').prefetch_related('children').filter(parent__isnull=True),
+                many=True,
+            ).data,
+        })
+
+    @action(detail=True, methods=['post'], url_path='update-items')
+    def update_items(self, request, pk=None):
+        """
+        Bulk-update existing offer items in one atomic request.
+
+        POST /sales/offers/{id}/update-items/
+        {
+          "items": [
+            { "id": 12, "title_override": "Panel - North", "quantity": 2 },
+            { "id": 15, "parent": 12 }
+          ]
+        }
+        Only fields present in each entry are updated (partial per item).
+        """
+        offer = self.get_object()
+        _TERMINAL = ('won', 'lost', 'cancelled', 'converted')
+        if offer.status in _TERMINAL:
+            return Response(
+                {'detail': 'Bu durumda kalemler güncellenemez.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        serializer = BulkUpdateItemsSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        item_ids = [i['id'] for i in data['items']]
+        offer_item_ids = set(offer.items.values_list('id', flat=True))
+        unknown = set(item_ids) - offer_item_ids
+        if unknown:
+            return Response(
+                {'detail': f"Item IDs not found in this offer: {sorted(unknown)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Validate parent IDs also belong to this offer
+        parent_ids = {i['parent'] for i in data['items'] if 'parent' in i and i['parent'] is not None}
+        unknown_parents = parent_ids - offer_item_ids
+        if unknown_parents:
+            return Response(
+                {'detail': f"Parent item IDs not found in this offer: {sorted(unknown_parents)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        _UPDATABLE = ['title_override', 'quantity', 'unit_price', 'weight_kg', 'delivery_period', 'notes', 'parent_id']
+
+        with transaction.atomic():
+            items_by_id = {i.id: i for i in offer.items.all()}
+            to_update = []
+            update_fields = set()
+
+            for entry in data['items']:
+                item = items_by_id[entry['id']]
+                if 'title_override' in entry:
+                    item.title_override = entry['title_override']
+                    update_fields.add('title_override')
+                if 'quantity' in entry:
+                    item.quantity = entry['quantity']
+                    update_fields.add('quantity')
+                if 'unit_price' in entry:
+                    item.unit_price = entry['unit_price']
+                    update_fields.add('unit_price')
+                if 'weight_kg' in entry:
+                    item.weight_kg = entry['weight_kg']
+                    update_fields.add('weight_kg')
+                if 'delivery_period' in entry:
+                    item.delivery_period = entry['delivery_period']
+                    update_fields.add('delivery_period')
+                if 'notes' in entry:
+                    item.notes = entry['notes']
+                    update_fields.add('notes')
+                if 'parent' in entry:
+                    item.parent_id = entry['parent']  # None clears the parent
+                    update_fields.add('parent_id')
+                to_update.append(item)
+
+            if to_update and update_fields:
+                SalesOfferItem.objects.bulk_update(to_update, list(update_fields))
+
+            if offer.status in ('pending_approval', 'approved', 'submitted_customer'):
+                services.rollback_to_pricing(offer)
+
+        return Response(
+            SalesOfferItemSerializer(
+                offer.items.select_related('template_node').prefetch_related('children').filter(parent__isnull=True),
+                many=True,
+            ).data
+        )
+
+    @action(detail=True, methods=['post'], url_path='delete-items')
+    def delete_items(self, request, pk=None):
+        """
+        Bulk-delete offer items in one atomic request.
+        Deleting a parent cascades to its children automatically.
+
+        POST /sales/offers/{id}/delete-items/
+        { "ids": [12, 15, 18] }
+        """
+        offer = self.get_object()
+        _TERMINAL = ('won', 'lost', 'cancelled', 'converted')
+        if offer.status in _TERMINAL:
+            return Response(
+                {'detail': 'Bu durumda kalemler silinemez.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        serializer = BulkDeleteItemsSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        ids = serializer.validated_data['ids']
+
+        offer_item_ids = set(offer.items.values_list('id', flat=True))
+        unknown = set(ids) - offer_item_ids
+        if unknown:
+            return Response(
+                {'detail': f"Item IDs not found in this offer: {sorted(unknown)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with transaction.atomic():
+            offer.items.filter(id__in=ids).delete()
+            if offer.status in ('pending_approval', 'approved', 'submitted_customer'):
+                services.rollback_to_pricing(offer)
+
+        return Response(
+            SalesOfferItemSerializer(
+                offer.items.select_related('template_node').prefetch_related('children').filter(parent__isnull=True),
+                many=True,
+            ).data
+        )
+
     @action(detail=True, methods=['get', 'post'], url_path='files',
             parser_classes=[MultiPartParser, FormParser])
     def files(self, request, pk=None):
@@ -492,6 +716,7 @@ class SalesOfferViewSet(viewsets.ModelViewSet):
             wf = services.submit_for_approval(
                 offer=offer,
                 user=request.user,
+                notes=serializer.validated_data.get('notes', ''),
             )
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
