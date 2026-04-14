@@ -122,9 +122,14 @@ def compute_shift_compliance(
     user,
     check_in: datetime,
     check_out: datetime,
+    leave_intervals: list[tuple[datetime, datetime]] | None = None,
 ) -> tuple[int, int]:
     """
     Compute lateness and early-leave against the user's ShiftRule.
+
+    Optional leave_intervals: list of (start_dt, end_dt) aware datetimes representing
+    approved leave windows. Any overlap with the late/early-leave penalty windows is
+    subtracted so approved leave is not penalised.
 
     Returns (late_minutes: int, early_leave_minutes: int).
     Both are 0 if on time / no rule found.
@@ -148,7 +153,42 @@ def compute_shift_compliance(
     early_delta = expected_end_dt - check_out
     early_leave_minutes = max(0, int(early_delta.total_seconds() // 60))
 
+    # Subtract any approved leave intervals that overlap the penalty windows
+    if leave_intervals:
+        for iv_start, iv_end in leave_intervals:
+            if late_minutes > 0:
+                # Overlap with [expected_start, check_in]
+                overlap_start = max(iv_start, expected_start_dt)
+                overlap_end = min(iv_end, check_in)
+                if overlap_end > overlap_start:
+                    covered = int((overlap_end - overlap_start).total_seconds() // 60)
+                    late_minutes = max(0, late_minutes - covered)
+
+            if early_leave_minutes > 0:
+                # Overlap with [check_out, expected_end]
+                overlap_start = max(iv_start, check_out)
+                overlap_end = min(iv_end, expected_end_dt)
+                if overlap_end > overlap_start:
+                    covered = int((overlap_end - overlap_start).total_seconds() // 60)
+                    early_leave_minutes = max(0, early_leave_minutes - covered)
+
     return late_minutes, early_leave_minutes
+
+
+def recompute_compliance_for_record(record) -> None:
+    """
+    Recompute late_minutes and early_leave_minutes on a record, factoring in
+    any attached leave intervals. Saves only if the record has both times.
+    """
+    if not (record.check_in_time and record.check_out_time):
+        return
+    intervals = [(i.start_time, i.end_time) for i in record.leave_intervals.all()]
+    late, early = compute_shift_compliance(
+        record.user, record.check_in_time, record.check_out_time, intervals
+    )
+    record.late_minutes = late
+    record.early_leave_minutes = early
+    record.save(update_fields=['late_minutes', 'early_leave_minutes', 'updated_at'])
 
 
 # ---------------------------------------------------------------------------

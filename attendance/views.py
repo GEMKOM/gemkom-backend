@@ -7,7 +7,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework import generics
 
-from .models import AttendanceRecord, AttendanceSite, ShiftRule
+from .models import AttendanceLeaveInterval, AttendanceRecord, AttendanceSite, ShiftRule
 from .permissions import IsHROrAdmin
 from .serializers import (
     AttendanceRecordSerializer,
@@ -15,6 +15,7 @@ from .serializers import (
     CheckOutSerializer,
     HRAttendanceCreateSerializer,
     HRAttendanceRecordSerializer,
+    HRLeaveIntervalCreateSerializer,
     AttendanceSiteSerializer,
     ShiftRuleSerializer,
     UserShiftRuleAssignSerializer,
@@ -25,6 +26,7 @@ from .services import (
     compute_shift_compliance,
     create_checkin_record,
     get_client_ip,
+    recompute_compliance_for_record,
 )
 
 
@@ -191,7 +193,7 @@ class HRRecordListCreateView(generics.ListCreateAPIView):
         return HRAttendanceRecordSerializer
 
     def get_queryset(self):
-        qs = AttendanceRecord.objects.select_related('user', 'reviewed_by').order_by('-date', '-check_in_time')
+        qs = AttendanceRecord.objects.select_related('user', 'reviewed_by').prefetch_related('leave_intervals').order_by('-date', '-check_in_time')
 
         params = self.request.query_params
 
@@ -536,7 +538,7 @@ class MonthlySummaryView(APIView):
         records = {
             r.date: r for r in AttendanceRecord.objects.filter(
                 user=target_user, date__gte=first_day, date__lte=last_day
-            ).select_related('reviewed_by')
+            ).select_related('reviewed_by').prefetch_related('leave_intervals')
         }
         holidays = {
             h.date: h for h in PublicHoliday.objects.filter(
@@ -637,6 +639,57 @@ class MonthlySummaryView(APIView):
             },
             'days': days,
         })
+
+
+# ---------------------------------------------------------------------------
+# Leave intervals (HR)
+# ---------------------------------------------------------------------------
+
+class HRLeaveIntervalListCreateView(generics.ListCreateAPIView):
+    """
+    GET  /attendance/hr/records/{record_id}/intervals/  — list intervals for a record
+    POST /attendance/hr/records/{record_id}/intervals/  — add a partial-day leave interval
+    """
+    permission_classes = [IsHROrAdmin]
+    serializer_class = HRLeaveIntervalCreateSerializer
+
+    def _get_record(self):
+        try:
+            return AttendanceRecord.objects.get(pk=self.kwargs['record_id'])
+        except AttendanceRecord.DoesNotExist:
+            from rest_framework.exceptions import NotFound
+            raise NotFound('Attendance record not found.')
+
+    def get_queryset(self):
+        return AttendanceLeaveInterval.objects.filter(record_id=self.kwargs['record_id'])
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx['record'] = self._get_record()
+        return ctx
+
+    def perform_create(self, serializer):
+        record = self.get_serializer_context()['record']
+        interval = serializer.save(record=record)
+        recompute_compliance_for_record(interval.record)
+
+
+class HRLeaveIntervalDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """
+    GET/PATCH/DELETE /attendance/hr/intervals/{id}/
+    """
+    permission_classes = [IsHROrAdmin]
+    serializer_class = HRLeaveIntervalCreateSerializer
+    queryset = AttendanceLeaveInterval.objects.select_related('record__user')
+
+    def perform_update(self, serializer):
+        interval = serializer.save()
+        recompute_compliance_for_record(interval.record)
+
+    def perform_destroy(self, instance):
+        record = instance.record
+        instance.delete()
+        recompute_compliance_for_record(record)
 
 
 # ---------------------------------------------------------------------------

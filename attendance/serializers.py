@@ -1,9 +1,18 @@
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
 
-from .models import AttendanceRecord, AttendanceSite, ShiftRule
+from .models import AttendanceLeaveInterval, AttendanceRecord, AttendanceSite, ShiftRule
 
 User = get_user_model()
+
+
+class AttendanceLeaveIntervalSerializer(serializers.ModelSerializer):
+    leave_type_display = serializers.CharField(source='get_leave_type_display', read_only=True)
+
+    class Meta:
+        model = AttendanceLeaveInterval
+        fields = ['id', 'start_time', 'end_time', 'leave_type', 'leave_type_display', 'notes', 'created_at']
+        read_only_fields = ['id', 'leave_type_display', 'created_at']
 
 
 class AttendanceRecordSerializer(serializers.ModelSerializer):
@@ -13,6 +22,7 @@ class AttendanceRecordSerializer(serializers.ModelSerializer):
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     leave_type_display = serializers.CharField(source='get_leave_type_display', read_only=True)
     is_paid_leave = serializers.BooleanField(read_only=True)
+    leave_intervals = AttendanceLeaveIntervalSerializer(many=True, read_only=True)
 
     class Meta:
         model = AttendanceRecord
@@ -28,6 +38,7 @@ class AttendanceRecordSerializer(serializers.ModelSerializer):
             'reviewed_by', 'reviewed_by_display', 'reviewed_at',
             'overtime_minutes', 'late_minutes', 'early_leave_minutes',
             'notes',
+            'leave_intervals',
             'created_at', 'updated_at',
         ]
         read_only_fields = [
@@ -37,6 +48,7 @@ class AttendanceRecordSerializer(serializers.ModelSerializer):
             'client_ip',
             'reviewed_by', 'reviewed_by_display', 'reviewed_at',
             'overtime_minutes', 'late_minutes', 'early_leave_minutes',
+            'leave_intervals',
             'created_at', 'updated_at',
         ]
 
@@ -83,6 +95,7 @@ class HRAttendanceRecordSerializer(serializers.ModelSerializer):
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     leave_type_display = serializers.CharField(source='get_leave_type_display', read_only=True)
     is_paid_leave = serializers.BooleanField(read_only=True)
+    leave_intervals = AttendanceLeaveIntervalSerializer(many=True, read_only=True)
 
     class Meta:
         model = AttendanceRecord
@@ -98,9 +111,10 @@ class HRAttendanceRecordSerializer(serializers.ModelSerializer):
             'reviewed_by', 'reviewed_by_display', 'reviewed_at',
             'overtime_minutes', 'late_minutes', 'early_leave_minutes',
             'notes',
+            'leave_intervals',
             'created_at', 'updated_at',
         ]
-        read_only_fields = ['id', 'user_display', 'reviewed_by_display', 'client_ip', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'user_display', 'reviewed_by_display', 'client_ip', 'leave_intervals', 'created_at', 'updated_at']
 
     def get_user_display(self, obj):
         u = obj.user
@@ -114,13 +128,18 @@ class HRAttendanceRecordSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         from attendance.services import compute_overtime_minutes, compute_shift_compliance
+        # If HR didn't explicitly send a method, stamp it as hr_manual
+        if 'method' not in validated_data:
+            validated_data['method'] = AttendanceRecord.METHOD_HR
         instance = super().update(instance, validated_data)
+        update_fields = []
         # Recompute whenever both times are present and either was changed
         time_fields = {'check_in_time', 'check_out_time'}
         if time_fields & set(validated_data.keys()) and instance.check_in_time and instance.check_out_time:
             instance.overtime_minutes = compute_overtime_minutes(instance.user, instance.check_in_time, instance.check_out_time)
             instance.late_minutes, instance.early_leave_minutes = compute_shift_compliance(instance.user, instance.check_in_time, instance.check_out_time)
-            instance.save(update_fields=['overtime_minutes', 'late_minutes', 'early_leave_minutes'])
+            update_fields += ['overtime_minutes', 'late_minutes', 'early_leave_minutes']
+            instance.save(update_fields=update_fields)
         return instance
 
 
@@ -203,3 +222,45 @@ class UserShiftRuleAssignSerializer(serializers.Serializer):
     """Assign or unassign a shift rule for a user. Pass shift_rule_id=null to clear."""
     user_id = serializers.IntegerField()
     shift_rule_id = serializers.IntegerField(allow_null=True)
+
+
+class HRLeaveIntervalCreateSerializer(serializers.ModelSerializer):
+    """
+    HR creates or edits a partial-day leave interval on an existing AttendanceRecord.
+    `record` is set from the URL, not the request body.
+    """
+    leave_type_display = serializers.CharField(source='get_leave_type_display', read_only=True)
+
+    class Meta:
+        model = AttendanceLeaveInterval
+        fields = ['id', 'start_time', 'end_time', 'leave_type', 'leave_type_display', 'notes', 'created_at']
+        read_only_fields = ['id', 'leave_type_display', 'created_at']
+
+    def validate(self, data):
+        start = data.get('start_time', getattr(self.instance, 'start_time', None))
+        end = data.get('end_time', getattr(self.instance, 'end_time', None))
+
+        if start and end and end <= start:
+            raise serializers.ValidationError("end_time must be after start_time.")
+
+        # Validate interval does not overlap with the work session [check_in, check_out]
+        record = self.context.get('record') or getattr(self.instance, 'record', None)
+        if record and start and end:
+            check_in = record.check_in_time
+            check_out = record.check_out_time
+            if check_in and check_out:
+                # Overlap exists if interval starts before check_out AND ends after check_in
+                if start < check_out and end > check_in:
+                    raise serializers.ValidationError(
+                        "Leave interval cannot overlap with the work session "
+                        f"({check_in:%H:%M}–{check_out:%H:%M}). "
+                        "It must end before check-in or start after check-out."
+                    )
+            elif check_in and end > check_in:
+                # No check_out yet — interval must not start during/before the ongoing session
+                raise serializers.ValidationError(
+                    "Leave interval cannot overlap with the ongoing work session "
+                    f"(checked in at {check_in:%H:%M})."
+                )
+
+        return data

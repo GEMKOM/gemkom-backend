@@ -1,6 +1,12 @@
 from django.contrib import admin
 
-from .models import AttendanceSite, AttendanceRecord, ShiftRule, PublicHoliday
+from .models import AttendanceLeaveInterval, AttendanceSite, AttendanceRecord, ShiftRule, PublicHoliday
+
+
+class LeaveIntervalInline(admin.TabularInline):
+    model = AttendanceLeaveInterval
+    extra = 0
+    fields = ['start_time', 'end_time', 'leave_type', 'notes']
 
 
 @admin.register(AttendanceSite)
@@ -33,3 +39,4 @@ class AttendanceRecordAdmin(admin.ModelAdmin):
     raw_id_fields = ['user', 'reviewed_by']
     date_hierarchy = 'date'
     ordering = ['-date', '-check_in_time']
+    inlines = [LeaveIntervalInline]

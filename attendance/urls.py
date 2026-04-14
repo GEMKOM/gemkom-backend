@@ -11,6 +11,8 @@ from .views import (
     HRApproveOverrideView,
     HRRejectOverrideView,
     HRPendingOverridesView,
+    HRLeaveIntervalListCreateView,
+    HRLeaveIntervalDetailView,
     AttendanceSiteView,
     ShiftRuleListCreateView,
     ShiftRuleDetailView,
@@ -32,6 +34,10 @@ urlpatterns = [
     path('hr/records/<int:pk>/approve-override/', HRApproveOverrideView.as_view(), name='attendance-hr-approve'),
     path('hr/records/<int:pk>/reject-override/', HRRejectOverrideView.as_view(), name='attendance-hr-reject'),
     path('hr/pending-overrides/', HRPendingOverridesView.as_view(), name='attendance-hr-pending'),
+
+    # HR — leave intervals
+    path('hr/records/<int:record_id>/intervals/', HRLeaveIntervalListCreateView.as_view(), name='attendance-hr-intervals'),
+    path('hr/intervals/<int:pk>/', HRLeaveIntervalDetailView.as_view(), name='attendance-hr-interval-detail'),
 
     # Debug (DEBUG=True only)
     path('debug/ip/', DebugIPView.as_view(), name='attendance-debug-ip'),

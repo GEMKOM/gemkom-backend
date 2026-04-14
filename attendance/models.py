@@ -91,7 +91,7 @@ class AttendanceRecord(models.Model):
         (METHOD_IP, 'IP (Ofis Ağı)'),
         (METHOD_GPS, 'GPS'),
         (METHOD_OVERRIDE, 'Manuel Değişim Talebi'),
-        (METHOD_HR, 'Manuel'),
+        (METHOD_HR, 'HR Değişikliği'),
     ]
 
     STATUS_ACTIVE = 'active'
@@ -123,6 +123,7 @@ class AttendanceRecord(models.Model):
     LEAVE_UNAUTHORIZED = 'unauthorized_absence'
     LEAVE_BUSINESS_TRIP = 'business_trip'
     LEAVE_HALF_DAY = 'half_day'
+    LEAVE_PAID = 'paid_leave'
 
     LEAVE_TYPE_CHOICES = [
         # Paid
@@ -136,6 +137,7 @@ class AttendanceRecord(models.Model):
         (LEAVE_COMPENSATORY, 'Mazeret İzni'),
         (LEAVE_BUSINESS_TRIP,'Görev Seyahati'),
         (LEAVE_HALF_DAY,     'Yarım Gün'),
+        (LEAVE_PAID,         'Ücretli İzin'),
         # Unpaid
         (LEAVE_UNPAID,       'Ücretsiz İzin'),
         (LEAVE_UNAUTHORIZED, 'İzinsiz Devamsızlık'),
@@ -144,7 +146,7 @@ class AttendanceRecord(models.Model):
     PAID_LEAVE_TYPES = {
         LEAVE_ANNUAL, LEAVE_SICK, LEAVE_MATERNITY, LEAVE_PATERNITY,
         LEAVE_BEREAVEMENT, LEAVE_MARRIAGE, LEAVE_PUBLIC_DUTY,
-        LEAVE_COMPENSATORY, LEAVE_BUSINESS_TRIP, LEAVE_HALF_DAY,
+        LEAVE_COMPENSATORY, LEAVE_BUSINESS_TRIP, LEAVE_HALF_DAY, LEAVE_PAID,
     }
 
     user = models.ForeignKey(User, on_delete=models.PROTECT, related_name='attendance_records')
@@ -189,7 +191,10 @@ class AttendanceRecord(models.Model):
         default=0,
         help_text="Minutes before expected_end the user checked out. 0 = stayed full shift or later.",
     )
-    notes = models.TextField(blank=True)
+    notes = models.TextField(
+        blank=True,
+        help_text="HR notes. For leave records, use this to record leave context (e.g. approval info, compensatory details).",
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -216,3 +221,34 @@ class AttendanceRecord(models.Model):
         if self.leave_type:
             return f"{self.user} | {self.date} | {self.get_leave_type_display()}"
         return f"{self.user} | {self.date} | {self.status}"
+
+
+class AttendanceLeaveInterval(models.Model):
+    """
+    A partial-day leave window attached to an AttendanceRecord.
+    Used when an employee works part of the day but has approved leave for a specific time interval
+    (e.g. arrived 90 min late, or left 2h early).
+    The parent record retains the actual work session check_in/check_out times.
+    """
+    record = models.ForeignKey(
+        AttendanceRecord,
+        on_delete=models.CASCADE,
+        related_name='leave_intervals',
+    )
+    start_time = models.DateTimeField()
+    end_time = models.DateTimeField()
+    leave_type = models.CharField(max_length=30, choices=AttendanceRecord.LEAVE_TYPE_CHOICES)
+    notes = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Leave Interval"
+        verbose_name_plural = "Leave Intervals"
+        ordering = ['start_time']
+
+    def __str__(self):
+        return (
+            f"{self.record.user} | {self.record.date} | "
+            f"{self.get_leave_type_display()} "
+            f"{self.start_time:%H:%M}–{self.end_time:%H:%M}"
+        )
