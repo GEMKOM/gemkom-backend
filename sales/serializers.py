@@ -78,6 +78,30 @@ class OfferTemplateCreateUpdateSerializer(serializers.ModelSerializer):
         fields = ['id', 'name', 'description', 'is_active']
 
 
+class NodeSearchResultSerializer(serializers.ModelSerializer):
+    template_name = serializers.CharField(source='template.name', read_only=True)
+    breadcrumb = serializers.SerializerMethodField()
+    children_count = serializers.IntegerField(source='children.count', read_only=True)
+
+    class Meta:
+        model = OfferTemplateNode
+        fields = [
+            'id', 'code', 'title', 'description',
+            'template', 'template_name',
+            'breadcrumb', 'children_count', 'is_active',
+        ]
+
+    def get_breadcrumb(self, obj):
+        """Walk up parent chain to build a title path. Requires select_related on parent chain."""
+        parts = []
+        node = obj
+        while node is not None:
+            parts.append(node.title)
+            node = node.parent
+        parts.reverse()
+        return parts
+
+
 # =============================================================================
 # File serializers
 # =============================================================================
@@ -160,6 +184,7 @@ class SalesOfferItemSerializer(serializers.ModelSerializer):
     )
     resolved_title = serializers.CharField(read_only=True)
     subtotal = serializers.DecimalField(max_digits=16, decimal_places=2, read_only=True)
+    children = serializers.SerializerMethodField()
 
     class Meta:
         model = SalesOfferItem
@@ -167,21 +192,37 @@ class SalesOfferItemSerializer(serializers.ModelSerializer):
             'id', 'offer', 'template_node', 'template_node_detail',
             'quantity', 'title_override', 'notes', 'sequence',
             'unit_price', 'weight_kg', 'delivery_period', 'subtotal',
-            'resolved_title', 'created_at',
+            'resolved_title', 'parent', 'children', 'created_at',
         ]
         read_only_fields = ['offer', 'created_at']
 
+    def get_children(self, obj):
+        return SalesOfferItemSerializer(obj.children.all(), many=True).data
+
 
 class SalesOfferItemCreateSerializer(serializers.ModelSerializer):
+    parent = serializers.PrimaryKeyRelatedField(
+        queryset=SalesOfferItem.objects.all(),
+        required=False,
+        allow_null=True,
+    )
+
     class Meta:
         model = SalesOfferItem
-        fields = ['template_node', 'quantity', 'title_override', 'notes', 'sequence', 'unit_price', 'weight_kg', 'delivery_period']
+        fields = ['template_node', 'quantity', 'title_override', 'notes', 'sequence', 'unit_price', 'weight_kg', 'delivery_period', 'parent']
 
     def validate(self, attrs):
         if self.instance is None:
             if not attrs.get('template_node') and not attrs.get('title_override'):
                 raise serializers.ValidationError(
                     "Either template_node or title_override must be provided."
+                )
+        parent_item = attrs.get('parent')
+        if parent_item is not None:
+            offer = self.context.get('offer')
+            if offer and parent_item.offer_id != offer.id:
+                raise serializers.ValidationError(
+                    {'parent': 'Parent item must belong to the same offer.'}
                 )
         return attrs
 
@@ -217,7 +258,7 @@ class SalesOfferListSerializer(serializers.ModelSerializer):
             'customer', 'customer_name', 'customer_code',
             'delivery_date_requested', 'offer_expiry_date',
             'delivery_place', 'payment_terms', 'payment_terms_detail', 'order_no',
-            'shipping_price',
+            'shipping_price', 'pricing_mode',
             'current_price', 'item_count',
             'total_price', 'total_weight_kg',
             'approval_round',
@@ -266,7 +307,7 @@ class SalesOfferDetailSerializer(serializers.ModelSerializer):
             'customer', 'customer_name', 'customer_code',
             'customer_inquiry_ref', 'delivery_date_requested', 'offer_expiry_date',
             'incoterms', 'delivery_place', 'payment_terms', 'payment_terms_detail', 'order_no',
-            'shipping_price',
+            'shipping_price', 'pricing_mode',
             'approval_round',
             'current_price',
             'total_price', 'total_weight_kg',
@@ -290,6 +331,7 @@ class SalesOfferCreateSerializer(serializers.ModelSerializer):
             'customer', 'title', 'description',
             'customer_inquiry_ref', 'delivery_date_requested', 'offer_expiry_date',
             'incoterms', 'delivery_place', 'payment_terms', 'order_no',
+            'pricing_mode',
         ]
 
 
@@ -300,6 +342,7 @@ class SalesOfferUpdateSerializer(serializers.ModelSerializer):
             'customer', 'title', 'description',
             'customer_inquiry_ref', 'delivery_date_requested', 'offer_expiry_date',
             'incoterms', 'delivery_place', 'payment_terms', 'order_no',
+            'shipping_price', 'pricing_mode',
         ]
 
     def validate(self, attrs):

@@ -144,6 +144,17 @@ class SalesOffer(models.Model):
         help_text="Nakliye bedeli (tarafımızca üstlenilirse toplam fiyata eklenir)"
     )
 
+    PRICING_MODE_CHOICES = [
+        ('flat', 'Düz — fiyat kök kalemlere girilir'),
+        ('leaf', 'Yaprak — fiyat yaprak kalemlere girilir, ebeveynler toplanır'),
+    ]
+    pricing_mode = models.CharField(
+        max_length=10,
+        choices=PRICING_MODE_CHOICES,
+        default='flat',
+        help_text="flat: price on root items; leaf: price on leaf items, parents roll up"
+    )
+
     status = models.CharField(
         max_length=30,
         choices=STATUS_CHOICES,
@@ -211,11 +222,21 @@ class SalesOffer(models.Model):
 
     @property
     def total_price(self):
+        """
+        flat: sum root items (parent=None) only.
+        leaf: sum leaf items (no children) only — parents roll up.
+        In both modes, total = sum of priced items + shipping_price.
+        """
         from decimal import Decimal
         total = Decimal('0.00')
-        for item in self.items.all():
-            if item.unit_price is not None:
-                total += item.unit_price * item.quantity
+        if self.pricing_mode == 'flat':
+            for item in self.items.filter(parent__isnull=True):
+                if item.unit_price is not None:
+                    total += item.unit_price * item.quantity
+        else:  # leaf
+            for item in self.items.all():
+                if item.unit_price is not None and not item.children.exists():
+                    total += item.unit_price * item.quantity
         total += self.shipping_price
         return total
 
@@ -253,6 +274,14 @@ class SalesOfferItem(models.Model):
         null=True,
         blank=True,
         related_name='offer_items'
+    )
+    parent = models.ForeignKey(
+        'self',
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='children',
+        help_text='Explicit parent item — makes this a custom sub-item of the parent on conversion'
     )
     quantity = models.PositiveIntegerField(default=1)
     title_override = models.CharField(
@@ -293,6 +322,10 @@ class SalesOfferItem(models.Model):
             raise ValidationError(
                 "Either template_node or title_override must be provided."
             )
+        if self.parent_id and self.offer_id and self.parent.offer_id != self.offer_id:
+            raise ValidationError(
+                "Parent item must belong to the same offer."
+            )
 
     @property
     def resolved_title(self):
@@ -304,6 +337,21 @@ class SalesOfferItem(models.Model):
 
     @property
     def subtotal(self):
+        """
+        flat mode: unit_price × quantity (meaningful only on root items).
+        leaf mode: if this item has children, returns sum of children's subtotals
+                   (rolled up); if no children, returns unit_price × quantity.
+        """
+        from decimal import Decimal
+        if self.offer.pricing_mode == 'leaf':
+            children = list(self.children.all())
+            if children:
+                total = Decimal('0.00')
+                for child in children:
+                    child_sub = child.subtotal
+                    if child_sub is not None:
+                        total += child_sub
+                return total
         if self.unit_price is not None:
             return self.unit_price * self.quantity
         return None

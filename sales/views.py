@@ -17,12 +17,15 @@ from .models import (
     SalesOfferPriceRevision,
 )
 from rest_framework.permissions import IsAuthenticated
+from django.db.models import Q
+
 from .serializers import (
     OfferTemplateListSerializer,
     OfferTemplateDetailSerializer,
     OfferTemplateCreateUpdateSerializer,
     OfferTemplateNodeSerializer,
     OfferTemplateNodeCreateUpdateSerializer,
+    NodeSearchResultSerializer,
     SalesOfferListSerializer,
     SalesOfferDetailSerializer,
     SalesOfferCreateSerializer,
@@ -35,7 +38,6 @@ from .serializers import (
     SendConsultationsSerializer,
     SubmitForApprovalSerializer,
     RecordApprovalDecisionSerializer,
-    AddItemsSerializer,
     UpdateConsultationSerializer,
 )
 from . import services
@@ -114,6 +116,45 @@ class OfferTemplateViewSet(viewsets.ModelViewSet):
             OfferTemplateNodeCreateUpdateSerializer(node).data,
             status=status.HTTP_201_CREATED,
         )
+
+    @action(detail=False, methods=['get'], url_path='nodes/search')
+    def search_nodes(self, request):
+        """
+        GET /sales/offer-templates/nodes/search/?q=<query>
+        Optional: ?template=<id>  &  ?is_active=true|false|all
+        """
+        q = request.query_params.get('q', '').strip()
+        if len(q) < 2:
+            return Response(
+                {'detail': 'q must be at least 2 characters.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        qs = (
+            OfferTemplateNode.objects
+            .select_related(
+                'template',
+                'parent',
+                'parent__parent',
+                'parent__parent__parent',
+                'parent__parent__parent__parent',
+            )
+            .filter(
+                Q(title__icontains=q) |
+                Q(code__icontains=q) |
+                Q(description__icontains=q)
+            )
+        )
+
+        is_active_param = request.query_params.get('is_active', 'true').lower()
+        if is_active_param != 'all':
+            qs = qs.filter(is_active=(is_active_param != 'false'))
+
+        if template_id := request.query_params.get('template'):
+            qs = qs.filter(template_id=template_id)
+
+        qs = qs.order_by('template__name', 'sequence')[:100]
+        return Response(NodeSearchResultSerializer(qs, many=True).data)
 
     @action(detail=True, methods=['get', 'patch', 'delete'], url_path=r'nodes/(?P<node_pk>\d+)')
     def node_detail(self, request, pk=None, node_pk=None):
@@ -260,10 +301,18 @@ class SalesOfferViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['get'], url_path='items')
     def items(self, request, pk=None):
         offer = self.get_object()
-        return Response(SalesOfferItemSerializer(offer.items.all(), many=True).data)
+        qs = offer.items.select_related('template_node').prefetch_related('children').filter(parent__isnull=True)
+        return Response(SalesOfferItemSerializer(qs, many=True).data)
 
     @action(detail=True, methods=['post'], url_path='add-items')
     def add_items(self, request, pk=None):
+        """
+        Accepts a list of items. Each item may have:
+          - _ref: optional client-assigned temp ID (string)
+          - parent_ref: references another item's _ref in this same request
+        Items are processed in order; parent_ref must reference a _ref that
+        appears earlier in the list.
+        """
         offer = self.get_object()
         _TERMINAL = ('won', 'lost', 'cancelled', 'converted')
         if offer.status in _TERMINAL:
@@ -272,17 +321,53 @@ class SalesOfferViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        serializer = AddItemsSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+        raw_items = request.data.get('items', [])
+        if not raw_items:
+            return Response(
+                {'detail': 'En az bir kalem girilmelidir.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
+        ref_map = {}   # _ref string → created SalesOfferItem
         created = []
-        for item_data in serializer.validated_data['items']:
+        errors = []
+
+        for idx, raw in enumerate(raw_items):
+            ref = raw.get('_ref')
+            parent_ref = raw.get('parent_ref')
+
+            # Strip meta fields before validation
+            item_data = {k: v for k, v in raw.items() if k not in ('_ref', 'parent_ref')}
+
+            # Resolve parent_ref → parent SalesOfferItem instance
+            if parent_ref is not None:
+                if parent_ref not in ref_map:
+                    errors.append({
+                        'index': idx,
+                        'parent_ref': f"'{parent_ref}' not found — it must appear earlier in the list with a matching _ref.",
+                    })
+                    continue
+                item_data['parent'] = ref_map[parent_ref].pk
+
+            serializer = SalesOfferItemCreateSerializer(
+                data=item_data,
+                context={'offer': offer},
+            )
+            if not serializer.is_valid():
+                errors.append({'index': idx, 'errors': serializer.errors})
+                continue
+
             item = SalesOfferItem.objects.create(
                 offer=offer,
                 created_by=request.user,
-                **item_data,
+                **serializer.validated_data,
             )
             created.append(item)
+            if ref:
+                ref_map[ref] = item
+
+        if errors:
+            return Response({'detail': 'Bazı kalemler eklenemedi.', 'errors': errors}, status=status.HTTP_400_BAD_REQUEST)
 
         if offer.status in ('pending_approval', 'approved', 'submitted_customer'):
             services.rollback_to_pricing(offer)
@@ -311,7 +396,7 @@ class SalesOfferViewSet(viewsets.ModelViewSet):
                     {'detail': 'Bu durumda kalem güncellenemez.'},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-            serializer = SalesOfferItemCreateSerializer(item, data=request.data, partial=True)
+            serializer = SalesOfferItemCreateSerializer(item, data=request.data, partial=True, context={'offer': offer})
             serializer.is_valid(raise_exception=True)
             serializer.save()
             if offer.status in ('draft', 'consultation'):

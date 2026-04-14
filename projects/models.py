@@ -150,6 +150,20 @@ class JobOrder(models.Model):
         blank=True,
         related_name='job_orders',
     )
+    source_offer_item = models.ForeignKey(
+        'sales.SalesOfferItem',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='job_orders',
+    )
+    template_node = models.ForeignKey(
+        'sales.OfferTemplateNode',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='job_orders',
+    )
     # Files shared from the source offer (reference only — no file duplication)
     offer_files = models.ManyToManyField(
         'sales.SalesOfferFile',
@@ -246,6 +260,13 @@ class JobOrder(models.Model):
 
     def __str__(self):
         return f"{self.job_no} - {self.title}"
+
+    @property
+    def effective_template_node(self):
+        """Return the template node from source_offer_item if available, else the manually assigned template_node."""
+        if self.source_offer_item_id:
+            return self.source_offer_item.template_node
+        return self.template_node
 
     def get_hierarchy_level(self):
         """Calculate depth: 254-01 = 0, 254-01-01 = 1, etc."""
@@ -466,9 +487,12 @@ class JobOrder(models.Model):
             )
 
         # Check all department tasks are complete (if any exist)
+        # Exclude subtasks whose parent is skipped — they are irrelevant when the parent is skipped
         if has_tasks:
             incomplete_tasks = self.department_tasks.exclude(
                 status__in=['completed', 'skipped']
+            ).exclude(
+                parent__status='skipped'
             ).count()
             if incomplete_tasks > 0:
                 raise ValueError(
@@ -1113,9 +1137,21 @@ class JobOrderDepartmentTask(models.Model):
         self.completed_by = user
         self.save(update_fields=['status', 'completed_at', 'completed_by'])
 
+        # Skip all subtasks that are not already completed or skipped
+        if not self.parent:
+            for subtask in self.subtasks.exclude(status__in=['completed', 'skipped']):
+                subtask.status = 'skipped'
+                subtask.completed_at = timezone.now()
+                subtask.completed_by = user
+                subtask.save(update_fields=['status', 'completed_at', 'completed_by'])
+
         # Update all dependent tasks - check if they can now start
         for dependent_task in self.dependents.all():
             dependent_task.update_status_from_dependencies()
+
+        # If this is a subtask, check if parent can auto-complete
+        if self.parent:
+            self.parent._check_subtask_completion(user)
 
         # Update job order completion percentage (not applicable for consultation tasks)
         if self.job_order_id:

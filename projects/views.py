@@ -342,6 +342,18 @@ class JobOrderViewSet(viewsets.ModelViewSet):
             child.update_completion_percentage()
 
         job_order.update_completion_percentage()
+
+        # Auto-complete if all main tasks are now done/skipped
+        if job_order.status == 'active':
+            incomplete = job_order.department_tasks.filter(
+                parent__isnull=True
+            ).exclude(status__in=['completed', 'skipped']).count()
+            if incomplete == 0 and job_order.department_tasks.filter(parent__isnull=True).exists():
+                try:
+                    job_order.complete(user=request.user, _auto=True)
+                except ValueError:
+                    pass
+
         job_order.refresh_from_db()
         return Response({
             'job_no': job_order.job_no,
