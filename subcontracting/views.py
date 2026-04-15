@@ -680,7 +680,7 @@ class SubcontractorStatementViewSet(viewsets.ModelViewSet):
             .filter(year=year, month=month, status__in=['approved', 'paid'])
             .select_related('subcontractor')
             .prefetch_related(
-                'line_items__assignment__department_task',
+                'line_items__assignment__price_tier',
                 'adjustments__job_order',
             )
         )
@@ -694,11 +694,11 @@ class SubcontractorStatementViewSet(viewsets.ModelViewSet):
             for line in stmt.line_items.all():
                 if not line.cost_amount:
                     continue
-                is_painting = (
-                    line.assignment is not None
-                    and line.assignment.department_task is not None
-                    and line.assignment.department_task.task_type == 'painting'
-                )
+                if line.assignment is not None and line.assignment.price_tier is not None:
+                    is_painting = line.assignment.price_tier.tier_type == SubcontractingPriceTier.TIER_TYPE_PAINT
+                else:
+                    # Fallback: treat all lines from the paint subcontractor as painting
+                    is_painting = stmt.subcontractor_id == PAINT_SUBCONTRACTOR_ID
                 if is_painting:
                     paint_job_weights[line.job_no] += line.effective_weight_kg
                     if not paint_sub_name:
