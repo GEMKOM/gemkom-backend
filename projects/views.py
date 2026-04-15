@@ -1970,6 +1970,226 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
             'tasks': DepartmentTaskListSerializer(created_tasks, many=True).data
         }, status=status.HTTP_201_CREATED)
 
+    @action(detail=False, methods=['post'])
+    def apply_template(self, request):
+        """
+        Apply a task template (with subtasks and dependencies) to one or more job orders
+        in a single atomic transaction. All job orders succeed or all are rolled back.
+
+        Request body:
+        {
+            "job_orders": ["100-100-01", "100-100-02"],
+            "tasks": [
+                {
+                    "temp_id": -1,
+                    "department": "design",
+                    "title": "...",
+                    "sequence": 1,
+                    "weight": 10
+                    // no "parent" → main task
+                },
+                {
+                    "temp_id": -2,
+                    "department": "planning",
+                    "title": "...",
+                    "sequence": 2,
+                    "weight": 10,
+                    "parent": -1   // temp_id of the parent task
+                }
+            ],
+            "dependencies": [
+                {"task": -2, "depends_on": [-1]}   // temp_ids
+            ]
+        }
+
+        Rules:
+        - temp_ids must be negative integers (to avoid collision with real PKs).
+        - "parent" references another temp_id in the same request.
+        - "dependencies" references temp_ids of tasks in the same request.
+        - On any validation error the whole request is rolled back (no partial state).
+        """
+        job_order_ids = request.data.get('job_orders', [])
+        tasks_data = request.data.get('tasks', [])
+        dependencies_data = request.data.get('dependencies', [])
+
+        # --- Basic input validation (before hitting the DB) ---
+        if not job_order_ids or not isinstance(job_order_ids, list):
+            return Response(
+                {'status': 'error', 'message': 'job_orders alanı bir liste olmalıdır.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if not tasks_data or not isinstance(tasks_data, list):
+            return Response(
+                {'status': 'error', 'message': 'tasks alanı boş olamaz.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Validate temp_ids
+        temp_ids = []
+        for idx, t in enumerate(tasks_data):
+            tid = t.get('temp_id')
+            if tid is None:
+                return Response(
+                    {'status': 'error', 'message': f'tasks[{idx}]: temp_id alanı zorunludur.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            if not isinstance(tid, int) or tid >= 0:
+                return Response(
+                    {'status': 'error', 'message': f'tasks[{idx}]: temp_id negatif bir tam sayı olmalıdır.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            if tid in temp_ids:
+                return Response(
+                    {'status': 'error', 'message': f'tasks[{idx}]: temp_id {tid} zaten kullanılmış.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            temp_ids.append(tid)
+
+        temp_id_set = set(temp_ids)
+
+        # Validate parent refs
+        for idx, t in enumerate(tasks_data):
+            parent_tid = t.get('parent')
+            if parent_tid is not None and parent_tid not in temp_id_set:
+                return Response(
+                    {'status': 'error', 'message': f'tasks[{idx}]: parent temp_id {parent_tid} bu istekte tanımlı değil.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+        # Validate dependency refs
+        for idx, dep in enumerate(dependencies_data):
+            task_tid = dep.get('task')
+            if task_tid not in temp_id_set:
+                return Response(
+                    {'status': 'error', 'message': f'dependencies[{idx}]: task temp_id {task_tid} bu istekte tanımlı değil.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            for dep_tid in dep.get('depends_on', []):
+                if dep_tid not in temp_id_set:
+                    return Response(
+                        {'status': 'error', 'message': f'dependencies[{idx}]: depends_on temp_id {dep_tid} bu istekte tanımlı değil.'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+        # Verify all job orders exist
+        existing_jos = set(
+            JobOrder.objects.filter(pk__in=job_order_ids).values_list('pk', flat=True)
+        )
+        missing = [jo for jo in job_order_ids if jo not in existing_jos]
+        if missing:
+            return Response(
+                {'status': 'error', 'message': f'İş emirleri bulunamadı: {missing}'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # Topological sort so parents are always created before their children
+        # Build adjacency: temp_id -> list of temp_ids that depend on it as parent
+        parent_map = {t['temp_id']: t.get('parent') for t in tasks_data}
+        task_by_tid = {t['temp_id']: t for t in tasks_data}
+
+        def topo_sort(task_list):
+            """Return tasks ordered so parents always come before children."""
+            order = []
+            visited = set()
+
+            def visit(tid):
+                if tid in visited:
+                    return
+                visited.add(tid)
+                p = parent_map.get(tid)
+                if p is not None:
+                    visit(p)
+                order.append(tid)
+
+            for t in task_list:
+                visit(t['temp_id'])
+            return [task_by_tid[tid] for tid in order]
+
+        sorted_tasks = topo_sort(tasks_data)
+
+        # Build dep lookup: temp_id -> [temp_ids it depends on]
+        dep_lookup = {dep['task']: dep.get('depends_on', []) for dep in dependencies_data}
+
+        # --- Single atomic block for all job orders ---
+        try:
+            with transaction.atomic():
+                result = {}
+
+                for jo_id in job_order_ids:
+                    tid_to_real = {}  # temp_id -> real DB pk for this job order
+
+                    # Pass 1: create all tasks (parents before children)
+                    for t in sorted_tasks:
+                        task_payload = {
+                            k: v for k, v in t.items()
+                            if k not in ('temp_id', 'parent', 'depends_on')
+                        }
+                        task_payload['job_order'] = jo_id
+
+                        # Resolve parent temp_id → real pk
+                        parent_tid = t.get('parent')
+                        if parent_tid is not None:
+                            task_payload['parent'] = tid_to_real[parent_tid]
+
+                        serializer = DepartmentTaskCreateSerializer(data=task_payload)
+                        if not serializer.is_valid():
+                            raise ValueError({
+                                'job_order': jo_id,
+                                'temp_id': t['temp_id'],
+                                'errors': serializer.errors,
+                            })
+
+                        task = serializer.save(created_by=request.user)
+                        tid_to_real[t['temp_id']] = task.pk
+
+                    # Pass 2: wire up depends_on
+                    for temp_task_id, dep_temp_ids in dep_lookup.items():
+                        real_pk = tid_to_real[temp_task_id]
+                        real_dep_pks = [tid_to_real[d] for d in dep_temp_ids]
+                        task_obj = JobOrderDepartmentTask.objects.get(pk=real_pk)
+                        task_obj.depends_on.set(real_dep_pks)
+
+                    # Pass 3: update statuses now that all deps are wired
+                    all_tasks = JobOrderDepartmentTask.objects.filter(
+                        pk__in=tid_to_real.values()
+                    ).prefetch_related('depends_on')
+                    for task_obj in all_tasks:
+                        task_obj.update_status_from_dependencies()
+
+                    result[jo_id] = list(tid_to_real.values())
+
+        except ValueError as exc:
+            err = exc.args[0]
+            return Response(
+                {
+                    'status': 'error',
+                    'message': 'Doğrulama hatası — tüm iş emirleri geri alındı.',
+                    'detail': err,
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Serialize results
+        all_created_pks = [pk for pks in result.values() for pk in pks]
+        all_created = JobOrderDepartmentTask.objects.filter(pk__in=all_created_pks)
+        tasks_by_jo = {}
+        for task_obj in all_created:
+            jo_key = task_obj.job_order_id
+            tasks_by_jo.setdefault(jo_key, []).append(task_obj)
+
+        return Response(
+            {
+                'status': 'success',
+                'message': f'{len(job_order_ids)} iş emrine şablon uygulandı.',
+                'results': {
+                    jo_id: DepartmentTaskListSerializer(tasks_by_jo.get(jo_id, []), many=True).data
+                    for jo_id in job_order_ids
+                },
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
     @action(detail=True, methods=['post'], url_path='bulk_create_subtasks')
     def bulk_create_subtasks(self, request, pk=None):
         """
