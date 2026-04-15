@@ -103,6 +103,7 @@ INSTALLED_APPS = [
     'notifications',
     'reports',
     'attendance',
+    'linear_cutting',
 ]
 
 MIDDLEWARE = [

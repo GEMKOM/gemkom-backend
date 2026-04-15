@@ -36,6 +36,9 @@ def _get_task_model_from_type(task_type):
     elif task_type == 'operation':
         from tasks.models import Operation
         return Operation
+    elif task_type == 'linear_cutting':
+        from linear_cutting.models import LinearCuttingTask
+        return LinearCuttingTask
     return None
 
 def _parse_ms(val):
@@ -58,6 +61,9 @@ def get_timer_serializer_class(task_type):
     elif task_type in ('machine_fault', 'machines'):
         from machines.serializers import MachineFaultTimerSerializer
         return MachineFaultTimerSerializer
+    elif task_type == 'linear_cutting':
+        from linear_cutting.serializers import LinearCuttingTimerSerializer
+        return LinearCuttingTimerSerializer
     return BaseTimerSerializer
 
 class GenericTimerStartView(APIView):

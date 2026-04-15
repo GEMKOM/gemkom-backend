@@ -468,3 +468,157 @@ class UpdateConsultationSerializer(serializers.Serializer):
     file_ids = serializers.ListField(
         child=serializers.IntegerField(), required=False, allow_null=True
     )
+
+
+# =============================================================================
+# Approval page serializer — full read for the approver link page
+# =============================================================================
+
+class ApprovalPageWorkflowSerializer(serializers.Serializer):
+    """
+    Per-workflow block for the approver landing page.
+    Includes created_at, is_cancelled, snapshot, and policy name
+    in addition to what the shared WorkflowSerializer provides.
+    """
+    policy_name = serializers.SerializerMethodField()
+    created_at = serializers.DateTimeField(read_only=True)
+    current_stage_order = serializers.IntegerField(read_only=True)
+    is_complete = serializers.BooleanField(read_only=True)
+    is_rejected = serializers.BooleanField(read_only=True)
+    is_cancelled = serializers.BooleanField(read_only=True)
+    snapshot = serializers.JSONField(read_only=True)
+    stage_instances = serializers.SerializerMethodField()
+
+    def get_policy_name(self, obj):
+        try:
+            return obj.policy.name
+        except Exception:
+            return None
+
+    def get_stage_instances(self, obj):
+        from approvals.serializers import StageInstanceSerializer
+        from django.contrib.auth.models import User
+
+        stages = list(obj.stage_instances.all().order_by('order'))
+        ids = {uid for s in stages for uid in (s.approver_user_ids or [])}
+        user_cache = {}
+        if ids:
+            from approvals.serializers import MiniUserSerializer
+            for u in User.objects.filter(id__in=ids).only('id', 'username', 'first_name', 'last_name'):
+                user_cache[u.id] = MiniUserSerializer(u).data
+        ctx = dict(self.context or {})
+        ctx['user_cache'] = user_cache
+        return StageInstanceSerializer(stages, many=True, context=ctx).data
+
+
+class SalesOfferApprovalPageSerializer(serializers.ModelSerializer):
+    """
+    All-in-one payload for the approver landing page:
+    - Offer header info
+    - All items (tree)
+    - Price history
+    - All approval workflows (past + current)
+    - current_user_can_decide: whether the requesting user has a pending decision
+    """
+    customer_name = serializers.CharField(source='customer.name', read_only=True)
+    customer_code = serializers.CharField(source='customer.code', read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    pricing_mode_display = serializers.CharField(source='get_pricing_mode_display', read_only=True)
+    payment_terms_detail = PaymentTermsMinimalSerializer(source='payment_terms', read_only=True)
+    created_by_name = serializers.CharField(
+        source='created_by.get_full_name', read_only=True, default=''
+    )
+    current_price = SalesOfferCurrentPriceSerializer(read_only=True)
+    total_price = serializers.SerializerMethodField()
+    total_weight_kg = serializers.SerializerMethodField()
+
+    items = serializers.SerializerMethodField()
+    price_history = serializers.SerializerMethodField()
+    workflows = serializers.SerializerMethodField()
+    current_user_can_decide = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SalesOffer
+        fields = [
+            # header
+            'id', 'offer_no', 'title', 'description', 'status', 'status_display',
+            'customer', 'customer_name', 'customer_code',
+            'customer_inquiry_ref', 'delivery_date_requested', 'offer_expiry_date',
+            'incoterms', 'delivery_place',
+            'payment_terms', 'payment_terms_detail',
+            'order_no', 'shipping_price',
+            'pricing_mode', 'pricing_mode_display',
+            'approval_round',
+            'current_price', 'total_price', 'total_weight_kg',
+            'created_by', 'created_by_name', 'created_at', 'updated_at',
+            # related
+            'items',
+            'price_history',
+            'workflows',
+            'current_user_can_decide',
+        ]
+
+    def get_total_price(self, obj):
+        return obj.total_price
+
+    def get_total_weight_kg(self, obj):
+        return obj.total_weight_kg
+
+    def get_items(self, obj):
+        roots = obj.items.filter(parent__isnull=True).order_by('sequence')
+        return SalesOfferItemSerializer(roots, many=True).data
+
+    def get_price_history(self, obj):
+        revisions = obj.price_revisions.order_by('created_at')
+        return SalesOfferPriceRevisionSerializer(revisions, many=True).data
+
+    def get_workflows(self, obj):
+        from django.contrib.contenttypes.models import ContentType
+        from approvals.models import ApprovalWorkflow
+
+        ct = ContentType.objects.get_for_model(SalesOffer)
+        workflows = (
+            ApprovalWorkflow.objects
+            .filter(content_type=ct, object_id=obj.id)
+            .prefetch_related('stage_instances__decisions__approver')
+            .select_related('policy')
+            .order_by('created_at')
+        )
+        return ApprovalPageWorkflowSerializer(
+            workflows, many=True, context=self.context
+        ).data
+
+    def get_current_user_can_decide(self, obj):
+        request = self.context.get('request')
+        if not request or not request.user or not request.user.is_authenticated:
+            return False
+        if obj.status != 'pending_approval':
+            return False
+
+        from django.contrib.contenttypes.models import ContentType
+        from approvals.models import ApprovalWorkflow, ApprovalDecision
+
+        ct = ContentType.objects.get_for_model(SalesOffer)
+        wf = (
+            ApprovalWorkflow.objects
+            .filter(content_type=ct, object_id=obj.id, is_complete=False, is_rejected=False, is_cancelled=False)
+            .prefetch_related('stage_instances')
+            .order_by('-created_at')
+            .first()
+        )
+        if not wf:
+            return False
+
+        current_stage = wf.stage_instances.filter(order=wf.current_stage_order).first()
+        if not current_stage:
+            return False
+
+        user_id = request.user.id
+        if user_id not in (current_stage.approver_user_ids or []):
+            return False
+
+        already_decided = ApprovalDecision.objects.filter(
+            stage_instance=current_stage,
+            approver=request.user,
+        ).exists()
+        return not already_decided

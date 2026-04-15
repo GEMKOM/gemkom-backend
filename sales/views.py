@@ -43,6 +43,7 @@ from .serializers import (
     BulkUpdateItemsSerializer,
     BulkDeleteItemsSerializer,
     UpdateConsultationSerializer,
+    SalesOfferApprovalPageSerializer,
 )
 from . import services
 
@@ -949,21 +950,40 @@ class SalesOfferViewSet(viewsets.ModelViewSet):
         revisions = offer.price_revisions.order_by('created_at')
         return Response(SalesOfferPriceRevisionSerializer(revisions, many=True).data)
 
-    @action(detail=True, methods=['get'], url_path='approval-status')
+    @action(detail=True, methods=['get', 'post'], url_path='approval-status')
     def approval_status(self, request, pk=None):
+        """
+        GET  — Full approval page payload: offer info, items, price history,
+               all workflows, and whether the current user can decide.
+        POST — Submit an approval decision (same as /decide/ but accessible
+               from the approval link page without separate auth context).
+               Body: { approve: bool, comment?: str, counter_amount?: decimal,
+                       counter_currency?: str }
+        """
         offer = self.get_object()
-        from django.contrib.contenttypes.models import ContentType
-        from approvals.models import ApprovalWorkflow
-        from approvals.serializers import WorkflowSerializer
 
-        ct = ContentType.objects.get_for_model(SalesOffer)
-        workflows = (
-            ApprovalWorkflow.objects
-            .filter(content_type=ct, object_id=offer.id)
-            .prefetch_related('stage_instances__decisions__approver')
-            .order_by('created_at')
+        if request.method == 'POST':
+            serializer = RecordApprovalDecisionSerializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            try:
+                result = services.record_approval_decision(
+                    offer=offer,
+                    approver=request.user,
+                    approve=serializer.validated_data['approve'],
+                    comment=serializer.validated_data.get('comment', ''),
+                    counter_amount=serializer.validated_data.get('counter_amount'),
+                    counter_currency=serializer.validated_data.get('counter_currency', 'EUR'),
+                )
+            except Exception as exc:
+                return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+            # Refresh offer from DB so serializer sees updated status
+            offer.refresh_from_db()
+            return Response({
+                'outcome': result['outcome'],
+                'offer': SalesOfferApprovalPageSerializer(offer, context={'request': request}).data,
+            })
+
+        return Response(
+            SalesOfferApprovalPageSerializer(offer, context={'request': request}).data
         )
-        if not workflows.exists():
-            return Response({'detail': 'Onay süreci bulunamadı.'}, status=status.HTTP_404_NOT_FOUND)
-
-        return Response(WorkflowSerializer(workflows, many=True).data)

@@ -24,6 +24,9 @@ class Machine(models.Model):
         ('SWD', 'Tozaltı Kaynak Makinesi'),
         ('3PB', 'Üç Silindirli Sac Büküm Makinesi'),
         ('LAPTOP', 'Dizüstü Bilgisayar'),
+        ('BKS', 'Band Kesim Tezgahı'),
+        ('DKS', 'Daire Kesim Tezgahı'),
+        ('PKES', 'Profil Kesim Makinesi'),
     ]
     USED_IN_CHOICES = [
         ('machining', 'Talaşlı İmalat'),
@@ -37,6 +40,7 @@ class Machine(models.Model):
         ('rollingmill', 'Haddehane'),
         ('qualitycontrol', 'Kalite Kontrol'),
         ('cutting', 'CNC Kesim'),
+        ('linear_cutting', 'Lineer Kesim'),
         ('warehouse', 'Ambar'),
         ('finance', 'Finans'),
         ('it', 'Bilgi İşlem'),

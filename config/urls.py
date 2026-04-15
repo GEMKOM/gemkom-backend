@@ -39,4 +39,5 @@ urlpatterns = [
     path('notifications/', include('notifications.urls')),
     path('reports/', include('reports.urls')),
     path('attendance/', include('attendance.urls')),
+    path('linear_cutting/', include('linear_cutting.urls')),
 ]

@@ -716,6 +716,7 @@ class DepartmentTaskTemplateItem(models.Model):
     # Special task type — propagated to created JobOrderDepartmentTask
     TASK_TYPE_CHOICES = [
         ('cnc_cutting', 'CNC Kesim'),
+        ('linear_cutting', 'Lineer Kesim'),
         ('machining', 'Talaşlı İmalat'),
         ('welding', 'Kaynaklı İmalat'),
         ('painting', 'Boya'),
@@ -788,6 +789,7 @@ class JobOrderDepartmentTask(models.Model):
 
     TASK_TYPE_CHOICES = [
         ('cnc_cutting', 'CNC Kesim'),
+        ('linear_cutting', 'Lineer Kesim'),
         ('machining', 'Talaşlı İmalat'),
         ('welding', 'Kaynaklı İmalat'),
         ('painting', 'Boya'),
