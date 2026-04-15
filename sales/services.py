@@ -11,7 +11,7 @@ from django.contrib.auth.models import User
 from django.db import transaction
 from django.utils import timezone
 
-from notifications.service import bulk_notify, get_route, render_notification
+from notifications.service import bulk_notify, get_route, notify, render_notification
 from notifications.models import Notification
 from projects.models import JobOrder, JobOrderDepartmentTask, JobOrderDiscussionTopic
 
@@ -283,6 +283,31 @@ def _notify_dept_heads_on_consultation(offer: SalesOffer, tasks: list):
         pass
 
 
+def _notify_creator_on_decision(offer: SalesOffer, approved: bool, comment: str = ''):
+    """Notify the offer creator when the approval workflow is completed or rejected."""
+    if not getattr(offer, 'created_by_id', None):
+        return
+    try:
+        notification_type = Notification.SALES_APPROVED if approved else Notification.SALES_REJECTED
+        ctx = {
+            'offer_no':    offer.offer_no,
+            'offer_title': offer.title,
+            'customer':    offer.customer.name,
+        }
+        title, body, link = render_notification(notification_type, ctx)
+        notify(
+            user=offer.created_by,
+            notification_type=notification_type,
+            title=title,
+            body=body,
+            link=link,
+            source_type='sales_offer',
+            source_id=offer.id,
+        )
+    except Exception:
+        pass
+
+
 # =============================================================================
 # Approval workflow
 # =============================================================================
@@ -428,6 +453,10 @@ def record_approval_decision(
         # handle_approval_event on SalesOffer sets status='approved'.
         # Also mark current price revision as the approved one.
         offer.price_revisions.filter(is_current=True).update(revision_type='approved')
+        transaction.on_commit(lambda: _notify_creator_on_decision(offer, approved=True))
+
+    if outcome == 'rejected':
+        transaction.on_commit(lambda: _notify_creator_on_decision(offer, approved=False, comment=comment))
 
     return {'outcome': outcome, 'workflow': wf}
 
