@@ -1238,13 +1238,9 @@ class PlanningRequestCreateSerializer(serializers.Serializer):
                 needed_date=validated_data.get('needed_date'),
                 priority=validated_data.get('priority', 'normal'),
                 created_by=user,
-                check_inventory=validated_data.get('check_inventory', False)
+                check_inventory=validated_data.get('check_inventory', False),
+                request_number=manual_request_number,
             )
-
-            # If manual request_number provided, update it
-            if manual_request_number:
-                planning_request.request_number = manual_request_number
-                planning_request.save(update_fields=['request_number'])
 
         # Create items first (needed for file attachment targets)
         items_data = validated_data.get('items', [])

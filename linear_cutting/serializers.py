@@ -40,7 +40,16 @@ class LinearCuttingPartWriteSerializer(serializers.ModelSerializer):
 
 class LinearCuttingSessionListSerializer(serializers.ModelSerializer):
     created_by_username = serializers.CharField(source='created_by.username', read_only=True, allow_null=True)
+    item_code = serializers.CharField(source='item.code', read_only=True, allow_null=True)
+    item_name = serializers.CharField(source='item.name', read_only=True, allow_null=True)
+    item_unit = serializers.CharField(source='item.unit', read_only=True, allow_null=True)
+    material_display = serializers.SerializerMethodField()
     parts_count = serializers.SerializerMethodField()
+    planning_request_number = serializers.CharField(source='planning_request.request_number', read_only=True, allow_null=True)
+
+    def get_material_display(self, obj):
+        """Returns material label if set, otherwise falls back to item name."""
+        return obj.material or (obj.item.name if obj.item else '')
 
     def get_parts_count(self, obj):
         return obj.parts.count()
@@ -48,9 +57,11 @@ class LinearCuttingSessionListSerializer(serializers.ModelSerializer):
     class Meta:
         model = LinearCuttingSession
         fields = [
-            'key', 'title', 'material', 'stock_length_mm', 'kerf_mm',
+            'key', 'title', 'material', 'material_display', 'stock_length_mm', 'kerf_mm',
+            'item', 'item_code', 'item_name', 'item_unit',
             'bars_needed', 'total_waste_mm', 'efficiency_pct',
             'tasks_created', 'planning_request_created',
+            'planning_request', 'planning_request_number',
             'created_by', 'created_by_username', 'created_at',
             'parts_count',
         ]
@@ -59,6 +70,15 @@ class LinearCuttingSessionListSerializer(serializers.ModelSerializer):
 class LinearCuttingSessionDetailSerializer(serializers.ModelSerializer):
     parts = LinearCuttingPartSerializer(many=True, read_only=True)
     created_by_username = serializers.CharField(source='created_by.username', read_only=True, allow_null=True)
+    item_code = serializers.CharField(source='item.code', read_only=True, allow_null=True)
+    item_name = serializers.CharField(source='item.name', read_only=True, allow_null=True)
+    item_unit = serializers.CharField(source='item.unit', read_only=True, allow_null=True)
+    material_display = serializers.SerializerMethodField()
+    planning_request_number = serializers.CharField(source='planning_request.request_number', read_only=True, allow_null=True)
+
+    def get_material_display(self, obj):
+        """Returns material label if set, otherwise falls back to item name."""
+        return obj.material or (obj.item.name if obj.item else '')
 
     # Write-only: list of parts to create together with the session
     parts_data = LinearCuttingPartWriteSerializer(many=True, write_only=True, required=False)
@@ -66,16 +86,18 @@ class LinearCuttingSessionDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model = LinearCuttingSession
         fields = [
-            'key', 'title', 'material', 'stock_length_mm', 'kerf_mm', 'notes',
+            'key', 'title', 'material', 'material_display', 'stock_length_mm', 'kerf_mm', 'notes',
+            'item', 'item_code', 'item_name', 'item_unit',
             'bars_needed', 'total_waste_mm', 'efficiency_pct', 'optimization_result',
             'tasks_created', 'planning_request_created',
+            'planning_request', 'planning_request_number',
             'created_by', 'created_by_username', 'created_at',
             'parts', 'parts_data',
         ]
         read_only_fields = [
             'key', 'bars_needed', 'total_waste_mm', 'efficiency_pct',
             'optimization_result', 'tasks_created', 'planning_request_created',
-            'created_by', 'created_at',
+            'planning_request', 'created_by', 'created_at',
         ]
 
     def create(self, validated_data):

@@ -175,18 +175,31 @@ class ConfirmView(APIView):
 
             planning_request_number = None
             if not pr_already:
+                if not session.item_id:
+                    return Response(
+                        {'error': 'Session has no catalog item linked. Set the item field before confirming.'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
                 from planning.models import PlanningRequest, PlanningRequestItem
-                from procurement.models import Item
 
                 needed_date = request.data.get('needed_date') or str(timezone.localdate())
                 priority = request.data.get('priority', 'normal')
 
+                # Collect distinct job numbers from parts
+                job_nos = list(
+                    session.parts.exclude(job_no='')
+                    .values_list('job_no', flat=True)
+                    .distinct()
+                )
+                job_no_str = ', '.join(job_nos) if job_nos else ''
+
                 pr = PlanningRequest(
-                    title=f"Linear Cutting Stock – {session.key} {session.title}",
+                    title=f"Lineer Kesim Stok – {session.key} {session.title}",
                     description=(
-                        f"Raw stock bars required for linear cutting session {session.key}.\n"
-                        f"Material: {session.material}, Stock length: {session.stock_length_mm} mm, "
-                        f"Bars needed: {result['bars_needed']}"
+                        f"Linear cutting session {session.key} için gerekli ham profil/boru.\n"
+                        f"Malzeme: {session.material or session.item.name}, Boy: {session.stock_length_mm} mm, "
+                        f"Gereken çubuk sayısı: {result['bars_needed']}"
                     ),
                     needed_date=needed_date,
                     created_by=request.user,
@@ -196,48 +209,21 @@ class ConfirmView(APIView):
                 pr.save()
                 planning_request_number = pr.request_number
 
-                # Build one line per distinct (material, stock_length_mm) combination
-                # — in practice the session has one material/length, but we're future-proof.
-                from collections import defaultdict
-                combo_counts = defaultdict(int)
-                for bar in result['bars']:
-                    combo_counts[(session.material, bar['stock_length_mm'])] += 1
+                PlanningRequestItem.objects.create(
+                    planning_request=pr,
+                    item=session.item,
+                    job_no=job_no_str,
+                    quantity=result['bars_needed'],
+                    quantity_to_purchase=result['bars_needed'],
+                    item_description=f"{session.material or session.item.name} {session.stock_length_mm} mm",
+                    specifications=(
+                        f"Linear cutting session: {session.key}. "
+                        f"Kerf: {session.kerf_mm} mm."
+                    ),
+                    order=1,
+                )
 
-                # Try to find or create a matching Item in the catalog
-                for (material, length_mm), qty in combo_counts.items():
-                    item_code = f"RAW-{material.replace(' ', '-').upper()}-{length_mm}"
-                    item_name = f"{material} {length_mm} mm"
-                    item, _ = Item.objects.get_or_create(
-                        code=item_code,
-                        defaults={
-                            'name': item_name,
-                            'unit': 'adet',
-                            'item_type': 'stock',
-                        }
-                    )
-
-                    # Collect job numbers from parts
-                    job_nos = list(
-                        session.parts.exclude(job_no='')
-                        .values_list('job_no', flat=True)
-                        .distinct()
-                    )
-                    job_no_str = ', '.join(job_nos) if job_nos else ''
-
-                    PlanningRequestItem.objects.create(
-                        planning_request=pr,
-                        item=item,
-                        job_no=job_no_str,
-                        quantity=qty,
-                        quantity_to_purchase=qty,
-                        item_description=item_name,
-                        specifications=(
-                            f"Linear cutting session: {session.key}. "
-                            f"Kerf: {session.kerf_mm} mm."
-                        ),
-                        order=1,
-                    )
-
+                session.planning_request = pr
                 session.planning_request_created = True
 
             session.save(update_fields=['tasks_created', 'planning_request_created'])
@@ -294,6 +280,16 @@ class LinearCuttingPartViewSet(ModelViewSet):
         if session_key:
             qs = qs.filter(session__key=session_key)
         return qs
+
+    def create(self, request, *args, **kwargs):
+        # Support both single object and list
+        if isinstance(request.data, list):
+            serializer = self.get_serializer(data=request.data, many=True)
+            serializer.is_valid(raise_exception=True)
+            with transaction.atomic():
+                self.perform_create(serializer)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return super().create(request, *args, **kwargs)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

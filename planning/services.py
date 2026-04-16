@@ -61,7 +61,8 @@ def create_standalone_planning_request(
     needed_date,
     priority: str,
     created_by,
-    check_inventory: bool = False
+    check_inventory: bool = False,
+    request_number: str = '',
 ) -> PlanningRequest:
     """
     Create a standalone PlanningRequest without a DepartmentRequest.
@@ -78,6 +79,7 @@ def create_standalone_planning_request(
         priority=priority,
         status='ready',
         check_inventory=check_inventory,
+        **({"request_number": request_number} if request_number else {}),
     )
 
     return planning_request

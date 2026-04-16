@@ -38,6 +38,9 @@ class PartInstance:
     effective_mm: float      # nominal + angle offsets
     job_no: str = ''
     part_id: int = 0         # LinearCuttingPart.pk
+    angle_left_deg: float = 0.0
+    angle_right_deg: float = 0.0
+    profile_height_mm: int = 0
 
 
 @dataclass
@@ -49,6 +52,9 @@ class PlacedCut:
     offset_mm: float         # distance from bar start to cut start
     job_no: str = ''
     part_id: int = 0
+    angle_left_deg: float = 0.0
+    angle_right_deg: float = 0.0
+    profile_height_mm: int = 0
 
 
 @dataclass
@@ -76,6 +82,9 @@ class Bar:
             offset_mm=round(offset, 2),
             job_no=part.job_no,
             part_id=part.part_id,
+            angle_left_deg=part.angle_left_deg,
+            angle_right_deg=part.angle_right_deg,
+            profile_height_mm=part.profile_height_mm,
         )
         self._used_mm += part.effective_mm + kerf_mm
         self.cuts.append(cut)
@@ -109,6 +118,9 @@ def _build_instances(parts_data: list) -> List[PartInstance]:
         left_offset = _angle_offset(float(p.get('angle_left_deg', 0)), int(p.get('profile_height_mm', 0)))
         right_offset = _angle_offset(float(p.get('angle_right_deg', 0)), int(p.get('profile_height_mm', 0)))
         effective = p['nominal_length_mm'] + left_offset + right_offset
+        angle_left = float(p.get('angle_left_deg', 0))
+        angle_right = float(p.get('angle_right_deg', 0))
+        profile_h = int(p.get('profile_height_mm', 0))
         for _ in range(int(p['quantity'])):
             instances.append(PartInstance(
                 label=p.get('label', ''),
@@ -116,6 +128,9 @@ def _build_instances(parts_data: list) -> List[PartInstance]:
                 effective_mm=effective,
                 job_no=p.get('job_no', ''),
                 part_id=p.get('id', 0),
+                angle_left_deg=angle_left,
+                angle_right_deg=angle_right,
+                profile_height_mm=profile_h,
             ))
     return instances
 
@@ -204,6 +219,9 @@ def optimize(
                         'offset_mm': c.offset_mm,
                         'job_no': c.job_no,
                         'part_id': c.part_id,
+                        'angle_left_deg': c.angle_left_deg,
+                        'angle_right_deg': c.angle_right_deg,
+                        'profile_height_mm': c.profile_height_mm,
                     }
                     for c in b.cuts
                 ],

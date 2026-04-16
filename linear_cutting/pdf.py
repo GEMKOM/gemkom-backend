@@ -52,7 +52,7 @@ def build_cutting_list_pdf(session) -> bytes:
         bottomMargin=15 * mm,
         leftMargin=15 * mm,
         rightMargin=15 * mm,
-        title=f"Cutting List – {session.key}",
+        title=f"Kesim Listesi – {session.key}",
     )
 
     styles = getSampleStyleSheet()
@@ -82,15 +82,16 @@ def build_cutting_list_pdf(session) -> bytes:
     story = []
 
     # ── Header ────────────────────────────────────────────────────────────────
-    story.append(Paragraph(f"Cutting List – {session.key}", title_style))
+    story.append(Paragraph(f"Kesim Listesi – {session.key}", title_style))
     story.append(Paragraph(session.title, subtitle_style))
 
     # Info table (2 columns)
+    material_label = session.material or (session.item.name if session.item else '—')
     info_data = [
-        ['Material', session.material or '—', 'Stock length', f"{session.stock_length_mm} mm"],
-        ['Kerf', f"{session.kerf_mm} mm", 'Bars needed', str(result.get('bars_needed', '—'))],
-        ['Efficiency', f"{result.get('efficiency_pct', '—')} %", 'Total waste', f"{result.get('total_waste_mm', '—')} mm"],
-        ['Date', str(date.today()), 'Prepared by', session.created_by.get_full_name() if session.created_by else '—'],
+        ['Malzeme', material_label, 'Stok boyu', f"{session.stock_length_mm} mm"],
+        ['Testere payı', f"{session.kerf_mm} mm", 'Gereken çubuk', str(result.get('bars_needed', '—'))],
+        ['Verimlilik', f"{result.get('efficiency_pct', '—')} %", 'Toplam fire', f"{result.get('total_waste_mm', '—')} mm"],
+        ['Tarih', str(date.today()), 'Hazırlayan', session.created_by.get_full_name() if session.created_by else '—'],
     ]
     info_table = Table(info_data, colWidths=[30 * mm, 55 * mm, 35 * mm, 55 * mm])
     info_table.setStyle(TableStyle([
@@ -112,7 +113,8 @@ def build_cutting_list_pdf(session) -> bytes:
     story.append(Spacer(1, 3 * mm))
 
     # ── Per-bar sections ───────────────────────────────────────────────────────
-    cut_col_widths = [20 * mm, 20 * mm, 65 * mm, 22 * mm, 22 * mm, 26 * mm]
+    # col widths: #, Offset, Label, Nominal, Effective, Angle L, Angle R, Job No
+    cut_col_widths = [10 * mm, 18 * mm, 52 * mm, 20 * mm, 20 * mm, 16 * mm, 16 * mm, 23 * mm]
 
     for bar in bars:
         bar_idx = bar['bar_index']
@@ -121,26 +123,30 @@ def build_cutting_list_pdf(session) -> bytes:
         efficiency = round((1 - waste / bar_stock) * 100, 1) if bar_stock else 0
 
         story.append(Paragraph(
-            f"Bar #{bar_idx}  –  {bar_stock} mm  |  Waste: {waste} mm  |  Efficiency: {efficiency} %",
+            f"Çubuk #{bar_idx}  –  {bar_stock} mm  |  Fire: {waste} mm  |  Verimlilik: {efficiency} %",
             bar_header_style,
         ))
 
         # Cut table header
-        header_row = ['#', 'Offset (mm)', 'Part label', 'Nominal (mm)', 'Effective (mm)', 'Job No']
+        header_row = ['#', 'Ofset (mm)', 'Parça adı', 'Nominal (mm)', 'Efektif (mm)', 'Sol açı', 'Sağ açı', 'İş No']
         table_data = [header_row]
 
         for i, cut in enumerate(bar['cuts'], start=1):
+            angle_left = cut.get('angle_left_deg', 0)
+            angle_right = cut.get('angle_right_deg', 0)
             table_data.append([
                 str(i),
                 str(round(cut.get('offset_mm', 0), 1)),
                 cut.get('label', ''),
                 str(cut.get('nominal_mm', '')),
                 str(round(cut.get('effective_mm', cut.get('nominal_mm', 0)), 1)),
+                f"{angle_left}°" if angle_left else '—',
+                f"{angle_right}°" if angle_right else '—',
                 cut.get('job_no', '') or '—',
             ])
 
         # Waste row
-        table_data.append(['', '', '⟶ WASTE', str(waste) + ' mm', '', ''])
+        table_data.append(['', '', '⟶ FİRE', str(waste) + ' mm', '', '', '', ''])
 
         cut_table = Table(table_data, colWidths=cut_col_widths, repeatRows=1)
         cut_table.setStyle(TableStyle([
@@ -171,6 +177,7 @@ def build_cutting_list_pdf(session) -> bytes:
             ('ALIGN', (0, 1), (0, -1), 'CENTER'),
             ('ALIGN', (1, 1), (1, -1), 'RIGHT'),
             ('ALIGN', (3, 1), (4, -1), 'RIGHT'),
+            ('ALIGN', (5, 1), (6, -1), 'CENTER'),
         ]))
         story.append(cut_table)
         story.append(Spacer(1, 3 * mm))
@@ -179,10 +186,10 @@ def build_cutting_list_pdf(session) -> bytes:
     story.append(HRFlowable(width='100%', thickness=0.5, color=colors.grey))
     story.append(Spacer(1, 2 * mm))
     story.append(Paragraph(
-        f"Total: {result.get('bars_needed', 0)} bars × {session.stock_length_mm} mm = "
-        f"{(result.get('bars_needed', 0) or 0) * session.stock_length_mm} mm used  |  "
-        f"Total waste: {result.get('total_waste_mm', 0)} mm  |  "
-        f"Overall efficiency: {result.get('efficiency_pct', 0)} %",
+        f"Toplam: {result.get('bars_needed', 0)} çubuk × {session.stock_length_mm} mm = "
+        f"{(result.get('bars_needed', 0) or 0) * session.stock_length_mm} mm  |  "
+        f"Toplam fire: {result.get('total_waste_mm', 0)} mm  |  "
+        f"Genel verimlilik: {result.get('efficiency_pct', 0)} %",
         small_style,
     ))
 

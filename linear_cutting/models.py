@@ -21,7 +21,8 @@ class LinearCuttingSession(models.Model):
     title = models.CharField(max_length=255)
     material = models.CharField(
         max_length=100,
-        help_text="Material / profile description, e.g. 'S235 IPE200'"
+        blank=True,
+        help_text="Optional human-friendly label, e.g. 'S235 IPE200'. Falls back to item name if blank."
     )
     stock_length_mm = models.IntegerField(
         help_text="Standard stock bar length in mm, e.g. 6000"
@@ -31,6 +32,15 @@ class LinearCuttingSession(models.Model):
         help_text="Saw blade kerf (material lost per cut) in mm"
     )
     notes = models.TextField(blank=True)
+
+    # Catalog item representing the raw stock bar (e.g. "60,3*3,6 ST 35-8 BORU")
+    item = models.ForeignKey(
+        'procurement.Item',
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='linear_cutting_sessions',
+        help_text="Procurement catalog item for the raw stock bar"
+    )
 
     # Optimization result snapshot (populated by /optimize/ endpoint)
     bars_needed = models.IntegerField(null=True, blank=True)
@@ -44,6 +54,15 @@ class LinearCuttingSession(models.Model):
     # Workflow flags
     tasks_created = models.BooleanField(default=False)
     planning_request_created = models.BooleanField(default=False)
+
+    # Links to created records
+    planning_request = models.OneToOneField(
+        'planning.PlanningRequest',
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='linear_cutting_session',
+        help_text="Planning request created from this session via /confirm/"
+    )
 
     # Audit
     created_by = models.ForeignKey(
