@@ -253,6 +253,9 @@ class DepartmentRequestViewSet(viewsets.ModelViewSet):
         user = request.user
 
 
+        if dr.status == 'transferred':
+            return Response({"detail": "Department request marked as transferred."})
+
         if dr.status != 'approved':
             return Response({"detail": "Only approved requests can be marked as transferred."}, status=400)
 

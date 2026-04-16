@@ -209,17 +209,27 @@ class PlanningRequest(models.Model):
     def __str__(self):
         return f"{self.request_number} - {self.title}"
 
+    @classmethod
+    def _generate_request_number(cls):
+        from django.db.models import Max
+        year = timezone.now().year
+        result = cls.objects.aggregate(max_num=Max('request_number'))
+        last_num_str = result.get('max_num')
+        if last_num_str:
+            try:
+                last_number = int(last_num_str.split('-')[-1])
+            except (ValueError, IndexError):
+                last_number = 0
+        else:
+            last_number = 0
+        return f"GR-{year}-{last_number + 1:04d}"
+
     def save(self, *args, **kwargs):
+        from django.db import IntegrityError
         is_new = self.pk is None
 
         if not self.request_number:
-            # Auto-generate request number
-            last_request = PlanningRequest.objects.order_by('-id').first()
-            if last_request:
-                last_number = int(last_request.request_number.split('-')[-1])
-                self.request_number = f"GR-{timezone.now().year}-{last_number + 1:04d}"
-            else:
-                self.request_number = f"GR-{timezone.now().year}-0001"
+            self.request_number = self._generate_request_number()
 
         # Set initial status based on check_inventory
         if is_new:
@@ -230,7 +240,17 @@ class PlanningRequest(models.Model):
                 self.status = 'ready'
                 self.ready_at = timezone.now()
 
-        super().save(*args, **kwargs)
+        from django.db import transaction
+        for attempt in range(10):
+            try:
+                with transaction.atomic():
+                    super().save(*args, **kwargs)
+                return
+            except IntegrityError as e:
+                if 'request_number' not in str(e) or not is_new or attempt >= 9:
+                    raise
+                # Another concurrent insert grabbed this number; regenerate and retry
+                self.request_number = self._generate_request_number()
 
     def get_completion_stats(self):
         """
