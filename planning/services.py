@@ -21,7 +21,7 @@ from users.helpers import _team_manager_user_ids, users_in_team
 
 
 @transaction.atomic
-def create_planning_request_from_department(dept_request: DepartmentRequest, created_by_user):
+def create_planning_request_from_department(dept_request: DepartmentRequest, created_by_user, request_number: str = ''):
     """
     Planning creates a new PlanningRequest by mapping DepartmentRequest items to catalog Items.
 
@@ -35,7 +35,7 @@ def create_planning_request_from_department(dept_request: DepartmentRequest, cre
     if dept_request.status != 'approved':
         raise ValidationError("Can only create planning requests from approved department requests.")
 
-    # Create shell
+    # Create shell — pass request_number so the model doesn't auto-generate when one is provided
     planning_request = PlanningRequest.objects.create(
         title=dept_request.title,
         description=dept_request.description,
@@ -44,6 +44,7 @@ def create_planning_request_from_department(dept_request: DepartmentRequest, cre
         created_by=created_by_user,
         priority=dept_request.priority,
         status='ready',
+        **({"request_number": request_number} if request_number else {}),
     )
 
     # Mark department request as transferred

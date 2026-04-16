@@ -1208,14 +1208,9 @@ class PlanningRequestCreateSerializer(serializers.Serializer):
         ct_item = ContentType.objects.get_for_model(PlanningRequestItem)
 
         if dr_id:
-            # Create from department request
+            # Create from department request — pass request_number directly to avoid a second save
             dr = DepartmentRequest.objects.get(id=dr_id)
-            planning_request = create_planning_request_from_department(dr, user)
-
-            # If manual request_number provided, update it
-            if manual_request_number:
-                planning_request.request_number = manual_request_number
-                planning_request.save(update_fields=['request_number'])
+            planning_request = create_planning_request_from_department(dr, user, request_number=manual_request_number)
 
             # Build a set of asset_ids that are explicitly mapped in files_data
             explicitly_mapped_assets = set()
