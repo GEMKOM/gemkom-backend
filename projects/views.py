@@ -1955,7 +1955,7 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
         # Update task statuses based on dependencies
         for task in created_tasks:
             task.update_status_from_dependencies()
-        #asd
+
         if errors:
             return Response({
                 'status': 'partial' if created_tasks else 'error',
