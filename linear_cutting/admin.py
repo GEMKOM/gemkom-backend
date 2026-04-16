@@ -16,9 +16,9 @@ class LinearCuttingTaskInline(admin.TabularInline):
 
 @admin.register(LinearCuttingSession)
 class LinearCuttingSessionAdmin(admin.ModelAdmin):
-    list_display = ['key', 'title', 'material', 'stock_length_mm', 'bars_needed', 'tasks_created', 'planning_request_created', 'created_by', 'created_at']
+    list_display = ['key', 'title', 'stock_length_mm', 'kerf_mm', 'tasks_created', 'planning_request_created', 'created_by', 'created_at']
     list_filter = ['tasks_created', 'planning_request_created']
-    search_fields = ['key', 'title', 'material']
+    search_fields = ['key', 'title']
     inlines = [LinearCuttingPartInline, LinearCuttingTaskInline]
     readonly_fields = ['key', 'created_at']
 

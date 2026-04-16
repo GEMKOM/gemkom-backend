@@ -15,17 +15,12 @@ def _next_session_key():
 class LinearCuttingSession(models.Model):
     """
     One optimization run for a set of parts to be cut from stock bars.
-    Contains the input parameters and stores the optimization result.
+    Parts each carry their own catalog item; the session holds shared defaults.
     """
     key = models.CharField(max_length=20, primary_key=True)
     title = models.CharField(max_length=255)
-    material = models.CharField(
-        max_length=100,
-        blank=True,
-        help_text="Optional human-friendly label, e.g. 'S235 IPE200'. Falls back to item name if blank."
-    )
     stock_length_mm = models.IntegerField(
-        help_text="Standard stock bar length in mm, e.g. 6000"
+        help_text="Default stock bar length in mm (can be overridden per part). e.g. 6000"
     )
     kerf_mm = models.DecimalField(
         max_digits=5, decimal_places=2, default=3,
@@ -33,22 +28,12 @@ class LinearCuttingSession(models.Model):
     )
     notes = models.TextField(blank=True)
 
-    # Catalog item representing the raw stock bar (e.g. "60,3*3,6 ST 35-8 BORU")
-    item = models.ForeignKey(
-        'procurement.Item',
-        on_delete=models.SET_NULL,
-        null=True, blank=True,
-        related_name='linear_cutting_sessions',
-        help_text="Procurement catalog item for the raw stock bar"
-    )
-
     # Optimization result snapshot (populated by /optimize/ endpoint)
-    bars_needed = models.IntegerField(null=True, blank=True)
-    total_waste_mm = models.IntegerField(null=True, blank=True)
-    efficiency_pct = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    # Structure: {"groups": [{item_id, item_name, item_code, stock_length_mm, kerf_mm,
+    #              bars_needed, total_waste_mm, efficiency_pct, bars: [...]}]}
     optimization_result = models.JSONField(
         null=True, blank=True,
-        help_text="Full optimization layout JSON for display without re-running"
+        help_text="Per-item-group optimization layout JSON"
     )
 
     # Workflow flags
@@ -86,10 +71,24 @@ class LinearCuttingSession(models.Model):
 class LinearCuttingPart(models.Model):
     """
     One part type entered by the user for a cutting session.
+    Each part references the catalog item (stock bar profile) it is cut from.
     A part with quantity=5 means 5 identical pieces of that length.
     """
     session = models.ForeignKey(
         LinearCuttingSession, on_delete=models.CASCADE, related_name='parts'
+    )
+    # Catalog item for the raw stock bar this part is cut from
+    item = models.ForeignKey(
+        'procurement.Item',
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='linear_cutting_parts',
+        help_text="Procurement catalog item for the stock bar this part is cut from"
+    )
+    # Optional per-part stock length override; falls back to session.stock_length_mm
+    stock_length_mm = models.IntegerField(
+        null=True, blank=True,
+        help_text="Stock bar length override for this part's item group (mm). Uses session default if blank."
     )
     label = models.CharField(max_length=255, help_text="Part name / description")
     job_no = models.CharField(
@@ -127,9 +126,16 @@ class LinearCuttingTask(BaseTask):
     session = models.ForeignKey(
         LinearCuttingSession, on_delete=models.CASCADE, related_name='cutting_tasks'
     )
-    bar_index = models.PositiveIntegerField(help_text="Bar number within the session (1-based)")
+    # Catalog item this bar belongs to (denormalized from optimization group)
+    item = models.ForeignKey(
+        'procurement.Item',
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='linear_cutting_tasks',
+    )
+    bar_index = models.PositiveIntegerField(help_text="Global bar number within the session (1-based)")
     stock_length_mm = models.IntegerField()
-    material = models.CharField(max_length=100)
+    material = models.CharField(max_length=100, help_text="Denormalized item name for display")
     layout_json = models.JSONField(
         help_text="Array of cuts on this bar: [{label, nominal_mm, effective_mm, offset_mm}]"
     )

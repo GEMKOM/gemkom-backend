@@ -1,15 +1,14 @@
 import time
 import logging
+from collections import defaultdict
 from django.db import transaction
 from django.utils import timezone
 from django.http import HttpResponse
 from rest_framework.views import APIView
 from rest_framework.viewsets import ModelViewSet
-from rest_framework.generics import RetrieveUpdateAPIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
-from rest_framework.pagination import PageNumberPagination
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import OrderingFilter
 
@@ -64,56 +63,94 @@ class OptimizeView(APIView):
     """
     POST /linear_cutting/sessions/{key}/optimize/
 
-    Runs the FFD bin-packing algorithm on the session's parts and stores
-    the result in the session.  Optionally overrides stock_length_mm / kerf_mm.
+    Groups parts by (item_id, stock_length_mm) and runs FFD bin-packing
+    separately for each group.  Result is stored on the session as:
+        {"groups": [{item_id, item_name, item_code, stock_length_mm, kerf_mm,
+                     bars_needed, total_waste_mm, efficiency_pct, bars: [...]}]}
     """
     permission_classes = [IsAuthenticated]
 
     def post(self, request, key):
         try:
-            session = LinearCuttingSession.objects.prefetch_related('parts').get(key=key)
+            session = LinearCuttingSession.objects.prefetch_related(
+                'parts', 'parts__item'
+            ).get(key=key)
         except LinearCuttingSession.DoesNotExist:
             return Response({'error': 'Session not found.'}, status=status.HTTP_404_NOT_FOUND)
 
-        stock_length_mm = int(request.data.get('stock_length_mm', session.stock_length_mm))
         kerf_mm = float(request.data.get('kerf_mm', session.kerf_mm))
 
-        parts_qs = session.parts.all()
-        if not parts_qs.exists():
-            return Response({'error': 'Session has no parts. Add parts before optimizing.'}, status=status.HTTP_400_BAD_REQUEST)
+        parts_qs = list(session.parts.select_related('item').all())
+        if not parts_qs:
+            return Response(
+                {'error': 'Session has no parts. Add parts before optimizing.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        parts_data = [
-            {
-                'id': p.id,
-                'label': p.label,
-                'job_no': p.job_no,
-                'nominal_length_mm': p.nominal_length_mm,
-                'quantity': p.quantity,
-                'angle_left_deg': float(p.angle_left_deg),
-                'angle_right_deg': float(p.angle_right_deg),
-                'profile_height_mm': p.profile_height_mm,
-            }
-            for p in parts_qs
-        ]
+        # Check all parts have an item assigned
+        parts_without_item = [p for p in parts_qs if not p.item_id]
+        if parts_without_item:
+            labels = ', '.join(f'"{p.label}"' for p in parts_without_item[:5])
+            return Response(
+                {'error': f'Some parts have no catalog item assigned: {labels}. Assign an item to every part before optimizing.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        try:
-            result = optimize(parts_data, stock_length_mm, kerf_mm)
-        except ValueError as exc:
-            return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        # Group parts by (item_id, effective stock_length_mm)
+        # Each group key is (item_id, stock_length_mm_for_group)
+        groups_map = defaultdict(list)
+        for p in parts_qs:
+            effective_stock = p.stock_length_mm or session.stock_length_mm
+            groups_map[(p.item_id, effective_stock)].append(p)
 
-        # Persist result on the session
-        session.stock_length_mm = stock_length_mm
+        groups = []
+        global_bar_index = 0
+
+        for (item_id, stock_len), group_parts in groups_map.items():
+            item_obj = group_parts[0].item
+            parts_data = [
+                {
+                    'id': p.id,
+                    'label': p.label,
+                    'job_no': p.job_no,
+                    'nominal_length_mm': p.nominal_length_mm,
+                    'quantity': p.quantity,
+                    'angle_left_deg': float(p.angle_left_deg),
+                    'angle_right_deg': float(p.angle_right_deg),
+                    'profile_height_mm': p.profile_height_mm,
+                }
+                for p in group_parts
+            ]
+
+            try:
+                result = optimize(parts_data, stock_len, kerf_mm)
+            except ValueError as exc:
+                return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+            # Assign global bar indices across all groups
+            for bar in result['bars']:
+                global_bar_index += 1
+                bar['global_bar_index'] = global_bar_index
+
+            groups.append({
+                'item_id': item_id,
+                'item_name': item_obj.name,
+                'item_code': item_obj.code,
+                'stock_length_mm': stock_len,
+                'kerf_mm': kerf_mm,
+                'bars_needed': result['bars_needed'],
+                'total_waste_mm': result['total_waste_mm'],
+                'efficiency_pct': result['efficiency_pct'],
+                'bars': result['bars'],
+            })
+
+        optimization_result = {'groups': groups}
+
         session.kerf_mm = kerf_mm
-        session.bars_needed = result['bars_needed']
-        session.total_waste_mm = result['total_waste_mm']
-        session.efficiency_pct = result['efficiency_pct']
-        session.optimization_result = result
-        session.save(update_fields=[
-            'stock_length_mm', 'kerf_mm',
-            'bars_needed', 'total_waste_mm', 'efficiency_pct', 'optimization_result',
-        ])
+        session.optimization_result = optimization_result
+        session.save(update_fields=['kerf_mm', 'optimization_result'])
 
-        return Response(result)
+        return Response(optimization_result)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -124,14 +161,16 @@ class ConfirmView(APIView):
     """
     POST /linear_cutting/sessions/{key}/confirm/
 
-    Creates one LinearCuttingTask per bar from the optimization result,
-    and one PlanningRequest for the raw stock needed.
+    Creates one LinearCuttingTask per bar (across all item groups) and one
+    PlanningRequest with one PlanningRequestItem per (item × job_no) combination.
     """
     permission_classes = [IsAuthenticated]
 
     def post(self, request, key):
         try:
-            session = LinearCuttingSession.objects.prefetch_related('parts').get(key=key)
+            session = LinearCuttingSession.objects.prefetch_related(
+                'parts', 'parts__item'
+            ).get(key=key)
         except LinearCuttingSession.DoesNotExist:
             return Response({'error': 'Session not found.'}, status=status.HTTP_404_NOT_FOUND)
 
@@ -141,92 +180,131 @@ class ConfirmView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        groups = session.optimization_result.get('groups', [])
+        if not groups:
+            return Response(
+                {'error': 'Optimization result has no groups.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         tasks_already = session.tasks_created
         pr_already = session.planning_request_created
 
         if tasks_already and pr_already:
-            return Response({'error': 'Tasks and planning request already created for this session.'}, status=status.HTTP_409_CONFLICT)
-
-        result = session.optimization_result
+            return Response(
+                {'error': 'Tasks and planning request already created for this session.'},
+                status=status.HTTP_409_CONFLICT,
+            )
 
         with transaction.atomic():
             created_task_keys = []
 
+            # ── Tasks (one per bar across all groups) ──────────────────────
             if not tasks_already:
-                for bar in result['bars']:
-                    task_key = f"{session.key}-B{bar['bar_index']}"
-                    task, _ = LinearCuttingTask.objects.get_or_create(
-                        key=task_key,
-                        defaults={
-                            'session': session,
-                            'bar_index': bar['bar_index'],
-                            'stock_length_mm': bar['stock_length_mm'],
-                            'material': session.material,
-                            'layout_json': bar['cuts'],
-                            'waste_mm': bar['waste_mm'],
-                            'name': f"{session.title} – Bar {bar['bar_index']}",
-                            'quantity': 1,
-                            'created_by': request.user,
-                            'created_at': int(time.time() * 1000),
-                        }
-                    )
-                    created_task_keys.append(task_key)
+                for group in groups:
+                    item_id = group['item_id']
+                    item_name = group['item_name']
+                    for bar in group['bars']:
+                        bar_idx = bar.get('global_bar_index', bar['bar_index'])
+                        task_key = f"{session.key}-B{bar_idx}"
+                        LinearCuttingTask.objects.get_or_create(
+                            key=task_key,
+                            defaults={
+                                'session': session,
+                                'item_id': item_id,
+                                'bar_index': bar_idx,
+                                'stock_length_mm': bar['stock_length_mm'],
+                                'material': item_name,
+                                'layout_json': bar['cuts'],
+                                'waste_mm': bar['waste_mm'],
+                                'name': f"{session.title} – {item_name} Bar {bar_idx}",
+                                'quantity': 1,
+                                'created_by': request.user,
+                                'created_at': int(time.time() * 1000),
+                            }
+                        )
+                        created_task_keys.append(task_key)
                 session.tasks_created = True
 
+            # ── Planning request ───────────────────────────────────────────
             planning_request_number = None
             if not pr_already:
-                if not session.item_id:
-                    return Response(
-                        {'error': 'Session has no catalog item linked. Set the item field before confirming.'},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-
                 from planning.models import PlanningRequest, PlanningRequestItem
+                from procurement.models import Item as ProcurementItem
 
                 needed_date = request.data.get('needed_date') or str(timezone.localdate())
                 priority = request.data.get('priority', 'normal')
 
-                # Collect distinct job numbers from parts
-                job_nos = list(
-                    session.parts.exclude(job_no='')
-                    .values_list('job_no', flat=True)
-                    .distinct()
-                )
-                job_no_str = ', '.join(job_nos) if job_nos else ''
+                total_bars = sum(g['bars_needed'] for g in groups)
 
                 pr = PlanningRequest(
-                    title=f"Lineer Kesim Stok – {session.key} {session.title}",
+                    title=f"Profil/Boru Kesim – {session.key} {session.title}",
                     description=(
-                        f"Linear cutting session {session.key} için gerekli ham profil/boru.\n"
-                        f"Malzeme: {session.material or session.item.name}, Boy: {session.stock_length_mm} mm, "
-                        f"Gereken çubuk sayısı: {result['bars_needed']}"
+                        f"Toplam {total_bars} çubuk, {len(groups)} farklı profil. "
+                        f"Testere payı: {session.kerf_mm} mm."
                     ),
                     needed_date=needed_date,
                     created_by=request.user,
                     priority=priority,
-                    check_inventory=False,
+                    check_inventory=True,
                 )
                 pr.save()
                 planning_request_number = pr.request_number
 
-                PlanningRequestItem.objects.create(
-                    planning_request=pr,
-                    item=session.item,
-                    job_no=job_no_str,
-                    quantity=result['bars_needed'],
-                    quantity_to_purchase=result['bars_needed'],
-                    item_description=f"{session.material or session.item.name} {session.stock_length_mm} mm",
-                    specifications=(
-                        f"Linear cutting session: {session.key}. "
-                        f"Kerf: {session.kerf_mm} mm."
-                    ),
-                    order=1,
-                )
+                order_idx = 1
+                for group in groups:
+                    item_id = group['item_id']
+                    item_obj = ProcurementItem.objects.get(pk=item_id)
+                    stock_len = group['stock_length_mm']
+                    stock_len_m = stock_len // 1000
+                    item_unit = (item_obj.unit or '').lower()
+
+                    # Map job_no → bars that contain a cut for this job_no in this group
+                    bars_by_job_no: dict[str, int] = {}
+                    for bar in group['bars']:
+                        seen = set(cut['job_no'] for cut in bar['cuts'])
+                        for jno in seen:
+                            bars_by_job_no[jno] = bars_by_job_no.get(jno, 0) + 1
+
+                    # Parts belonging to this group's item
+                    group_parts = session.parts.filter(item_id=item_id)
+                    distinct_job_nos = list(
+                        group_parts.values_list('job_no', flat=True).distinct()
+                    )
+
+                    for job_no in distinct_job_nos:
+                        parts_for_job = group_parts.filter(job_no=job_no)
+                        bars_for_job = bars_by_job_no.get(job_no, 0)
+
+                        if item_unit == 'metre':
+                            quantity = bars_for_job * (stock_len / 1000)
+                        else:
+                            quantity = float(bars_for_job)
+
+                        item_description = f"{bars_for_job} boy {stock_len_m} metre"
+                        specs = ", ".join(
+                            f"{p.label} {p.nominal_length_mm}mm ×{p.quantity}"
+                            for p in parts_for_job
+                        )
+
+                        PlanningRequestItem.objects.create(
+                            planning_request=pr,
+                            item=item_obj,
+                            job_no=job_no,
+                            quantity=quantity,
+                            quantity_to_purchase=quantity,
+                            item_description=item_description,
+                            specifications=specs,
+                            order=order_idx,
+                        )
+                        order_idx += 1
 
                 session.planning_request = pr
                 session.planning_request_created = True
 
-            session.save(update_fields=['tasks_created', 'planning_request_created'])
+            session.save(update_fields=[
+                'tasks_created', 'planning_request_created', 'planning_request',
+            ])
 
         return Response({
             'created_tasks': created_task_keys,
@@ -245,6 +323,7 @@ class CuttingListPDFView(APIView):
     GET /linear_cutting/sessions/{key}/pdf/
 
     Returns a printable A4 PDF cutting list for the session.
+    Each item group is rendered as a separate section.
     """
     permission_classes = [IsAuthenticated]
 
@@ -275,7 +354,7 @@ class LinearCuttingPartViewSet(ModelViewSet):
     serializer_class = LinearCuttingPartSerializer
 
     def get_queryset(self):
-        qs = LinearCuttingPart.objects.all()
+        qs = LinearCuttingPart.objects.select_related('item').all()
         session_key = self.request.query_params.get('session')
         if session_key:
             qs = qs.filter(session__key=session_key)
@@ -302,7 +381,9 @@ class LinearCuttingTaskViewSet(ModelViewSet):
     ordering_fields = ['created_at', 'completion_date', 'bar_index']
 
     def get_queryset(self):
-        qs = LinearCuttingTask.objects.select_related('session', 'machine_fk').prefetch_related('issue_key')
+        qs = LinearCuttingTask.objects.select_related(
+            'session', 'machine_fk', 'item'
+        ).prefetch_related('issue_key')
         session_key = self.request.query_params.get('session')
         if session_key:
             qs = qs.filter(session__key=session_key)
