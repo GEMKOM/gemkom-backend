@@ -104,6 +104,7 @@ INSTALLED_APPS = [
     'reports',
     'attendance',
     'linear_cutting',
+    'equipment',
 ]
 
 MIDDLEWARE = [

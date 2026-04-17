@@ -249,46 +249,6 @@ class Part(models.Model):
         return f"{self.key} - {self.name}"
 
 
-class Tool(models.Model):
-    """
-    Catalog of manufacturing tools with inventory tracking.
-    """
-    code = models.CharField(max_length=100, unique=True, db_index=True)
-    name = models.CharField(max_length=255)
-    description = models.TextField(null=True, blank=True)
-    category = models.CharField(max_length=100, null=True, blank=True, db_index=True)
-    quantity = models.PositiveIntegerField(default=1)
-    is_active = models.BooleanField(default=True)
-    properties = models.JSONField(default=dict, blank=True)
-
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        ordering = ['code']
-        indexes = [
-            models.Index(fields=['category', 'is_active']),
-        ]
-
-    def __str__(self):
-        return f"{self.code} - {self.name}"
-
-    def get_in_use_count(self):
-        """Count tools currently in use (operations with active timers)"""
-        from django.db.models import Sum
-        result = self.tool_operations.filter(
-            operation__timers__finish_time__isnull=True  # Active timers only
-        ).aggregate(total=Sum('quantity'))
-        return result['total'] or 0
-
-    def get_available_quantity(self):
-        """Calculate available quantity"""
-        return self.quantity - self.get_in_use_count()
-
-    def is_available(self, required_quantity=1):
-        """Check if tool is available in required quantity"""
-        return self.get_available_quantity() >= required_quantity
-
 
 class Operation(BaseTask):
     """
@@ -303,14 +263,6 @@ class Operation(BaseTask):
     interchangeable = models.BooleanField(
         default=False,
         help_text="If True, this operation can be completed out of order"
-    )
-
-    # Tools (many-to-many via junction)
-    tools = models.ManyToManyField(
-        Tool,
-        through='OperationTool',
-        related_name='operations',
-        blank=True
     )
 
     class Meta:
@@ -394,36 +346,6 @@ class Operation(BaseTask):
             self.part.completed_by = None
             self.part.save()
 
-
-class OperationTool(models.Model):
-    """
-    Junction table for Operation-Tool relationship.
-    Allows tracking which tools are required/used for each operation.
-    """
-    operation = models.ForeignKey(
-        Operation,
-        on_delete=models.CASCADE,
-        related_name='operation_tools'
-    )
-    tool = models.ForeignKey(
-        Tool,
-        on_delete=models.PROTECT,  # Prevent deletion of tools in use
-        related_name='tool_operations'
-    )
-
-    # Quantity needed and usage notes
-    quantity = models.PositiveIntegerField(default=1)
-    notes = models.TextField(null=True, blank=True)
-
-    # Order for display
-    display_order = models.PositiveIntegerField(default=1)
-
-    class Meta:
-        ordering = ['operation', 'display_order']
-        unique_together = [('operation', 'tool')]
-
-    def __str__(self):
-        return f"{self.operation.key} - {self.tool.code} (x{self.quantity})"
 
 
 # ============================================================================

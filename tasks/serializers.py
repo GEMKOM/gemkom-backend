@@ -4,7 +4,7 @@ from django.db import transaction
 from django.db.models import Sum, Q, ExpressionWrapper, FloatField, Value
 from django.db.models.functions import Coalesce
 
-from .models import Timer, TaskFile, Part, Tool, Operation, OperationTool, TaskKeyCounter, DowntimeReason
+from .models import Timer, TaskFile, Part, Operation, TaskKeyCounter, DowntimeReason
 from machines.models import Machine, MachineFault
 
 
@@ -162,36 +162,6 @@ class OperationTimerSerializer(BaseTimerSerializer):
 # ==================== Part-Operation System Serializers ====================
 
 
-class ToolSerializer(serializers.ModelSerializer):
-    """Serializer for Tool model with availability tracking"""
-    available_quantity = serializers.SerializerMethodField()
-    in_use_count = serializers.SerializerMethodField()
-
-    class Meta:
-        model = Tool
-        fields = [
-            'id', 'code', 'name', 'description', 'category',
-            'quantity', 'available_quantity', 'in_use_count',
-            'is_active', 'properties', 'created_at', 'updated_at'
-        ]
-
-    def get_available_quantity(self, obj):
-        return obj.get_available_quantity()
-
-    def get_in_use_count(self, obj):
-        return obj.get_in_use_count()
-
-
-class OperationToolSerializer(serializers.ModelSerializer):
-    """Serializer for OperationTool junction model"""
-    tool_code = serializers.CharField(source='tool.code', read_only=True)
-    tool_name = serializers.CharField(source='tool.name', read_only=True)
-
-    class Meta:
-        model = OperationTool
-        fields = ['id', 'tool', 'tool_code', 'tool_name', 'quantity', 'notes', 'display_order']
-
-
 class OperationSerializer(serializers.ModelSerializer):
     """Serializer for Operation model"""
     part_key = serializers.CharField(source='part.key', read_only=True)
@@ -199,7 +169,6 @@ class OperationSerializer(serializers.ModelSerializer):
     machine_name = serializers.CharField(source='machine_fk.name', read_only=True, allow_null=True)
     created_by_username = serializers.CharField(source='created_by.username', read_only=True, allow_null=True)
     completed_by_username = serializers.CharField(source='completed_by.username', read_only=True, allow_null=True)
-    operation_tools = OperationToolSerializer(many=True, read_only=True)
     total_hours_spent = serializers.DecimalField(
         max_digits=10, decimal_places=2, read_only=True, default=0
     )
@@ -213,7 +182,6 @@ class OperationSerializer(serializers.ModelSerializer):
             'in_plan', 'plan_order', 'planned_start_ms', 'planned_end_ms', 'plan_locked',
             'created_by', 'created_by_username', 'created_at',
             'completed_by', 'completed_by_username', 'completion_date',
-            'operation_tools'
         ]
         read_only_fields = ['key', 'created_by', 'created_at', 'completed_by', 'completion_date']
 
@@ -253,7 +221,6 @@ class OperationDetailSerializer(serializers.ModelSerializer):
     created_by_username = serializers.CharField(source='created_by.username', read_only=True, allow_null=True)
     completed_by_username = serializers.CharField(source='completed_by.username', read_only=True, allow_null=True)
 
-    operation_tools = OperationToolSerializer(many=True, read_only=True)
     total_hours_spent = serializers.DecimalField(
         max_digits=10, decimal_places=2, read_only=True, default=0
     )
@@ -272,7 +239,7 @@ class OperationDetailSerializer(serializers.ModelSerializer):
             'in_plan', 'plan_order', 'planned_start_ms', 'planned_end_ms', 'plan_locked',
             'created_by', 'created_by_username', 'created_at',
             'completed_by', 'completed_by_username', 'completion_date',
-            'operation_tools', 'has_active_timer'
+            'has_active_timer'
         ]
         read_only_fields = ['key', 'created_by', 'created_at', 'completed_by', 'completion_date']
 
@@ -329,7 +296,6 @@ class OperationOperatorSerializer(serializers.ModelSerializer):
 
     machine_name = serializers.CharField(source='machine_fk.name', read_only=True, allow_null=True)
 
-    operation_tools = OperationToolSerializer(many=True, read_only=True)
     total_hours_spent = serializers.DecimalField(
         max_digits=10, decimal_places=2, read_only=True, default=0
     )
@@ -344,13 +310,12 @@ class OperationOperatorSerializer(serializers.ModelSerializer):
             'machine_fk', 'machine_name',
             'estimated_hours', 'total_hours_spent',
             'completion_date',
-            'operation_tools'
         ]
         read_only_fields = ['key', 'completion_date']
 
 
 class OperationCreateSerializer(serializers.Serializer):
-    """Serializer for creating operations with tools"""
+    """Serializer for creating operations"""
     name = serializers.CharField(max_length=255, required=True)
     description = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     order = serializers.IntegerField()
@@ -359,22 +324,9 @@ class OperationCreateSerializer(serializers.Serializer):
     )
     interchangeable = serializers.BooleanField(default=False)
     estimated_hours = serializers.DecimalField(max_digits=6, decimal_places=2, required=False, allow_null=True)
-    tools = serializers.ListField(
-        child=serializers.IntegerField(), required=False, allow_empty=True
-    )
 
     def create(self, validated_data):
-        tools_data = validated_data.pop('tools', [])
-        operation = Operation.objects.create(**validated_data)
-
-        # Attach tools
-        for tool_id in tools_data:
-            OperationTool.objects.create(
-                operation=operation,
-                tool_id=tool_id
-            )
-
-        return operation
+        return Operation.objects.create(**validated_data)
 
 
 class PartListSerializer(serializers.ModelSerializer):
@@ -461,21 +413,12 @@ class PartWithOperationsSerializer(serializers.ModelSerializer):
 
         # Create operations
         for op_data in operations_data:
-            tools_data = op_data.pop('tools', [])
-
-            operation = Operation.objects.create(
+            Operation.objects.create(
                 part=part,
                 created_by=self.context['request'].user,
                 created_at=part.created_at,
                 **op_data
             )
-
-            # Attach tools
-            for tool_id in tools_data:
-                OperationTool.objects.create(
-                    operation=operation,
-                    tool_id=tool_id
-                )
 
         return part
 

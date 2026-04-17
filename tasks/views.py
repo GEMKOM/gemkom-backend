@@ -15,11 +15,11 @@ from django.db import transaction
 import time
 
 # Create your views here.
-from .models import Timer, Part, Operation, Tool
+from .models import Timer, Part, Operation
 from .serializers import (
     BaseTimerSerializer, PartSerializer, PartListSerializer, PartWithOperationsSerializer,
     OperationSerializer, OperationDetailSerializer, OperationOperatorSerializer,
-    ToolSerializer, OperationPlanUpdateItemSerializer
+    OperationPlanUpdateItemSerializer
 )
 from .filters import OperationFilter, PartFilter
 from config.pagination import CustomPageNumberPagination
@@ -87,7 +87,7 @@ class GenericTimerStartView(APIView):
             operation_key = data.get('task_key')
             if operation_key:
                 try:
-                    operation = Operation.objects.select_related('part').prefetch_related('operation_tools__tool').get(key=operation_key)
+                    operation = Operation.objects.select_related('part').get(key=operation_key)
 
                     # Validate operation order - non-interchangeable operations must wait for ALL previous operations
                     if not operation.interchangeable:
@@ -101,18 +101,6 @@ class GenericTimerStartView(APIView):
                             return Response({
                                 'error': f"Cannot start timer on operation {operation.order}. All previous operations must be completed first.",
                                 'incomplete_operations': incomplete_orders
-                            }, status=400)
-
-                    # Validate tool availability
-                    for op_tool in operation.operation_tools.all():
-                        tool = op_tool.tool
-                        if not tool.is_available(op_tool.quantity):
-                            available = tool.get_available_quantity()
-                            return Response({
-                                'error': f"Tool {tool.code} ({tool.name}) not available",
-                                'tool_code': tool.code,
-                                'required': op_tool.quantity,
-                                'available': available
                             }, status=400)
 
                 except Operation.DoesNotExist:
@@ -883,7 +871,7 @@ class PartViewSet(ModelViewSet):
             "delete_operations": ["PT-001-OP-3"]  // keys of operations to delete
         }
         """
-        from .models import Operation, OperationTool
+        from .models import Operation
         from .serializers import OperationCreateSerializer
 
         part = self.get_object()
@@ -909,7 +897,7 @@ class PartViewSet(ModelViewSet):
 
             # 2. Update or create operations
             for op_data in operations_data:
-                tools_data = op_data.pop('tools', [])
+                op_data.pop('tools', None)
                 op_key = op_data.pop('key', None)
 
                 if op_key:
@@ -933,26 +921,6 @@ class PartViewSet(ModelViewSet):
                                 setattr(operation, field, value)
                         operation.save()
 
-                        # Update tools
-                        OperationTool.objects.filter(operation=operation).delete()
-                        for idx, tool_data in enumerate(tools_data, start=1):
-                            # Support both formats: integer (tool ID) or dict (tool ID + quantity)
-                            if isinstance(tool_data, dict):
-                                tool_id = tool_data.get('tool') or tool_data.get('id')
-                                quantity = tool_data.get('quantity', 1)
-                                notes = tool_data.get('notes', '')
-                            else:
-                                tool_id = tool_data
-                                quantity = 1
-                                notes = ''
-
-                            OperationTool.objects.create(
-                                operation=operation,
-                                tool_id=tool_id,
-                                quantity=quantity,
-                                notes=notes,
-                                display_order=idx
-                            )
                     except Operation.DoesNotExist:
                         return Response({
                             'error': f'Operation {op_key} not found'
@@ -963,32 +931,12 @@ class PartViewSet(ModelViewSet):
                     if not serializer.is_valid():
                         return Response(serializer.errors, status=400)
 
-                    operation = Operation.objects.create(
+                    Operation.objects.create(
                         part=part,
                         created_by=request.user,
                         created_at=int(time.time() * 1000),
                         **serializer.validated_data
                     )
-
-                    # Attach tools
-                    for idx, tool_data in enumerate(tools_data, start=1):
-                        # Support both formats: integer (tool ID) or dict (tool ID + quantity)
-                        if isinstance(tool_data, dict):
-                            tool_id = tool_data.get('tool') or tool_data.get('id')
-                            quantity = tool_data.get('quantity', 1)
-                            notes = tool_data.get('notes', '')
-                        else:
-                            tool_id = tool_data
-                            quantity = 1
-                            notes = ''
-
-                        OperationTool.objects.create(
-                            operation=operation,
-                            tool_id=tool_id,
-                            quantity=quantity,
-                            notes=notes,
-                            display_order=idx
-                        )
 
         # Return updated part with operations
         part.refresh_from_db()
@@ -1099,7 +1047,6 @@ class OperationViewSet(ModelViewSet):
         queryset = Operation.objects.select_related(
             'part', 'machine_fk', 'created_by', 'completed_by'
         ).prefetch_related(
-            'operation_tools__tool',
             'timers'  # Prefetch timers for has_active_timer check
         )
 
@@ -1224,18 +1171,6 @@ class OperationViewSet(ModelViewSet):
                     'incomplete_operations': incomplete_orders
                 }, status=400)
 
-        # Validate tool availability
-        for op_tool in operation.operation_tools.all():
-            tool = op_tool.tool
-            if not tool.is_available(op_tool.quantity):
-                available = tool.get_available_quantity()
-                return Response({
-                    'error': f"Tool {tool.code} ({tool.name}) not available",
-                    'tool_code': tool.code,
-                    'required': op_tool.quantity,
-                    'available': available
-                }, status=400)
-
         # Create timer
         timer = Timer.objects.create(
             user=request.user,
@@ -1334,37 +1269,6 @@ class OperationViewSet(ModelViewSet):
             return Response(serializer.data, status=status.HTTP_200_OK)
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-
-class ToolViewSet(ModelViewSet):
-    """ViewSet for Tool model"""
-    queryset = Tool.objects.filter(is_active=True)
-    serializer_class = ToolSerializer
-    permission_classes = [IsAuthenticated]
-    filter_backends = [DjangoFilterBackend, OrderingFilter]
-    filterset_fields = ['category', 'is_active']
-    ordering_fields = ['code', 'name', 'category']
-    ordering = ['code']
-
-    def get_permissions(self):
-        # Read-only for all authenticated, write for admins
-        if self.action in ['list', 'retrieve']:
-            return [IsAuthenticated()]
-        return [IsAdminUser()]
-
-    @action(detail=False, methods=['get'])
-    def available(self, request):
-        """Get only tools that have available quantity > 0"""
-        tools = self.filter_queryset(self.get_queryset())
-
-        # Filter for available tools
-        available_tools = []
-        for tool in tools:
-            if tool.get_available_quantity() > 0:
-                available_tools.append(tool)
-
-        serializer = self.get_serializer(available_tools, many=True)
-        return Response(serializer.data)
 
 
 # ==================== Downtime Tracking Views ====================

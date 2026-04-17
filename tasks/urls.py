@@ -1,12 +1,11 @@
 from rest_framework.routers import DefaultRouter
 from django.urls import path
-from .views import PartViewSet, OperationViewSet, ToolViewSet, PartStatsView, DowntimeReasonListView, LogReasonView
+from .views import PartViewSet, OperationViewSet, PartStatsView, DowntimeReasonListView, LogReasonView
 from .queue_views import DrainCostQueueView
 
 router = DefaultRouter()
 router.register(r'parts', PartViewSet, basename='part')
 router.register(r'operations', OperationViewSet, basename='operation')
-router.register(r'tools', ToolViewSet, basename='tool')
 
 # Stats and utility endpoints (must come BEFORE router.urls to match first)
 stats_urlpatterns = [
