@@ -416,3 +416,139 @@ def build_cutting_list_pdf(session) -> bytes:
 
     doc.build(story)
     return buffer.getvalue()
+
+
+def build_task_pdf(task) -> bytes:
+    """
+    Build a single-bar work-order PDF for one LinearCuttingTask.
+    """
+    USABLE_WIDTH = A4[0] - 30 * mm
+    styles = _make_styles()
+
+    # Build a synthetic bar dict from the task's stored fields
+    bar = {
+        'bar_index': task.bar_index,
+        'global_bar_index': task.bar_index,
+        'stock_length_mm': task.stock_length_mm,
+        'waste_mm': task.waste_mm,
+        'cuts': task.layout_json or [],
+    }
+
+    # Part lookup for angle fallback
+    part_ids = [c.get('part_id') for c in bar['cuts'] if c.get('part_id')]
+    from .models import LinearCuttingPart
+    part_lookup = {
+        p.id: p for p in LinearCuttingPart.objects.filter(id__in=part_ids)
+    }
+
+    session = task.session
+    prepared_by = session.created_by.get_full_name() if session.created_by else '—'
+    eff = round((1 - task.waste_mm / task.stock_length_mm) * 100, 1) if task.stock_length_mm else 0
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        topMargin=15 * mm, bottomMargin=15 * mm,
+        leftMargin=15 * mm, rightMargin=15 * mm,
+        title=f"İş Emri – {task.key}",
+    )
+
+    story = []
+
+    # ── Header ────────────────────────────────────────────────────────────────
+    story.append(Paragraph(f"İş Emri – {task.key}", styles['title']))
+    story.append(Paragraph(task.name, styles['subtitle']))
+
+    info_data = [
+        ['Malzeme',    task.material,         'Stok boyu',  f"{task.stock_length_mm} mm"],
+        ['Oturum',     session.key,            'Fire',       f"{task.waste_mm} mm"],
+        ['Verimlilik', f"{eff} %",             'Tarih',      str(date.today())],
+        ['Hazırlayan', prepared_by,            '', ''],
+    ]
+    info_table = Table(info_data, colWidths=[32*mm, 53*mm, 37*mm, 53*mm])
+    info_table.setStyle(TableStyle([
+        ('FONTNAME',      (0, 0), (-1, -1), 'Vera'),
+        ('FONTNAME',      (0, 0), (0,  -1), 'VeraBd'),
+        ('FONTNAME',      (2, 0), (2,  -1), 'VeraBd'),
+        ('FONTSIZE',      (0, 0), (-1, -1), 8),
+        ('TEXTCOLOR',     (0, 0), (0,  -1), DARK_BLUE),
+        ('TEXTCOLOR',     (2, 0), (2,  -1), DARK_BLUE),
+        ('ROWBACKGROUNDS',(0, 0), (-1, -1), [LIGHT_GREY, colors.white]),
+        ('GRID',          (0, 0), (-1, -1), 0.3, colors.lightgrey),
+        ('TOPPADDING',    (0, 0), (-1, -1), 2),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+    ]))
+    story.append(info_table)
+    story.append(Spacer(1, 4 * mm))
+    story.append(HRFlowable(width='100%', thickness=1.5, color=DARK_BLUE))
+    story.append(Spacer(1, 3 * mm))
+
+    # ── Bar diagram ───────────────────────────────────────────────────────────
+    story.append(BarDiagram(bar, _CUT_COLORS, USABLE_WIDTH))
+
+    # Color legend
+    legend_parts = []
+    for i, cut in enumerate(bar['cuts']):
+        color_hex = _CUT_COLORS[i % len(_CUT_COLORS)].hexval()
+        legend_parts.append(
+            f'<font color="{color_hex}">&#9632;</font> {i+1}. {cut.get("label","")}'
+        )
+    story.append(Paragraph('    '.join(legend_parts), styles['legend']))
+    story.append(Spacer(1, 3 * mm))
+
+    # ── Cut table ─────────────────────────────────────────────────────────────
+    col_w = [10*mm, 17*mm, 50*mm, 20*mm, 20*mm, 17*mm, 17*mm, 24*mm]
+    rows = [['#', 'Ofset (mm)', 'Parça adı', 'Nominal (mm)', 'Efektif (mm)', 'Sol açı', 'Sağ açı', 'İş No']]
+
+    for i, cut in enumerate(bar['cuts'], start=1):
+        part        = part_lookup.get(cut.get('part_id'))
+        angle_left  = cut.get('angle_left_deg')
+        angle_right = cut.get('angle_right_deg')
+        if angle_left is None:
+            angle_left  = float(part.angle_left_deg)  if part else 0
+        if angle_right is None:
+            angle_right = float(part.angle_right_deg) if part else 0
+
+        rows.append([
+            str(i),
+            str(round(cut.get('offset_mm', 0), 1)),
+            cut.get('label', ''),
+            str(cut.get('nominal_mm', '')),
+            str(round(cut.get('effective_mm', cut.get('nominal_mm', 0)), 1)),
+            _fmt_angle(angle_left),
+            _fmt_angle(angle_right),
+            cut.get('job_no', '') or '—',
+        ])
+
+    rows.append(['', '', '⟶ FİRE', f"{task.waste_mm} mm", '', '', '', ''])
+
+    cut_table = Table(rows, colWidths=col_w, repeatRows=1)
+    cut_table.setStyle(TableStyle([
+        ('BACKGROUND',     (0, 0), (-1, 0),  DARK_BLUE),
+        ('TEXTCOLOR',      (0, 0), (-1, 0),  colors.white),
+        ('FONTNAME',       (0, 0), (-1, 0),  'VeraBd'),
+        ('FONTSIZE',       (0, 0), (-1, 0),  8),
+        ('ALIGN',          (0, 0), (-1, 0),  'CENTER'),
+        ('LINEBELOW',      (0, 0), (-1, 0),  1, DARK_BLUE),
+        ('FONTNAME',       (0, 1), (-1, -2), 'Vera'),
+        ('FONTSIZE',       (0, 1), (-1, -2), 8),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -2), [colors.white, BAR_ACCENT]),
+        ('BACKGROUND',     (0, -1), (-1, -1), LIGHT_GREY),
+        ('FONTNAME',       (0, -1), (-1, -1), 'VeraIt'),
+        ('FONTSIZE',       (0, -1), (-1, -1), 8),
+        ('TEXTCOLOR',      (0, -1), (-1, -1), colors.grey),
+        ('GRID',           (0, 0), (-1, -1), 0.3, colors.lightgrey),
+        ('TOPPADDING',     (0, 0), (-1, -1), 3),
+        ('BOTTOMPADDING',  (0, 0), (-1, -1), 3),
+        ('LEFTPADDING',    (0, 0), (-1, -1), 4),
+        ('RIGHTPADDING',   (0, 0), (-1, -1), 4),
+        ('ALIGN',          (0, 1), (0, -1), 'CENTER'),
+        ('ALIGN',          (1, 1), (1, -1), 'RIGHT'),
+        ('ALIGN',          (3, 1), (4, -1), 'RIGHT'),
+        ('ALIGN',          (5, 1), (6, -1), 'CENTER'),
+    ]))
+    story.append(cut_table)
+
+    doc.build(story)
+    return buffer.getvalue()

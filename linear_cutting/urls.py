@@ -7,6 +7,7 @@ from .views import (
     OptimizeView,
     ConfirmView,
     CuttingListPDFView,
+    TaskPDFView,
     TimerStartView,
     TimerStopView,
     TimerManualEntryView,
@@ -30,6 +31,7 @@ urlpatterns = [
     path('sessions/<str:key>/pdf/', CuttingListPDFView.as_view(), name='session-pdf'),
 
     # Task actions
+    path('tasks/<str:key>/pdf/', TaskPDFView.as_view(), name='task-pdf'),
     path('tasks/mark-completed/', MarkTaskCompletedView.as_view(), name='mark-task-completed'),
     path('tasks/unmark-completed/', UnmarkTaskCompletedView.as_view(), name='unmark-task-completed'),
 

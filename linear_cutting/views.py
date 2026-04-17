@@ -1,7 +1,9 @@
 import time
 import logging
 from collections import defaultdict
+from decimal import Decimal
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 from django.http import HttpResponse
 from rest_framework.views import APIView
@@ -22,7 +24,7 @@ from .serializers import (
     LinearCuttingTimerSerializer,
 )
 from .optimizer import optimize
-from .pdf import build_cutting_list_pdf
+from .pdf import build_cutting_list_pdf, build_task_pdf
 from tasks.views import (
     GenericTimerStartView,
     GenericTimerStopView,
@@ -168,7 +170,9 @@ class ConfirmView(APIView):
 
     def post(self, request, key):
         try:
-            session = LinearCuttingSession.objects.prefetch_related(
+            session = LinearCuttingSession.objects.select_related(
+                'planning_request'
+            ).prefetch_related(
                 'parts', 'parts__item'
             ).get(key=key)
         except LinearCuttingSession.DoesNotExist:
@@ -187,44 +191,48 @@ class ConfirmView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        tasks_already = session.tasks_created
-        pr_already = session.planning_request_created
+        # A planning request is considered "active" only if it exists and is not cancelled.
+        # If the linked PR was cancelled (or the FK was cleared), allow re-creation.
+        pr = session.planning_request
+        pr_already = (
+            pr is not None and
+            getattr(pr, 'status', None) != 'cancelled'
+        )
 
-        if tasks_already and pr_already:
+        if pr_already:
             return Response(
-                {'error': 'Tasks and planning request already created for this session.'},
+                {'error': 'Planning request already created for this session.'},
                 status=status.HTTP_409_CONFLICT,
             )
 
         with transaction.atomic():
             created_task_keys = []
 
-            # ── Tasks (one per bar across all groups) ──────────────────────
-            if not tasks_already:
-                for group in groups:
-                    item_id = group['item_id']
-                    item_name = group['item_name']
-                    for bar in group['bars']:
-                        bar_idx = bar.get('global_bar_index', bar['bar_index'])
-                        task_key = f"{session.key}-B{bar_idx}"
-                        LinearCuttingTask.objects.get_or_create(
-                            key=task_key,
-                            defaults={
-                                'session': session,
-                                'item_id': item_id,
-                                'bar_index': bar_idx,
-                                'stock_length_mm': bar['stock_length_mm'],
-                                'material': item_name,
-                                'layout_json': bar['cuts'],
-                                'waste_mm': bar['waste_mm'],
-                                'name': f"{session.title} – {item_name} Bar {bar_idx}",
-                                'quantity': 1,
-                                'created_by': request.user,
-                                'created_at': int(time.time() * 1000),
-                            }
-                        )
-                        created_task_keys.append(task_key)
-                session.tasks_created = True
+            # ── Tasks (always re-sync via get_or_create — idempotent) ──────
+            for group in groups:
+                item_id = group['item_id']
+                item_name = group['item_name']
+                for bar in group['bars']:
+                    bar_idx = bar.get('global_bar_index', bar['bar_index'])
+                    task_key = f"{session.key}-B{bar_idx}"
+                    LinearCuttingTask.objects.get_or_create(
+                        key=task_key,
+                        defaults={
+                            'session': session,
+                            'item_id': item_id,
+                            'bar_index': bar_idx,
+                            'stock_length_mm': bar['stock_length_mm'],
+                            'material': item_name,
+                            'layout_json': bar['cuts'],
+                            'waste_mm': bar['waste_mm'],
+                            'name': f"{session.title} – {item_name} Bar {bar_idx}",
+                            'quantity': 1,
+                            'created_by': request.user,
+                            'created_at': int(time.time() * 1000),
+                        }
+                    )
+                    created_task_keys.append(task_key)
+            session.tasks_created = True
 
             # ── Planning request ───────────────────────────────────────────
             planning_request_number = None
@@ -266,8 +274,19 @@ class ConfirmView(APIView):
                         for jno in seen:
                             bars_by_job_no[jno] = bars_by_job_no.get(jno, 0) + 1
 
-                    # Parts belonging to this group's item
-                    group_parts = session.parts.filter(item_id=item_id)
+                    # Parts belonging to this exact group (item + stock_length_mm)
+                    group_parts = session.parts.filter(
+                        item_id=item_id,
+                        stock_length_mm=stock_len,
+                    )
+                    # Also include parts with no stock_length_mm override when the
+                    # group's stock_len equals the session default
+                    if stock_len == session.stock_length_mm:
+                        group_parts = session.parts.filter(
+                            item_id=item_id,
+                        ).filter(
+                            Q(stock_length_mm=stock_len) | Q(stock_length_mm__isnull=True)
+                        )
                     distinct_job_nos = list(
                         group_parts.values_list('job_no', flat=True).distinct()
                     )
@@ -277,9 +296,9 @@ class ConfirmView(APIView):
                         bars_for_job = bars_by_job_no.get(job_no, 0)
 
                         if item_unit == 'metre':
-                            quantity = bars_for_job * (stock_len / 1000)
+                            quantity = Decimal(str(bars_for_job * (stock_len / 1000)))
                         else:
-                            quantity = float(bars_for_job)
+                            quantity = Decimal(bars_for_job)
 
                         item_description = f"{bars_for_job} boy {stock_len_m} metre"
                         specs = ", ".join(
@@ -309,7 +328,6 @@ class ConfirmView(APIView):
         return Response({
             'created_tasks': created_task_keys,
             'planning_request_number': planning_request_number,
-            'tasks_already_existed': tasks_already,
             'planning_request_already_existed': pr_already,
         })
 
@@ -342,6 +360,30 @@ class CuttingListPDFView(APIView):
         pdf_bytes = build_cutting_list_pdf(session)
         response = HttpResponse(pdf_bytes, content_type='application/pdf')
         response['Content-Disposition'] = f'attachment; filename="{session.key}_cutting_list.pdf"'
+        return response
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Task PDF endpoint
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TaskPDFView(APIView):
+    """
+    GET /linear_cutting/tasks/{key}/pdf/
+
+    Returns a single-bar work-order PDF for one cutting task.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, key):
+        try:
+            task = LinearCuttingTask.objects.select_related('session', 'session__created_by').get(key=key)
+        except LinearCuttingTask.DoesNotExist:
+            return Response({'error': 'Task not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        pdf_bytes = build_task_pdf(task)
+        response = HttpResponse(pdf_bytes, content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="{task.key}_work_order.pdf"'
         return response
 
 

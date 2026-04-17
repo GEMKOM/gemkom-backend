@@ -268,6 +268,7 @@ class GenericTimerListView(APIView):
             'cnc_cutting': ('cnc_cutting', 'cnctask'),
             'operation': ('tasks', 'operation'),
             'machine_fault': ('machines', 'machinefault'),
+            'linear_cutting': ('linear_cutting', 'linearcuttingtask'),
         }
 
         if task_type not in task_type_map:
@@ -284,7 +285,7 @@ class GenericTimerListView(APIView):
         # For null content_type timers, filter by user's team to avoid showing them in wrong task_type views
         # cnc_cutting -> users with team='cutting', operation/machining -> users with team='machining'
         # machine_fault -> only GFK-linked timers, no null content_type timers
-        if task_type == 'machine_fault':
+        if task_type in ('machine_fault', 'linear_cutting'):
             query = Q(content_type=ct)
         elif task_type == 'cnc_cutting':
             null_content_type_filter = Q(content_type__isnull=True, user__groups__name='cutting_team')
@@ -416,6 +417,7 @@ class GenericTimerReportView(APIView):
             'cnc_cutting': ('cnc_cutting', 'cnctask'),
             'operation': ('tasks', 'operation'),
             'machine_fault': ('machines', 'machinefault'),
+            'linear_cutting': ('linear_cutting', 'linearcuttingtask'),
         }
 
         if task_type not in task_type_map:
