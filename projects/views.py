@@ -1405,7 +1405,7 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
     ).prefetch_related('subtasks', 'depends_on', 'qc_reviews', 'qc_reviews__ncr')
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     search_fields = ['title', 'description', 'job_order__job_no', 'job_order__title']
-    ordering_fields = ['sequence', 'status', 'created_at', 'target_completion_date', 'job_order', 'job_order__created_at', 'job_order__job_no']
+    ordering_fields = ['sequence', 'status', 'created_at', 'target_start_date', 'target_completion_date', 'job_order', 'job_order__created_at', 'job_order__job_no']
     ordering = ['job_order__created_at', 'sequence']
     filterset_fields = {
         'job_order': ['exact'],
@@ -1413,6 +1413,8 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
         'status': ['exact', 'in'],
         'assigned_to': ['exact', 'isnull'],
         'parent': ['exact', 'isnull'],
+        'target_start_date': ['exact', 'gte', 'lte', 'isnull'],
+        'target_completion_date': ['exact', 'gte', 'lte', 'isnull'],
     }
 
     def get_serializer_class(self):
