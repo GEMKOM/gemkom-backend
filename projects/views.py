@@ -2245,10 +2245,10 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
     def destroy(self, request, *args, **kwargs):
         task = self.get_object()
 
-        # Block deletion of main tasks (no parent)
-        if task.parent_id is None:
+        # Only 'part' subtasks can be deleted
+        if task.parent_id is None or task.task_type not in ('part', None):
             return Response(
-                {'status': 'error', 'message': 'Ana görevler silinemez.'},
+                {'status': 'error', 'message': 'Yalnızca "part" türündeki alt görevler silinebilir.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
