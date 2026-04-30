@@ -214,6 +214,7 @@ class NCRListSerializer(serializers.ModelSerializer):
     created_by_name = serializers.CharField(source='created_by.get_full_name', read_only=True)
     job_order_title = serializers.CharField(source='job_order.title', read_only=True)
     assigned_team_name = serializers.SerializerMethodField()
+    assigned_team_group_name = serializers.CharField(source='assigned_team.name', read_only=True)
 
     def get_assigned_team_name(self, obj):
         if obj.assigned_team is None:
@@ -229,7 +230,7 @@ class NCRListSerializer(serializers.ModelSerializer):
             'severity', 'severity_display',
             'defect_type', 'defect_type_display',
             'status', 'status_display',
-            'assigned_team', 'assigned_team_name', 'disposition',
+            'assigned_team', 'assigned_team_name', 'assigned_team_group_name', 'disposition',
             'submission_count',
             'created_by', 'created_by_name', 'created_at',
         ]
@@ -244,6 +245,7 @@ class NCRDetailSerializer(serializers.ModelSerializer):
     detected_by_name = serializers.CharField(source='detected_by.get_full_name', read_only=True)
     job_order_title = serializers.CharField(source='job_order.title', read_only=True)
     assigned_team_name = serializers.SerializerMethodField()
+    assigned_team_group_name = serializers.CharField(source='assigned_team.name', read_only=True)
 
     def get_assigned_team_name(self, obj):
         if obj.assigned_team is None:
@@ -263,7 +265,7 @@ class NCRDetailSerializer(serializers.ModelSerializer):
             'affected_quantity',
             'root_cause', 'corrective_action',
             'disposition', 'disposition_display',
-            'assigned_team', 'assigned_team_name', 'assigned_members', 'assigned_members_data',
+            'assigned_team', 'assigned_team_name', 'assigned_team_group_name', 'assigned_members', 'assigned_members_data',
             'status', 'status_display',
             'submission_count',
             'created_by', 'created_by_name', 'created_at', 'updated_at',
