@@ -4,6 +4,7 @@ from rest_framework.filters import SearchFilter, OrderingFilter
 from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser, FormParser
 from django_filters.rest_framework import DjangoFilterBackend
+import django_filters
 from django.utils import timezone
 from django.db import transaction
 
@@ -1388,6 +1389,50 @@ def _bulk_create_subtask_tree(parent_task, tasks_data, user):
 # Job Order Department Task ViewSet
 # =============================================================================
 
+class DepartmentTaskFilter(django_filters.FilterSet):
+    from .models import JobOrderDepartmentTask as _Task
+
+    job_order = django_filters.CharFilter(field_name='job_order')
+    department = django_filters.CharFilter(field_name='department')
+    department__in = django_filters.BaseInFilter(field_name='department')
+    status = django_filters.CharFilter(field_name='status')
+    status__in = django_filters.BaseInFilter(field_name='status')
+    assigned_to = django_filters.NumberFilter(field_name='assigned_to')
+    assigned_to__isnull = django_filters.BooleanFilter(field_name='assigned_to', lookup_expr='isnull')
+    parent = django_filters.NumberFilter(field_name='parent')
+    parent__isnull = django_filters.BooleanFilter(field_name='parent', lookup_expr='isnull')
+
+    target_start_date__gte = django_filters.DateFilter(field_name='target_start_date', lookup_expr='gte')
+    target_start_date__lte = django_filters.DateFilter(field_name='target_start_date', lookup_expr='lte')
+    target_start_date__isnull = django_filters.BooleanFilter(field_name='target_start_date', lookup_expr='isnull')
+    target_completion_date__gte = django_filters.DateFilter(field_name='target_completion_date', lookup_expr='gte')
+    target_completion_date__lte = django_filters.DateFilter(field_name='target_completion_date', lookup_expr='lte')
+    target_completion_date__isnull = django_filters.BooleanFilter(field_name='target_completion_date', lookup_expr='isnull')
+
+    # OR filter: tasks where start_date >= X OR completion_date <= Y
+    date_range_start = django_filters.DateFilter(method='filter_date_range_start')
+    date_range_end = django_filters.DateFilter(method='filter_date_range_end')
+
+    def filter_date_range_start(self, queryset, name, value):
+        # Stored for use in filter_date_range_end; apply OR when both are present
+        self._date_range_start = value
+        return queryset
+
+    def filter_date_range_end(self, queryset, name, value):
+        start = getattr(self, '_date_range_start', None)
+        if start:
+            from django.db.models import Q
+            return queryset.filter(
+                Q(target_start_date__gte=start) | Q(target_completion_date__lte=value)
+            )
+        return queryset.filter(target_completion_date__lte=value)
+
+    class Meta:
+        from .models import JobOrderDepartmentTask as _Task
+        model = _Task
+        fields = []
+
+
 class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
     """
     ViewSet for JobOrderDepartmentTask CRUD operations with workflow actions.
@@ -1407,15 +1452,7 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
     search_fields = ['title', 'description', 'job_order__job_no', 'job_order__title']
     ordering_fields = ['sequence', 'status', 'created_at', 'target_start_date', 'target_completion_date', 'job_order', 'job_order__created_at', 'job_order__job_no']
     ordering = ['job_order__created_at', 'sequence']
-    filterset_fields = {
-        'job_order': ['exact'],
-        'department': ['exact', 'in'],
-        'status': ['exact', 'in'],
-        'assigned_to': ['exact', 'isnull'],
-        'parent': ['exact', 'isnull'],
-        'target_start_date': ['exact', 'gte', 'lte', 'isnull'],
-        'target_completion_date': ['exact', 'gte', 'lte', 'isnull'],
-    }
+    filterset_class = DepartmentTaskFilter
 
     def get_serializer_class(self):
         if self.action == 'list':
