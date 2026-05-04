@@ -101,9 +101,9 @@ def _notify_on_final(statement: SubcontractorStatement, status_str: str, comment
 
 def submit_statement(statement: SubcontractorStatement, by_user: User) -> ApprovalWorkflow:
     """Submit a statement for approval. Mirrors procurement.submit_purchase_request."""
-    if statement.status != 'draft':
+    if statement.status not in ('draft', 'rejected'):
         raise ValueError(
-            f"Yalnızca 'taslak' durumundaki hakedişler gönderilebilir. "
+            f"Yalnızca 'taslak' veya 'reddedilmiş' durumundaki hakedişler gönderilebilir. "
             f"Mevcut durum: {statement.get_status_display()}"
         )
     if statement.grand_total <= 0:
