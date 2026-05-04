@@ -428,7 +428,7 @@ class DepartmentTaskTemplateItemChildSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = DepartmentTaskTemplateItem
-        fields = ['id', 'department', 'department_display', 'title', 'sequence', 'weight']
+        fields = ['id', 'department', 'department_display', 'title', 'sequence', 'weight', 'task_type']
 
 
 class DepartmentTaskTemplateItemSerializer(serializers.ModelSerializer):
@@ -442,7 +442,7 @@ class DepartmentTaskTemplateItemSerializer(serializers.ModelSerializer):
         model = DepartmentTaskTemplateItem
         fields = [
             'id', 'department', 'department_display', 'title',
-            'sequence', 'weight', 'depends_on', 'parent',
+            'sequence', 'weight', 'task_type', 'depends_on', 'parent',
             'children', 'children_count'
         ]
 
@@ -495,7 +495,7 @@ class DepartmentTaskTemplateItemUpdateSerializer(serializers.ModelSerializer):
     """Serializer for updating template items."""
     class Meta:
         model = DepartmentTaskTemplateItem
-        fields = ['department', 'title', 'sequence', 'weight', 'depends_on']
+        fields = ['department', 'title', 'sequence', 'weight', 'task_type', 'depends_on']
 
     def validate_department(self, value):
         """Prevent department change if item has children."""
@@ -552,15 +552,25 @@ class DepartmentTaskSubtaskSerializer(serializers.ModelSerializer):
         read_only=True,
         default=''
     )
+    internal_team_assignment = serializers.SerializerMethodField()
 
     class Meta:
         model = JobOrderDepartmentTask
         fields = [
             'id', 'title', 'task_type', 'department', 'department_display',
-            'status', 'status_display', 'weight',
+            'status', 'status_display', 'weight', 'manual_progress',
             'assigned_to', 'assigned_to_name',
-            'target_completion_date', 'completed_at'
+            'target_completion_date', 'completed_at',
+            'internal_team_assignment',
         ]
+
+    def get_internal_team_assignment(self, obj):
+        try:
+            a = obj.internal_team_assignment
+        except Exception:
+            return None
+        from welding.serializers import InternalTeamAssignmentInlineSerializer
+        return InternalTeamAssignmentInlineSerializer(a).data
 
 
 class DepartmentTaskListSerializer(serializers.ModelSerializer):

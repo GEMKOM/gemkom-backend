@@ -10,8 +10,12 @@ from django.db import transaction
 from django.contrib.auth import get_user_model
 from collections import defaultdict
 
-from .models import WeldingTimeEntry
-from .serializers import WeldingTimeEntrySerializer, WeldingTimeEntryBulkCreateSerializer
+from .models import WeldingTimeEntry, InternalTeamAssignment
+from .serializers import (
+    WeldingTimeEntrySerializer,
+    WeldingTimeEntryBulkCreateSerializer,
+    InternalTeamAssignmentSerializer,
+)
 from .filters import WeldingTimeEntryFilter
 from users.helpers import primary_team_from_groups
 from rest_framework.permissions import IsAuthenticated
@@ -203,6 +207,193 @@ class WeldingTimeEntryViewSet(viewsets.ModelViewSet):
             'breakdown_by_employee': formatted_employee_breakdown,
             'breakdown_by_date': formatted_date_breakdown,
         })
+
+
+class InternalTeamAssignmentViewSet(viewsets.ModelViewSet):
+    """
+    CRUD for InternalTeamAssignment.
+
+    Filtering:
+      ?job_no=254-01      — all assignments for a specific job order
+      ?department_task=42 — assignment for a specific task (or its subtasks)
+
+    Creation is handled exclusively through the create-with-subtask action.
+    Deletion is handled exclusively through the delete-with-subtask action.
+    """
+    serializer_class = InternalTeamAssignmentSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        qs = InternalTeamAssignment.objects.select_related(
+            'department_task__job_order',
+            'team__foreman',
+            'created_by',
+            'updated_by',
+        )
+        job_no = self.request.query_params.get('job_no')
+        department_task = self.request.query_params.get('department_task')
+        if job_no:
+            qs = qs.filter(department_task__job_order_id=job_no)
+        if department_task:
+            from projects.models import JobOrderDepartmentTask
+            subtask_ids = list(
+                JobOrderDepartmentTask.objects
+                .filter(parent_id=department_task)
+                .values_list('pk', flat=True)
+            )
+            qs = qs.filter(department_task_id__in=[int(department_task)] + subtask_ids)
+        return qs
+
+    def create(self, request, *args, **kwargs):
+        return Response(
+            {'detail': 'Doğrudan oluşturmak için create-with-subtask kullanın.'},
+            status=status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
+
+    def destroy(self, request, *args, **kwargs):
+        return Response(
+            {'detail': 'Silmek için delete-with-subtask kullanın.'},
+            status=status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
+
+    @action(detail=False, methods=['post'], url_path='create-with-subtask')
+    def create_with_subtask(self, request):
+        """
+        Atomically create an internal_team subtask and its assignment.
+
+        POST /welding/internal-team-assignments/create-with-subtask/
+
+        Body:
+          welding_task_id      (int, required)     — ID of the Kaynaklı İmalat parent task
+          team                 (int, required)      — Team PK
+          allocated_weight_kg  (decimal, required)
+          title                (str, optional)      — subtask title; defaults to team name
+          notes                (str, optional)
+        """
+        from decimal import Decimal
+        from projects.models import JobOrderDepartmentTask
+        from teams.models import Team
+        from .services.internal_team import create_internal_team_assignment
+
+        welding_task_id = request.data.get('welding_task_id')
+        team_id = request.data.get('team')
+        allocated_weight_kg = request.data.get('allocated_weight_kg')
+        title = str(request.data.get('title', '') or '').strip()
+        notes = str(request.data.get('notes', '') or '')
+
+        if not welding_task_id or not team_id or not allocated_weight_kg:
+            return Response(
+                {'detail': 'welding_task_id, team ve allocated_weight_kg zorunludur.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            parent_task = JobOrderDepartmentTask.objects.select_related('job_order').get(pk=welding_task_id)
+        except JobOrderDepartmentTask.DoesNotExist:
+            return Response({'detail': 'Üst görev bulunamadı.'}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            team = Team.objects.get(pk=team_id, is_active=True)
+        except Team.DoesNotExist:
+            return Response({'detail': 'Ekip bulunamadı.'}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            _, assignment = create_internal_team_assignment(
+                parent_task=parent_task,
+                team=team,
+                allocated_weight_kg=Decimal(str(allocated_weight_kg)),
+                title=title,
+                notes=notes,
+                created_by=request.user,
+            )
+        except ValueError as e:
+            return Response({'detail': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(
+            InternalTeamAssignmentSerializer(assignment, context={'request': request}).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+    @action(detail=True, methods=['patch'], url_path='update-assignment')
+    def update_assignment(self, request, pk=None):
+        """
+        Update an internal team assignment and optionally its linked subtask.
+
+        PATCH /welding/internal-team-assignments/{id}/update-assignment/
+
+        Body (all optional):
+          team                 — new Team PK
+          allocated_weight_kg  — new weight (also updates subtask.weight)
+          notes
+          title                — new subtask title
+          manual_progress      — 0-100; sets department_task.manual_progress
+          task_status          — new status for the subtask
+        """
+        from decimal import Decimal
+        from teams.models import Team
+
+        assignment = self.get_object()
+        subtask = assignment.department_task
+
+        with transaction.atomic():
+            if 'team' in request.data:
+                try:
+                    assignment.team = Team.objects.get(pk=request.data['team'], is_active=True)
+                except Team.DoesNotExist:
+                    return Response({'detail': 'Ekip bulunamadı.'}, status=status.HTTP_404_NOT_FOUND)
+
+            if 'allocated_weight_kg' in request.data:
+                new_weight = Decimal(str(request.data['allocated_weight_kg']))
+                assignment.allocated_weight_kg = new_weight
+                subtask.weight = max(1, round(new_weight))
+
+            if 'notes' in request.data:
+                assignment.notes = request.data['notes']
+
+            assignment.updated_by = request.user
+            assignment.save()
+
+            subtask_update_fields = []
+            if 'title' in request.data:
+                subtask.title = request.data['title']
+                subtask_update_fields.append('title')
+            if 'manual_progress' in request.data:
+                subtask.manual_progress = Decimal(str(request.data['manual_progress']))
+                subtask_update_fields.append('manual_progress')
+            if 'task_status' in request.data:
+                subtask.status = request.data['task_status']
+                subtask_update_fields.append('status')
+            if 'allocated_weight_kg' in request.data:
+                subtask_update_fields.append('weight')
+
+            if subtask_update_fields:
+                subtask.save(update_fields=subtask_update_fields)
+
+            if ('manual_progress' in request.data or 'task_status' in request.data) and subtask.job_order_id:
+                subtask.job_order.update_completion_percentage()
+
+        return Response(
+            InternalTeamAssignmentSerializer(assignment, context={'request': request}).data
+        )
+
+    @action(detail=True, methods=['delete'], url_path='delete-with-subtask')
+    def delete_with_subtask(self, request, pk=None):
+        """
+        Delete the assignment AND its linked subtask together.
+
+        DELETE /welding/internal-team-assignments/{id}/delete-with-subtask/
+        """
+        assignment = self.get_object()
+        subtask = assignment.department_task
+        job_order = subtask.job_order
+
+        with transaction.atomic():
+            subtask.delete()  # CASCADE removes the assignment
+
+        if job_order:
+            job_order.update_completion_percentage()
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class WeldingTimeEntryBulkCreateView(APIView):

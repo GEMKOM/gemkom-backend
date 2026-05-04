@@ -6,11 +6,13 @@ from .views import (
     WeldingJobCostListView,
     WeldingJobEntriesReportView,
     UserWorkHoursReportView,
+    InternalTeamAssignmentViewSet,
 )
 from .queue_views import DrainWeldingCostQueueView
 
 router = DefaultRouter()
 router.register(r'time-entries', WeldingTimeEntryViewSet, basename='welding-time-entry')
+router.register(r'internal-team-assignments', InternalTeamAssignmentViewSet, basename='internal-team-assignment')
 
 urlpatterns = [
     path('time-entries/bulk-create/', WeldingTimeEntryBulkCreateView.as_view(), name='welding-bulk-create'),

@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import WeldingTimeEntry
+from .models import WeldingTimeEntry, InternalTeamAssignment
 from django.contrib.auth import get_user_model
 
 User = get_user_model()
@@ -79,6 +79,61 @@ class WeldingTimeEntrySerializer(serializers.ModelSerializer):
         if request and hasattr(request, 'user'):
             validated_data['updated_by'] = request.user
         return super().update(instance, validated_data)
+
+
+class InternalTeamAssignmentInlineSerializer(serializers.ModelSerializer):
+    """Compact serializer for embedding inside DepartmentTaskSubtaskSerializer."""
+    team_name = serializers.CharField(source='team.name', read_only=True)
+    team_foreman_name = serializers.SerializerMethodField()
+    current_progress = serializers.DecimalField(max_digits=5, decimal_places=2, read_only=True)
+
+    class Meta:
+        model = InternalTeamAssignment
+        fields = ['id', 'team', 'team_name', 'team_foreman_name', 'allocated_weight_kg', 'notes', 'current_progress']
+
+    def get_team_foreman_name(self, obj):
+        if obj.team.foreman_id:
+            return obj.team.foreman.get_full_name() or obj.team.foreman.username
+        return None
+
+
+class InternalTeamAssignmentSerializer(serializers.ModelSerializer):
+    """Full serializer for list/detail/update responses."""
+    team_name = serializers.CharField(source='team.name', read_only=True)
+    team_foreman_name = serializers.SerializerMethodField()
+    job_no = serializers.CharField(source='department_task.job_order_id', read_only=True)
+    task_title = serializers.CharField(source='department_task.title', read_only=True)
+    task_status = serializers.CharField(source='department_task.status', read_only=True)
+    current_progress = serializers.DecimalField(max_digits=5, decimal_places=2, read_only=True)
+    created_by_name = serializers.SerializerMethodField()
+    updated_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = InternalTeamAssignment
+        fields = [
+            'id', 'department_task', 'job_no', 'task_title', 'task_status',
+            'team', 'team_name', 'team_foreman_name',
+            'allocated_weight_kg', 'notes',
+            'current_progress',
+            'created_at', 'created_by', 'created_by_name',
+            'updated_at', 'updated_by', 'updated_by_name',
+        ]
+        read_only_fields = ['created_at', 'created_by', 'updated_at', 'updated_by']
+
+    def get_team_foreman_name(self, obj):
+        if obj.team.foreman_id:
+            return obj.team.foreman.get_full_name() or obj.team.foreman.username
+        return None
+
+    def get_created_by_name(self, obj):
+        if obj.created_by_id:
+            return obj.created_by.get_full_name() or obj.created_by.username
+        return None
+
+    def get_updated_by_name(self, obj):
+        if obj.updated_by_id:
+            return obj.updated_by.get_full_name() or obj.updated_by.username
+        return None
 
 
 class WeldingTimeEntryBulkCreateSerializer(serializers.Serializer):

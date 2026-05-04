@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import WeldingTimeEntry
+from .models import WeldingTimeEntry, InternalTeamAssignment
 
 
 @admin.register(WeldingTimeEntry)
@@ -53,3 +53,11 @@ class WeldingTimeEntryAdmin(admin.ModelAdmin):
         else:  # Updating existing object
             obj.updated_by = request.user
         super().save_model(request, obj, form, change)
+
+
+@admin.register(InternalTeamAssignment)
+class InternalTeamAssignmentAdmin(admin.ModelAdmin):
+    list_display = ['id', 'department_task', 'team', 'allocated_weight_kg', 'created_at']
+    list_select_related = ['department_task__job_order', 'team']
+    raw_id_fields = ['department_task']
+    search_fields = ['department_task__job_order__job_no', 'team__name']

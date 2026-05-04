@@ -41,4 +41,5 @@ urlpatterns = [
     path('attendance/', include('attendance.urls')),
     path('linear_cutting/', include('linear_cutting.urls')),
     path('equipment/', include('equipment.urls')),
+    path('teams/', include('teams.urls')),
 ]

@@ -1,3 +1,6 @@
+from decimal import Decimal
+
+from django.core.validators import MinValueValidator
 from django.db import models
 from django.contrib.auth import get_user_model
 
@@ -160,6 +163,53 @@ class WeldingJobCostAggUser(models.Model):
 
     def __str__(self):
         return f"{self.job_no} - {self.user.username} - {self.total_cost} {self.currency}"
+
+
+class InternalTeamAssignment(models.Model):
+    """
+    Assigns an internal team to a welding subtask.
+    Mutually exclusive with SubcontractingAssignment on the same subtask (enforced by OneToOne at DB level).
+    No billing or cost tracking — progress is read from department_task.manual_progress.
+    """
+    department_task = models.OneToOneField(
+        'projects.JobOrderDepartmentTask',
+        on_delete=models.CASCADE,
+        related_name='internal_team_assignment',
+    )
+    team = models.ForeignKey(
+        'teams.Team',
+        on_delete=models.PROTECT,
+        related_name='assignments',
+    )
+    allocated_weight_kg = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal('0.01'))],
+    )
+    notes = models.TextField(blank=True, null=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='+',
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='+',
+    )
+
+    class Meta:
+        db_table = 'welding_internal_team_assignment'
+        verbose_name = 'Dahili Takım Ataması'
+        verbose_name_plural = 'Dahili Takım Atamaları'
+
+    def __str__(self):
+        return f"{self.department_task.job_order_id} – {self.team.name} – {self.allocated_weight_kg} kg"
+
+    @property
+    def current_progress(self) -> Decimal:
+        return self.department_task.get_completion_percentage(skip_expensive_calculations=True)
 
 
 class WeldingJobCostRecalcQueue(models.Model):
