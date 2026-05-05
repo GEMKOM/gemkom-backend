@@ -371,10 +371,9 @@ class JobOrder(models.Model):
                                         subtask_earned_weight += subtask_progress * subtask_weight
                                     elif subtask.status == 'completed':
                                         subtask_earned_weight += subtask_weight
-                                elif subtask.status == 'completed':
-                                    subtask_earned_weight += subtask_weight
-                                elif subtask.manual_progress > 0:
-                                    subtask_earned_weight += (subtask.manual_progress / Decimal('100')) * subtask_weight
+                                else:
+                                    subtask_pct = subtask.get_completion_percentage()
+                                    subtask_earned_weight += (subtask_pct / Decimal('100')) * subtask_weight
 
                         if subtask_total_weight > 0:
                             # Proportional contribution based on subtask completion
