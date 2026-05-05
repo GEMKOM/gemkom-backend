@@ -239,31 +239,22 @@ class SalesOfferCurrentPriceSerializer(serializers.ModelSerializer):
 
 class SalesOfferListSerializer(serializers.ModelSerializer):
     customer_name = serializers.CharField(source='customer.name', read_only=True)
-    customer_code = serializers.CharField(source='customer.code', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
-    current_price = SalesOfferCurrentPriceSerializer(read_only=True)
     item_count = serializers.SerializerMethodField()
     total_price = serializers.SerializerMethodField()
     total_weight_kg = serializers.SerializerMethodField()
     created_by_name = serializers.CharField(
         source='created_by.get_full_name', read_only=True, default=''
     )
-    payment_terms_detail = PaymentTermsMinimalSerializer(source='payment_terms', read_only=True)
-    needs_my_approval = serializers.BooleanField(read_only=True, default=False)
 
     class Meta:
         model = SalesOffer
         fields = [
             'id', 'offer_no', 'title', 'status', 'status_display',
-            'customer', 'customer_name', 'customer_code',
+            'customer_name',
+            'total_price', 'item_count', 'total_weight_kg',
+            'created_by_name', 'created_at',
             'delivery_date_requested', 'offer_expiry_date',
-            'delivery_place', 'payment_terms', 'payment_terms_detail', 'order_no',
-            'shipping_price', 'pricing_mode',
-            'current_price', 'item_count',
-            'total_price', 'total_weight_kg',
-            'approval_round',
-            'needs_my_approval',
-            'created_by', 'created_by_name', 'created_at', 'updated_at',
         ]
 
     def get_item_count(self, obj):

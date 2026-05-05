@@ -1072,6 +1072,14 @@ class JobOrderDepartmentTask(models.Model):
                 "Lütfen önce KK incelemesi için gönderin."
             )
 
+        # Procurement gate: all planning request items must be fully delivered
+        if self.department == 'procurement':
+            earned, total = self.get_procurement_progress()
+            if total > 0 and earned < total:
+                raise ValueError(
+                    "Tüm satın alma kalemleri teslim alınmadan tedarik görevi tamamlanamaz."
+                )
+
         # For subtasks: ensure parent is not blocked
         if self.parent and self.parent.status == 'blocked':
             raise ValueError("Üst görev engellenmiş olduğu için bu alt görev tamamlanamaz.")

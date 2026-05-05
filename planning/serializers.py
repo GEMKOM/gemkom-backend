@@ -810,10 +810,19 @@ class PlanningRequestUpdateSerializer(serializers.Serializer):
         """Ensure the planning request can be edited."""
         instance = self.instance
 
-        if instance and instance.status in ['converted', 'completed', 'cancelled']:
+        if instance and instance.status in ['completed', 'cancelled']:
             raise serializers.ValidationError(
                 f"Cannot edit planning request with status '{instance.status}'."
             )
+
+        # For converted requests, only allow item list changes (not field edits)
+        if instance and instance.status == 'converted':
+            blocked_fields = {'title', 'description', 'needed_date', 'priority', 'check_inventory'}
+            changed_fields = blocked_fields & attrs.keys()
+            if changed_fields:
+                raise serializers.ValidationError(
+                    f"Cannot edit fields {sorted(changed_fields)} on a converted planning request."
+                )
 
         # Validate that file attachment targets reference valid item indices
         files_data = attrs.get('files', [])

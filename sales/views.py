@@ -251,13 +251,16 @@ class SalesOfferViewSet(viewsets.ModelViewSet):
             approver_user_ids__contains=[user.id],
         )
 
-        return (
+        qs = (
             SalesOffer.objects
             .select_related('customer', 'created_by', 'converted_job_order')
-            .prefetch_related('items', 'price_revisions', 'job_orders')
+            .prefetch_related('items')
             .annotate(needs_my_approval=Exists(pending_for_me))
             .order_by('-needs_my_approval', '-created_at')
         )
+        if self.action != 'list':
+            qs = qs.prefetch_related('price_revisions', 'job_orders')
+        return qs
 
     def filter_queryset(self, queryset):
         queryset = super().filter_queryset(queryset)
