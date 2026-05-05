@@ -422,7 +422,16 @@ class JobOrder(models.Model):
         if self.status != 'completed':
             pct = min(pct, Decimal('99.00'))
         self.completion_percentage = pct
-        self.save(update_fields=['completion_percentage'])
+        save_fields = ['completion_percentage']
+
+        # If percentage dropped below 100 and job was completed, revert to active
+        if self.status == 'completed' and pct < Decimal('100.00'):
+            self.status = 'active'
+            self.completed_at = None
+            self.completed_by = None
+            save_fields += ['status', 'completed_at', 'completed_by']
+
+        self.save(update_fields=save_fields)
         self._log_progress_change(_old_pct)
 
         # Recursively update parent

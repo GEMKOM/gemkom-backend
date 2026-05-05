@@ -2074,11 +2074,11 @@ class CostTableRowSerializer(serializers.Serializer):
         currency = self.get_selling_price_currency(obj)
         if currency != 'EUR':
             return None
-        price = Decimal(self.get_selling_price(obj))
-        if price == 0:
-            return None
         total_at100 = Decimal(self.get_actual_total_cost(obj))
-        pct = (price - total_at100) / price * 100
+        if total_at100 == 0:
+            return None
+        price = Decimal(self.get_selling_price(obj))
+        pct = (price - total_at100) / total_at100 * 100
         return str(pct.quantize(Decimal('0.01')))
 
     def get_last_updated(self, obj):
