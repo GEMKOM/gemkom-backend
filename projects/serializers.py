@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from django.utils import timezone
 from decimal import Decimal
+from datetime import timedelta
 from django.contrib.auth import get_user_model
 from .models import (
     Customer, JobOrder, JobOrderFile,
@@ -115,6 +116,84 @@ class JobOrderTargetDateRevisionSerializer(serializers.ModelSerializer):
         fields = ['id', 'previous_date', 'new_date', 'reason', 'changed_by', 'changed_by_name', 'changed_at']
 
 
+MEETING_CUTOFF_HOUR = 12  # Tuesday noon — after this, changes belong to the next week
+
+
+def _weekly_meeting_boundaries():
+    """
+    Return (week_start_dt, week_end_dt) for the last completed reporting week.
+
+    Weeks run Tuesday 12:00 → Tuesday 12:00. The reported delta is frozen
+    until the next Tuesday noon, at which point the window shifts forward by one week.
+
+    Example on Wed May 6:  window = Tue Apr 29 12:00 → Tue May 6 12:00  (frozen)
+    Example on Tue May 12 before noon: still Apr 29 → May 6 (not yet flipped)
+    Example on Tue May 12 after noon:  window = Tue May 6 12:00 → Tue May 13 12:00
+    """
+    now = timezone.localtime(timezone.now())
+    today = now.date()
+    days_since_tue = (today.weekday() - 1) % 7  # weekday(): Mon=0, Tue=1
+    this_tuesday = today - timedelta(days=days_since_tue)
+    this_tuesday_noon = timezone.make_aware(
+        timezone.datetime(this_tuesday.year, this_tuesday.month, this_tuesday.day, MEETING_CUTOFF_HOUR, 0, 0)
+    )
+
+    # Always report the last *completed* week.
+    # Completed = the week whose end boundary (Tuesday noon) has already passed.
+    # On Tuesday after noon the window advances; Wed–Mon it stays on that same week.
+    if now >= this_tuesday_noon:
+        # This Tuesday noon has passed — that week is now closed
+        week_end = this_tuesday_noon
+    else:
+        # Haven't reached this Tuesday noon yet — last closed week ended one week ago
+        week_end = this_tuesday_noon - timedelta(weeks=1)
+
+    week_start = week_end - timedelta(weeks=1)
+    return week_start, week_end
+
+
+def _compute_weekly_deltas(logs):
+    """
+    Given a list of JobOrderProgressLog ordered by logged_at (ascending),
+    return a list of deltas (floats) for every closed Tuesday-noon week
+    that had log activity.
+    """
+    if not logs:
+        return []
+
+    first_log_date = logs[0].logged_at.date()
+    days_since_tue = (first_log_date.weekday() - 1) % 7
+    week_start_date = first_log_date - timedelta(days=days_since_tue)
+
+    now = timezone.localtime(timezone.now())
+    today = now.date()
+    days_since_tue_now = (today.weekday() - 1) % 7
+    this_tuesday = today - timedelta(days=days_since_tue_now)
+    this_tuesday_noon = timezone.make_aware(
+        timezone.datetime(this_tuesday.year, this_tuesday.month, this_tuesday.day, MEETING_CUTOFF_HOUR, 0, 0)
+    )
+    last_closed_noon = this_tuesday_noon if now >= this_tuesday_noon else this_tuesday_noon - timedelta(weeks=1)
+
+    deltas = []
+    while True:
+        week_start = timezone.make_aware(
+            timezone.datetime(week_start_date.year, week_start_date.month, week_start_date.day, MEETING_CUTOFF_HOUR, 0, 0)
+        )
+        week_end = week_start + timedelta(weeks=1)
+        if week_end > last_closed_noon:
+            break
+
+        pct_at_start = next((float(l.new_pct) for l in reversed(logs) if l.logged_at < week_start), None)
+        pct_at_end = next((float(l.new_pct) for l in reversed(logs) if l.logged_at < week_end), None)
+
+        if pct_at_end is not None:
+            deltas.append(round(pct_at_end - (pct_at_start or 0.0), 2))
+
+        week_start_date += timedelta(weeks=1)
+
+    return deltas
+
+
 class JobOrderListSerializer(serializers.ModelSerializer):
     """Lightweight serializer for list views."""
     customer_name = serializers.CharField(source='customer.name', read_only=True)
@@ -128,6 +207,10 @@ class JobOrderListSerializer(serializers.ModelSerializer):
     revision_count = serializers.IntegerField(read_only=True)
     previous_target_date_revision = serializers.DateField(read_only=True, default=None)
     target_date_revisions_count = serializers.IntegerField(read_only=True)
+    last_week_progress = serializers.SerializerMethodField()
+    weekly_avg_progress = serializers.SerializerMethodField()
+    estimated_completion_by_last_week = serializers.SerializerMethodField()
+    estimated_completion_by_avg = serializers.SerializerMethodField()
 
     class Meta:
         model = JobOrder
@@ -141,11 +224,68 @@ class JobOrderListSerializer(serializers.ModelSerializer):
             'target_date_revisions_count',
             'general_expenses_rate',
             'source_offer',
-            'created_at'
+            'created_at',
+            'last_week_progress',
+            'weekly_avg_progress',
+            'estimated_completion_by_last_week',
+            'estimated_completion_by_avg',
         ]
 
     def get_hierarchy_level(self, obj):
         return obj.get_hierarchy_level()
+
+    def _get_progress_stats(self, obj):
+        """
+        Compute all weekly progress stats in one pass and cache on the instance
+        so the four SerializerMethodFields below don't repeat the work.
+        Returns (last_week_delta, weekly_avg, pct_at_week_end, week_end_dt).
+        """
+        cache_attr = '_progress_stats_cache'
+        if hasattr(obj, cache_attr):
+            return getattr(obj, cache_attr)
+
+        logs = list(getattr(obj, '_prefetched_progress_logs', None) or [])
+        week_start, week_end = _weekly_meeting_boundaries()
+
+        pct_at_start = next((float(l.new_pct) for l in reversed(logs) if l.logged_at < week_start), None)
+        pct_at_end = next((float(l.new_pct) for l in reversed(logs) if l.logged_at < week_end), None)
+
+        last_week_delta = round(pct_at_end - (pct_at_start or 0.0), 2) if pct_at_end is not None else None
+
+        deltas = _compute_weekly_deltas(logs)
+        weekly_avg = round(sum(deltas) / len(deltas), 2) if deltas else None
+
+        result = (last_week_delta, weekly_avg, pct_at_end, week_end)
+        setattr(obj, cache_attr, result)
+        return result
+
+    def _estimate_completion(self, pct_at_anchor, anchor_dt, weekly_rate):
+        """
+        Estimate completion date anchored to the week-end snapshot so the value
+        is frozen for the week and doesn't drift day by day.
+        """
+        if weekly_rate is None or weekly_rate <= 0 or pct_at_anchor is None:
+            return None
+        remaining = 100.0 - pct_at_anchor
+        weeks_remaining = remaining / weekly_rate
+        estimated_dt = anchor_dt + timedelta(weeks=weeks_remaining)
+        return estimated_dt.date().isoformat()
+
+    def get_last_week_progress(self, obj):
+        last_week_delta, _, _, _ = self._get_progress_stats(obj)
+        return last_week_delta
+
+    def get_weekly_avg_progress(self, obj):
+        _, weekly_avg, _, _ = self._get_progress_stats(obj)
+        return weekly_avg
+
+    def get_estimated_completion_by_last_week(self, obj):
+        last_week_delta, _, pct_at_end, week_end = self._get_progress_stats(obj)
+        return self._estimate_completion(pct_at_end, week_end, last_week_delta)
+
+    def get_estimated_completion_by_avg(self, obj):
+        _, weekly_avg, pct_at_end, week_end = self._get_progress_stats(obj)
+        return self._estimate_completion(pct_at_end, week_end, weekly_avg)
 
 
 class JobOrderDepartmentTaskNestedSerializer(serializers.ModelSerializer):
@@ -225,7 +365,15 @@ class JobOrderDetailSerializer(serializers.ModelSerializer):
         ]
 
     def get_children(self, obj):
-        children = obj.children.order_by('job_no')
+        from django.db.models import Prefetch
+        from .models import JobOrderProgressLog
+        children = obj.children.prefetch_related(
+            Prefetch(
+                'progress_logs',
+                queryset=JobOrderProgressLog.objects.only('job_order_id', 'new_pct', 'logged_at').order_by('logged_at'),
+                to_attr='_prefetched_progress_logs',
+            )
+        ).order_by('job_no')
         return JobOrderListSerializer(children, many=True).data
 
     def get_children_count(self, obj):

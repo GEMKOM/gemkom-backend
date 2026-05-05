@@ -7,6 +7,7 @@ from django_filters.rest_framework import DjangoFilterBackend
 import django_filters
 from django.utils import timezone
 from django.db import transaction
+from datetime import timedelta
 
 from .models import (
     Customer, JobOrder, JobOrderFile,
@@ -160,8 +161,8 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         return JobOrderDetailSerializer
 
     def get_queryset(self):
-        from django.db.models import Count, Q, Subquery, OuterRef
-        from .models import JobOrderTargetDateRevision
+        from django.db.models import Count, Q, Subquery, OuterRef, Prefetch
+        from .models import JobOrderTargetDateRevision, JobOrderProgressLog
         latest_revision = JobOrderTargetDateRevision.objects.filter(
             job_order=OuterRef('pk')
         ).order_by('-changed_at')
@@ -177,6 +178,12 @@ class JobOrderViewSet(viewsets.ModelViewSet):
             ),
             target_date_revisions_count=Count('target_date_revisions', distinct=True),
             previous_target_date_revision=Subquery(latest_revision.values('previous_date')[:1]),
+        ).prefetch_related(
+            Prefetch(
+                'progress_logs',
+                queryset=JobOrderProgressLog.objects.only('job_order_id', 'new_pct', 'logged_at').order_by('logged_at'),
+                to_attr='_prefetched_progress_logs',
+            )
         ).exclude(job_no='LEGACY-ARCHIVE')
 
         # Filter by root only (no parent) if requested
@@ -360,6 +367,76 @@ class JobOrderViewSet(viewsets.ModelViewSet):
             'job_no': job_order.job_no,
             'old_percentage': float(old_pct),
             'new_percentage': float(job_order.completion_percentage),
+        })
+
+    @action(detail=True, methods=['get'], url_path='progress-history')
+    def progress_history(self, request, job_no=None):
+        """
+        GET /job-orders/{job_no}/progress-history/
+        Returns weekly progress deltas (Tuesday noon → Tuesday noon), oldest first.
+        Each entry: week_start, week_end, completion_pct at end of week, delta for that week.
+        Also includes weekly_avg across all weeks.
+        """
+        from projects.serializers import MEETING_CUTOFF_HOUR
+
+        job_order = self.get_object()
+        logs = list(job_order.progress_logs.order_by('logged_at').only('new_pct', 'logged_at'))
+        if not logs:
+            return Response({'weeks': [], 'weekly_avg': None})
+
+        first_log_date = logs[0].logged_at.date()
+        days_since_tue = (first_log_date.weekday() - 1) % 7
+        week_start_date = first_log_date - timedelta(days=days_since_tue)
+
+        now = timezone.localtime(timezone.now())
+        today = now.date()
+        days_since_tue_now = (today.weekday() - 1) % 7
+        this_tuesday = today - timedelta(days=days_since_tue_now)
+        this_tuesday_noon = timezone.make_aware(
+            timezone.datetime(this_tuesday.year, this_tuesday.month, this_tuesday.day, MEETING_CUTOFF_HOUR, 0, 0)
+        )
+        last_closed_noon = this_tuesday_noon if now >= this_tuesday_noon else this_tuesday_noon - timedelta(weeks=1)
+
+        weeks = []
+        while True:
+            week_start = timezone.make_aware(
+                timezone.datetime(week_start_date.year, week_start_date.month, week_start_date.day, MEETING_CUTOFF_HOUR, 0, 0)
+            )
+            week_end = week_start + timedelta(weeks=1)
+            if week_end > last_closed_noon:
+                break
+
+            pct_at_start = next((float(l.new_pct) for l in reversed(logs) if l.logged_at < week_start), None)
+            pct_at_end = next((float(l.new_pct) for l in reversed(logs) if l.logged_at < week_end), None)
+
+            if pct_at_end is not None:
+                delta = round(pct_at_end - (pct_at_start or 0.0), 2)
+                weeks.append({
+                    'week_start': week_start.date().isoformat(),
+                    'week_end': (week_end.date() - timedelta(days=1)).isoformat(),
+                    'completion_pct': pct_at_end,
+                    'delta': delta,
+                })
+
+            week_start_date += timedelta(weeks=1)
+
+        weekly_avg = round(sum(w['delta'] for w in weeks) / len(weeks), 2) if weeks else None
+
+        current_pct = float(job_order.completion_percentage)
+        remaining = 100.0 - current_pct
+
+        def estimate_completion(weekly_rate):
+            if not weekly_rate or weekly_rate <= 0:
+                return None
+            weeks_remaining = remaining / weekly_rate
+            return (today + timedelta(weeks=weeks_remaining)).isoformat()
+
+        last_week_rate = weeks[-1]['delta'] if weeks else None
+        return Response({
+            'weeks': weeks,
+            'weekly_avg': weekly_avg,
+            'estimated_completion_by_last_week': estimate_completion(last_week_rate),
+            'estimated_completion_by_avg': estimate_completion(weekly_avg),
         })
 
     @action(detail=True, methods=['get'])
