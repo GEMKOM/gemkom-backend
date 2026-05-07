@@ -566,6 +566,8 @@ class PlanningRequestListSerializer(serializers.ModelSerializer):
     status_label = serializers.SerializerMethodField()
     department_request_number = serializers.CharField(source='department_request.request_number', read_only=True)
     items_count = serializers.IntegerField(read_only=True)
+    is_from_cutting_session = serializers.SerializerMethodField()
+    cutting_session_key = serializers.SerializerMethodField()
 
     class Meta:
         model = PlanningRequest
@@ -576,7 +578,7 @@ class PlanningRequestListSerializer(serializers.ModelSerializer):
             'priority', 'status', 'status_label',
             'check_inventory', 'inventory_control_completed', 'fully_from_inventory',
             'created_at', 'updated_at', 'ready_at', 'converted_at', 'completed_at',
-            'items_count'
+            'items_count', 'is_from_cutting_session', 'cutting_session_key',
         ]
         read_only_fields = [
             'request_number', 'created_at', 'updated_at',
@@ -592,6 +594,26 @@ class PlanningRequestListSerializer(serializers.ModelSerializer):
     def get_status_label(self, obj):
         return obj.get_status_display()
 
+    def get_is_from_cutting_session(self, obj):
+        return hasattr(obj, 'linear_cutting_session')
+
+    def get_cutting_session_key(self, obj):
+        session = getattr(obj, 'linear_cutting_session', None)
+        return session.key if session else None
+
+
+class CuttingSessionForPlanningSerializer(serializers.Serializer):
+    """Minimal cutting session data embedded in the planning request detail."""
+    key = serializers.CharField(read_only=True)
+    title = serializers.CharField(read_only=True)
+    stock_entry_complete = serializers.BooleanField(read_only=True)
+    optimization_result = serializers.JSONField(read_only=True)
+    stock_bars = serializers.SerializerMethodField()
+
+    def get_stock_bars(self, obj):
+        from linear_cutting.serializers import LinearCuttingStockBarSerializer
+        return LinearCuttingStockBarSerializer(obj.stock_bars.all(), many=True).data
+
 
 class PlanningRequestSerializer(serializers.ModelSerializer):
     """Full serializer for detail views - includes nested items and files"""
@@ -603,6 +625,9 @@ class PlanningRequestSerializer(serializers.ModelSerializer):
     completion_stats = serializers.SerializerMethodField()
     purchase_request_info = serializers.SerializerMethodField()
     files = FileAttachmentSerializer(many=True, read_only=True)
+    is_from_cutting_session = serializers.SerializerMethodField()
+    cutting_session_key = serializers.SerializerMethodField()
+    cutting_session = serializers.SerializerMethodField()
 
     class Meta:
         model = PlanningRequest
@@ -614,7 +639,8 @@ class PlanningRequestSerializer(serializers.ModelSerializer):
             'check_inventory', 'inventory_control_completed', 'fully_from_inventory',
             'created_at', 'updated_at', 'ready_at', 'converted_at', 'completed_at',
             'completion_stats', 'purchase_request_info',
-            'items', 'files'
+            'items', 'files',
+            'is_from_cutting_session', 'cutting_session_key', 'cutting_session',
         ]
         read_only_fields = [
             'request_number', 'created_at', 'updated_at',
@@ -631,8 +657,20 @@ class PlanningRequestSerializer(serializers.ModelSerializer):
         return obj.get_status_display()
 
     def get_completion_stats(self, obj):
-        """Get completion statistics for this planning request"""
         return obj.get_completion_stats()
+
+    def get_is_from_cutting_session(self, obj):
+        return hasattr(obj, 'linear_cutting_session')
+
+    def get_cutting_session_key(self, obj):
+        session = getattr(obj, 'linear_cutting_session', None)
+        return session.key if session else None
+
+    def get_cutting_session(self, obj):
+        session = getattr(obj, 'linear_cutting_session', None)
+        if not session:
+            return None
+        return CuttingSessionForPlanningSerializer(session).data
 
     def get_purchase_request_info(self, obj):
         """Get info about all unique active purchase requests created from this planning request's items (excludes rejected/cancelled)"""

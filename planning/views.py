@@ -291,7 +291,7 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
         # For list views and list-like actions, use minimal prefetching
         if self.action in ['list', 'ready_for_procurement', 'my_requests', 'warehouse_requests']:
             qs = PlanningRequest.objects.select_related(
-                'created_by', 'department_request'
+                'created_by', 'department_request', 'linear_cutting_session'
             ).annotate(
                 items_count=Count('items')
             )
@@ -299,7 +299,7 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
             # For detail views, prefetch all related data
             from procurement.models import PurchaseRequestItem as PRItem
             qs = PlanningRequest.objects.select_related(
-                'created_by', 'department_request'
+                'created_by', 'department_request', 'linear_cutting_session'
             ).prefetch_related(
                 'items__item',
                 'items__purchase_requests',
@@ -312,6 +312,7 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
                 ),
                 Prefetch('files', queryset=FileAttachment.objects.select_related('asset', 'uploaded_by', 'source_attachment')),
                 Prefetch('items__files', queryset=FileAttachment.objects.select_related('asset', 'uploaded_by', 'source_attachment')),
+                'linear_cutting_session__stock_bars__item',
             )
 
         return qs

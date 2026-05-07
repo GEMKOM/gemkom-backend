@@ -609,12 +609,78 @@ class LinearCuttingStockBarViewSet(ModelViewSet):
 
     def create(self, request, *args, **kwargs):
         if isinstance(request.data, list):
-            serializer = self.get_serializer(data=request.data, many=True)
-            serializer.is_valid(raise_exception=True)
-            with transaction.atomic():
-                self.perform_create(serializer)
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
+            return self._bulk_sync(request)
         return super().create(request, *args, **kwargs)
+
+    def _bulk_sync(self, request):
+        """
+        Replace the stock bars for a session with the provided list.
+        Items with an 'id' field are updated in-place; items without 'id' are
+        created; existing bars whose id is not present in the payload are deleted.
+        All items in the list must belong to the same session.
+        Session is resolved from the items' 'session' field or the ?session= query param.
+        """
+        items = request.data
+
+        # Resolve session key from items or query param
+        session_keys = {item.get('session') for item in items if item.get('session')}
+        qp_session = request.query_params.get('session')
+        if qp_session:
+            session_keys.add(qp_session)
+
+        if len(session_keys) != 1:
+            return Response(
+                {'error': 'Provide a single session key via the items or ?session= query param.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        session_key = session_keys.pop()
+
+        try:
+            session = LinearCuttingSession.objects.get(pk=session_key)
+        except LinearCuttingSession.DoesNotExist:
+            return Response({'error': 'Session not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        now_ms = int(time.time() * 1000)
+        user = request.user
+
+        with transaction.atomic():
+            incoming_ids = {int(item['id']) for item in items if item.get('id')}
+            # Delete bars not in the incoming list
+            LinearCuttingStockBar.objects.filter(session=session).exclude(
+                pk__in=incoming_ids
+            ).delete()
+
+            result = []
+            for item in items:
+                bar_id = item.get('id')
+                if bar_id:
+                    # Update existing
+                    try:
+                        bar = LinearCuttingStockBar.objects.get(pk=bar_id, session=session)
+                    except LinearCuttingStockBar.DoesNotExist:
+                        return Response(
+                            {'error': f'Stock bar id={bar_id} not found in session {session_key}.'},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+                    serializer = self.get_serializer(bar, data=item, partial=True)
+                    serializer.is_valid(raise_exception=True)
+                    bar = serializer.save()
+                else:
+                    # Create new
+                    serializer = self.get_serializer(data=item)
+                    serializer.is_valid(raise_exception=True)
+                    bar = serializer.save(
+                        declared_by=user,
+                        declared_at=now_ms,
+                    )
+                result.append(bar)
+
+            LinearCuttingSession.objects.filter(pk=session.pk).update(stock_entry_complete=False)
+
+        return Response(
+            LinearCuttingStockBarSerializer(result, many=True).data,
+            status=status.HTTP_200_OK,
+        )
 
     def perform_create(self, serializer):
         now_ms = int(time.time() * 1000)
@@ -622,7 +688,6 @@ class LinearCuttingStockBarViewSet(ModelViewSet):
             declared_by=self.request.user,
             declared_at=now_ms,
         )
-        # Reset stock_entry_complete when new entries are added
         if isinstance(instances, list) and instances:
             session = instances[0].session
         elif hasattr(instances, 'session'):
