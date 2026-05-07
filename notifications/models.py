@@ -33,6 +33,7 @@ class Notification(models.Model):
     SALES_REJECTED           = 'sales_rejected'
     SALES_CONSULTATION       = 'sales_consultation'
     SALES_CONVERTED          = 'sales_converted'
+    SALES_ORDER_CONFIRMED    = 'sales_order_confirmed'
     # Subcontracting
     SUB_APPROVAL_REQUESTED   = 'sub_approval_requested'
     SUB_APPROVED             = 'sub_approved'
@@ -94,6 +95,7 @@ class Notification(models.Model):
         SALES_REJECTED:           CATEGORY_SALES,
         SALES_CONSULTATION:       CATEGORY_SALES,
         SALES_CONVERTED:          CATEGORY_SALES,
+        SALES_ORDER_CONFIRMED:    CATEGORY_SALES,
         PLAN_APPROVAL_REQUESTED:  CATEGORY_PLANNING,
         PLAN_APPROVED:            CATEGORY_PLANNING,
         PLAN_REJECTED:            CATEGORY_PLANNING,
@@ -149,6 +151,7 @@ class Notification(models.Model):
         (SALES_REJECTED,           'Satış Teklifi Reddedildi'),
         (SALES_CONSULTATION,       'Satış Danışma Talebi'),
         (SALES_CONVERTED,          'Teklif İş Emrine Dönüştürüldü'),
+        (SALES_ORDER_CONFIRMED,    'Sipariş Onayı Bildirimi'),
         (SUB_APPROVAL_REQUESTED,   'Taşeron Hakedişi Onay Bekliyor'),
         (SUB_APPROVED,             'Taşeron Hakedişi Onaylandı'),
         (SUB_REJECTED,             'Taşeron Hakedişi Reddedildi'),
@@ -242,6 +245,7 @@ class NotificationConfig(models.Model):
     ROUTABLE_TYPES = [
         Notification.SALES_CONVERTED,
         Notification.SALES_CONSULTATION,
+        Notification.SALES_ORDER_CONFIRMED,
         Notification.JOB_ON_HOLD,
         Notification.JOB_ON_HOLD_REVISION,
         Notification.JOB_RESUMED,

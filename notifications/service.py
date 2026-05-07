@@ -48,6 +48,7 @@ NOTIFICATION_DEFAULTS: dict[str, tuple[bool, bool]] = {
     Notification.SALES_REJECTED:           (True,  True),
     Notification.SALES_CONSULTATION:       (True,  True),
     Notification.SALES_CONVERTED:          (True,  True),
+    Notification.SALES_ORDER_CONFIRMED:    (True,  True),
     Notification.SUB_APPROVAL_REQUESTED:   (True,  True),
     Notification.SUB_APPROVED:             (True,  True),
     Notification.SUB_REJECTED:             (True,  True),
@@ -276,6 +277,23 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
         'link': '',
         'vars': ['offer_no', 'offer_title', 'customer', 'department', 'task_title', 'completed_by', 'link'],
     },
+    Notification.SALES_ORDER_CONFIRMED: {
+        'title': '[Sipariş Onayı] {customer} – {job_no}',
+        'body': (
+            'Sayın İlgili,\n\n'
+            'Onayladığımız {customer} siparişimize ait sipariş formunu ekte bilgilerinize arz ederim.\n\n'
+            'Siparişimiz ile ilgili bilgiler şu şekildedir:\n'
+            'Sipariş Numarası: {order_no}\n'
+            'İş Emri No: {job_no}\n'
+            'Teslim Şekli: {delivery_line}\n'
+            'Teslim Süresi: {delivery_date}\n'
+            'Sipariş Tutarı: {amount}\n'
+            'Ödeme Şekli: {payment_terms}'
+        ),
+        'link': f'{_BASE_URL}/projects/project-tracking/?job_no={{job_no}}',
+        'vars': ['customer', 'job_no', 'order_no', 'delivery_line', 'delivery_date', 'amount', 'payment_terms', 'link'],
+    },
+    # ----- Procurement -----
     Notification.PR_APPROVAL_REQUESTED: {
         'title': '[Onay Gerekli] Satınalma Talebi #{pr_id} \u2013 {pr_title}',
         'body': (

@@ -94,6 +94,7 @@ ALWAYS_NOTIFIED = {
     Notification.SALES_CONSULTATION:       'İlgili departman müdürleri ve danışma görevine atanan kişi',
     Notification.SALES_CONSULT_COMPLETED:  'Teklifi oluşturan satış temsilcisi',
     Notification.SALES_CONVERTED:          None,
+    Notification.SALES_ORDER_CONFIRMED:    'Teklifi oluşturan kişi',
     # QC
     Notification.QC_REVIEW_SUBMITTED:    'KK ekibi üyeleri',
     Notification.QC_REVIEW_APPROVED:     'İncelemeyi gönderen kişi',
