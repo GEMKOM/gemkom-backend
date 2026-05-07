@@ -60,6 +60,8 @@ class Notification(models.Model):
     # Tasks
     TASK_ASSIGNED            = 'task_assigned'
     SALES_CONSULT_COMPLETED  = 'sales_consult_completed'
+    # Linear Cutting
+    LC_STOCK_ENTRY_COMPLETE  = 'lc_stock_entry_complete'
     # Auth
     PASSWORD_RESET           = 'password_reset'
 
@@ -117,6 +119,7 @@ class Notification(models.Model):
         JOB_DATE_CHANGED:         CATEGORY_GENERAL,
         TASK_ASSIGNED:            CATEGORY_GENERAL,
         SALES_CONSULT_COMPLETED:  CATEGORY_SALES,
+        LC_STOCK_ENTRY_COMPLETE:  CATEGORY_PLANNING,
         PASSWORD_RESET:           CATEGORY_GENERAL,
     }
 
@@ -173,6 +176,7 @@ class Notification(models.Model):
         (NEW_COMMENT,              'Yeni Yorum'),
         (TASK_ASSIGNED,            'Göreve Atandınız'),
         (SALES_CONSULT_COMPLETED,  'Satış Destek Görevi Tamamlandı'),
+        (LC_STOCK_ENTRY_COMPLETE,  'Stok Girişi Tamamlandı'),
         (PASSWORD_RESET,           'Parola Sıfırlama Talebi'),
     ]
 
@@ -255,6 +259,7 @@ class NotificationConfig(models.Model):
         Notification.REVISION_APPROVED,
         Notification.REVISION_COMPLETED,
         Notification.REVISION_REJECTED,
+        Notification.LC_STOCK_ENTRY_COMPLETE,
     ]
 
     notification_type = models.CharField(

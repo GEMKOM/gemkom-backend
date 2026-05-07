@@ -39,6 +39,15 @@ class LinearCuttingSession(models.Model):
     # Workflow flags
     tasks_created = models.BooleanField(default=False)
     planning_request_created = models.BooleanField(default=False)
+    stock_entry_complete = models.BooleanField(default=False)
+
+    # Stock bars consumed by this session (populated on re-confirm)
+    used_stock_bars = models.ManyToManyField(
+        'LinearCuttingStockBar',
+        through='LinearCuttingStockBarUsage',
+        related_name='consuming_sessions',
+        blank=True,
+    )
 
     # Links to created records
     planning_request = models.OneToOneField(
@@ -116,6 +125,62 @@ class LinearCuttingPart(models.Model):
 
     def __str__(self):
         return f"{self.label} {self.nominal_length_mm}mm ×{self.quantity} ({self.session.key})"
+
+
+class LinearCuttingStockBar(models.Model):
+    """
+    Bar stock inventory. Initially attached to a session (declared by warehouse
+    during pending_inventory). In future will support global inventory entries.
+    quantity tracks remaining pieces; quantity=0 means fully consumed.
+    """
+    session = models.ForeignKey(
+        LinearCuttingSession,
+        on_delete=models.CASCADE,
+        related_name='stock_bars',
+    )
+    item = models.ForeignKey(
+        'procurement.Item',
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='lc_stock_bars',
+    )
+    length_mm    = models.IntegerField(help_text="Length of this bar/piece in mm")
+    quantity     = models.PositiveIntegerField(default=1, help_text="Remaining pieces available")
+    notes        = models.TextField(blank=True)
+    declared_by  = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='declared_stock_bars',
+    )
+    declared_at  = models.BigIntegerField(null=True, blank=True, help_text="Epoch ms")
+
+    class Meta:
+        ordering = ['-length_mm']
+
+    def __str__(self):
+        item_name = self.item.name if self.item else '?'
+        return f"{item_name} {self.length_mm}mm ×{self.quantity} ({self.session_id})"
+
+
+class LinearCuttingStockBarUsage(models.Model):
+    """
+    Records how many pieces of a stock bar were consumed by a session.
+    Acts as the through model for LinearCuttingSession.used_stock_bars.
+    Enables reversing a confirm (e.g. on cancellation) by adding quantity back.
+    """
+    session   = models.ForeignKey(
+        LinearCuttingSession,
+        on_delete=models.CASCADE,
+        related_name='stock_bar_usages',
+    )
+    stock_bar = models.ForeignKey(
+        LinearCuttingStockBar,
+        on_delete=models.CASCADE,
+        related_name='usages',
+    )
+    quantity_used = models.PositiveIntegerField()
+
+    class Meta:
+        unique_together = [('session', 'stock_bar')]
 
 
 class LinearCuttingTask(BaseTask):

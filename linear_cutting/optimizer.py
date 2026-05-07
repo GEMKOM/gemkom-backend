@@ -63,6 +63,8 @@ class Bar:
     bar_index: int
     stock_length_mm: int
     cuts: List[PlacedCut] = field(default_factory=list)
+    is_remnant: bool = False
+    stock_bar_id: int = 0
     _used_mm: float = field(default=0.0, init=False)
 
     def remaining(self, kerf_mm: float) -> float:
@@ -139,6 +141,7 @@ def optimize(
     parts_data: list,
     stock_length_mm: int,
     kerf_mm: float = 3.0,
+    stock_pieces: list = None,
 ) -> dict:
     """
     Run First Fit Decreasing (FFD) bin-packing on the given parts.
@@ -149,14 +152,20 @@ def optimize(
         Each dict: {label, nominal_length_mm, quantity, angle_left_deg,
                     angle_right_deg, profile_height_mm, job_no?, id?}
     stock_length_mm : int
-        Length of a single stock bar in mm.
+        Length of a single full stock bar in mm.
     kerf_mm : float
         Blade kerf in mm (material removed per cut).
+    stock_pieces : list of dicts, optional
+        Pre-existing remnant pieces to use before opening new full bars.
+        Each dict: {length_mm: int, quantity: int}
+        Pieces that receive no cuts are dropped from the result.
 
     Returns
     -------
     dict with keys:
-        bars_needed, total_waste_mm, efficiency_pct, bars (list)
+        bars_needed (new full bars only), remnant_bars_used,
+        total_waste_mm, efficiency_pct, bars (list).
+        Each bar has is_remnant: bool.
 
     Raises
     ------
@@ -165,7 +174,7 @@ def optimize(
     """
     instances = _build_instances(parts_data)
 
-    # Validate: no part can exceed the bar
+    # Validate: no part can exceed the full bar
     for inst in instances:
         if inst.effective_mm > stock_length_mm:
             raise ValueError(
@@ -176,6 +185,7 @@ def optimize(
     if not instances:
         return {
             'bars_needed': 0,
+            'remnant_bars_used': 0,
             'total_waste_mm': 0,
             'efficiency_pct': 100.0,
             'bars': [],
@@ -184,7 +194,19 @@ def optimize(
     # Sort descending by effective length (FFD heuristic)
     instances.sort(key=lambda p: p.effective_mm, reverse=True)
 
+    # Pre-seed bars from stock pieces (longest first)
+    # Each piece is expanded into `quantity` individual Bar instances,
+    # all sharing the same stock_bar_id so confirm can tally usage per ID.
     bars: List[Bar] = []
+    if stock_pieces:
+        for piece in sorted(stock_pieces, key=lambda p: p['length_mm'], reverse=True):
+            for _ in range(int(piece['quantity'])):
+                bars.append(Bar(
+                    bar_index=len(bars) + 1,
+                    stock_length_mm=int(piece['length_mm']),
+                    is_remnant=True,
+                    stock_bar_id=int(piece.get('id', 0)),
+                ))
 
     for inst in instances:
         placed = False
@@ -194,16 +216,26 @@ def optimize(
                 placed = True
                 break
         if not placed:
-            new_bar = Bar(bar_index=len(bars) + 1, stock_length_mm=stock_length_mm)
+            new_bar = Bar(bar_index=len(bars) + 1, stock_length_mm=stock_length_mm, is_remnant=False)
             new_bar.place(inst, kerf_mm)
             bars.append(new_bar)
 
+    # Drop remnant bars that received no cuts (too short for any part)
+    bars = [b for b in bars if b.cuts or not b.is_remnant]
+
+    # Re-index after possible drops
+    for i, b in enumerate(bars):
+        b.bar_index = i + 1
+
     total_waste = sum(b.waste_mm for b in bars)
-    total_material = stock_length_mm * len(bars)
-    efficiency = round((1 - total_waste / total_material) * 100, 2) if total_material else 0.0
+    total_stock_mm = sum(b.stock_length_mm for b in bars)
+    efficiency = round((1 - total_waste / total_stock_mm) * 100, 2) if total_stock_mm else 0.0
+
+    new_bars = [b for b in bars if not b.is_remnant]
 
     return {
-        'bars_needed': len(bars),
+        'bars_needed': len(new_bars),
+        'remnant_bars_used': len(bars) - len(new_bars),
         'total_waste_mm': total_waste,
         'efficiency_pct': efficiency,
         'bars': [
@@ -211,6 +243,8 @@ def optimize(
                 'bar_index': b.bar_index,
                 'stock_length_mm': b.stock_length_mm,
                 'waste_mm': b.waste_mm,
+                'is_remnant': b.is_remnant,
+                'stock_bar_id': b.stock_bar_id,
                 'cuts': [
                     {
                         'label': c.label,

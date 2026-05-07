@@ -2,8 +2,30 @@ from rest_framework import serializers
 from django.db import transaction
 import time
 
-from .models import LinearCuttingSession, LinearCuttingPart, LinearCuttingTask
+from .models import LinearCuttingSession, LinearCuttingPart, LinearCuttingTask, LinearCuttingStockBar
 from tasks.serializers import BaseTimerSerializer
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stock bar serializer
+# ─────────────────────────────────────────────────────────────────────────────
+
+class LinearCuttingStockBarSerializer(serializers.ModelSerializer):
+    item_code           = serializers.CharField(source='item.code', read_only=True, allow_null=True)
+    item_name           = serializers.CharField(source='item.name', read_only=True, allow_null=True)
+    item_unit           = serializers.CharField(source='item.unit', read_only=True, allow_null=True)
+    declared_by_username = serializers.CharField(source='declared_by.username', read_only=True, allow_null=True)
+    session_key         = serializers.CharField(source='session.key', read_only=True)
+
+    class Meta:
+        model = LinearCuttingStockBar
+        fields = [
+            'id', 'session', 'session_key',
+            'item', 'item_code', 'item_name', 'item_unit',
+            'length_mm', 'quantity', 'notes',
+            'declared_by', 'declared_by_username', 'declared_at',
+        ]
+        read_only_fields = ['id', 'session_key', 'declared_by', 'declared_at']
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -49,7 +71,6 @@ class LinearCuttingSessionListSerializer(serializers.ModelSerializer):
     created_by_username = serializers.CharField(source='created_by.username', read_only=True, allow_null=True)
     planning_request_number = serializers.CharField(source='planning_request.request_number', read_only=True, allow_null=True)
     parts_count = serializers.SerializerMethodField()
-    # Per-item-group summary derived from optimization_result
     optimization_summary = serializers.SerializerMethodField()
 
     def get_parts_count(self, obj):
@@ -77,7 +98,7 @@ class LinearCuttingSessionListSerializer(serializers.ModelSerializer):
         model = LinearCuttingSession
         fields = [
             'key', 'title', 'stock_length_mm', 'kerf_mm',
-            'tasks_created', 'planning_request_created',
+            'tasks_created', 'planning_request_created', 'stock_entry_complete',
             'planning_request', 'planning_request_number',
             'created_by', 'created_by_username', 'created_at',
             'parts_count', 'optimization_summary',
@@ -86,6 +107,7 @@ class LinearCuttingSessionListSerializer(serializers.ModelSerializer):
 
 class LinearCuttingSessionDetailSerializer(serializers.ModelSerializer):
     parts = LinearCuttingPartSerializer(many=True, read_only=True)
+    stock_bars = LinearCuttingStockBarSerializer(many=True, read_only=True)
     created_by_username = serializers.CharField(source='created_by.username', read_only=True, allow_null=True)
     planning_request_number = serializers.CharField(source='planning_request.request_number', read_only=True, allow_null=True)
 
@@ -96,11 +118,11 @@ class LinearCuttingSessionDetailSerializer(serializers.ModelSerializer):
         model = LinearCuttingSession
         fields = [
             'key', 'title', 'stock_length_mm', 'kerf_mm', 'notes',
-            'tasks_created', 'planning_request_created',
+            'tasks_created', 'planning_request_created', 'stock_entry_complete',
             'planning_request', 'planning_request_number',
             'optimization_result',
             'created_by', 'created_by_username', 'created_at',
-            'parts', 'parts_data',
+            'parts', 'parts_data', 'stock_bars',
         ]
         read_only_fields = [
             'key', 'optimization_result',

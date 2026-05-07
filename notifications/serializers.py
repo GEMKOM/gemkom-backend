@@ -104,6 +104,8 @@ ALWAYS_NOTIFIED = {
     Notification.NCR_APPROVED:           'NCR\'ı oluşturan kişi, atanan ekip ve atanan üyeler',
     Notification.NCR_REJECTED:           'NCR\'ı oluşturan kişi ve atanan ekip',
     Notification.NCR_ASSIGNED:           'NCR\'a atanan ekip ve atanan üyeler',
+    # Linear Cutting
+    Notification.LC_STOCK_ENTRY_COMPLETE: 'Kesim oturumunu oluşturan planlama uzmanı',
     # Auth
     Notification.PASSWORD_RESET:         'IT yöneticileri',
 }

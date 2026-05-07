@@ -71,6 +71,7 @@ NOTIFICATION_DEFAULTS: dict[str, tuple[bool, bool]] = {
     Notification.PASSWORD_RESET:           (True,  False),
     Notification.TASK_ASSIGNED:            (True,  True),
     Notification.SALES_CONSULT_COMPLETED:  (True,  True),
+    Notification.LC_STOCK_ENTRY_COMPLETE:  (True,  True),
 }
 
 
@@ -563,6 +564,17 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
         'body': '{actor} sizi "{task_title}" görevine atadı.',
         'link': '',
         'vars': ['actor', 'task_title', 'task_id', 'offer_no', 'department', 'link'],
+    },
+    Notification.LC_STOCK_ENTRY_COMPLETE: {
+        'title': '[Stok Girişi Tamamlandı] {session_key} – {session_title}',
+        'body': (
+            'Depo, {session_key} numaralı "{session_title}" kesim oturumu için '
+            'stok bar girişini tamamladı.\n'
+            'Yeniden optimize edip onaylayabilirsiniz.\n\n'
+            '{link}'
+        ),
+        'link': f'{_BASE_URL}/linear-cutting/sessions/{{session_key}}',
+        'vars': ['session_key', 'session_title', 'actor', 'link'],
     },
 }
 

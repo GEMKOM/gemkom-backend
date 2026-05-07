@@ -188,9 +188,12 @@ class NotificationConfigViewSet(
                 data = dict(self.get_serializer(cfg).data)
                 data['is_default'] = False
             else:
+                cat = Notification.CATEGORY_MAP.get(ntype, '')
                 data = {
                     'notification_type': ntype,
                     'notification_type_display': choices.get(ntype, ntype),
+                    'category': cat,
+                    'category_display': dict(Notification.CATEGORY_CHOICES).get(cat, ''),
                     'title_template': default['title'],
                     'body_template': default['body'],
                     'link_template': default['link'],

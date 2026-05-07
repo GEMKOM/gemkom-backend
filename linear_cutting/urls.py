@@ -4,6 +4,7 @@ from .views import (
     LinearCuttingSessionViewSet,
     LinearCuttingPartViewSet,
     LinearCuttingTaskViewSet,
+    LinearCuttingStockBarViewSet,
     OptimizeView,
     ConfirmView,
     CuttingListPDFView,
@@ -23,6 +24,7 @@ router = DefaultRouter()
 router.register(r'sessions', LinearCuttingSessionViewSet, basename='session')
 router.register(r'parts', LinearCuttingPartViewSet, basename='part')
 router.register(r'tasks', LinearCuttingTaskViewSet, basename='task')
+router.register(r'stock-bars', LinearCuttingStockBarViewSet, basename='stock-bar')
 
 urlpatterns = [
     # Session actions

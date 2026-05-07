@@ -2,7 +2,7 @@ import time
 import logging
 from collections import defaultdict
 from decimal import Decimal
-from django.db import transaction
+from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 from django.http import HttpResponse
@@ -14,7 +14,7 @@ from rest_framework import status
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import OrderingFilter
 
-from .models import LinearCuttingSession, LinearCuttingPart, LinearCuttingTask
+from .models import LinearCuttingSession, LinearCuttingPart, LinearCuttingTask, LinearCuttingStockBar
 from .serializers import (
     LinearCuttingSessionListSerializer,
     LinearCuttingSessionDetailSerializer,
@@ -22,6 +22,7 @@ from .serializers import (
     LinearCuttingTaskListSerializer,
     LinearCuttingTaskDetailSerializer,
     LinearCuttingTimerSerializer,
+    LinearCuttingStockBarSerializer,
 )
 from .optimizer import optimize
 from .pdf import build_cutting_list_pdf, build_task_pdf
@@ -36,6 +37,29 @@ from tasks.views import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _notify_stock_entry_complete(session, actor):
+    try:
+        from notifications.service import notify, render_notification
+        from notifications.models import Notification
+        ctx = {
+            'session_key':   session.key,
+            'session_title': session.title,
+            'actor':         actor.get_full_name() or actor.username,
+        }
+        title, body, link = render_notification(Notification.LC_STOCK_ENTRY_COMPLETE, ctx)
+        notify(
+            user=session.created_by,
+            notification_type=Notification.LC_STOCK_ENTRY_COMPLETE,
+            title=title,
+            body=body,
+            link=link,
+            source_type='linear_cutting_session',
+            source_id=session.key,
+        )
+    except Exception:
+        logger.exception('Failed to send LC stock entry complete notification for %s', session.key)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -55,6 +79,15 @@ class LinearCuttingSessionViewSet(ModelViewSet):
         if self.action == 'list':
             return LinearCuttingSessionListSerializer
         return LinearCuttingSessionDetailSerializer
+
+    def partial_update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        was_complete = instance.stock_entry_complete
+        response = super().partial_update(request, *args, **kwargs)
+        instance.refresh_from_db(fields=['stock_entry_complete'])
+        if not was_complete and instance.stock_entry_complete and instance.created_by_id:
+            _notify_stock_entry_complete(instance, actor=request.user)
+        return response
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -124,8 +157,18 @@ class OptimizeView(APIView):
                 for p in group_parts
             ]
 
+            # Collect stock bars declared by warehouse for this session/item
+            stock_bars_qs = LinearCuttingStockBar.objects.filter(
+                session=session,
+                item_id=item_id,
+            ).values('id', 'length_mm', 'quantity')
+            stock_pieces = [
+                {'id': r['id'], 'length_mm': r['length_mm'], 'quantity': r['quantity']}
+                for r in stock_bars_qs
+            ] or None
+
             try:
-                result = optimize(parts_data, stock_len, kerf_mm)
+                result = optimize(parts_data, stock_len, kerf_mm, stock_pieces=stock_pieces)
             except ValueError as exc:
                 return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -141,6 +184,7 @@ class OptimizeView(APIView):
                 'stock_length_mm': stock_len,
                 'kerf_mm': kerf_mm,
                 'bars_needed': result['bars_needed'],
+                'remnant_bars_used': result.get('remnant_bars_used', 0),
                 'total_waste_mm': result['total_waste_mm'],
                 'efficiency_pct': result['efficiency_pct'],
                 'bars': result['bars'],
@@ -191,60 +235,32 @@ class ConfirmView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # A planning request is considered "active" only if it exists and is not cancelled.
-        # If the linked PR was cancelled (or the FK was cleared), allow re-creation.
         pr = session.planning_request
-        pr_already = (
-            pr is not None and
-            getattr(pr, 'status', None) != 'cancelled'
-        )
+        pr_status = getattr(pr, 'status', None) if pr else None
 
-        if pr_already:
+        # Block if PR is past pending_inventory (already being processed)
+        if pr is not None and pr_status not in (None, 'cancelled', 'pending_inventory'):
             return Response(
-                {'error': 'Planning request already created for this session.'},
+                {'error': 'Planning request is already past pending_inventory and cannot be updated.'},
                 status=status.HTTP_409_CONFLICT,
             )
 
+        # Re-confirm mode: PR exists and is still pending_inventory
+        is_reconfirm = (pr is not None and pr_status == 'pending_inventory')
+
         with transaction.atomic():
-            created_task_keys = []
+            from planning.models import PlanningRequest, PlanningRequestItem
+            from procurement.models import Item as ProcurementItem
+            from .models import LinearCuttingStockBarUsage
 
-            # ── Tasks (always re-sync via get_or_create — idempotent) ──────
-            for group in groups:
-                item_id = group['item_id']
-                item_name = group['item_name']
-                for bar in group['bars']:
-                    bar_idx = bar.get('global_bar_index', bar['bar_index'])
-                    task_key = f"{session.key}-B{bar_idx}"
-                    LinearCuttingTask.objects.get_or_create(
-                        key=task_key,
-                        defaults={
-                            'session': session,
-                            'item_id': item_id,
-                            'bar_index': bar_idx,
-                            'stock_length_mm': bar['stock_length_mm'],
-                            'material': item_name,
-                            'layout_json': bar['cuts'],
-                            'waste_mm': bar['waste_mm'],
-                            'name': f"{session.title} – {item_name} Bar {bar_idx}",
-                            'quantity': 1,
-                            'created_by': request.user,
-                            'created_at': int(time.time() * 1000),
-                        }
-                    )
-                    created_task_keys.append(task_key)
-            session.tasks_created = True
+            needed_date = request.data.get('needed_date') or str(timezone.localdate())
+            priority = request.data.get('priority', 'normal')
+            total_bars = sum(g['bars_needed'] for g in groups)
+            now_ms = int(time.time() * 1000)
 
-            # ── Planning request ───────────────────────────────────────────
-            planning_request_number = None
-            if not pr_already:
-                from planning.models import PlanningRequest, PlanningRequestItem
-                from procurement.models import Item as ProcurementItem
-
-                needed_date = request.data.get('needed_date') or str(timezone.localdate())
-                priority = request.data.get('priority', 'normal')
-
-                total_bars = sum(g['bars_needed'] for g in groups)
-
+            if is_reconfirm:
+                pr.items.all().delete()
+            else:
                 pr = PlanningRequest(
                     title=f"Profil/Boru Kesim – {session.key} {session.title}",
                     description=(
@@ -257,79 +273,151 @@ class ConfirmView(APIView):
                     check_inventory=True,
                 )
                 pr.save()
-                planning_request_number = pr.request_number
 
-                order_idx = 1
-                for group in groups:
-                    item_id = group['item_id']
-                    item_obj = ProcurementItem.objects.get(pk=item_id)
-                    stock_len = group['stock_length_mm']
-                    stock_len_m = stock_len // 1000
-                    item_unit = (item_obj.unit or '').lower()
+            planning_request_number = pr.request_number
 
-                    # Parts for this group — fresh queryset to avoid prefetch/distinct issues
-                    group_parts = LinearCuttingPart.objects.filter(
-                        session=session, item_id=item_id,
+            order_idx = 1
+            for group in groups:
+                item_id = group['item_id']
+                item_obj = ProcurementItem.objects.get(pk=item_id)
+                stock_len = group['stock_length_mm']
+                stock_len_m = stock_len // 1000
+                item_unit = (item_obj.unit or '').lower()
+
+                group_parts = LinearCuttingPart.objects.filter(session=session, item_id=item_id)
+                if stock_len == session.stock_length_mm:
+                    group_parts = group_parts.filter(
+                        Q(stock_length_mm=stock_len) | Q(stock_length_mm__isnull=True)
                     )
-                    if stock_len == session.stock_length_mm:
-                        group_parts = group_parts.filter(
-                            Q(stock_length_mm=stock_len) | Q(stock_length_mm__isnull=True)
-                        )
+                else:
+                    group_parts = group_parts.filter(stock_length_mm=stock_len)
+
+                distinct_job_nos = list(
+                    group_parts.order_by('job_no').values_list('job_no', flat=True).distinct()
+                )
+
+                new_bars_by_job: dict[str, int] = defaultdict(int)
+                remnant_bars_by_job: dict[str, list] = defaultdict(list)
+                for bar in group['bars']:
+                    cut_mm_by_job: dict[str, float] = defaultdict(float)
+                    for cut in bar['cuts']:
+                        cut_mm_by_job[cut['job_no']] += cut['effective_mm']
+                    dominant_job = max(cut_mm_by_job, key=lambda j: cut_mm_by_job[j])
+                    if bar.get('is_remnant'):
+                        remnant_bars_by_job[dominant_job].append(bar['stock_length_mm'])
                     else:
-                        group_parts = group_parts.filter(stock_length_mm=stock_len)
+                        new_bars_by_job[dominant_job] += 1
 
-                    distinct_job_nos = list(
-                        group_parts.order_by('job_no').values_list('job_no', flat=True).distinct()
+                specs_cache = {
+                    job_no: ", ".join(
+                        f"{p.label} {p.nominal_length_mm}mm ×{p.quantity}"
+                        for p in group_parts.filter(job_no=job_no)
                     )
+                    for job_no in distinct_job_nos
+                }
 
-                    # Assign each bar to the job_no with the most cut length on it.
-                    # This gives one line per job_no with bars summing to bars_needed.
-                    bars_by_job_no: dict[str, int] = defaultdict(int)
-                    for bar in group['bars']:
-                        cut_mm_by_job: dict[str, float] = defaultdict(float)
-                        for cut in bar['cuts']:
-                            cut_mm_by_job[cut['job_no']] += cut['effective_mm']
-                        dominant_job = max(cut_mm_by_job, key=lambda j: cut_mm_by_job[j])
-                        bars_by_job_no[dominant_job] += 1
+                for job_no in distinct_job_nos:
+                    specs = specs_cache[job_no]
 
-                    for job_no in distinct_job_nos:
-                        parts_for_job = group_parts.filter(job_no=job_no)
-                        bars_for_job = bars_by_job_no.get(job_no, 0)
-
+                    new_bar_count = new_bars_by_job.get(job_no, 0)
+                    if new_bar_count > 0:
                         if item_unit == 'metre':
-                            quantity = Decimal(str(bars_for_job * (stock_len / 1000)))
+                            quantity = Decimal(str(new_bar_count * (stock_len / 1000)))
                         else:
-                            quantity = Decimal(bars_for_job)
-
-                        item_description = f"{bars_for_job} boy {stock_len_m} metre"
-                        specs = ", ".join(
-                            f"{p.label} {p.nominal_length_mm}mm ×{p.quantity}"
-                            for p in parts_for_job
-                        )
-
+                            quantity = Decimal(new_bar_count)
                         PlanningRequestItem.objects.create(
                             planning_request=pr,
                             item=item_obj,
                             job_no=job_no,
                             quantity=quantity,
                             quantity_to_purchase=quantity,
-                            item_description=item_description,
+                            item_description=f"{new_bar_count} boy {stock_len_m} metre (yeni)",
                             specifications=specs,
                             order=order_idx,
                         )
                         order_idx += 1
 
+                    remnant_lengths = remnant_bars_by_job.get(job_no, [])
+                    if remnant_lengths:
+                        total_remnant_mm = sum(remnant_lengths)
+                        if item_unit == 'metre':
+                            rem_quantity = Decimal(str(round(total_remnant_mm / 1000, 3)))
+                        else:
+                            rem_quantity = Decimal(len(remnant_lengths))
+                        lengths_str = ", ".join(f"{l}mm" for l in sorted(remnant_lengths, reverse=True))
+                        PlanningRequestItem.objects.create(
+                            planning_request=pr,
+                            item=item_obj,
+                            job_no=job_no,
+                            quantity=rem_quantity,
+                            quantity_from_inventory=rem_quantity,
+                            quantity_to_purchase=Decimal('0'),
+                            item_description=f"{len(remnant_lengths)} parça stoktan ({lengths_str})",
+                            specifications=specs,
+                            order=order_idx,
+                        )
+                        order_idx += 1
+
+            created_task_keys = []
+
+            if is_reconfirm:
+                # ── Tasks (only created once layout is final) ─────────────
+                LinearCuttingTask.objects.filter(session=session).delete()
+                for group in groups:
+                    item_id = group['item_id']
+                    item_name = group['item_name']
+                    for bar in group['bars']:
+                        bar_idx = bar.get('global_bar_index', bar['bar_index'])
+                        task_key = f"{session.key}-B{bar_idx}"
+                        LinearCuttingTask.objects.create(
+                            key=task_key,
+                            session=session,
+                            item_id=item_id,
+                            bar_index=bar_idx,
+                            stock_length_mm=bar['stock_length_mm'],
+                            material=item_name,
+                            layout_json=bar['cuts'],
+                            waste_mm=bar['waste_mm'],
+                            name=f"{session.title} – {item_name} Bar {bar_idx}",
+                            quantity=1,
+                            created_by=request.user,
+                            created_at=now_ms,
+                        )
+                        created_task_keys.append(task_key)
+                session.tasks_created = True
+
+                # ── Stock bar usage: tally consumed IDs, decrement quantities ─
+                usage_tally: dict[int, int] = defaultdict(int)
+                for group in groups:
+                    for bar in group['bars']:
+                        if bar.get('is_remnant') and bar.get('stock_bar_id'):
+                            usage_tally[bar['stock_bar_id']] += 1
+
+                # Clear previous usage records for this session (in case of re-re-confirm)
+                LinearCuttingStockBarUsage.objects.filter(session=session).delete()
+
+                for stock_bar_id, qty_used in usage_tally.items():
+                    LinearCuttingStockBarUsage.objects.create(
+                        session=session,
+                        stock_bar_id=stock_bar_id,
+                        quantity_used=qty_used,
+                    )
+                    LinearCuttingStockBar.objects.filter(pk=stock_bar_id).update(
+                        quantity=models.F('quantity') - qty_used
+                    )
+
+                pr.status = 'pending_erp_entry'
+                pr.save(update_fields=['status'])
+                session.save(update_fields=['tasks_created'])
+            else:
                 session.planning_request = pr
                 session.planning_request_created = True
-
-            session.save(update_fields=[
-                'tasks_created', 'planning_request_created', 'planning_request',
-            ])
+                session.save(update_fields=['planning_request_created', 'planning_request'])
 
         return Response({
             'created_tasks': created_task_keys,
             'planning_request_number': planning_request_number,
-            'planning_request_already_existed': pr_already,
+            'reconfirmed': is_reconfirm,
         })
 
 
@@ -492,3 +580,58 @@ class UnmarkTaskCompletedView(GenericUnmarkTaskCompletedView):
 
     def post(self, request):
         return super().post(request, task_type='linear_cutting')
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stock bar registry (per-session, declared by warehouse)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class LinearCuttingStockBarViewSet(ModelViewSet):
+    """
+    GET    /linear_cutting/stock-bars/?session=LC-0007  — list for a session
+    POST   /linear_cutting/stock-bars/                  — create one or bulk list
+    PATCH  /linear_cutting/stock-bars/{id}/             — update entry
+    DELETE /linear_cutting/stock-bars/{id}/             — delete freely
+    Adding or deleting entries resets session.stock_entry_complete to False.
+    """
+    permission_classes = [IsAuthenticated]
+    serializer_class = LinearCuttingStockBarSerializer
+
+    def get_queryset(self):
+        qs = LinearCuttingStockBar.objects.select_related('item', 'session', 'declared_by').all()
+        session_key = self.request.query_params.get('session')
+        if session_key:
+            qs = qs.filter(session__key=session_key)
+        item_id = self.request.query_params.get('item')
+        if item_id:
+            qs = qs.filter(item_id=item_id)
+        return qs
+
+    def create(self, request, *args, **kwargs):
+        if isinstance(request.data, list):
+            serializer = self.get_serializer(data=request.data, many=True)
+            serializer.is_valid(raise_exception=True)
+            with transaction.atomic():
+                self.perform_create(serializer)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return super().create(request, *args, **kwargs)
+
+    def perform_create(self, serializer):
+        now_ms = int(time.time() * 1000)
+        instances = serializer.save(
+            declared_by=self.request.user,
+            declared_at=now_ms,
+        )
+        # Reset stock_entry_complete when new entries are added
+        if isinstance(instances, list) and instances:
+            session = instances[0].session
+        elif hasattr(instances, 'session'):
+            session = instances.session
+        else:
+            return
+        LinearCuttingSession.objects.filter(pk=session.pk).update(stock_entry_complete=False)
+
+    def perform_destroy(self, instance):
+        session_pk = instance.session_id
+        instance.delete()
+        LinearCuttingSession.objects.filter(pk=session_pk).update(stock_entry_complete=False)
