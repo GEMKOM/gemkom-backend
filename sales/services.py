@@ -65,7 +65,7 @@ def generate_job_no(customer_code: str, parent_job_no: str = None) -> str:
             JobOrder.objects
             .select_for_update()
             .filter(parent__job_no=parent_job_no)
-            .order_by('-job_no')
+            .order_by('-id')
         )
         if siblings.exists():
             try:
@@ -80,7 +80,7 @@ def generate_job_no(customer_code: str, parent_job_no: str = None) -> str:
             JobOrder.objects
             .select_for_update()
             .filter(customer__code=customer_code, parent__isnull=True)
-            .order_by('-job_no')
+            .order_by('-id')
         )
         if roots.exists():
             # Parse the numeric segment after the customer code prefix

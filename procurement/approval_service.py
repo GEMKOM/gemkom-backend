@@ -212,20 +212,20 @@ def submit_purchase_request(pr: PurchaseRequest, by_user):
 # --------- Decide on PR (uses core engine) ---------
 def decide(pr: PurchaseRequest, user, approve: bool, comment: str = ""):
     # DB writes in a transaction; notifications run after commit.
+    created_pos = []
     with transaction.atomic():
         wf, stage, outcome = record_decision(pr, user, approve, comment)
 
         if outcome == "rejected":
             pr.status = "rejected"
             pr.save(update_fields=["status"])
-            return wf
 
-        if outcome == "completed":
+        elif outcome == "completed":
             pr.status = "approved"
             pr.save(update_fields=["status"])
             created_pos = create_pos_from_recommended(pr)
 
-        if outcome == "pending":
+        elif outcome == "pending":
             return wf
 
     # Notifications sent outside the transaction

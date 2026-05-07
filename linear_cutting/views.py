@@ -267,29 +267,30 @@ class ConfirmView(APIView):
                     stock_len_m = stock_len // 1000
                     item_unit = (item_obj.unit or '').lower()
 
-                    # Map job_no → bars that contain a cut for this job_no in this group
-                    bars_by_job_no: dict[str, int] = {}
-                    for bar in group['bars']:
-                        seen = set(cut['job_no'] for cut in bar['cuts'])
-                        for jno in seen:
-                            bars_by_job_no[jno] = bars_by_job_no.get(jno, 0) + 1
-
-                    # Parts belonging to this exact group (item + stock_length_mm)
-                    group_parts = session.parts.filter(
-                        item_id=item_id,
-                        stock_length_mm=stock_len,
+                    # Parts for this group — fresh queryset to avoid prefetch/distinct issues
+                    group_parts = LinearCuttingPart.objects.filter(
+                        session=session, item_id=item_id,
                     )
-                    # Also include parts with no stock_length_mm override when the
-                    # group's stock_len equals the session default
                     if stock_len == session.stock_length_mm:
-                        group_parts = session.parts.filter(
-                            item_id=item_id,
-                        ).filter(
+                        group_parts = group_parts.filter(
                             Q(stock_length_mm=stock_len) | Q(stock_length_mm__isnull=True)
                         )
+                    else:
+                        group_parts = group_parts.filter(stock_length_mm=stock_len)
+
                     distinct_job_nos = list(
-                        group_parts.values_list('job_no', flat=True).distinct()
+                        group_parts.order_by('job_no').values_list('job_no', flat=True).distinct()
                     )
+
+                    # Assign each bar to the job_no with the most cut length on it.
+                    # This gives one line per job_no with bars summing to bars_needed.
+                    bars_by_job_no: dict[str, int] = defaultdict(int)
+                    for bar in group['bars']:
+                        cut_mm_by_job: dict[str, float] = defaultdict(float)
+                        for cut in bar['cuts']:
+                            cut_mm_by_job[cut['job_no']] += cut['effective_mm']
+                        dominant_job = max(cut_mm_by_job, key=lambda j: cut_mm_by_job[j])
+                        bars_by_job_no[dominant_job] += 1
 
                     for job_no in distinct_job_nos:
                         parts_for_job = group_parts.filter(job_no=job_no)
