@@ -744,6 +744,8 @@ class DepartmentTaskListSerializer(serializers.ModelSerializer):
     qc_status = serializers.CharField(read_only=True)
     is_consultation = serializers.SerializerMethodField()
     offer_summary = serializers.SerializerMethodField()
+    assigned_subcontractors = serializers.SerializerMethodField()
+    assigned_teams = serializers.SerializerMethodField()
 
     class Meta:
         model = JobOrderDepartmentTask
@@ -760,6 +762,7 @@ class DepartmentTaskListSerializer(serializers.ModelSerializer):
             'pending_revision_request',
             'qc_required', 'has_qc_approval', 'qc_status',
             'is_consultation', 'offer_summary',
+            'assigned_subcontractors', 'assigned_teams',
             'created_at'
         ]
 
@@ -864,6 +867,42 @@ class DepartmentTaskListSerializer(serializers.ModelSerializer):
             'requested_by_id': topic.created_by_id,
             'requested_at': topic.created_at,
         }
+
+    def get_assigned_subcontractors(self, obj):
+        if obj.department != 'planning' or not obj.job_order_id:
+            return []
+        from subcontracting.models import SubcontractingAssignment
+        assignments = (
+            SubcontractingAssignment.objects
+            .filter(department_task__job_order_id=obj.job_order_id)
+            .select_related('subcontractor')
+        )
+        return [
+            {
+                'subcontractor_id': a.subcontractor_id,
+                'subcontractor_name': a.subcontractor.name,
+                'allocated_weight_kg': str(a.allocated_weight_kg),
+            }
+            for a in assignments
+        ]
+
+    def get_assigned_teams(self, obj):
+        if obj.department != 'planning' or not obj.job_order_id:
+            return []
+        from welding.models import InternalTeamAssignment
+        assignments = (
+            InternalTeamAssignment.objects
+            .filter(department_task__job_order_id=obj.job_order_id)
+            .select_related('team')
+        )
+        return [
+            {
+                'team_id': a.team_id,
+                'team_name': a.team.name,
+                'allocated_weight_kg': str(a.allocated_weight_kg),
+            }
+            for a in assignments
+        ]
 
 
 class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
