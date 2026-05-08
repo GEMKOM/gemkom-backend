@@ -106,6 +106,7 @@ INSTALLED_APPS = [
     'linear_cutting',
     'equipment',
     'teams',
+    'vacation_requests',
 ]
 
 MIDDLEWARE = [

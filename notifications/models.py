@@ -62,6 +62,10 @@ class Notification(models.Model):
     SALES_CONSULT_COMPLETED  = 'sales_consult_completed'
     # Linear Cutting
     LC_STOCK_ENTRY_COMPLETE  = 'lc_stock_entry_complete'
+    # Vacation Requests
+    VR_APPROVAL_REQUESTED    = 'vr_approval_requested'
+    VR_APPROVED              = 'vr_approved'
+    VR_REJECTED              = 'vr_rejected'
     # Auth
     PASSWORD_RESET           = 'password_reset'
 
@@ -113,6 +117,9 @@ class Notification(models.Model):
         OT_APPROVAL_REQUESTED:    CATEGORY_GENERAL,
         OT_APPROVED:              CATEGORY_GENERAL,
         OT_REJECTED:              CATEGORY_GENERAL,
+        VR_APPROVAL_REQUESTED:    CATEGORY_GENERAL,
+        VR_APPROVED:              CATEGORY_GENERAL,
+        VR_REJECTED:              CATEGORY_GENERAL,
         JOB_ON_HOLD:              CATEGORY_GENERAL,
         JOB_ON_HOLD_REVISION:     CATEGORY_DESIGN,
         JOB_RESUMED:              CATEGORY_GENERAL,
@@ -177,6 +184,9 @@ class Notification(models.Model):
         (TASK_ASSIGNED,            'Göreve Atandınız'),
         (SALES_CONSULT_COMPLETED,  'Satış Destek Görevi Tamamlandı'),
         (LC_STOCK_ENTRY_COMPLETE,  'Stok Girişi Tamamlandı'),
+        (VR_APPROVAL_REQUESTED,    'İzin Talebi Onay Bekliyor'),
+        (VR_APPROVED,              'İzin Talebi Onaylandı'),
+        (VR_REJECTED,              'İzin Talebi Reddedildi'),
         (PASSWORD_RESET,           'Parola Sıfırlama Talebi'),
     ]
 
