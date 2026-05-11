@@ -267,7 +267,7 @@ class VacationRequest(models.Model):
             balance = UserLeaveBalance.objects.get(user_id=self.requester_id)
         except UserLeaveBalance.DoesNotExist:
             return
-        balance.used_days = max(Decimal("0"), balance.used_days - self.duration_days)
+        balance.used_days = balance.used_days - self.duration_days
         balance.save(update_fields=["used_days"])
 
 
@@ -295,4 +295,4 @@ class UserLeaveBalance(models.Model):
 
     @property
     def remaining_days(self) -> Decimal:
-        return max(Decimal("0"), self.total_days - self.used_days)
+        return self.total_days - self.used_days
