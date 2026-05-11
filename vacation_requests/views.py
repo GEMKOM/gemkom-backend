@@ -42,6 +42,9 @@ class VacationRequestViewSet(viewsets.ModelViewSet):
         user = self.request.user
         qs = VacationRequest.objects.select_related("requester").prefetch_related("approvals")
 
+        if self.request.query_params.get("mine") == "true":
+            return qs.filter(requester=user).distinct()
+
         if user.is_staff or user.is_superuser or user_has_role_perm(user, "office_access"):
             return qs.distinct()
 

@@ -14,7 +14,7 @@ from notifications.models import Notification
 from notifications.service import bulk_notify, notify, render_notification
 from users.helpers import _team_manager_user_ids
 
-from .models import VacationRequest
+from .models import LEAVE_TYPE_CHOICES, VacationRequest
 
 # ---------------------------------------------------------------------------
 # Config
@@ -55,7 +55,7 @@ def _users_from_ids(user_ids):
 
 
 def _vr_title(vr: VacationRequest) -> str:
-    leave_label = dict(vr.LEAVE_TYPE_CHOICES).get(vr.leave_type, vr.leave_type)
+    leave_label = dict(LEAVE_TYPE_CHOICES).get(vr.leave_type, vr.leave_type)
     return f"{leave_label} | {vr.start_date} → {vr.end_date} ({vr.duration_days} gün)"
 
 
