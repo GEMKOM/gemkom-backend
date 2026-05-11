@@ -16,18 +16,17 @@ User = settings.AUTH_USER_MODEL
 # ---------------------------------------------------------------------------
 # Leave type constants — mirrors attendance.AttendanceRecord.LEAVE_TYPE_CHOICES
 # ---------------------------------------------------------------------------
-LEAVE_ANNUAL       = 'annual_leave'
-LEAVE_SICK         = 'sick_leave'
-LEAVE_MATERNITY    = 'maternity_leave'
-LEAVE_PATERNITY    = 'paternity_leave'
-LEAVE_BEREAVEMENT  = 'bereavement_leave'
-LEAVE_MARRIAGE     = 'marriage_leave'
-LEAVE_PUBLIC_DUTY  = 'public_duty'
-LEAVE_COMPENSATORY = 'compensatory_leave'
-LEAVE_UNPAID       = 'unpaid_leave'
+LEAVE_ANNUAL        = 'annual_leave'
+LEAVE_SICK          = 'sick_leave'
+LEAVE_MATERNITY     = 'maternity_leave'
+LEAVE_PATERNITY     = 'paternity_leave'
+LEAVE_BEREAVEMENT   = 'bereavement_leave'
+LEAVE_MARRIAGE      = 'marriage_leave'
+LEAVE_PUBLIC_DUTY   = 'public_duty'
+LEAVE_COMPENSATORY  = 'compensatory_leave'
+LEAVE_UNPAID        = 'unpaid_leave'
 LEAVE_BUSINESS_TRIP = 'business_trip'
-LEAVE_HALF_DAY     = 'half_day'
-LEAVE_PAID         = 'paid_leave'
+LEAVE_PAID          = 'paid_leave'
 
 LEAVE_TYPE_CHOICES = [
     (LEAVE_ANNUAL,        'Yıllık İzin'),
@@ -39,31 +38,40 @@ LEAVE_TYPE_CHOICES = [
     (LEAVE_PUBLIC_DUTY,   'Resmi Görev'),
     (LEAVE_COMPENSATORY,  'Mazeret İzni'),
     (LEAVE_BUSINESS_TRIP, 'Görev Seyahati'),
-    (LEAVE_HALF_DAY,      'Yarım Gün'),
     (LEAVE_PAID,          'Ücretli İzin'),
     (LEAVE_UNPAID,        'Ücretsiz İzin'),
 ]
 
 
-def _working_days_in_range(start: date, end: date) -> tuple[int, set[date]]:
+def _working_days_in_range(start: date, end: date) -> tuple[Decimal, set[date]]:
     """
-    Returns (count_of_working_days, set_of_excluded_dates).
-    Excludes weekends and public holidays.
+    Returns (working_day_count, set_of_excluded_dates).
+    Excluded dates get no attendance record created (weekends + full public holidays).
+    Half-day holidays (Arife) count 0.5 and DO get a leave record so employees
+    aren't flagged absent for the morning portion.
     """
     from attendance.models import PublicHoliday
 
-    holidays: set[date] = set(
-        PublicHoliday.objects.filter(date__gte=start, date__lte=end)
-        .values_list("date", flat=True)
-    )
+    holiday_rows = PublicHoliday.objects.filter(date__gte=start, date__lte=end).values("date", "is_half_day")
+    half_day_holidays: set[date] = set()
+    full_holidays: set[date] = set()
+    for row in holiday_rows:
+        if row["is_half_day"]:
+            half_day_holidays.add(row["date"])
+        else:
+            full_holidays.add(row["date"])
+
     excluded: set[date] = set()
-    count = 0
+    count = Decimal("0")
     current = start
     while current <= end:
-        if current.weekday() >= 5 or current in holidays:
+        if current.weekday() >= 5 or current in full_holidays:
             excluded.add(current)
+        elif current in half_day_holidays:
+            count += Decimal("0.5")
+            # not excluded — leave record IS created so employee isn't flagged absent
         else:
-            count += 1
+            count += Decimal("1")
         current += timedelta(days=1)
     return count, excluded
 
@@ -86,6 +94,9 @@ class VacationRequest(models.Model):
     leave_type   = models.CharField(max_length=30, choices=LEAVE_TYPE_CHOICES, default=LEAVE_ANNUAL)
     start_date   = models.DateField()
     end_date     = models.DateField()
+    # Compensatory leave only — the exact time window on that single day
+    start_time   = models.TimeField(null=True, blank=True)
+    end_time     = models.TimeField(null=True, blank=True)
     duration_days = models.DecimalField(max_digits=6, decimal_places=1, default=0)
     reason       = models.TextField(blank=True)
     status       = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_SUBMITTED)
@@ -114,8 +125,10 @@ class VacationRequest(models.Model):
     def compute_duration_days(self) -> Decimal:
         if not (self.start_date and self.end_date):
             return Decimal("0")
+        if self.leave_type == LEAVE_COMPENSATORY:
+            return Decimal("0")  # compensatory is tracked in hours, not days
         count, _ = _working_days_in_range(self.start_date, self.end_date)
-        return Decimal(str(count))
+        return count
 
     def save(self, *args, **kwargs):
         if self.start_date and self.end_date:
@@ -125,18 +138,20 @@ class VacationRequest(models.Model):
     # ===== Approval wiring =====
 
     def _snapshot_for_workflow(self) -> dict:
-        return {
-            "vacation_request": {
-                "id": self.pk,
-                "requester_id": self.requester_id,
-                "team": self.team,
-                "leave_type": self.leave_type,
-                "start_date": self.start_date.isoformat(),
-                "end_date": self.end_date.isoformat(),
-                "duration_days": str(self.duration_days),
-                "reason": self.reason,
-            }
+        snap = {
+            "id": self.pk,
+            "requester_id": self.requester_id,
+            "team": self.team,
+            "leave_type": self.leave_type,
+            "start_date": self.start_date.isoformat(),
+            "end_date": self.end_date.isoformat(),
+            "duration_days": str(self.duration_days),
+            "reason": self.reason,
         }
+        if self.leave_type == LEAVE_COMPENSATORY:
+            snap["start_time"] = self.start_time.isoformat() if self.start_time else None
+            snap["end_time"]   = self.end_time.isoformat()   if self.end_time   else None
+        return {"vacation_request": snap}
 
     @transaction.atomic
     def send_for_approval(self):
@@ -167,58 +182,89 @@ class VacationRequest(models.Model):
         return f"vr:{self.pk}"
 
     def _create_attendance_records(self):
-        from attendance.models import AttendanceRecord
+        from attendance.models import AttendanceLeaveInterval, AttendanceRecord
+        from datetime import datetime
 
-        _, excluded = _working_days_in_range(self.start_date, self.end_date)
         tag = self._attendance_note_tag()
-        current = self.start_date
-        while current <= self.end_date:
-            if current not in excluded:
-                AttendanceRecord.objects.get_or_create(
-                    user_id=self.requester_id,
-                    date=current,
-                    defaults={
-                        "status": AttendanceRecord.STATUS_LEAVE,
-                        "leave_type": self.leave_type,
-                        "method": AttendanceRecord.METHOD_HR,
-                        "notes": tag,
-                    },
-                )
-            current += timedelta(days=1)
+
+        if self.leave_type == LEAVE_COMPENSATORY:
+            # Compensatory: create/find the day's record then attach a leave interval.
+            # Multiple compensatory requests on the same day are each their own interval.
+            record, _ = AttendanceRecord.objects.get_or_create(
+                user_id=self.requester_id,
+                date=self.start_date,
+                defaults={
+                    "status": AttendanceRecord.STATUS_LEAVE,
+                    "leave_type": LEAVE_COMPENSATORY,
+                    "method": AttendanceRecord.METHOD_HR,
+                    "notes": tag,
+                },
+            )
+            start_dt = datetime.combine(self.start_date, self.start_time)
+            end_dt   = datetime.combine(self.start_date, self.end_time)
+            AttendanceLeaveInterval.objects.get_or_create(
+                record=record,
+                start_time=start_dt,
+                end_time=end_dt,
+                defaults={"leave_type": LEAVE_COMPENSATORY, "notes": tag},
+            )
+        else:
+            _, excluded = _working_days_in_range(self.start_date, self.end_date)
+            current = self.start_date
+            while current <= self.end_date:
+                if current not in excluded:
+                    AttendanceRecord.objects.get_or_create(
+                        user_id=self.requester_id,
+                        date=current,
+                        defaults={
+                            "status": AttendanceRecord.STATUS_LEAVE,
+                            "leave_type": self.leave_type,
+                            "method": AttendanceRecord.METHOD_HR,
+                            "notes": tag,
+                        },
+                    )
+                current += timedelta(days=1)
 
     def _rollback_attendance_records(self):
-        from attendance.models import AttendanceRecord
+        from attendance.models import AttendanceLeaveInterval, AttendanceRecord
 
         tag = self._attendance_note_tag()
-        AttendanceRecord.objects.filter(
-            user_id=self.requester_id,
-            notes=tag,
-            status=AttendanceRecord.STATUS_LEAVE,
-        ).delete()
 
-    # ===== Leave balance =====
+        if self.leave_type == LEAVE_COMPENSATORY:
+            # Only delete the specific interval; leave the parent record intact
+            # (the employee may have other records or intervals on that day).
+            deleted, _ = AttendanceLeaveInterval.objects.filter(notes=tag).delete()
+            # If the parent record was created solely by this request (tagged), clean it up.
+            AttendanceRecord.objects.filter(
+                user_id=self.requester_id,
+                date=self.start_date,
+                notes=tag,
+                status=AttendanceRecord.STATUS_LEAVE,
+            ).delete()
+        else:
+            AttendanceRecord.objects.filter(
+                user_id=self.requester_id,
+                notes=tag,
+                status=AttendanceRecord.STATUS_LEAVE,
+            ).delete()
+
+    # ===== Leave balance (annual_leave only) =====
 
     def _deduct_leave_balance(self):
-        if not self.start_date:
+        if self.leave_type != LEAVE_ANNUAL:
             return
         balance, _ = UserLeaveBalance.objects.get_or_create(
             user_id=self.requester_id,
-            year=self.start_date.year,
-            leave_type=self.leave_type,
             defaults={"total_days": Decimal("0"), "used_days": Decimal("0")},
         )
         balance.used_days += self.duration_days
         balance.save(update_fields=["used_days"])
 
     def _refund_leave_balance(self):
-        if not self.start_date:
+        if self.leave_type != LEAVE_ANNUAL:
             return
         try:
-            balance = UserLeaveBalance.objects.get(
-                user_id=self.requester_id,
-                year=self.start_date.year,
-                leave_type=self.leave_type,
-            )
+            balance = UserLeaveBalance.objects.get(user_id=self.requester_id)
         except UserLeaveBalance.DoesNotExist:
             return
         balance.used_days = max(Decimal("0"), balance.used_days - self.duration_days)
@@ -226,18 +272,26 @@ class VacationRequest(models.Model):
 
 
 class UserLeaveBalance(models.Model):
-    user       = models.ForeignKey(User, on_delete=models.CASCADE, related_name="leave_balances")
-    year       = models.PositiveIntegerField()
-    leave_type = models.CharField(max_length=30, choices=LEAVE_TYPE_CHOICES)
-    total_days = models.DecimalField(max_digits=6, decimal_places=1, default=0)
-    used_days  = models.DecimalField(max_digits=6, decimal_places=1, default=0)
+    """
+    One row per user. Tracks annual leave (yıllık izin) only.
+    total_days is set manually by HR — includes carry-over from before the system.
+    used_days is managed automatically on approval/cancellation.
+    """
+    user       = models.OneToOneField(User, on_delete=models.CASCADE, related_name="leave_balance")
+    total_days = models.DecimalField(max_digits=6, decimal_places=1, default=0,
+                                     help_text="Total annual leave days available (set by HR, includes carry-over).")
+    used_days  = models.DecimalField(max_digits=6, decimal_places=1, default=0,
+                                     help_text="Days used (auto-managed by the system).")
+    last_credited_date = models.DateField(
+        null=True, blank=True,
+        help_text="Date of the last anniversary credit. Set by the credit_annual_leave command.",
+    )
 
     class Meta:
-        unique_together = [("user", "year", "leave_type")]
-        ordering = ["user", "year", "leave_type"]
+        ordering = ["user"]
 
     def __str__(self):
-        return f"{self.user_id} | {self.year} | {self.leave_type} | {self.used_days}/{self.total_days}"
+        return f"{self.user_id} | {self.used_days}/{self.total_days} gün"
 
     @property
     def remaining_days(self) -> Decimal:

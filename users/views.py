@@ -13,7 +13,7 @@ from machines.serializers import SimpleUserSerializer
 from users.filters import UserFilter, WageOrderingFilter
 from users.helpers import _team_manager_user_ids, primary_team_from_groups, TEAM_TO_GROUP, TEAM_CHOICES, TEAM_LABELS
 from users.models import UserProfile, WageRate
-from users.permissions import IsAdmin, IsHRorAuthorized, user_has_role_perm
+from users.permissions import IsAdmin, IsAdminOrHR, IsHRorAuthorized, user_has_role_perm
 from users.constants import GROUP_DISPLAY_NAMES
 from .serializers import AdminUserUpdateSerializer, CurrentUserUpdateSerializer, PasswordResetSerializer, PublicUserSerializer, UserCreateSerializer, UserListSerializer, UserPasswordResetSerializer, UserWageOverviewSerializer, WageRateSerializer, WageRateSlimSerializer
 from rest_framework.permissions import IsAuthenticated, IsAdminUser
@@ -60,6 +60,8 @@ class UserViewSet(ModelViewSet):
     def get_permissions(self):
         if self.action == 'list':
             return []
+        if self.action in ('update', 'partial_update'):
+            return [IsAdminOrHR()]
         return [IsAdmin()]
     
     def get_serializer_class(self):

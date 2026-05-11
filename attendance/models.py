@@ -71,6 +71,10 @@ class PublicHoliday(models.Model):
     date = models.DateField(unique=True, db_index=True)
     name = models.CharField(max_length=255, help_text="English name")
     local_name = models.CharField(max_length=255, help_text="Turkish name")
+    is_half_day = models.BooleanField(
+        default=False,
+        help_text="True for Arife (bayram eve) — work ends at noon.",
+    )
 
     class Meta:
         verbose_name = "Public Holiday"

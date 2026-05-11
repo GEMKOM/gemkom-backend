@@ -23,8 +23,8 @@ class ShiftRuleAdmin(admin.ModelAdmin):
 
 @admin.register(PublicHoliday)
 class PublicHolidayAdmin(admin.ModelAdmin):
-    list_display = ['date', 'local_name', 'name']
-    list_filter = ['date']
+    list_display = ['date', 'local_name', 'name', 'is_half_day']
+    list_filter = ['date', 'is_half_day']
     search_fields = ['local_name', 'name']
     date_hierarchy = 'date'
     ordering = ['date']

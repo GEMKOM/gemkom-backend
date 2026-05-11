@@ -40,6 +40,14 @@ class IsAdmin(BasePermission):
         return u and u.is_authenticated and (u.is_superuser or u.is_staff)
 
 
+class IsAdminOrHR(BasePermission):
+    def has_permission(self, request, view):
+        u = request.user
+        return u and u.is_authenticated and (
+            u.is_superuser or u.is_staff or user_has_role_perm(u, 'manage_hr')
+        )
+
+
 class IsOfficeUserOrAdmin(BasePermission):
     def has_permission(self, request, view):
         return user_has_role_perm(request.user, 'office_access')

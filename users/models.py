@@ -30,6 +30,10 @@ class UserProfile(models.Model):
         related_name='assigned_users',
         help_text="Explicit shift rule for this user. If blank, the default shift rule is used.",
     )
+    hire_date = models.DateField(
+        null=True, blank=True,
+        help_text="Official employment start date. Used to calculate annual leave entitlement.",
+    )
 
     class Meta:
         default_permissions = ()  # suppress add/change/delete/view_userprofile

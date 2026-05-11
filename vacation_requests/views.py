@@ -14,6 +14,7 @@ from django_filters.rest_framework import DjangoFilterBackend
 
 from approvals.models import ApprovalDecision, ApprovalStageInstance, ApprovalWorkflow
 from approvals.services import get_workflow
+from machining.permissions import HasQueueSecret
 from users.permissions import user_has_role_perm
 
 from .approval_service import decide as vr_decide
@@ -21,6 +22,7 @@ from .filters import VacationRequestFilter
 from .models import LEAVE_TYPE_CHOICES, UserLeaveBalance, VacationRequest
 from .serializers import (
     UserLeaveBalanceSerializer,
+    UserLeaveSetupSerializer,
     VacationRequestCreateSerializer,
     VacationRequestDetailSerializer,
     VacationRequestListSerializer,
@@ -237,16 +239,9 @@ class UserLeaveBalanceViewSet(viewsets.ModelViewSet):
             target_user = self.request.query_params.get("user_id")
             if target_user:
                 qs = qs.filter(user_id=target_user)
-            year = self.request.query_params.get("year")
-            if year:
-                qs = qs.filter(year=year)
             return qs
 
-        year = self.request.query_params.get("year")
-        qs   = qs.filter(user=user)
-        if year:
-            qs = qs.filter(year=year)
-        return qs
+        return qs.filter(user=user)
 
     def partial_update(self, request, *args, **kwargs):
         if not (request.user.is_staff or request.user.is_superuser or user_has_role_perm(request.user, "manage_hr")):
@@ -279,21 +274,26 @@ class VacationPreviewView(APIView):
         if end < start:
             return Response({"detail": "end_date must be on or after start_date."}, status=400)
 
-        holidays = {
-            h.date: h.local_name
+        holiday_map = {
+            h.date: h
             for h in PublicHoliday.objects.filter(date__gte=start, date__lte=end)
         }
 
+        from decimal import Decimal
         excluded = []
-        working_days = 0
+        working_days = Decimal("0")
         current = start
         while current <= end:
+            holiday = holiday_map.get(current)
             if current.weekday() >= 5:
                 excluded.append({"date": current.isoformat(), "reason": "weekend"})
-            elif current in holidays:
-                excluded.append({"date": current.isoformat(), "reason": "public_holiday", "name": holidays[current]})
+            elif holiday and not holiday.is_half_day:
+                excluded.append({"date": current.isoformat(), "reason": "public_holiday", "name": holiday.local_name})
+            elif holiday and holiday.is_half_day:
+                working_days += Decimal("0.5")
+                excluded.append({"date": current.isoformat(), "reason": "half_day_holiday", "name": holiday.local_name})
             else:
-                working_days += 1
+                working_days += Decimal("1")
             current += timedelta(days=1)
 
         return Response({
@@ -302,3 +302,316 @@ class VacationPreviewView(APIView):
             "duration_days": working_days,
             "excluded":      excluded,
         })
+
+
+# ---------------------------------------------------------------------------
+# Internal scheduler endpoint — credit annual leave on work anniversaries
+# ---------------------------------------------------------------------------
+
+class CreditAnnualLeaveView(APIView):
+    """
+    POST /vacation-requests/internal/credit-annual-leave/
+    Headers: X-Queue-Secret: <secret>
+
+    Called daily by Cloud Scheduler. Credits annual leave entitlement to users
+    whose work anniversary falls on the date provided (or today if omitted).
+    Body (optional): {"date": "YYYY-MM-DD"}
+    """
+    authentication_classes = []
+    permission_classes     = [HasQueueSecret]
+
+    def post(self, request):
+        from decimal import Decimal
+
+        from django.contrib.auth import get_user_model
+        from django.db import transaction as db_transaction
+
+        from core.emails import send_plain_email
+        from vacation_requests.management.commands.credit_annual_leave import (
+            _entitled_days,
+            _is_anniversary_today,
+        )
+
+        User = get_user_model()
+
+        date_str = (request.data or {}).get("date")
+        if date_str:
+            try:
+                today = date.fromisoformat(date_str)
+            except ValueError:
+                return Response({"detail": "Invalid date format, use YYYY-MM-DD."}, status=400)
+        else:
+            today = date.today()
+
+        users = (
+            User.objects
+            .filter(is_active=True, profile__hire_date__isnull=False)
+            .select_related("profile")
+        )
+
+        credited = []
+        skipped  = []
+
+        for user in users:
+            hire_date = user.profile.hire_date
+            if not _is_anniversary_today(hire_date, today):
+                continue
+
+            balance = UserLeaveBalance.objects.filter(user=user).first()
+            if balance and balance.last_credited_date == today:
+                skipped.append(user.get_full_name() or user.username)
+                continue
+
+            birth_date = getattr(user.profile, "birth_date", None)
+            days = _entitled_days(hire_date, today, birth_date)
+            if days == 0:
+                continue
+
+            with db_transaction.atomic():
+                balance, _ = UserLeaveBalance.objects.get_or_create(
+                    user=user,
+                    defaults={"total_days": Decimal("0"), "used_days": Decimal("0")},
+                )
+                balance.total_days += Decimal(str(days))
+                balance.last_credited_date = today
+                balance.save(update_fields=["total_days", "last_credited_date"])
+
+            completed_years = (
+                today.year - hire_date.year
+                - (1 if (today.month, today.day) < (hire_date.month, hire_date.day) else 0)
+            )
+            credited.append({
+                "user":            user.get_full_name() or user.username,
+                "username":        user.username,
+                "days_added":      days,
+                "completed_years": completed_years,
+                "new_total":       str(balance.total_days),
+            })
+
+        # Send email to HR regardless — even on days with no activity
+        self._notify_hr(today, credited, skipped)
+
+        return Response({
+            "date":       today.isoformat(),
+            "credited":   credited,
+            "already_done": skipped,
+        })
+
+    @staticmethod
+    def _notify_hr(today, credited, skipped):
+        from django.contrib.auth import get_user_model
+        from core.emails import send_plain_email
+
+        User = get_user_model()
+        hr_emails = list(
+            User.objects
+            .filter(is_active=True, groups__name="hr_team")
+            .exclude(email="")
+            .values_list("email", flat=True)
+            .distinct()
+        )
+        if not hr_emails:
+            return
+
+        lines = [
+            f"Yıllık İzin Kredi Raporu — {today.strftime('%d %B %Y')}",
+            "=" * 50,
+            "",
+        ]
+
+        if credited:
+            lines.append(f"Bugün İzin Kredisi Eklenen Çalışanlar ({len(credited)}):")
+            lines.append("-" * 40)
+            for entry in credited:
+                lines.append(
+                    f"  • {entry['user']} (@{entry['username']})"
+                    f"  |  +{entry['days_added']} gün"
+                    f"  |  {entry['completed_years']}. yıl dönümü"
+                    f"  |  Yeni toplam: {entry['new_total']} gün"
+                )
+        else:
+            lines.append("Bugün yıl dönümü olan çalışan bulunmamaktadır.")
+
+        if skipped:
+            lines.append("")
+            lines.append(f"Daha Önce İşlenmiş (atlandı) ({len(skipped)}):")
+            for name in skipped:
+                lines.append(f"  • {name}")
+
+        lines += [
+            "",
+            "=" * 50,
+            "Bu e-posta otomatik olarak GemCore sistemi tarafından gönderilmiştir.",
+        ]
+
+        send_plain_email(
+            subject=f"[GemCore] Yıllık İzin Kredi Raporu — {today.strftime('%d.%m.%Y')}",
+            body="\n".join(lines),
+            to=hr_emails,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Upcoming leaves — who is on leave and when
+# ---------------------------------------------------------------------------
+
+class UpcomingLeavesView(APIView):
+    """
+    GET /vacation-requests/upcoming-leaves/
+
+    Returns all approved vacation requests overlapping the next 30 days.
+    Sorted by start_date. One row per request — designed for a table view.
+
+    Query params:
+      from_date  YYYY-MM-DD  (default: today)
+      to_date    YYYY-MM-DD  (default: today + 30 days)
+      team       filter by team (e.g. "welding")
+      user_id    filter to a single user
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from users.helpers import TEAM_LABELS
+
+        today = date.today()
+
+        try:
+            from_date = date.fromisoformat(request.query_params["from_date"]) if "from_date" in request.query_params else today
+            to_date   = date.fromisoformat(request.query_params["to_date"])   if "to_date"   in request.query_params else today + timedelta(days=30)
+        except ValueError:
+            return Response({"detail": "Dates must be YYYY-MM-DD."}, status=400)
+
+        if to_date < from_date:
+            return Response({"detail": "to_date must be on or after from_date."}, status=400)
+
+        qs = (
+            VacationRequest.objects
+            .filter(
+                status=VacationRequest.STATUS_APPROVED,
+                start_date__lte=to_date,
+                end_date__gte=from_date,
+            )
+            .select_related("requester")
+            .order_by("start_date", "requester__first_name", "requester__last_name")
+        )
+
+        if team := request.query_params.get("team"):
+            qs = qs.filter(team=team)
+        if user_id := request.query_params.get("user_id"):
+            qs = qs.filter(requester_id=user_id)
+
+        leave_type_map = dict(LEAVE_TYPE_CHOICES)
+
+        results = [
+            {
+                "id":               vr.pk,
+                "user_id":          vr.requester_id,
+                "full_name":        vr.requester.get_full_name() or vr.requester.username,
+                "team":             vr.team,
+                "team_label":       TEAM_LABELS.get(vr.team, vr.team or ""),
+                "leave_type":       vr.leave_type,
+                "leave_type_label": leave_type_map.get(vr.leave_type, vr.leave_type),
+                "start_date":       vr.start_date.isoformat(),
+                "end_date":         vr.end_date.isoformat(),
+                "duration_days":    str(vr.duration_days),
+            }
+            for vr in qs
+        ]
+
+        return Response({
+            "from_date": from_date.isoformat(),
+            "to_date":   to_date.isoformat(),
+            "count":     len(results),
+            "results":   results,
+        })
+
+
+# ---------------------------------------------------------------------------
+# HR leave setup — hire_date + total_days in one endpoint per user
+# ---------------------------------------------------------------------------
+
+class UserLeaveSetupView(APIView):
+    """
+    GET  /vacation-requests/users/{user_id}/leave-setup/  → current hire_date + balance
+    PATCH /vacation-requests/users/{user_id}/leave-setup/ → update hire_date and/or total_days
+
+    HR-only (manage_hr permission, staff, or superuser).
+    """
+    permission_classes = [IsAuthenticated]
+
+    def _check_hr(self, request):
+        if not (
+            request.user.is_staff
+            or request.user.is_superuser
+            or user_has_role_perm(request.user, "manage_hr")
+        ):
+            return Response({"detail": "Bu işlem için HR yetkisi gereklidir."}, status=403)
+        return None
+
+    def _get_user_or_404(self, user_id):
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        try:
+            return User.objects.select_related("profile", "leave_balance").get(pk=user_id, is_active=True)
+        except User.DoesNotExist:
+            return None
+
+    def _build_response(self, user):
+        from decimal import Decimal
+        profile = getattr(user, "profile", None)
+        balance = getattr(user, "leave_balance", None)
+        used_days      = balance.used_days      if balance else Decimal("0")
+        total_days     = balance.total_days     if balance else Decimal("0")
+        remaining_days = max(Decimal("0"), total_days - used_days)
+        return {
+            "user_id":        user.pk,
+            "username":       user.username,
+            "full_name":      user.get_full_name() or user.username,
+            "hire_date":      profile.hire_date.isoformat() if (profile and profile.hire_date) else None,
+            "total_days":     str(total_days),
+            "used_days":      str(used_days),
+            "remaining_days": str(remaining_days),
+        }
+
+    def get(self, request, user_id):
+        err = self._check_hr(request)
+        if err:
+            return err
+        user = self._get_user_or_404(user_id)
+        if not user:
+            return Response({"detail": "Kullanıcı bulunamadı."}, status=404)
+        return Response(self._build_response(user))
+
+    def patch(self, request, user_id):
+        from decimal import Decimal
+        from django.db import transaction as db_transaction
+
+        err = self._check_hr(request)
+        if err:
+            return err
+        user = self._get_user_or_404(user_id)
+        if not user:
+            return Response({"detail": "Kullanıcı bulunamadı."}, status=404)
+
+        ser = UserLeaveSetupSerializer(data=request.data, partial=True)
+        ser.is_valid(raise_exception=True)
+        data = ser.validated_data
+
+        with db_transaction.atomic():
+            if "hire_date" in data:
+                profile = getattr(user, "profile", None)
+                if profile:
+                    profile.hire_date = data["hire_date"]
+                    profile.save(update_fields=["hire_date"])
+
+            if "total_days" in data:
+                balance, _ = UserLeaveBalance.objects.get_or_create(
+                    user=user,
+                    defaults={"total_days": Decimal("0"), "used_days": Decimal("0")},
+                )
+                balance.total_days = data["total_days"]
+                balance.save(update_fields=["total_days"])
+
+        # Re-fetch to get fresh values
+        user = self._get_user_or_404(user_id)
+        return Response(self._build_response(user))

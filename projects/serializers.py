@@ -788,6 +788,8 @@ class DepartmentTaskListSerializer(serializers.ModelSerializer):
             'title': offer.title,
             'description': offer.description,
             'delivery_date_requested': offer.delivery_date_requested,
+            'incoterms': offer.incoterms,
+            'delivery_place': offer.delivery_place,
         }
 
     def get_subtasks_count(self, obj):
@@ -1000,6 +1002,8 @@ class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
             'title': offer.title,
             'description': offer.description,
             'delivery_date_requested': offer.delivery_date_requested,
+            'incoterms': offer.incoterms,
+            'delivery_place': offer.delivery_place,
         }
 
     def get_shared_files(self, obj):

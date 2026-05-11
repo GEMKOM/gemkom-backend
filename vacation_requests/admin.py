@@ -18,10 +18,10 @@ class VacationRequestAdmin(admin.ModelAdmin):
 
 @admin.register(UserLeaveBalance)
 class UserLeaveBalanceAdmin(admin.ModelAdmin):
-    list_display  = ["user", "year", "leave_type", "total_days", "used_days", "remaining_days"]
-    list_filter   = ["year", "leave_type"]
+    list_display  = ["user", "total_days", "used_days", "remaining_days"]
     search_fields = ["user__username", "user__first_name", "user__last_name"]
-    ordering      = ["user", "year", "leave_type"]
+    ordering      = ["user"]
+    readonly_fields = ["used_days"]
 
     def remaining_days(self, obj):
         return obj.remaining_days

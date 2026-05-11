@@ -561,7 +561,7 @@ class MonthlySummaryView(APIView):
             holiday = holidays.get(current)
             record = records.get(current)
 
-            if holiday:
+            if holiday and not holiday.is_half_day:
                 day_type = 'public_holiday'
             elif is_weekend:
                 day_type = 'weekend'
@@ -585,6 +585,7 @@ class MonthlySummaryView(APIView):
                 'day_type': day_type,
                 'weekday': current.strftime('%A'),
                 'holiday_name': holiday.local_name if holiday else None,
+                'is_half_day_holiday': holiday.is_half_day if holiday else False,
             }
 
             if record:
