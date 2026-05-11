@@ -60,7 +60,7 @@ class UserViewSet(ModelViewSet):
     def get_permissions(self):
         if self.action == 'list':
             return []
-        if self.action in ('update', 'partial_update'):
+        if self.action in ('create', 'update', 'partial_update'):
             return [IsAdminOrHR()]
         return [IsAdmin()]
     

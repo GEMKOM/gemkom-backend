@@ -259,6 +259,14 @@ class VacationRequest(models.Model):
         )
         balance.used_days += self.duration_days
         balance.save(update_fields=["used_days"])
+        LeaveBalanceLog.objects.create(
+            user_id=self.requester_id,
+            kind=LeaveBalanceLog.KIND_REQUEST_DEDUCT,
+            delta=-self.duration_days,
+            balance_after=balance.remaining_days,
+            vacation_request=self,
+            note=f"İzin talebi #{self.pk} onaylandı ({self.start_date} → {self.end_date})",
+        )
 
     def _refund_leave_balance(self):
         if self.leave_type != LEAVE_ANNUAL:
@@ -269,6 +277,14 @@ class VacationRequest(models.Model):
             return
         balance.used_days = balance.used_days - self.duration_days
         balance.save(update_fields=["used_days"])
+        LeaveBalanceLog.objects.create(
+            user_id=self.requester_id,
+            kind=LeaveBalanceLog.KIND_REQUEST_REFUND,
+            delta=self.duration_days,
+            balance_after=balance.remaining_days,
+            vacation_request=self,
+            note=f"İzin talebi #{self.pk} iptal/reddedildi ({self.start_date} → {self.end_date})",
+        )
 
 
 class UserLeaveBalance(models.Model):
@@ -296,3 +312,46 @@ class UserLeaveBalance(models.Model):
     @property
     def remaining_days(self) -> Decimal:
         return self.total_days - self.used_days
+
+
+class LeaveBalanceLog(models.Model):
+    """
+    Append-only ledger of every event that changes a user's annual leave balance.
+    Each row records the delta and the running balance after the change.
+    """
+    KIND_HR_ADJUSTMENT  = "hr_adjustment"
+    KIND_ANNIVERSARY    = "anniversary_credit"
+    KIND_REQUEST_DEDUCT = "request_deduct"
+    KIND_REQUEST_REFUND = "request_refund"
+
+    KIND_CHOICES = [
+        (KIND_HR_ADJUSTMENT,  "HR Düzeltmesi"),
+        (KIND_ANNIVERSARY,    "Yıllık Kredi"),
+        (KIND_REQUEST_DEDUCT, "İzin Talebi Kesintisi"),
+        (KIND_REQUEST_REFUND, "İzin Talebi İadesi"),
+    ]
+
+    user            = models.ForeignKey(User, on_delete=models.CASCADE, related_name="leave_balance_logs")
+    kind            = models.CharField(max_length=30, choices=KIND_CHOICES)
+    delta           = models.DecimalField(max_digits=6, decimal_places=1,
+                                         help_text="Positive = added, negative = deducted.")
+    balance_after   = models.DecimalField(max_digits=6, decimal_places=1,
+                                         help_text="Remaining days after this entry.")
+    # Optional link to the vacation request that caused this entry
+    vacation_request = models.ForeignKey(
+        "VacationRequest", null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="balance_logs",
+    )
+    note            = models.TextField(blank=True)
+    created_by      = models.ForeignKey(
+        User, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="leave_balance_log_actions",
+    )
+    created_at      = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at"]
+
+    def __str__(self):
+        sign = "+" if self.delta >= 0 else ""
+        return f"{self.user_id} | {self.get_kind_display()} | {sign}{self.delta} → {self.balance_after}"

@@ -608,13 +608,208 @@ class UserLeaveSetupView(APIView):
                     profile.save(update_fields=["hire_date"])
 
             if "total_days" in data:
+                from .models import LeaveBalanceLog
                 balance, _ = UserLeaveBalance.objects.get_or_create(
                     user=user,
                     defaults={"total_days": Decimal("0"), "used_days": Decimal("0")},
                 )
+                old_total = balance.total_days
                 balance.total_days = data["total_days"]
                 balance.save(update_fields=["total_days"])
+                delta = balance.total_days - old_total
+                LeaveBalanceLog.objects.create(
+                    user=user,
+                    kind=LeaveBalanceLog.KIND_HR_ADJUSTMENT,
+                    delta=delta,
+                    balance_after=balance.remaining_days,
+                    created_by=request.user,
+                    note=f"HR düzeltmesi: {old_total} → {balance.total_days} gün",
+                )
 
         # Re-fetch to get fresh values
         user = self._get_user_or_404(user_id)
         return Response(self._build_response(user))
+
+
+# ---------------------------------------------------------------------------
+# Leave balance ledger
+# ---------------------------------------------------------------------------
+
+class LeaveBalanceLedgerView(APIView):
+    """
+    GET /vacation-requests/users/{user_id}/leave-ledger/
+
+    HR-only. Returns a chronological ledger of every event that affected
+    a user's annual leave balance, with a running balance after each entry.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, user_id):
+        from .models import LeaveBalanceLog
+
+        if not (request.user.is_staff or request.user.is_superuser or user_has_role_perm(request.user, "manage_hr")):
+            return Response({"detail": "Bu işlem için yetkiniz yok."}, status=403)
+
+        from django.contrib.auth import get_user_model
+        UserModel = get_user_model()
+        try:
+            user = UserModel.objects.get(pk=user_id)
+        except UserModel.DoesNotExist:
+            return Response({"detail": "Kullanıcı bulunamadı."}, status=404)
+
+        logs = LeaveBalanceLog.objects.filter(user=user).select_related(
+            "vacation_request", "created_by"
+        ).order_by("created_at")
+
+        entries = []
+        for log in logs:
+            entry = {
+                "id":           log.pk,
+                "date":         log.created_at.date().isoformat(),
+                "kind":         log.kind,
+                "kind_label":   log.get_kind_display(),
+                "delta":        str(log.delta),
+                "balance_after": str(log.balance_after),
+                "note":         log.note,
+                "created_by":   log.created_by.get_full_name() or log.created_by.username if log.created_by else None,
+            }
+            if log.vacation_request_id:
+                vr = log.vacation_request
+                entry["request"] = {
+                    "id":         vr.pk,
+                    "leave_type": vr.leave_type,
+                    "start_date": vr.start_date.isoformat(),
+                    "end_date":   vr.end_date.isoformat(),
+                }
+            else:
+                entry["request"] = None
+            entries.append(entry)
+
+        try:
+            balance = UserLeaveBalance.objects.get(user=user)
+            current = {
+                "total_days":     str(balance.total_days),
+                "used_days":      str(balance.used_days),
+                "remaining_days": str(balance.remaining_days),
+            }
+        except UserLeaveBalance.DoesNotExist:
+            current = {"total_days": "0", "used_days": "0", "remaining_days": "0"}
+
+        return Response({
+            "user_id":  user.pk,
+            "username": user.username,
+            "current_balance": current,
+            "entries":  entries,
+        })
+
+
+# ---------------------------------------------------------------------------
+# My leave summary
+# ---------------------------------------------------------------------------
+
+class MyLeaveSummaryView(APIView):
+    """
+    GET /vacation-requests/my-summary/
+
+    Returns the authenticated user's full leave picture:
+      - Annual leave balance (total / used / remaining)
+      - Request counts by status (submitted / approved / rejected / cancelled)
+      - Days used per leave type (approved requests only)
+      - Upcoming approved leave (next entry)
+      - Hire date and years of service
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from decimal import Decimal
+        from django.db.models import Count, Sum
+
+        user = request.user
+        today = date.today()
+
+        # ── Annual leave balance ──────────────────────────────────────────
+        try:
+            balance = UserLeaveBalance.objects.get(user=user)
+            total_days     = balance.total_days
+            used_days      = balance.used_days
+            remaining_days = balance.remaining_days
+            last_credited  = balance.last_credited_date
+        except UserLeaveBalance.DoesNotExist:
+            total_days = used_days = remaining_days = Decimal("0")
+            last_credited = None
+
+        # ── Request counts by status ──────────────────────────────────────
+        counts = (
+            VacationRequest.objects
+            .filter(requester=user)
+            .values("status")
+            .annotate(n=Count("id"))
+        )
+        status_counts = {row["status"]: row["n"] for row in counts}
+
+        # ── Days used per leave type (approved only) ──────────────────────
+        leave_type_label_map = dict(LEAVE_TYPE_CHOICES)
+        approved_by_type = (
+            VacationRequest.objects
+            .filter(requester=user, status=VacationRequest.STATUS_APPROVED)
+            .values("leave_type")
+            .annotate(days=Sum("duration_days"), count=Count("id"))
+            .order_by("leave_type")
+        )
+        by_type = [
+            {
+                "leave_type":        row["leave_type"],
+                "leave_type_label":  leave_type_label_map.get(row["leave_type"], row["leave_type"]),
+                "approved_requests": row["count"],
+                "days_used":         str(row["days"] or Decimal("0")),
+            }
+            for row in approved_by_type
+        ]
+
+        # ── Upcoming approved leave ───────────────────────────────────────
+        next_leave = (
+            VacationRequest.objects
+            .filter(requester=user, status=VacationRequest.STATUS_APPROVED, end_date__gte=today)
+            .order_by("start_date")
+            .first()
+        )
+        upcoming = None
+        if next_leave:
+            upcoming = {
+                "id":               next_leave.pk,
+                "leave_type_label": leave_type_label_map.get(next_leave.leave_type, next_leave.leave_type),
+                "start_date":       next_leave.start_date.isoformat(),
+                "end_date":         next_leave.end_date.isoformat(),
+                "duration_days":    str(next_leave.duration_days),
+            }
+
+        # ── Hire date & service years ─────────────────────────────────────
+        hire_date = None
+        years_of_service = None
+        profile = getattr(user, "profile", None)
+        if profile and getattr(profile, "hire_date", None):
+            hire_date = profile.hire_date
+            years_of_service = (
+                today.year - hire_date.year
+                - (1 if (today.month, today.day) < (hire_date.month, hire_date.day) else 0)
+            )
+
+        return Response({
+            "annual_leave": {
+                "total_days":     str(total_days),
+                "used_days":      str(used_days),
+                "remaining_days": str(remaining_days),
+                "last_credited":  last_credited.isoformat() if last_credited else None,
+            },
+            "requests": {
+                "total":     sum(status_counts.values()),
+                "submitted": status_counts.get(VacationRequest.STATUS_SUBMITTED, 0),
+                "approved":  status_counts.get(VacationRequest.STATUS_APPROVED, 0),
+                "rejected":  status_counts.get(VacationRequest.STATUS_REJECTED, 0),
+                "cancelled": status_counts.get(VacationRequest.STATUS_CANCELLED, 0),
+            },
+            "by_leave_type": by_type,
+            "upcoming_leave": upcoming,
+            "hire_date":        hire_date.isoformat() if hire_date else None,
+            "years_of_service": years_of_service,
+        })

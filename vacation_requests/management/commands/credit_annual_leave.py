@@ -148,6 +148,7 @@ class Command(BaseCommand):
 
             if not dry_run:
                 with transaction.atomic():
+                    from vacation_requests.models import LeaveBalanceLog
                     balance, _ = UserLeaveBalance.objects.get_or_create(
                         user=user,
                         defaults={"total_days": Decimal("0"), "used_days": Decimal("0")},
@@ -155,6 +156,13 @@ class Command(BaseCommand):
                     balance.total_days += Decimal(str(days))
                     balance.last_credited_date = today
                     balance.save(update_fields=["total_days", "last_credited_date"])
+                    LeaveBalanceLog.objects.create(
+                        user=user,
+                        kind=LeaveBalanceLog.KIND_ANNIVERSARY,
+                        delta=Decimal(str(days)),
+                        balance_after=balance.remaining_days,
+                        note=f"Yıllık kredi: {completed_years}. yıl dönümü ({hire_date}), +{days} gün",
+                    )
 
             credited += 1
 
