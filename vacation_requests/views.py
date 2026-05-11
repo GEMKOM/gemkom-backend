@@ -565,12 +565,13 @@ class UserLeaveSetupView(APIView):
         balance = getattr(user, "leave_balance", None)
         used_days      = balance.used_days      if balance else Decimal("0")
         total_days     = balance.total_days     if balance else Decimal("0")
-        remaining_days = max(Decimal("0"), total_days - used_days)
+        remaining_days = total_days - used_days
         return {
             "user_id":        user.pk,
             "username":       user.username,
             "full_name":      user.get_full_name() or user.username,
-            "hire_date":      profile.hire_date.isoformat() if (profile and profile.hire_date) else None,
+            "hire_date":      profile.hire_date.isoformat()  if (profile and profile.hire_date)  else None,
+            "birth_date":     profile.birth_date.isoformat() if (profile and profile.birth_date) else None,
             "total_days":     str(total_days),
             "used_days":      str(used_days),
             "remaining_days": str(remaining_days),
@@ -601,11 +602,17 @@ class UserLeaveSetupView(APIView):
         data = ser.validated_data
 
         with db_transaction.atomic():
-            if "hire_date" in data:
-                profile = getattr(user, "profile", None)
-                if profile:
+            profile = getattr(user, "profile", None)
+            if profile:
+                profile_fields = []
+                if "hire_date" in data:
                     profile.hire_date = data["hire_date"]
-                    profile.save(update_fields=["hire_date"])
+                    profile_fields.append("hire_date")
+                if "birth_date" in data:
+                    profile.birth_date = data["birth_date"]
+                    profile_fields.append("birth_date")
+                if profile_fields:
+                    profile.save(update_fields=profile_fields)
 
             if "total_days" in data:
                 from .models import LeaveBalanceLog

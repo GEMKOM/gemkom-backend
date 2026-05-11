@@ -34,6 +34,10 @@ class UserProfile(models.Model):
         null=True, blank=True,
         help_text="Official employment start date. Used to calculate annual leave entitlement.",
     )
+    birth_date = models.DateField(
+        null=True, blank=True,
+        help_text="Date of birth. Used for age-based leave entitlement (under 18 / over 50 → min 20 days).",
+    )
 
     class Meta:
         default_permissions = ()  # suppress add/change/delete/view_userprofile

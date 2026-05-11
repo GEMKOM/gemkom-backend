@@ -199,13 +199,14 @@ class VacationRequestUpdateSerializer(serializers.ModelSerializer):
 
 class UserLeaveSetupSerializer(serializers.Serializer):
     """
-    Read/write hire_date (UserProfile) and total_days (UserLeaveBalance) together.
-    HR-only. GET returns current values, PATCH updates both atomically.
+    Read/write hire_date, birth_date (UserProfile) and total_days (UserLeaveBalance) together.
+    HR-only. GET returns current values, PATCH updates atomically.
     """
     user_id        = serializers.IntegerField(read_only=True)
     username       = serializers.CharField(read_only=True)
     full_name      = serializers.CharField(read_only=True)
     hire_date      = serializers.DateField(allow_null=True, required=False)
+    birth_date     = serializers.DateField(allow_null=True, required=False)
     total_days     = serializers.DecimalField(max_digits=6, decimal_places=1, required=False)
     used_days      = serializers.DecimalField(max_digits=6, decimal_places=1, read_only=True)
     remaining_days = serializers.DecimalField(max_digits=6, decimal_places=1, read_only=True)
