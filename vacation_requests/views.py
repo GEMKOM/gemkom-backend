@@ -530,7 +530,7 @@ class CreditAnnualLeaveView(APIView):
         User = get_user_model()
         hr_emails = list(
             User.objects
-            .filter(is_active=True, profile__position__department_code='human_resources')
+            .filter(is_active=True, user_permissions__codename='manage_hr')
             .exclude(email="")
             .values_list("email", flat=True)
             .distinct()

@@ -19,17 +19,12 @@ from tasks.views import (
     GenericTimerStopView,
 )
 from rest_framework.permissions import IsAuthenticated
-from users.permissions import IsAdmin
+from users.permissions import IsAdmin, user_has_role_perm
 from django.db.models import Q
 
 from config.pagination import CustomPageNumberPagination
 
 
-def _user_in_dept(user, dept_code: str) -> bool:
-    try:
-        return user.profile.position.department_code == dept_code
-    except AttributeError:
-        return False
 
 
 # Create your views here.
@@ -396,7 +391,7 @@ class MachineFaultDetailView(APIView):
 
         if not fault.resolved_at:
             # Only maintenance team or admins can resolve faults
-            is_maintenance = _user_in_dept(request.user, 'maintenance')
+            is_maintenance = user_has_role_perm(request.user, 'access_maintenance')
             is_admin = request.user.is_superuser or request.user.is_staff
 
             if not is_maintenance and not is_admin:

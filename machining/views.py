@@ -533,8 +533,9 @@ class DailyEfficiencyReportView(APIView):
             .filter(
                 start_time__gte=day_start_ms,
                 start_time__lt=day_end_ms + 86400000,
-                user__profile__position__department_code='machining'
+                user__user_permissions__codename='access_machining_tasks',
             )
+            .distinct()
             .order_by('user_id', 'start_time')
         )
 
@@ -608,7 +609,7 @@ class DailyEfficiencyReportView(APIView):
         user_ids = list(user_task_timers.keys())
         users = User.objects.filter(
             id__in=user_ids,
-            profile__position__department_code='machining',
+            user_permissions__codename='access_machining_tasks',
         ).select_related('profile').distinct()
         users_by_id = {u.id: u for u in users}
 
@@ -1025,8 +1026,9 @@ class UserReportView(APIView):
             .filter(
                 start_time__gte=day_start_ms,
                 start_time__lt=day_end_ms + 86400000,
-                user__profile__position__department_code='machining',
+                user__user_permissions__codename='access_machining_tasks',
             )
+            .distinct()
             .order_by('user_id', 'start_time')
         )
         if user_filter is not None:
@@ -1120,7 +1122,7 @@ class UserReportView(APIView):
         now_ms = int(timezone.now().timestamp() * 1000)
 
         # Fetch all machining team users upfront so those with no timers still appear
-        users = User.objects.filter(profile__position__department_code='machining', is_active=True).select_related('profile').distinct()
+        users = User.objects.filter(user_permissions__codename='access_machining_tasks', is_active=True).select_related('profile').distinct()
         users_by_id = {u.id: u for u in users}
         if not users_by_id:
             return Response({"start_date": start_date.isoformat(), "end_date": end_date.isoformat(), "users": []})
@@ -1252,7 +1254,7 @@ class UserTaskDetailView(APIView):
 
         try:
             user = User.objects.select_related('profile').get(
-                id=user_id, profile__position__department_code='machining'
+                id=user_id, user_permissions__codename='access_machining_tasks'
             )
         except User.DoesNotExist:
             return Response({"error": "User not found or not in machining team"}, status=404)

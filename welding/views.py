@@ -80,8 +80,8 @@ class WeldingTimeEntryViewSet(viewsets.ModelViewSet):
         # Get active users in welding team
         active_welders = User.objects.filter(
             is_active=True,
-            profile__position__department_code='welding'
-        ).select_related('profile', 'profile__position').order_by('first_name', 'last_name', 'username')
+            user_permissions__codename='access_manufacturing_welding',
+        ).select_related('profile', 'profile__position').distinct().order_by('first_name', 'last_name', 'username')
 
         # Format response
         employees = [
