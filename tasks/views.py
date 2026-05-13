@@ -270,17 +270,22 @@ class GenericTimerListView(APIView):
             return Response({"error": f"Invalid task_type '{task_type}'"}, status=status.HTTP_400_BAD_REQUEST)
 
         # Include both task-linked timers AND machine-level timers (downtime/break with no operation)
-        # For null content_type timers, filter by user's team to avoid showing them in wrong task_type views
-        # cnc_cutting -> users with team='cutting', operation/machining -> users with team='machining'
-        # machine_fault -> only GFK-linked timers, no null content_type timers
+        # For null content_type timers, filter by permission to avoid showing them in wrong task_type views
+        # machine_fault/linear_cutting -> only GFK-linked timers, no null content_type timers
         if task_type in ('machine_fault', 'linear_cutting'):
             query = Q(content_type=ct)
         elif task_type == 'cnc_cutting':
-            null_content_type_filter = Q(content_type__isnull=True, user__profile__position__department_code='cutting')
+            null_content_type_filter = Q(
+                content_type__isnull=True,
+                user__user_permissions__codename='access_cnc_cutting_tasks',
+            )
             query = Q(content_type=ct) | null_content_type_filter
         else:
-            # For 'operation' and 'machining', show timers from machining team users
-            null_content_type_filter = Q(content_type__isnull=True, user__profile__position__department_code='machining')
+            # For 'operation' and 'machining', filter by access_machining_tasks permission
+            null_content_type_filter = Q(
+                content_type__isnull=True,
+                user__user_permissions__codename='access_machining_tasks',
+            )
             query = Q(content_type=ct) | null_content_type_filter
 
         if request.GET.get("is_active") == "true":
@@ -337,7 +342,7 @@ class GenericTimerListView(APIView):
                 output_field=FloatField()
             ),
             task_total_hours=Subquery(task_total_hours_subquery)
-        ).filter(query).order_by(ordering)
+        ).filter(query).distinct().order_by(ordering)
 
         paginator = CustomPageNumberPagination()
         page = paginator.paginate_queryset(timers, request)
