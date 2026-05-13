@@ -1,20 +1,12 @@
 from django.contrib.auth.models import User
 from rest_framework import serializers
 from .models import UserProfile, WageRate
-from .helpers import GROUP_TO_TEAM, TEAM_TO_GROUP, TEAM_LABELS, sync_user_group
+from organization.models import Position
 
 
-def _team_code_from_user(user) -> str | None:
-    for group in user.groups.all():
-        if group.name in GROUP_TO_TEAM:
-            return GROUP_TO_TEAM[group.name]
-    return None
-
-
-def _team_label_from_user(user) -> str | None:
-    team = _team_code_from_user(user)
-    return TEAM_LABELS.get(team) if team else None
-
+# ---------------------------------------------------------------------------
+# Serializers
+# ---------------------------------------------------------------------------
 
 class SimpleUserSerializer(serializers.ModelSerializer):
     class Meta:
@@ -23,77 +15,87 @@ class SimpleUserSerializer(serializers.ModelSerializer):
 
 
 class PublicUserSerializer(serializers.ModelSerializer):
-    team = serializers.SerializerMethodField()
-    team_label = serializers.SerializerMethodField()
+    department_code = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ['username', 'first_name', 'last_name', 'team', 'team_label']
+        fields = ['username', 'first_name', 'last_name', 'department_code']
 
-    def get_team(self, obj):
-        return _team_code_from_user(obj)
-
-    def get_team_label(self, obj):
-        return _team_label_from_user(obj)
+    def get_department_code(self, obj):
+        try:
+            return obj.profile.position.department_code or None
+        except Exception:
+            return None
 
 
 class UserPasswordResetSerializer(serializers.ModelSerializer):
     reset_password_request = serializers.BooleanField(source='profile.reset_password_request')
-    must_reset_password = serializers.BooleanField(source='profile.must_reset_password')
-    team = serializers.SerializerMethodField()
+    must_reset_password    = serializers.BooleanField(source='profile.must_reset_password')
+    department_code        = serializers.SerializerMethodField()
 
     class Meta:
         model = User
         fields = [
             'id', 'username', 'first_name', 'last_name', 'email', 'is_superuser',
-            'team', 'reset_password_request', 'must_reset_password'
+            'department_code', 'reset_password_request', 'must_reset_password',
         ]
 
-    def get_team(self, obj):
-        return _team_code_from_user(obj)
+    def get_department_code(self, obj):
+        try:
+            return obj.profile.position.department_code or None
+        except Exception:
+            return None
 
 
 class UserListSerializer(serializers.ModelSerializer):
-    team = serializers.SerializerMethodField()
-    occupation = serializers.CharField(source='profile.occupation')
     must_reset_password = serializers.BooleanField(source='profile.must_reset_password')
-    team_label = serializers.SerializerMethodField()
-    occupation_label = serializers.SerializerMethodField()
-    groups = serializers.SerializerMethodField()
+    position_id         = serializers.IntegerField(source='profile.position_id', read_only=True)
+    position_title      = serializers.SerializerMethodField()
+    position_level      = serializers.SerializerMethodField()
+    department_code     = serializers.SerializerMethodField()
 
     class Meta:
         model = User
         fields = [
             'id', 'username', 'first_name', 'last_name', 'email', 'is_superuser',
-            'team', 'team_label', 'occupation', 'occupation_label',
-            'groups',
+            'position_id', 'position_title', 'position_level',
+            'department_code',
             'must_reset_password', 'is_active',
         ]
 
-    def get_groups(self, obj):
-        return [g.name for g in obj.groups.all()]
+    def get_position_title(self, obj):
+        try:
+            return obj.profile.position.title if obj.profile.position_id else None
+        except Exception:
+            return None
 
-    def get_team(self, obj):
-        return _team_code_from_user(obj)
+    def get_position_level(self, obj):
+        try:
+            return obj.profile.position.level if obj.profile.position_id else None
+        except Exception:
+            return None
 
-    def get_team_label(self, obj):
-        return _team_label_from_user(obj)
-
-    def get_occupation_label(self, obj):
-        if hasattr(obj, 'profile') and obj.profile.occupation:
-            return obj.profile.get_occupation_display()
-        return None
+    def get_department_code(self, obj):
+        try:
+            return obj.profile.position.department_code or None
+        except Exception:
+            return None
 
 
 class UserCreateSerializer(serializers.ModelSerializer):
-    team = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    position = serializers.PrimaryKeyRelatedField(
+        queryset=Position.objects.filter(is_active=True),
+        required=False,
+        allow_null=True,
+        write_only=True,
+    )
 
     class Meta:
         model = User
-        fields = ['username', 'first_name', 'last_name', 'email', 'team']
+        fields = ['username', 'first_name', 'last_name', 'email', 'position']
 
     def create(self, validated_data):
-        team = validated_data.pop('team', None)
+        position = validated_data.pop('position', None)
 
         user = User.objects.create(
             username=validated_data.get('username'),
@@ -104,13 +106,13 @@ class UserCreateSerializer(serializers.ModelSerializer):
         user.set_password("gemkom2025.")
         user.save()
 
-        UserProfile.objects.update_or_create(user=user, defaults={
-            'team': team,
-            'must_reset_password': True,
-        })
-
-        if team:
-            sync_user_group(user, team)
+        UserProfile.objects.update_or_create(
+            user=user,
+            defaults={
+                'must_reset_password': True,
+                'position': position,
+            },
+        )
 
         return user
 
@@ -152,20 +154,23 @@ class CurrentUserUpdateSerializer(serializers.ModelSerializer):
 
 
 class AdminUserUpdateSerializer(serializers.ModelSerializer):
-    jira_api_token = serializers.CharField(source="profile.jira_api_token", allow_blank=True, required=False)
-    team = serializers.CharField(required=False, allow_blank=True, write_only=True)
+    jira_api_token      = serializers.CharField(source="profile.jira_api_token", allow_blank=True, required=False)
     must_reset_password = serializers.BooleanField(source='profile.must_reset_password', required=False)
-    occupation = serializers.CharField(source='profile.occupation', required=False, allow_blank=True)
+    position = serializers.PrimaryKeyRelatedField(
+        source='profile.position',
+        queryset=Position.objects.filter(is_active=True),
+        required=False,
+        allow_null=True,
+    )
 
     class Meta:
         model = User
         fields = [
             'first_name', 'last_name', 'email', 'jira_api_token',
-            'team', 'must_reset_password', 'occupation', 'is_active',
+            'position', 'must_reset_password', 'is_active',
         ]
 
     def update(self, instance, validated_data):
-        team = validated_data.pop('team', None)
         profile_data = validated_data.pop('profile', {})
 
         for attr, value in validated_data.items():
@@ -173,48 +178,50 @@ class AdminUserUpdateSerializer(serializers.ModelSerializer):
         instance.save()
 
         profile = instance.profile
+        position_changed = 'position' in profile_data
         for attr, value in profile_data.items():
             setattr(profile, attr, value)
-        profile.save()
-
-        if team is not None:
-            sync_user_group(instance, team or None)
+        profile.save(update_fields=list(profile_data.keys()) if profile_data else None)
 
         return instance
 
 
 class UserMiniSerializer(serializers.ModelSerializer):
-    team = serializers.SerializerMethodField()
-    team_label = serializers.SerializerMethodField()
-    occupation = serializers.CharField(source="profile.occupation", read_only=True)
-    occupation_label = serializers.CharField(source="profile.get_occupation_display", read_only=True)
-    groups = serializers.SerializerMethodField()
+    position_id     = serializers.IntegerField(source='profile.position_id', read_only=True)
+    position_title  = serializers.SerializerMethodField()
+    position_level  = serializers.SerializerMethodField()
+    department_code = serializers.SerializerMethodField()
 
     class Meta:
         model = User
         fields = [
             "id", "username", "first_name", "last_name",
-            "team", "team_label", "occupation", "occupation_label",
-            "groups",
+            "position_id", "position_title", "position_level",
+            "department_code",
         ]
 
-    def get_team(self, obj):
-        return _team_code_from_user(obj)
+    def get_position_title(self, obj):
+        try:
+            return obj.profile.position.title if obj.profile.position_id else None
+        except Exception:
+            return None
 
-    def get_team_label(self, obj):
-        return _team_label_from_user(obj)
+    def get_position_level(self, obj):
+        try:
+            return obj.profile.position.level if obj.profile.position_id else None
+        except Exception:
+            return None
 
-    def get_groups(self, obj):
-        return [g.name for g in obj.groups.all()]
+    def get_department_code(self, obj):
+        try:
+            return obj.profile.position.department_code or None
+        except Exception:
+            return None
 
 
 class UserWageOverviewSerializer(serializers.ModelSerializer):
-    """
-    Represents one user + their *current* wage (if any).
-    The current wage fields are annotated in the queryset.
-    """
-    user_info = UserMiniSerializer(source="*", read_only=True)
-    has_wage = serializers.BooleanField(read_only=True)
+    user_info   = UserMiniSerializer(source="*", read_only=True)
+    has_wage    = serializers.BooleanField(read_only=True)
     current_wage = serializers.SerializerMethodField()
 
     class Meta:
@@ -234,8 +241,7 @@ class UserWageOverviewSerializer(serializers.ModelSerializer):
 
 
 class WageRateSerializer(serializers.ModelSerializer):
-    from django.contrib.auth.models import User as DjangoUser
-    user = serializers.PrimaryKeyRelatedField(queryset=DjangoUser.objects.all())
+    user      = serializers.PrimaryKeyRelatedField(queryset=User.objects.all())
     user_info = UserMiniSerializer(source="user", read_only=True)
 
     class Meta:
@@ -260,4 +266,4 @@ class WageRateSerializer(serializers.ModelSerializer):
 
 class WageRateSlimSerializer(WageRateSerializer):
     class Meta(WageRateSerializer.Meta):
-        fields = [f for f in WageRateSerializer.Meta.fields if f not in ("user_info")]
+        fields = [f for f in WageRateSerializer.Meta.fields if f != "user_info"]

@@ -67,13 +67,13 @@ class VacationRequestViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def cancel(self, request, pk=None):
+        """Immediate cancel — only for submitted (not yet approved) requests."""
         vr: VacationRequest = self.get_object()
         if vr.requester_id != request.user.id and not (request.user.is_staff or request.user.is_superuser):
             return Response({"detail": "Yalnızca talebi oluşturan kişi iptal edebilir."}, status=403)
-        if vr.status not in (VacationRequest.STATUS_SUBMITTED, VacationRequest.STATUS_APPROVED):
-            return Response({"detail": "Yalnızca onay bekleyen veya onaylanmış talepler iptal edilebilir."}, status=400)
+        if vr.status != VacationRequest.STATUS_SUBMITTED:
+            return Response({"detail": "Yalnızca onay bekleyen talepler doğrudan iptal edilebilir. Onaylanmış talepler için iptal talebinde bulununuz."}, status=400)
 
-        was_approved = vr.status == VacationRequest.STATUS_APPROVED
         vr.status = VacationRequest.STATUS_CANCELLED
         vr.save(update_fields=["status", "updated_at"])
 
@@ -85,11 +85,51 @@ class VacationRequestViewSet(viewsets.ModelViewSet):
             wf.is_cancelled = True
             wf.save(update_fields=["is_cancelled"])
 
-        if was_approved:
-            vr._rollback_attendance_records()
-            vr._refund_leave_balance()
-
         return Response({"detail": "Talep iptal edildi."}, status=200)
+
+    @action(detail=True, methods=["post"], url_path="request-cancellation")
+    def request_cancellation(self, request, pk=None):
+        """Request cancellation of an already-approved leave — goes to HR for approval."""
+        vr: VacationRequest = self.get_object()
+        if vr.requester_id != request.user.id and not (request.user.is_staff or request.user.is_superuser or user_has_role_perm(request.user, "manage_hr")):
+            return Response({"detail": "Bu işlem için yetkiniz yok."}, status=403)
+        if vr.status != VacationRequest.STATUS_APPROVED:
+            return Response({"detail": "Yalnızca onaylanmış talepler için iptal talebinde bulunulabilir."}, status=400)
+
+        reason = (request.data or {}).get("reason", "")
+        vr.status = VacationRequest.STATUS_CANCELLATION_REQUESTED
+        vr.cancellation_reason = reason
+        vr.save(update_fields=["status", "cancellation_reason", "updated_at"])
+        return Response({"detail": "İptal talebiniz HR onayına gönderildi."}, status=200)
+
+    @action(detail=True, methods=["post"], url_path="approve-cancellation")
+    def approve_cancellation(self, request, pk=None):
+        """HR approves the cancellation — rolls back attendance and refunds balance."""
+        if not (request.user.is_staff or request.user.is_superuser or user_has_role_perm(request.user, "manage_hr")):
+            return Response({"detail": "Bu işlem için yetkiniz yok."}, status=403)
+        vr: VacationRequest = self.get_object()
+        if vr.status != VacationRequest.STATUS_CANCELLATION_REQUESTED:
+            return Response({"detail": "Bu talep iptal onayı beklemiyordur."}, status=400)
+
+        vr.status = VacationRequest.STATUS_CANCELLED
+        vr.save(update_fields=["status", "updated_at"])
+        vr._rollback_attendance_records()
+        vr._refund_leave_balance()
+        return Response({"detail": "İptal onaylandı, devamsızlık kayıtları ve bakiye güncellendi."}, status=200)
+
+    @action(detail=True, methods=["post"], url_path="reject-cancellation")
+    def reject_cancellation(self, request, pk=None):
+        """HR rejects the cancellation — request goes back to approved."""
+        if not (request.user.is_staff or request.user.is_superuser or user_has_role_perm(request.user, "manage_hr")):
+            return Response({"detail": "Bu işlem için yetkiniz yok."}, status=403)
+        vr: VacationRequest = self.get_object()
+        if vr.status != VacationRequest.STATUS_CANCELLATION_REQUESTED:
+            return Response({"detail": "Bu talep iptal onayı beklemiyordur."}, status=400)
+
+        vr.status = VacationRequest.STATUS_APPROVED
+        vr.cancellation_reason = ""
+        vr.save(update_fields=["status", "cancellation_reason", "updated_at"])
+        return Response({"detail": "İptal talebi reddedildi, izin onaylı olarak devam ediyor."}, status=200)
 
     # ------------------------------------------------------------------
     # Approve / Reject
@@ -185,6 +225,90 @@ class VacationRequestViewSet(viewsets.ModelViewSet):
             context=self.get_serializer_context(),
         )
         return self.get_paginated_response(ser.data) if page is not None else Response(ser.data)
+
+    @action(detail=False, methods=["get"], url_path="approvals-inbox")
+    def approvals_inbox(self, request):
+        """
+        Unified approval inbox for HR and managers.
+
+        Returns two kinds of items, distinguished by the `kind` field:
+          - `workflow_approval`   — submitted requests pending a workflow stage decision
+          - `cancellation_request` — approved requests where the employee requested cancellation
+
+        Non-HR users only see workflow_approval items where they are an approver.
+        HR/staff/superuser see both kinds.
+        """
+        user   = request.user
+        ct     = ContentType.objects.get_for_model(VacationRequest)
+        is_hr  = user.is_staff or user.is_superuser or user_has_role_perm(user, "manage_hr")
+
+        leave_type_map = dict(LEAVE_TYPE_CHOICES)
+        from users.helpers import TEAM_LABELS
+
+        def _serialize_vr(vr, kind):
+            return {
+                "kind":               kind,
+                "id":                 vr.pk,
+                "status":             vr.status,
+                "leave_type":         vr.leave_type,
+                "leave_type_label":   leave_type_map.get(vr.leave_type, vr.leave_type),
+                "start_date":         vr.start_date.isoformat(),
+                "end_date":           vr.end_date.isoformat(),
+                "duration_days":      str(vr.duration_days),
+                "requester_id":       vr.requester_id,
+                "requester_username": vr.requester.username,
+                "requester_full_name": vr.requester.get_full_name() or vr.requester.username,
+                "team":               vr.team,
+                "team_label":         TEAM_LABELS.get(vr.team, vr.team or ""),
+                "is_company_holiday": vr.is_company_holiday,
+                "cancellation_reason": vr.cancellation_reason if kind == "cancellation_request" else None,
+                "created_at":         vr.created_at.isoformat(),
+            }
+
+        results = []
+
+        # ── Pending workflow approvals (HR stage only) ────────────────────
+        from .approval_service import TEAM_MANAGER_STAGE_ORDER
+        stage_filter = ApprovalStageInstance.objects.filter(
+            workflow__content_type=ct,
+            workflow__is_complete=False,
+            workflow__is_rejected=False,
+            workflow__is_cancelled=False,
+            order=F("workflow__current_stage_order"),
+            order__gt=TEAM_MANAGER_STAGE_ORDER,
+            is_complete=False,
+            is_rejected=False,
+        )
+        if not is_hr:
+            stage_filter = stage_filter.filter(approver_user_ids__contains=[user.id])
+
+        workflow_vr_ids = stage_filter.values_list("workflow__object_id", flat=True)
+
+        workflow_vrs = (
+            VacationRequest.objects
+            .filter(id__in=Subquery(workflow_vr_ids), status=VacationRequest.STATUS_SUBMITTED)
+            .select_related("requester")
+            .order_by("created_at")
+            .distinct()
+        )
+        for vr in workflow_vrs:
+            results.append(_serialize_vr(vr, "workflow_approval"))
+
+        # ── Pending cancellation requests (HR only) ───────────────────────
+        if is_hr:
+            cancellation_vrs = (
+                VacationRequest.objects
+                .filter(status=VacationRequest.STATUS_CANCELLATION_REQUESTED)
+                .select_related("requester")
+                .order_by("created_at")
+            )
+            for vr in cancellation_vrs:
+                results.append(_serialize_vr(vr, "cancellation_request"))
+
+        # Sort combined list by created_at ascending
+        results.sort(key=lambda x: x["created_at"])
+
+        return Response({"count": len(results), "results": results})
 
     @action(detail=False, methods=["get"], url_path="decision_by_me")
     def decision_by_me(self, request):
@@ -408,7 +532,7 @@ class CreditAnnualLeaveView(APIView):
         User = get_user_model()
         hr_emails = list(
             User.objects
-            .filter(is_active=True, groups__name="hr_team")
+            .filter(is_active=True, profile__position__department_code='human_resources')
             .exclude(email="")
             .values_list("email", flat=True)
             .distinct()
@@ -708,6 +832,120 @@ class LeaveBalanceLedgerView(APIView):
             "current_balance": current,
             "entries":  entries,
         })
+
+
+# ---------------------------------------------------------------------------
+# Company-wide holiday — HR bulk creates annual leave for all employees
+# ---------------------------------------------------------------------------
+
+class CompanyHolidayView(APIView):
+    """
+    POST /vacation-requests/company-holiday/
+
+    HR-only. Creates an auto-approved annual leave VacationRequest for every
+    active employee on a given date, skipping excluded users and users who
+    already have an approved/submitted request on that day.
+
+    Body:
+      date           YYYY-MM-DD  (required)
+      name           str         (required) — shown as the reason
+      excluded_users list[int]   (optional) — user IDs to skip
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        if not (request.user.is_staff or request.user.is_superuser or user_has_role_perm(request.user, "manage_hr")):
+            return Response({"detail": "Bu işlem için yetkiniz yok."}, status=403)
+
+        from django.contrib.auth import get_user_model
+        from decimal import Decimal
+        from users.helpers import get_dept_code_for_user
+        from .models import LEAVE_ANNUAL, LeaveBalanceLog
+
+        UserModel = get_user_model()
+
+        date_str = (request.data or {}).get("date")
+        name     = (request.data or {}).get("name", "")
+        excluded = set((request.data or {}).get("excluded_users") or [])
+
+        if not date_str:
+            return Response({"detail": "date alanı zorunludur."}, status=400)
+        if not name:
+            return Response({"detail": "name alanı zorunludur."}, status=400)
+        try:
+            holiday_date = date.fromisoformat(date_str)
+        except ValueError:
+            return Response({"detail": "Geçersiz tarih formatı. YYYY-MM-DD kullanın."}, status=400)
+
+        active_users = (
+            UserModel.objects
+            .filter(is_active=True)
+            .exclude(id__in=excluded)
+            .select_related("profile", "leave_balance")
+        )
+
+        # Users who already have a submitted/approved request covering this date
+        already_covered = set(
+            VacationRequest.objects
+            .filter(
+                status__in=[VacationRequest.STATUS_SUBMITTED, VacationRequest.STATUS_APPROVED],
+                start_date__lte=holiday_date,
+                end_date__gte=holiday_date,
+            )
+            .values_list("requester_id", flat=True)
+        )
+
+        created_list = []
+        skipped_list = []
+
+        for user in active_users:
+            if user.id in already_covered:
+                skipped_list.append({"user_id": user.id, "username": user.username, "reason": "already_on_leave"})
+                continue
+
+            team = get_dept_code_for_user(user) or ""
+
+            vr = VacationRequest.objects.create(
+                requester=user,
+                team=team,
+                leave_type=LEAVE_ANNUAL,
+                start_date=holiday_date,
+                end_date=holiday_date,
+                reason=name,
+                is_company_holiday=True,
+                status=VacationRequest.STATUS_APPROVED,
+            )
+
+            # Auto-create attendance record
+            vr._create_attendance_records()
+
+            # Deduct balance and log
+            balance, _ = UserLeaveBalance.objects.get_or_create(
+                user=user,
+                defaults={"total_days": Decimal("0"), "used_days": Decimal("0")},
+            )
+            balance.used_days += vr.duration_days
+            balance.save(update_fields=["used_days"])
+            LeaveBalanceLog.objects.create(
+                user=user,
+                kind=LeaveBalanceLog.KIND_REQUEST_DEDUCT,
+                delta=-vr.duration_days,
+                balance_after=balance.remaining_days,
+                vacation_request=vr,
+                created_by=request.user,
+                note=f"Şirket tatili: {name} ({holiday_date})",
+            )
+
+            created_list.append({"user_id": user.id, "username": user.username, "vr_id": vr.pk})
+
+        return Response({
+            "date":    date_str,
+            "name":    name,
+            "created": len(created_list),
+            "skipped": len(skipped_list),
+            "results": created_list,
+            "skipped_users": skipped_list,
+        }, status=201)
 
 
 # ---------------------------------------------------------------------------

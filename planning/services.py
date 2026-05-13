@@ -11,13 +11,13 @@ from approvals.services import (
     create_workflow,
     get_workflow,
     record_decision,
-    resolve_group_user_ids,
     auto_bypass_self_approver,
 )
 from approvals.models import ApprovalPolicy, ApprovalStageInstance, ApprovalWorkflow
+from approvals.resolvers import resolve_approvers_for_stage
 from notifications.service import notify, bulk_notify, render_notification
 from notifications.models import Notification
-from users.helpers import _team_manager_user_ids, users_in_team
+from organization.services import get_dept_members
 
 
 @transaction.atomic
@@ -248,57 +248,16 @@ def auto_allocate_inventory(planning_request: PlanningRequest, allocated_by_user
 
 # ===== Department Request Approval Services =====
 
-# ------- Config -------
-DEPARTMENT_REQUEST_POLICY_NAME = "Department Request – Default"
-DEPARTMENT_HEAD_STAGE_ORDER = 1  # Stage #1 = Department Head
-
-
-def _dedupe_ordered(ids: list[int]) -> list[int]:
-    seen, ordered = set(), []
-    for uid in ids:
-        if uid not in seen:
-            seen.add(uid)
-            ordered.append(uid)
-    return ordered
+DEPARTMENT_REQUEST_SUBJECT_TYPE = "department_request"
 
 
 # --------- Policy selection for Department Requests ---------
 def pick_policy_for_department_request(dr: DepartmentRequest):
-    """
-    Find the appropriate approval policy for a department request by name.
-    """
     return (ApprovalPolicy.objects
-            .filter(is_active=True, name=DEPARTMENT_REQUEST_POLICY_NAME)
+            .filter(is_active=True, subject_type=DEPARTMENT_REQUEST_SUBJECT_TYPE)
             .order_by("selection_priority")
             .first())
 
-
-# --------- Helper functions ---------
-def _resolve_manager_team(team):
-    """
-    Map a department/team to the managing team whose managers should approve.
-    Examples:
-      - cutting -> planning
-      - warehouse -> planning
-      - machining -> manufacturing
-      - maintenance -> manufacturing
-      - welding -> manufacturing
-      - planning/manufacturing -> themselves
-      - other/unknown -> itself (fallback)
-    """
-    if not team:
-        return None
-    t = str(team).strip().lower()
-    mapping = {
-        "cutting": "planning",
-        "warehouse": "planning",
-        "planning": "planning",
-        "machining": "manufacturing",
-        "maintenance": "manufacturing",
-        "welding": "manufacturing",
-        "manufacturing": "manufacturing",
-    }
-    return mapping.get(t, t)
 
 def _users_from_ids(user_ids):
     if not user_ids:
@@ -371,7 +330,7 @@ def _notify_requestor_on_final(dr: DepartmentRequest, status_str: str, comment: 
 
 def _notify_planning_on_approval(dr: DepartmentRequest):
     """Notify planning department when a department request is approved."""
-    planning_users = users_in_team("planning")
+    planning_users = get_dept_members("planning")
     if not planning_users.exists():
         return
     ctx = {
@@ -427,16 +386,10 @@ def _skip_empty_stages(wf: ApprovalWorkflow) -> bool:
 # --------- Submit Department Request ---------
 @transaction.atomic
 def submit_department_request(dr: DepartmentRequest, by_user):
-    """
-    Submit a department request for approval.
-    Stage 1: Department head (auto-resolved from dr.department)
-    Stage 2+: Policy-configured approvers (e.g., planning team)
-    """
     policy = pick_policy_for_department_request(dr)
     if not policy or not policy.stages.exists():
         raise ValueError("Uygun bir onay politikası (departman talebi) bulunamadı.")
 
-    # Build snapshot
     stages_qs = policy.stages.all().order_by("order")
     snapshot = {
         "policy": {"id": policy.id, "name": policy.name},
@@ -446,7 +399,6 @@ def submit_department_request(dr: DepartmentRequest, by_user):
                 "name": s.name,
                 "required_approvals": s.required_approvals,
                 "users": list(s.approver_users.values_list("id", flat=True)),
-                "groups": list(s.approver_groups.values_list("id", flat=True)),
             }
             for s in stages_qs
         ],
@@ -459,35 +411,11 @@ def submit_department_request(dr: DepartmentRequest, by_user):
         },
     }
 
-    def _builder_with_mapping(stage, _subject):
-        # Stage 1: merge policy approvers with managing-team managers
-        if stage.order == DEPARTMENT_HEAD_STAGE_ORDER:
-            manager_team = _resolve_manager_team(dr.department)
-            mapped_manager_ids = _team_manager_user_ids(manager_team or dr.department)
-            if not mapped_manager_ids and manager_team and manager_team != dr.department:
-                mapped_manager_ids = _team_manager_user_ids(dr.department)
+    def _builder(stage, _subject):
+        u_ids = resolve_approvers_for_stage(stage, dr.requestor)
+        return list(dict.fromkeys(u_ids)), []
 
-            # Include users and groups from the policy stage as well
-            stage_user_ids = list(stage.approver_users.values_list("id", flat=True))
-            stage_group_ids = list(stage.approver_groups.values_list("id", flat=True))
-            stage_group_user_ids = resolve_group_user_ids(stage_group_ids)
-
-            u_ids = mapped_manager_ids + stage_user_ids + stage_group_user_ids
-            # keep group ids for traceability, although engine relies on user ids
-            return _dedupe_ordered(u_ids), stage_group_ids
-
-        # For all later stages, use the configured assignments (users + expanded groups)
-        u_ids = list(stage.approver_users.values_list("id", flat=True))
-        g_ids = list(stage.approver_groups.values_list("id", flat=True))
-        u_ids += resolve_group_user_ids(g_ids)
-
-        # Safety fallback (shouldn't trigger if policy is set correctly)
-        if not u_ids:
-            u_ids = list(User.objects.filter(is_active=True, is_superuser=True).values_list("id", flat=True))
-
-        return _dedupe_ordered(u_ids), g_ids
-
-    wf = create_workflow(dr, policy, snapshot=snapshot, approver_user_ids_builder=_builder_with_mapping)
+    wf = create_workflow(dr, policy, snapshot=snapshot, approver_user_ids_builder=_builder)
 
     # Update status
     dr.status = 'submitted'

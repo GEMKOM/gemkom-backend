@@ -17,7 +17,7 @@ from .serializers import (
     InternalTeamAssignmentSerializer,
 )
 from .filters import WeldingTimeEntryFilter
-from users.helpers import primary_team_from_groups
+from users.helpers import get_dept_code_for_user
 from rest_framework.permissions import IsAuthenticated
 from users.permissions import IsAdmin, can_see_job_costs
 from config.pagination import CustomPageNumberPagination
@@ -80,7 +80,7 @@ class WeldingTimeEntryViewSet(viewsets.ModelViewSet):
         # Get active users in welding team
         active_welders = User.objects.filter(
             is_active=True,
-            groups__name='welding_team'
+            profile__position__department_code='welding'
         ).select_related('profile').order_by('first_name', 'last_name', 'username')
 
         # Format response
@@ -89,7 +89,7 @@ class WeldingTimeEntryViewSet(viewsets.ModelViewSet):
                 'id': user.id,
                 'username': user.username,
                 'full_name': f"{user.first_name} {user.last_name}".strip() or user.username,
-                'team': primary_team_from_groups(user),
+                'team': get_dept_code_for_user(user),
                 'occupation': user.profile.occupation if hasattr(user, 'profile') else None,
             }
             for user in active_welders

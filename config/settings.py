@@ -85,6 +85,7 @@ INSTALLED_APPS = [
     'rest_framework',
     'storages',
     'users',
+    'organization.apps.OrganizationConfig',
     'core',
     'corsheaders',
     'machining.apps.MachiningConfig',

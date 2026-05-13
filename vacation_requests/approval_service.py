@@ -1,36 +1,24 @@
 from __future__ import annotations
 
-from django.contrib.auth.models import User, Group
+from django.contrib.auth.models import User
 from django.db import transaction
 
-from approvals.models import ApprovalPolicy, ApprovalStageInstance, ApprovalWorkflow
+from approvals.models import ApprovalPolicy, ApprovalWorkflow
+from approvals.resolvers import resolve_approvers_for_stage
 from approvals.services import (
     auto_bypass_self_approver,
     create_workflow,
     record_decision,
-    resolve_group_user_ids,
 )
 from notifications.models import Notification
 from notifications.service import bulk_notify, notify, render_notification
-from users.helpers import _team_manager_user_ids
 
 from .models import LEAVE_TYPE_CHOICES, VacationRequest
 
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-VACATION_POLICY_NAME     = "Vacation – Default"
-TEAM_MANAGER_STAGE_ORDER = 1
-HR_GROUP_NAME            = "hr_team"
-
-
-def _dedupe_ordered(ids: list[int]) -> list[int]:
-    seen, ordered = set(), []
-    for uid in ids:
-        if uid not in seen:
-            seen.add(uid)
-            ordered.append(uid)
-    return ordered
+VACATION_SUBJECT_TYPE = "vacation_request"
 
 
 # ---------------------------------------------------------------------------
@@ -39,7 +27,7 @@ def _dedupe_ordered(ids: list[int]) -> list[int]:
 def pick_policy_for_vacation(_vr: VacationRequest):
     return (
         ApprovalPolicy.objects
-        .filter(is_active=True, name=VACATION_POLICY_NAME)
+        .filter(is_active=True, subject_type=VACATION_SUBJECT_TYPE)
         .order_by("selection_priority")
         .first()
     )
@@ -168,7 +156,6 @@ def submit_vacation_request(vr: VacationRequest, by_user):
                 "name": s.name,
                 "required_approvals": s.required_approvals,
                 "users": list(s.approver_users.values_list("id", flat=True)),
-                "groups": list(s.approver_groups.values_list("id", flat=True)),
             }
             for s in stages_qs
         ],
@@ -184,16 +171,11 @@ def submit_vacation_request(vr: VacationRequest, by_user):
         },
     }
 
+    requester = vr.requester
+
     def _builder(stage, _subject):
-        if stage.order == TEAM_MANAGER_STAGE_ORDER:
-            u_ids = _team_manager_user_ids(vr.team)
-            return _dedupe_ordered(u_ids), []
-        u_ids = list(stage.approver_users.values_list("id", flat=True))
-        g_ids = list(stage.approver_groups.values_list("id", flat=True))
-        u_ids += resolve_group_user_ids(g_ids)
-        if not u_ids:
-            u_ids = list(User.objects.filter(is_active=True, is_superuser=True).values_list("id", flat=True))
-        return _dedupe_ordered(u_ids), []
+        u_ids = resolve_approvers_for_stage(stage, requester)
+        return list(dict.fromkeys(u_ids)), []
 
     wf = create_workflow(vr, policy, snapshot=snapshot, approver_user_ids_builder=_builder)
 

@@ -43,4 +43,6 @@ urlpatterns = [
     path('linear_cutting/', include('linear_cutting.urls')),
     path('equipment/', include('equipment.urls')),
     path('teams/', include('teams.urls')),
+    path('organization/', include('organization.urls')),
+    path('approvals/', include('approvals.urls')),
 ]

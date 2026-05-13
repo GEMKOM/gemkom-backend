@@ -3,25 +3,22 @@ from __future__ import annotations
 
 from django.db import transaction
 from django.contrib.auth.models import User
-from approvals.models import ApprovalPolicy, ApprovalStageInstance, ApprovalWorkflow
+from approvals.models import ApprovalPolicy, ApprovalWorkflow
+from approvals.resolvers import resolve_approvers_for_stage
 from approvals.services import (
     create_workflow,
     record_decision,
     auto_bypass_self_approver,
-    resolve_group_user_ids,
 )
-from django.contrib.auth.models import Group
-from users.helpers import _team_manager_user_ids
+from organization.services import get_dept_members
 from .models import OvertimeRequest
 
 from notifications.service import notify, bulk_notify, render_notification
 from notifications.models import Notification
 
 
-# ------- Config -------
-OVERTIME_POLICY_NAME     = "Overtime – Default"
-TEAM_MANAGER_STAGE_ORDER = 1
-HR_GROUP_NAME            = "hr_team"
+OVERTIME_SUBJECT_TYPE = "overtime_request"
+
 
 def _dedupe_ordered(ids: list[int]) -> list[int]:
     seen, ordered = set(), []
@@ -32,10 +29,10 @@ def _dedupe_ordered(ids: list[int]) -> list[int]:
     return ordered
 
 
-# --------- Policy selection (by name) ---------
+# --------- Policy selection ---------
 def pick_policy_for_overtime(_ot: OvertimeRequest):
     return (ApprovalPolicy.objects
-            .filter(is_active=True, name=OVERTIME_POLICY_NAME)
+            .filter(is_active=True, subject_type=OVERTIME_SUBJECT_TYPE)
             .order_by("selection_priority")
             .first())
 
@@ -46,9 +43,12 @@ def _users_from_ids(user_ids):
         return User.objects.none()
     return User.objects.filter(id__in=user_ids, is_active=True)
 
+
 def _ot_title(ot: OvertimeRequest):
-    s = ot.start_at.strftime("%Y-%m-%d %H:%M"); e = ot.end_at.strftime("%Y-%m-%d %H:%M")
+    s = ot.start_at.strftime("%Y-%m-%d %H:%M")
+    e = ot.end_at.strftime("%Y-%m-%d %H:%M")
     return f"{s} → {e} / {ot.duration_hours} saat"
+
 
 def _ot_frontend_url(ot: OvertimeRequest):
     return f"https://ofis.gemcore.com.tr/general/overtime/pending/?request={ot.id}"
@@ -111,7 +111,7 @@ def _notify_requester(ot: OvertimeRequest, status_str: str, comment: str = ""):
 
 
 def _notify_hr_on_approved(ot: OvertimeRequest):
-    hr_users = User.objects.filter(is_active=True, groups__name=HR_GROUP_NAME)
+    hr_users = get_dept_members('human_resources')
     if not hr_users.exists():
         return
     lines = [
@@ -185,16 +185,20 @@ def submit_overtime_request(ot: OvertimeRequest, by_user):
         "policy": {"id": policy.id, "name": policy.name},
         "stages": [
             {
-                "order": s.order, "name": s.name,
+                "order": s.order,
+                "name": s.name,
                 "required_approvals": s.required_approvals,
                 "users": list(s.approver_users.values_list("id", flat=True)),
-                "groups": list(s.approver_groups.values_list("id", flat=True)),
             }
             for s in stages_qs
         ],
         "overtime": {
-            "id": ot.id, "requester_id": ot.requester_id, "team": ot.team, "reason": ot.reason,
-            "start_at": ot.start_at.isoformat(), "end_at": ot.end_at.isoformat(),
+            "id": ot.id,
+            "requester_id": ot.requester_id,
+            "team": ot.team,
+            "reason": ot.reason,
+            "start_at": ot.start_at.isoformat(),
+            "end_at": ot.end_at.isoformat(),
             "duration_hours": str(ot.duration_hours),
             "entries": [
                 {"user_id": e.user_id, "job_no": e.job_no, "description": e.description}
@@ -203,16 +207,11 @@ def submit_overtime_request(ot: OvertimeRequest, by_user):
         },
     }
 
+    requester = ot.requester
+
     def _builder(stage, _subject):
-        if stage.order == TEAM_MANAGER_STAGE_ORDER:
-            u_ids = _team_manager_user_ids(ot.team)
-            return _dedupe_ordered(u_ids), []
-        u_ids = list(stage.approver_users.values_list("id", flat=True))
-        g_ids = list(stage.approver_groups.values_list("id", flat=True))
-        u_ids += resolve_group_user_ids(g_ids)
-        if not u_ids:
-            u_ids = list(User.objects.filter(is_active=True, is_superuser=True).values_list("id", flat=True))
-        return _dedupe_ordered(u_ids), []
+        u_ids = resolve_approvers_for_stage(stage, requester)
+        return list(dict.fromkeys(u_ids)), []
 
     wf = create_workflow(ot, policy, snapshot=snapshot, approver_user_ids_builder=_builder)
 

@@ -77,16 +77,18 @@ def _working_days_in_range(start: date, end: date) -> tuple[Decimal, set[date]]:
 
 
 class VacationRequest(models.Model):
-    STATUS_SUBMITTED = "submitted"
-    STATUS_APPROVED  = "approved"
-    STATUS_REJECTED  = "rejected"
-    STATUS_CANCELLED = "cancelled"
+    STATUS_SUBMITTED             = "submitted"
+    STATUS_APPROVED              = "approved"
+    STATUS_REJECTED              = "rejected"
+    STATUS_CANCELLED             = "cancelled"
+    STATUS_CANCELLATION_REQUESTED = "cancellation_requested"
 
     STATUS_CHOICES = [
-        (STATUS_SUBMITTED, "Onay Bekliyor"),
-        (STATUS_APPROVED,  "Onaylandı"),
-        (STATUS_REJECTED,  "Reddedildi"),
-        (STATUS_CANCELLED, "İptal Edildi"),
+        (STATUS_SUBMITTED,              "Onay Bekliyor"),
+        (STATUS_APPROVED,               "Onaylandı"),
+        (STATUS_REJECTED,               "Reddedildi"),
+        (STATUS_CANCELLED,              "İptal Edildi"),
+        (STATUS_CANCELLATION_REQUESTED, "İptal Talebi Bekliyor"),
     ]
 
     requester    = models.ForeignKey(User, on_delete=models.PROTECT, related_name="vacation_requests")
@@ -98,8 +100,10 @@ class VacationRequest(models.Model):
     start_time   = models.TimeField(null=True, blank=True)
     end_time     = models.TimeField(null=True, blank=True)
     duration_days = models.DecimalField(max_digits=6, decimal_places=1, default=0)
-    reason       = models.TextField(blank=True)
-    status       = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_SUBMITTED)
+    reason            = models.TextField(blank=True)
+    cancellation_reason = models.TextField(blank=True)
+    is_company_holiday  = models.BooleanField(default=False)
+    status       = models.CharField(max_length=30, choices=STATUS_CHOICES, default=STATUS_SUBMITTED)
 
     approvals = GenericRelation(ApprovalWorkflow, related_query_name="vacation_request")
 

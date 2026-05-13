@@ -13,27 +13,28 @@ from .models import (
     JobOrderTargetDateRevision,
 )
 
-# Groups that should receive drawing release notifications
-DRAWING_RELEASE_STAKEHOLDER_GROUPS = [
-    'procurement_team',
-    'planning_team',
-    'planning_manager',
-    'manufacturing_team',
-    'qualitycontrol_team',
-    'logistics_team',
-    'sales_team',
+# Departments whose members receive drawing release notifications
+DRAWING_RELEASE_STAKEHOLDER_DEPTS = [
+    'procurement',
+    'planning',
+    'manufacturing',
+    'qualitycontrol',
+    'logistics',
+    'sales',
 ]
 
 
 def get_drawing_release_stakeholders():
     """
-    Get all active users from stakeholder groups who should receive
-    drawing release notifications.
+    Return active users in the stakeholder departments for drawing release
+    notifications. Planning positions at L3 or above (manager+) are always
+    included; other depts include all active members.
     """
     User = get_user_model()
     return User.objects.filter(
         is_active=True,
-        groups__name__in=DRAWING_RELEASE_STAKEHOLDER_GROUPS,
+        profile__position__department_code__in=DRAWING_RELEASE_STAKEHOLDER_DEPTS,
+        profile__position__is_active=True,
     ).distinct()
 
 
@@ -1956,6 +1957,57 @@ class JobOrderCostSummarySerializer(serializers.ModelSerializer):
         today = date.today()
         total = convert_to_eur(obj.paint_material_rate * Decimal(str(weight)), 'TRY', today)
         return str(total)
+
+
+class JobOrderNodeHistorySerializer(serializers.ModelSerializer):
+    """Lightweight job order summary used in the template-node history endpoint."""
+    customer_name = serializers.CharField(source='customer.name', read_only=True)
+    cost_summary = serializers.SerializerMethodField()
+    offer_unit_price = serializers.SerializerMethodField()
+    children = serializers.SerializerMethodField()
+
+    class Meta:
+        model = JobOrder
+        fields = [
+            'job_no', 'title', 'customer_name',
+            'target_completion_date', 'status',
+            'estimated_cost',
+            'offer_unit_price',
+            'cost_summary',
+            'children',
+        ]
+
+    def get_cost_summary(self, obj):
+        cs = getattr(obj, 'cost_summary', None)
+        if cs is None:
+            return None
+        return {
+            'labor_cost': str(cs.labor_cost),
+            'material_cost': str(cs.material_cost),
+            'subcontractor_cost': str(cs.subcontractor_cost),
+            'paint_cost': str(cs.paint_cost),
+            'qc_cost': str(cs.qc_cost),
+            'shipping_cost': str(cs.shipping_cost),
+            'paint_material_cost': str(cs.paint_material_cost),
+            'general_expenses_cost': str(cs.general_expenses_cost),
+            'employee_overhead_cost': str(cs.employee_overhead_cost),
+            'actual_total_cost': str(cs.actual_total_cost),
+            'selling_price': str(cs.selling_price),
+            'selling_price_currency': cs.selling_price_currency,
+        }
+
+    def get_offer_unit_price(self, obj):
+        if obj.source_offer_item_id:
+            return str(obj.source_offer_item.unit_price)
+        return None
+
+    def get_children(self, obj):
+        # Only include children that themselves have a template node (via source_offer_item or direct)
+        children = [
+            c for c in obj.children.all()
+            if c.source_offer_item_id or c.template_node_id
+        ]
+        return JobOrderNodeHistorySerializer(children, many=True).data
 
 
 class JobOrderProcurementLineSerializer(serializers.ModelSerializer):

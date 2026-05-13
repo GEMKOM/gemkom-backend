@@ -24,6 +24,14 @@ from django.db.models import Q
 
 from config.pagination import CustomPageNumberPagination
 
+
+def _user_in_dept(user, dept_code: str) -> bool:
+    try:
+        return user.profile.position.department_code == dept_code
+    except AttributeError:
+        return False
+
+
 # Create your views here.
 
 from rest_framework import generics, permissions
@@ -388,7 +396,7 @@ class MachineFaultDetailView(APIView):
 
         if not fault.resolved_at:
             # Only maintenance team or admins can resolve faults
-            is_maintenance = request.user.groups.filter(name='maintenance_team').exists()
+            is_maintenance = _user_in_dept(request.user, 'maintenance')
             is_admin = request.user.is_superuser or request.user.is_staff
 
             if not is_maintenance and not is_admin:
@@ -537,7 +545,7 @@ class MachineFaultCompleteView(APIView):
         if fault.resolved_at:
             return Response({'error': 'This fault is already resolved.'}, status=400)
 
-        is_maintenance = request.user.groups.filter(name='maintenance_team').exists()
+        is_maintenance = _user_in_dept(request.user, 'maintenance')
         is_admin = request.user.is_superuser or request.user.is_staff
 
         if not is_maintenance and not is_admin:

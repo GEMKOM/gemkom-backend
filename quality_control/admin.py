@@ -107,7 +107,7 @@ class NCRAdmin(admin.ModelAdmin):
         'assigned_team',
         'created_by', 'created_at',
     )
-    list_filter = ('status', 'severity', 'defect_type', 'assigned_team__name', 'disposition')
+    list_filter = ('status', 'severity', 'defect_type', 'assigned_team', 'disposition')
     search_fields = (
         'ncr_number', 'title', 'description',
         'job_order__job_no',

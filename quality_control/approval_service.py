@@ -6,39 +6,40 @@ from django.utils import timezone
 
 from approvals.services import create_workflow, record_decision
 from approvals.models import ApprovalPolicy, ApprovalStage
+from approvals.resolvers import resolve_approvers_for_stage
 
 from .models import QCReview, NCR
 
 from notifications.service import notify, bulk_notify, render_notification
 from notifications.models import Notification
-from django.contrib.auth.models import Group
-from users.helpers import users_in_team, TEAM_TO_GROUP
+from organization.services import get_dept_members
 
 
-def _group_for_team(team_code: str) -> Group | None:
-    group_name = TEAM_TO_GROUP.get(team_code)
-    if not group_name:
-        return None
-    return Group.objects.filter(name=group_name).first()
-
+QC_REVIEW_SUBJECT_TYPE = "qc_review"
+NCR_SUBJECT_TYPE = "ncr"
 
 QC_REVIEW_POLICY_NAME = "KK İnceleme Onay Politikası"
 NCR_POLICY_NAME = "NCR Onay Politikası"
 
 
-def _get_qc_team_users():
-    return users_in_team('qualitycontrol')
+def _user_in_dept(user, dept_code: str) -> bool:
+    try:
+        return user.profile.position.department_code == dept_code
+    except AttributeError:
+        return False
 
 
-def _get_qc_team_user_ids() -> list[int]:
-    return list(_get_qc_team_users().values_list('id', flat=True))
-
-
-def _get_or_create_policy(policy_name: str) -> ApprovalPolicy:
+def _get_or_create_policy(subject_type: str, policy_name: str) -> ApprovalPolicy:
+    policy = ApprovalPolicy.objects.filter(subject_type=subject_type, is_active=True).first()
+    if policy:
+        return policy
     policy, created = ApprovalPolicy.objects.get_or_create(
         name=policy_name,
-        defaults={'is_active': True}
+        defaults={'is_active': True, 'subject_type': subject_type},
     )
+    if not policy.subject_type:
+        policy.subject_type = subject_type
+        policy.save(update_fields=['subject_type'])
     if created:
         ApprovalStage.objects.create(
             policy=policy, order=1,
@@ -48,20 +49,10 @@ def _get_or_create_policy(policy_name: str) -> ApprovalPolicy:
     return policy
 
 
-def _qc_team_builder(stage, _subject):
-    return _get_qc_team_user_ids(), []
-
 
 # =============================================================================
 # QCReview
 # =============================================================================
-
-def _user_in_team(user, team_code: str) -> bool:
-    group_name = TEAM_TO_GROUP.get(team_code)
-    if not group_name:
-        return False
-    return user.groups.filter(name=group_name).exists()
-
 
 def _create_review_discussion_topic(review: QCReview) -> None:
     """Create a dedicated discussion topic for a QCReview and link it back."""
@@ -86,7 +77,7 @@ def submit_for_qc_review(task, submitted_by, part_data=None) -> QCReview:
             "Bu görev KK incelemesine uygun değil. Yalnızca imalat ana görevleri ve "
             "parça görevleri KK incelemesine gönderilebilir."
         )
-    if not submitted_by.is_superuser and not _user_in_team(submitted_by, task.department) and not _user_in_team(submitted_by, 'qualitycontrol'):
+    if not submitted_by.is_superuser and not _user_in_dept(submitted_by, task.department) and not _user_in_dept(submitted_by, 'qualitycontrol'):
         raise ValueError("Bu görevi KK için gönderme yetkiniz yok.")
 
     with transaction.atomic():
@@ -94,12 +85,14 @@ def submit_for_qc_review(task, submitted_by, part_data=None) -> QCReview:
             task=task, submitted_by=submitted_by,
             status='pending', part_data=part_data or {},
         )
-        policy = _get_or_create_policy(QC_REVIEW_POLICY_NAME)
+        policy = _get_or_create_policy(QC_REVIEW_SUBJECT_TYPE, QC_REVIEW_POLICY_NAME)
         snapshot = {
             'task_id': task.id, 'task_title': task.title,
             'job_order': task.job_order_id, 'submitted_by': submitted_by.id,
         }
-        create_workflow(review, policy, snapshot=snapshot, approver_user_ids_builder=_qc_team_builder)
+        def _builder(stage, _subject):
+            return list(dict.fromkeys(resolve_approvers_for_stage(stage, None))), []
+        create_workflow(review, policy, snapshot=snapshot, approver_user_ids_builder=_builder)
         _create_review_discussion_topic(review)
 
     _notify_qc_team_review_submitted(review)
@@ -112,11 +105,14 @@ def bulk_submit_for_qc_review(task, submitted_by, part_data_list: list) -> list:
             "Bu görev KK incelemesine uygun değil. Yalnızca imalat ana görevleri ve "
             "parça görevleri KK incelemesine gönderilebilir."
         )
-    if not submitted_by.is_superuser and not _user_in_team(submitted_by, task.department) and not _user_in_team(submitted_by, 'qualitycontrol'):
+    if not submitted_by.is_superuser and not _user_in_dept(submitted_by, task.department) and not _user_in_dept(submitted_by, 'qualitycontrol'):
         raise ValueError("Bu görevi KK için gönderme yetkiniz yok.")
 
-    policy = _get_or_create_policy(QC_REVIEW_POLICY_NAME)
+    policy = _get_or_create_policy(QC_REVIEW_SUBJECT_TYPE, QC_REVIEW_POLICY_NAME)
     reviews = []
+
+    def _builder(stage, _subject):
+        return list(dict.fromkeys(resolve_approvers_for_stage(stage, None))), []
 
     with transaction.atomic():
         for part_data in part_data_list:
@@ -128,7 +124,7 @@ def bulk_submit_for_qc_review(task, submitted_by, part_data_list: list) -> list:
                 'task_id': task.id, 'task_title': task.title,
                 'job_order': task.job_order_id, 'submitted_by': submitted_by.id,
             }
-            create_workflow(review, policy, snapshot=snapshot, approver_user_ids_builder=_qc_team_builder)
+            create_workflow(review, policy, snapshot=snapshot, approver_user_ids_builder=_builder)
             _create_review_discussion_topic(review)
             reviews.append(review)
 
@@ -174,7 +170,9 @@ def _on_qc_review_rejected(review: QCReview, comment: str = ""):
         detected_by=reviewer,
         affected_quantity=prefill.get('affected_quantity') or 1,
         disposition=prefill.get('disposition') or 'pending',
-        assigned_team=_group_for_team(task.department), status='draft', created_by=reviewer,
+        assigned_team=_dept_for_task(task),
+        status='draft',
+        created_by=reviewer,
     )
     review.ncr = ncr
     review.save(update_fields=['ncr'])
@@ -210,13 +208,15 @@ def submit_ncr(ncr: NCR, by_user, field_updates=None) -> None:
         for field, value in m2m_updates.items():
             getattr(ncr, field).set(value)
 
-        policy = _get_or_create_policy(NCR_POLICY_NAME)
+        policy = _get_or_create_policy(NCR_SUBJECT_TYPE, NCR_POLICY_NAME)
         snapshot = {
             'ncr_number': ncr.ncr_number, 'title': ncr.title,
             'severity': ncr.severity, 'job_order': ncr.job_order_id,
             'submission_count': ncr.submission_count,
         }
-        create_workflow(ncr, policy, snapshot=snapshot, approver_user_ids_builder=_qc_team_builder)
+        def _builder(stage, _subject):
+            return list(dict.fromkeys(resolve_approvers_for_stage(stage, None))), []
+        create_workflow(ncr, policy, snapshot=snapshot, approver_user_ids_builder=_builder)
 
     _notify_qc_team_ncr_submitted(ncr)
 
@@ -290,15 +290,17 @@ def _notify_qc_team_bulk_reviews_submitted(reviews: list, task, submitted_by):
 
 def _notify_review_approved(review: QCReview):
     task = review.task
-    recipients = {review.submitted_by}
-    recipients.update(users_in_team(task.department))
+    dept_users = get_dept_members(task.department)
+    recipients_qs = set(dept_users.values_list('id', flat=True))
+    recipients_qs.add(review.submitted_by_id)
+    recipients = User.objects.filter(id__in=recipients_qs, is_active=True)
     ctx = {
         'job_no':     str(task.job_order_id),
         'task_title': task.title,
         'review_id':  review.id,
     }
     title, body, link = render_notification(Notification.QC_REVIEW_APPROVED, ctx)
-    bulk_notify(users=list(recipients), notification_type=Notification.QC_REVIEW_APPROVED,
+    bulk_notify(users=recipients, notification_type=Notification.QC_REVIEW_APPROVED,
                 title=title, body=body, link=link, source_type='qc_review', source_id=review.id)
 
 
@@ -319,7 +321,7 @@ def _notify_ncr_created_on_rejection(ncr: NCR):
     task = ncr.department_task
     if not task:
         return
-    dept_users = users_in_team(task.department)
+    dept_users = get_dept_members(task.department)
     if not dept_users.exists():
         return
     ctx = {
@@ -350,23 +352,27 @@ def _notify_qc_team_ncr_submitted(ncr: NCR):
 
 
 def _ncr_assigned_team_users(ncr: NCR):
-    """Return active users in the group responsible for the NCR."""
-    group = ncr.assigned_team
-    if not group and ncr.department_task:
-        group = _group_for_team(ncr.department_task.department)
-    if not group:
+    """Return active users in the position/department responsible for the NCR."""
+    position = ncr.assigned_team
+    if not position and ncr.department_task:
+        position = _position_for_task(ncr.department_task)
+    if not position:
         return User.objects.none()
-    return User.objects.filter(is_active=True, groups=group)
+    return User.objects.filter(
+        is_active=True,
+        profile__position__department_code=position.department_code,
+    ).distinct()
 
 
 def _notify_ncr_approved(ncr: NCR):
     recipients = set()
-    if ncr.created_by:
-        recipients.add(ncr.created_by)
-    recipients.update(ncr.assigned_members.filter(is_active=True))
-    recipients.update(_ncr_assigned_team_users(ncr))
+    if ncr.created_by_id:
+        recipients.add(ncr.created_by_id)
+    recipients.update(ncr.assigned_members.filter(is_active=True).values_list('id', flat=True))
+    recipients.update(_ncr_assigned_team_users(ncr).values_list('id', flat=True))
     if not recipients:
         return
+    users = User.objects.filter(id__in=recipients, is_active=True)
     ctx = {
         'ncr_number': ncr.ncr_number,
         'ncr_title':  ncr.title,
@@ -374,17 +380,18 @@ def _notify_ncr_approved(ncr: NCR):
         'severity':   ncr.get_severity_display(),
     }
     title, body, link = render_notification(Notification.NCR_APPROVED, ctx)
-    bulk_notify(users=list(recipients), notification_type=Notification.NCR_APPROVED,
+    bulk_notify(users=users, notification_type=Notification.NCR_APPROVED,
                 title=title, body=body, link=link, source_type='ncr', source_id=ncr.id)
 
 
 def _notify_ncr_rejected(ncr: NCR, comment: str = ""):
     recipients = set()
-    if ncr.created_by:
-        recipients.add(ncr.created_by)
-    recipients.update(_ncr_assigned_team_users(ncr))
+    if ncr.created_by_id:
+        recipients.add(ncr.created_by_id)
+    recipients.update(_ncr_assigned_team_users(ncr).values_list('id', flat=True))
     if not recipients:
         return
+    users = User.objects.filter(id__in=recipients, is_active=True)
     ctx = {
         'ncr_number': ncr.ncr_number,
         'ncr_title':  ncr.title,
@@ -392,14 +399,17 @@ def _notify_ncr_rejected(ncr: NCR, comment: str = ""):
         'comment':    comment or '—',
     }
     title, body, link = render_notification(Notification.NCR_REJECTED, ctx)
-    bulk_notify(users=list(recipients), notification_type=Notification.NCR_REJECTED,
+    bulk_notify(users=users, notification_type=Notification.NCR_REJECTED,
                 title=title, body=body, link=link, source_type='ncr', source_id=ncr.id)
 
 
 def email_ncr_assigned_team(ncr: NCR):
     if not ncr.assigned_team_id:
         return
-    dept_users = User.objects.filter(is_active=True, groups=ncr.assigned_team)
+    dept_users = User.objects.filter(
+        is_active=True,
+        profile__position__department_code=ncr.assigned_team.department_code,
+    ).distinct()
     if not dept_users.exists():
         return
     ctx = {

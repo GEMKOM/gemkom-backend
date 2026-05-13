@@ -1,6 +1,6 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .views import CreditAnnualLeaveView, LeaveBalanceLedgerView, MyLeaveSummaryView, UpcomingLeavesView, UserLeaveBalanceViewSet, UserLeaveSetupView, VacationPreviewView, VacationRequestViewSet
+from .views import CompanyHolidayView, CreditAnnualLeaveView, LeaveBalanceLedgerView, MyLeaveSummaryView, UpcomingLeavesView, UserLeaveBalanceViewSet, UserLeaveSetupView, VacationPreviewView, VacationRequestViewSet
 
 router = DefaultRouter()
 router.register(r"requests", VacationRequestViewSet, basename="vacation-request")
@@ -14,4 +14,5 @@ urlpatterns = [
     path("upcoming-leaves/", UpcomingLeavesView.as_view(), name="upcoming-leaves"),
     path("my-summary/", MyLeaveSummaryView.as_view(), name="my-leave-summary"),
     path("users/<int:user_id>/leave-ledger/", LeaveBalanceLedgerView.as_view(), name="leave-balance-ledger"),
+    path("company-holiday/", CompanyHolidayView.as_view(), name="company-holiday"),
 ]

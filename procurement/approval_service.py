@@ -9,7 +9,6 @@ from approvals.services import (
     get_workflow,
     record_decision,
     auto_bypass_self_approver,
-    resolve_group_user_ids,
 )
 from approvals.models import ApprovalPolicy
 from approvals.models import ApprovalStageInstance, ApprovalWorkflow, ApprovalDecision
@@ -20,26 +19,29 @@ from django.db.models import Max, Q
 
 from notifications.service import notify, bulk_notify, render_notification
 from notifications.models import Notification
-from users.helpers import users_in_team
+from organization.services import get_dept_members
 
 
 SYSTEM_USERNAME = "system"
 
 
+PURCHASE_REQUEST_SUBJECT_TYPE = "purchase_request"
+PURCHASE_REQUEST_ROLLING_MILL_SUBJECT_TYPE = "purchase_request_rolling_mill"
+
+
 # --------- Policy selection (PR-specific) ---------
 def pick_policy_for_purchase_request(pr: PurchaseRequest):
-    qs = ApprovalPolicy.objects.filter(
-        is_active=True,
-        is_rolling_mill=pr.is_rolling_mill,
+    subject_type = (
+        PURCHASE_REQUEST_ROLLING_MILL_SUBJECT_TYPE
+        if pr.is_rolling_mill
+        else PURCHASE_REQUEST_SUBJECT_TYPE
     )
+    qs = ApprovalPolicy.objects.filter(is_active=True, subject_type=subject_type)
     if pr.total_amount_eur is not None:
         qs = qs.filter(
             Q(min_amount_eur__isnull=True) | Q(min_amount_eur__lte=pr.total_amount_eur),
             Q(max_amount_eur__isnull=True) | Q(max_amount_eur__gte=pr.total_amount_eur),
         )
-    if getattr(pr, "priority", None):
-        qs = qs.filter(Q(priority_in=[]) | Q(priority_in__contains=[pr.priority]))
-
     return qs.order_by("selection_priority").first()
 
 
@@ -114,7 +116,7 @@ def _notify_requestor_on_final(pr: PurchaseRequest, status_str: str, comment: st
 def _notify_finance_pos_created(pr: PurchaseRequest, pos_list):
     if not pos_list:
         return
-    finance_users = users_in_team("finance")
+    finance_users = get_dept_members("finance")
     if not finance_users.exists():
         return
     pr_title = getattr(pr, "title", f"PR-{pr.id}")
@@ -162,25 +164,20 @@ def submit_purchase_request(pr: PurchaseRequest, by_user):
                     "name": s.name,
                     "required_approvals": s.required_approvals,
                     "users": list(s.approver_users.values_list("id", flat=True)),
-                    "groups": list(s.approver_groups.values_list("id", flat=True)),
                 }
                 for s in stages_qs
             ],
         }
 
-        # Expand groups to users for actual approvers
         def _builder(stage, _subject):
             u_ids = list(stage.approver_users.values_list("id", flat=True))
-            g_ids = list(stage.approver_groups.values_list("id", flat=True))
-            u_ids += resolve_group_user_ids(g_ids)
-            # dedupe, keep order
             seen = set()
             ordered = []
             for uid in u_ids:
                 if uid not in seen:
                     seen.add(uid)
                     ordered.append(uid)
-            return ordered, g_ids
+            return ordered, []
 
         wf = create_workflow(pr, policy, snapshot=snapshot, approver_user_ids_builder=_builder)
 

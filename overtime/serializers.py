@@ -6,7 +6,7 @@ from approvals.serializers import WorkflowSerializer
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 
-from users.helpers import primary_team_from_groups, GROUP_TO_TEAM, TEAM_LABELS
+from users.helpers import get_dept_code_for_user, GROUP_TO_TEAM, TEAM_LABELS
 
 from .models import OvertimeRequest, OvertimeEntry
 
@@ -158,7 +158,7 @@ class OvertimeRequestCreateSerializer(serializers.ModelSerializer):
         end_at = validated_data["end_at"]
 
         # Snapshot team from group membership
-        team = primary_team_from_groups(requester) or ""
+        team = get_dept_code_for_user(requester) or ""
 
         # Validate overlaps before creating
         users = [row["user"] for row in entries_data]
@@ -210,10 +210,10 @@ class UserOvertimeListSerializer(serializers.ModelSerializer):
         return obj.get_full_name() or obj.username
 
     def get_team(self, obj):
-        return primary_team_from_groups(obj)
+        return get_dept_code_for_user(obj)
 
     def get_team_label(self, obj):
-        team = primary_team_from_groups(obj)
+        team = get_dept_code_for_user(obj)
         return TEAM_LABELS.get(team, "") if team else ""
     
     def get_entries(self, obj):

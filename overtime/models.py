@@ -68,28 +68,6 @@ class OvertimeRequest(models.Model):
 
     # ===== Approval wiring =====
 
-    def _select_policy(self) -> ApprovalPolicy | None:
-        """
-        Choose an ApprovalPolicy for this overtime request.
-        Adjust rules as you like. Example rules:
-        - Use is_rolling_mill when team == 'rollingmill'
-        - Only active policies
-        - Lowest selection_priority wins
-        """
-        qs = ApprovalPolicy.objects.filter(is_active=True)
-
-        # Example mapping for your earlier pattern (you used is_rolling_mill in PR approvals):
-        if (self.team or "").lower() in {"rollingmill", "haddehane"}:
-            qs = qs.filter(is_rolling_mill=True)
-        else:
-            qs = qs.filter(is_rolling_mill=False)
-
-        # If you want to drive by "priority_in", you can store "overtime" or team names there
-        # and add an extra filter like:
-        # qs = qs.filter(Q(priority_in__len=0) | Q(priority_in__contains=["overtime"]))
-
-        return qs.order_by("selection_priority").first()
-
     def _snapshot_for_workflow(self) -> dict:
         """
         Persist enough data so approvers see context even if things change later.

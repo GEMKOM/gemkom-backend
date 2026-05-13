@@ -2,7 +2,7 @@ from django.db import models
 
 # Create your models here.
 from django.db import models
-from django.contrib.auth.models import User, Group
+from django.contrib.auth.models import User
 from django.db import models
 from django.contrib.contenttypes.models import ContentType
 from django.contrib.contenttypes.fields import GenericForeignKey
@@ -55,14 +55,28 @@ class ApprovalDecision(models.Model):
 
 
 class ApprovalPolicy(models.Model):
+    SUBJECT_CHOICES = [
+        ("vacation_request",              "Vacation Request"),
+        ("overtime_request",              "Overtime Request"),
+        ("purchase_request",              "Purchase Request"),
+        ("purchase_request_rolling_mill", "Purchase Request (Rolling Mill)"),
+        ("subcontractor_statement",       "Subcontractor Statement"),
+        ("qc_review",                     "QC Review"),
+        ("ncr",                           "NCR"),
+        ("sales_offer",                   "Sales Offer"),
+        ("department_request",            "Department Request"),
+    ]
+
     name = models.CharField(max_length=200, unique=True)
+    subject_type = models.SlugField(
+        max_length=50, blank=True, default='',
+        help_text="Which workflow subject this policy applies to. Used for policy lookup; renaming the policy will not break routing.",
+    )
     is_active = models.BooleanField(default=True)
 
     # optional matching rules (extend later if needed)
     min_amount_eur = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
     max_amount_eur = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
-    is_rolling_mill = models.BooleanField(default=False)
-    priority_in = models.JSONField(default=list, blank=True)  # e.g. ["normal","urgent"]
 
     selection_priority = models.PositiveIntegerField(default=100)  # lower wins
 
@@ -74,8 +88,19 @@ class ApprovalStage(models.Model):
     order = models.PositiveIntegerField()
     name = models.CharField(max_length=200)
     required_approvals = models.PositiveIntegerField(default=1)  # quorum
+
+    # Static overrides — directors/owners and explicit assignments go here
     approver_users = models.ManyToManyField(User, blank=True, related_name="approval_stages")
-    approver_groups = models.ManyToManyField(Group, blank=True, related_name="approval_stages")
+
+    # Org-tree dynamic resolution
+    climb_levels = models.PositiveSmallIntegerField(
+        null=True, blank=True,
+        help_text="Walk N levels up the requester's position tree to find approvers. Vacant positions are skipped.",
+    )
+    role_department_code = models.SlugField(
+        null=True, blank=True,
+        help_text="When set, resolve approvers to all active users in this department (ignores climb_levels). E.g. 'human_resources' for an HR stage.",
+    )
 
     class Meta:
         unique_together = [("policy", "order")]

@@ -1,125 +1,164 @@
-# ------- Helpers -------
+# users/helpers.py
 from django.contrib.auth.models import User
-from django.db.models import Q
 
-TEAM_MANAGER_OCCUPATION = "manager"
+# ---------------------------------------------------------------------------
+# Team / department canonical data
+# Kept here for the backfill data migration (users/0039) which reads it to
+# map old group membership → new Department records. Can be removed once
+# all environments have run that migration.
+# ---------------------------------------------------------------------------
 
-# Canonical team code → display label mapping.
-# Previously lived on UserProfile.TEAM_CHOICES; centralised here after field removal.
 TEAM_CHOICES: list[tuple[str, str]] = [
-    ('machining',         'Talaşlı İmalat'),
-    ('design',            'Dizayn'),
-    ('logistics',         'Lojistik'),
-    ('procurement',       'Satın Alma'),
-    ('welding',           'Kaynaklı İmalat'),
-    ('planning',          'Planlama'),
-    ('manufacturing',     'İmalat'),
-    ('maintenance',       'Bakım'),
-    ('rollingmill',       'Haddehane'),
-    ('qualitycontrol',    'Kalite Kontrol'),
-    ('cutting',           'CNC Kesim'),
-    ('warehouse',         'Ambar'),
-    ('finance',           'Finans'),
-    ('management',        'Yönetim'),
-    ('external_workshops','Dış Atölyeler'),
-    ('human_resouces',    'İnsan Kaynakları'),
-    ('sales',             'Proje Taahhüt'),
-    ('accounting',        'Muhasebe'),
+    ('machining',          'Talaşlı İmalat'),
+    ('design',             'Dizayn'),
+    ('logistics',          'Lojistik'),
+    ('procurement',        'Satın Alma'),
+    ('welding',            'Kaynaklı İmalat'),
+    ('planning',           'Planlama'),
+    ('manufacturing',      'İmalat'),
+    ('maintenance',        'Bakım'),
+    ('rollingmill',        'Haddehane'),
+    ('qualitycontrol',     'Kalite Kontrol'),
+    ('cutting',            'CNC Kesim'),
+    ('warehouse',          'Ambar'),
+    ('finance',            'Finans'),
+    ('management',         'Yönetim'),
+    ('external_workshops', 'Dış Atölyeler'),
+    ('human_resouces',     'İnsan Kaynakları'),  # kept with original typo for group-name compat
+    ('sales',              'Proje Taahhüt'),
+    ('accounting',         'Muhasebe'),
 ]
-TEAM_LABELS: dict[str, str] = dict(TEAM_CHOICES)
 
-# Maps team codes to Django Group names.
-TEAM_TO_GROUP: dict[str, str] = {
-    'machining':        'machining_team',
-    'design':           'design_team',
-    'logistics':        'logistics_team',
-    'procurement':      'procurement_team',
-    'welding':          'welding_team',
-    'planning':         'planning_team',
-    'manufacturing':    'manufacturing_team',
-    'maintenance':      'maintenance_team',
-    'rollingmill':      'manufacturing_team',
-    'qualitycontrol':   'qualitycontrol_team',
-    'cutting':          'cutting_team',
-    'warehouse':        'warehouse_team',
-    'finance':          'finance_team',
-    'management':       'management_team',
-    'external_workshops': 'procurement_team',
-    'human_resouces':   'hr_team',
-    'sales':            'sales_team',
-    'accounting':       'accounting_team',
+# Maps old group names → department codes.
+# Used ONLY by the backfill migration to determine which department
+# a user belongs to based on their current Django group membership.
+GROUP_TO_DEPT: dict[str, str] = {
+    'machining_team':         'machining',
+    'design_team':            'design',
+    'logistics_team':         'logistics',
+    'procurement_team':       'procurement',
+    'welding_team':           'welding',
+    'planning_team':          'planning',
+    'planning_manager':       'planning',
+    'manufacturing_team':     'manufacturing',
+    'maintenance_team':       'maintenance',
+    'qualitycontrol_team':    'qualitycontrol',
+    'cutting_team':           'cutting',
+    'warehouse_team':         'warehouse',
+    'finance_team':           'finance',
+    'accounting_team':        'accounting',
+    'management_team':        'management',
+    'hr_team':                'human_resources',
+    'sales_team':             'sales',
+    'external_workshops_team':'external_workshops',
 }
 
-# Teams that have a dedicated manager group in addition to occupation-based detection.
-TEAM_TO_MANAGER_GROUP: dict[str, str] = {
-    'planning': 'planning_manager',
-}
+# ---------------------------------------------------------------------------
+# Active helpers (used in production code)
+# ---------------------------------------------------------------------------
 
-# Reverse map: group name → team code (first match wins for multi-team groups like rollingmill)
-GROUP_TO_TEAM: dict[str, str] = {}
-for _team, _group in TEAM_TO_GROUP.items():
-    if _group not in GROUP_TO_TEAM:
-        GROUP_TO_TEAM[_group] = _team
-
-
-def primary_team_from_groups(user) -> str | None:
-    """Return the team code for the user's primary team group, or None."""
-    for group in user.groups.all():
-        team = GROUP_TO_TEAM.get(group.name)
-        if team:
-            return team
+def get_dept_code_for_user(user: User) -> str | None:
+    """
+    Return the department code for a user via their assigned Position.
+    Returns None if no position is set.
+    """
+    try:
+        pos = user.profile.position
+        if pos:
+            return pos.department_code or None
+    except Exception:
+        pass
     return None
 
 
-def sync_user_group(user, team: str | None) -> None:
+# ---------------------------------------------------------------------------
+# Compatibility shims — remove after all callers are migrated
+# These replace the old group-based helpers with position-based equivalents.
+# ---------------------------------------------------------------------------
+
+TEAM_LABELS: dict[str, str] = dict(TEAM_CHOICES)
+
+# Reverse of TEAM_TO_GROUP below — kept for compat (overtime/serializers.py)
+GROUP_TO_TEAM: dict[str, str] = {
+    'machining_team':          'machining',
+    'design_team':             'design',
+    'logistics_team':          'logistics',
+    'procurement_team':        'procurement',
+    'welding_team':            'welding',
+    'planning_team':           'planning',
+    'planning_manager':        'planning',
+    'manufacturing_team':      'manufacturing',
+    'maintenance_team':        'maintenance',
+    'qualitycontrol_team':     'qualitycontrol',
+    'cutting_team':            'cutting',
+    'warehouse_team':          'warehouse',
+    'finance_team':            'finance',
+    'accounting_team':         'accounting',
+    'management_team':         'management',
+    'hr_team':                 'human_resouces',
+    'sales_team':              'sales',
+    'external_workshops_team': 'external_workshops',
+}
+
+# Kept for callers that still read it (notifications, procurement)
+TEAM_TO_GROUP: dict[str, str] = {
+    'machining':          'machining_team',
+    'design':             'design_team',
+    'logistics':          'logistics_team',
+    'procurement':        'procurement_team',
+    'welding':            'welding_team',
+    'planning':           'planning_team',
+    'manufacturing':      'manufacturing_team',
+    'maintenance':        'maintenance_team',
+    'rollingmill':        'manufacturing_team',
+    'qualitycontrol':     'qualitycontrol_team',
+    'cutting':            'cutting_team',
+    'warehouse':          'warehouse_team',
+    'finance':            'finance_team',
+    'management':         'management_team',
+    'external_workshops': 'procurement_team',
+    'human_resouces':     'hr_team',
+    'sales':              'sales_team',
+    'accounting':         'accounting_team',
+}
+
+
+def primary_team_from_groups(user: User) -> str | None:
     """
-    Set the user's team group to match the given team code.
-    Removes any existing team groups first, then adds the new one.
+    Return the user's primary department code from their Position.
+    Replaces the old group-membership-based implementation.
     """
-    from django.contrib.auth.models import Group
-
-    old_team_groups = [g for g in user.groups.all() if g.name in GROUP_TO_TEAM]
-    for g in old_team_groups:
-        user.groups.remove(g)
-
-    if team:
-        group_name = TEAM_TO_GROUP.get(team)
-        if group_name:
-            group, _ = Group.objects.get_or_create(name=group_name)
-            user.groups.add(group)
-            # Also add dedicated manager group if occupation matches
-            manager_group_name = TEAM_TO_MANAGER_GROUP.get(team)
-            if manager_group_name:
-                profile_occupation = getattr(getattr(user, 'profile', None), 'occupation', None)
-                if profile_occupation == TEAM_MANAGER_OCCUPATION:
-                    manager_group, _ = Group.objects.get_or_create(name=manager_group_name)
-                    user.groups.add(manager_group)
+    return get_dept_code_for_user(user)
 
 
-def users_in_team(team: str):
-    """Return active users belonging to the group that corresponds to the given team code."""
-    group_name = TEAM_TO_GROUP.get(team)
-    if not group_name:
-        return User.objects.none()
-    return User.objects.filter(is_active=True, groups__name=group_name)
-
-
-def _team_manager_user_ids(team: str) -> list[int]:
+def users_in_team(team_code: str):
     """
-    Return IDs of active managers for the given team code.
-    Checks both occupation='manager' within the team group, and any dedicated
-    manager group (e.g. planning_manager).
+    Return active users in the named department.
+    Replaces the old Group-based users_in_team().
     """
-    if not team:
+    from organization.services import get_dept_members
+    return get_dept_members(team_code)
+
+
+def _team_manager_user_ids(team_code: str) -> list[int]:
+    """
+    Return IDs of users at manager level (level <= 4) in the given department.
+    """
+    if not team_code:
         return []
-    group_name = TEAM_TO_GROUP.get(team)
-    if not group_name:
-        return []
+    return list(
+        User.objects.filter(
+            is_active=True,
+            profile__position__department_code=team_code,
+            profile__position__level__lte=4,
+            profile__position__is_active=True,
+        ).values_list('id', flat=True)
+    )
 
-    q = Q(is_active=True, groups__name=group_name, profile__occupation=TEAM_MANAGER_OCCUPATION)
 
-    manager_group = TEAM_TO_MANAGER_GROUP.get(team)
-    if manager_group:
-        q |= Q(is_active=True, groups__name=manager_group)
-
-    return list(User.objects.filter(q).values_list("id", flat=True).distinct())
+def sync_user_group(user: User, team_code: str) -> None:
+    """
+    No-op shim. Group sync is replaced by organization.signals.
+    Kept for seed_users management command compatibility.
+    """
+    pass

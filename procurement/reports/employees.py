@@ -7,7 +7,7 @@ from django.utils import timezone
 
 from ..models import PurchaseRequest, PurchaseRequestItem, PurchaseOrder, PurchaseOrderLine
 from .common import q2, extract_rates, get_fallback_rates, to_eur
-from users.helpers import primary_team_from_groups
+from users.helpers import get_dept_code_for_user
 
 def build_procurement_staff_report(users_qs, request):
     created_gte = request.query_params.get("created_gte")
@@ -114,7 +114,7 @@ def build_procurement_staff_report(users_qs, request):
             "user_id": u.id,
             "username": u.username,
             "full_name": getattr(u, "get_full_name", lambda: "")() or f"{getattr(u, 'first_name', '')} {getattr(u, 'last_name','')}".strip(),
-            "team": primary_team_from_groups(u),
+            "team": get_dept_code_for_user(u),
 
             "pr_count": pr_count,
             "po_count": po_count,

@@ -4,7 +4,7 @@ from django.contrib.auth import get_user_model
 
 from approvals.models import ApprovalWorkflow
 from approvals.serializers import WorkflowSerializer
-from users.helpers import primary_team_from_groups, TEAM_LABELS
+from users.helpers import get_dept_code_for_user, TEAM_LABELS
 
 from .models import LEAVE_TYPE_CHOICES, UserLeaveBalance, VacationRequest
 
@@ -50,6 +50,7 @@ class VacationRequestListSerializer(serializers.ModelSerializer):
             "start_date", "end_date", "start_time", "end_time", "duration_days",
             "requester", "requester_username", "requester_full_name",
             "team", "team_label",
+            "is_company_holiday",
             "created_at", "approval",
         ]
 
@@ -93,7 +94,8 @@ class VacationRequestDetailSerializer(serializers.ModelSerializer):
             "start_date", "end_date", "start_time", "end_time", "duration_days",
             "requester", "requester_username", "requester_full_name",
             "team", "team_label",
-            "reason", "created_at", "updated_at", "approval",
+            "reason", "cancellation_reason", "is_company_holiday",
+            "created_at", "updated_at", "approval",
         ]
 
 
@@ -179,7 +181,7 @@ class VacationRequestCreateSerializer(serializers.ModelSerializer):
 
         self._validate_overlaps(requester, start_date, end_date, leave_type, start_time, end_time)
 
-        team = primary_team_from_groups(requester) or ""
+        team = get_dept_code_for_user(requester) or ""
 
         vr = VacationRequest.objects.create(requester=requester, team=team, **validated_data)
         vr.send_for_approval()

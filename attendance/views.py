@@ -161,10 +161,9 @@ class TodayRecordView(APIView):
 
     def get(self, request):
         today = timezone.localdate()
-        try:
-            record = AttendanceRecord.objects.get(user=request.user, date=today)
-        except AttendanceRecord.DoesNotExist:
-            return Response({'detail': 'No record for today.'}, status=status.HTTP_404_NOT_FOUND)
+        record = AttendanceRecord.objects.filter(user=request.user, date=today).first()
+        if record is None:
+            return Response(None, status=status.HTTP_200_OK)
         return Response(AttendanceRecordSerializer(record).data)
 
 
@@ -232,9 +231,9 @@ class HRRecordListCreateView(generics.ListCreateAPIView):
             )
 
         if group_id:
-            qs = qs.filter(user__groups__id=group_id)
+            qs = qs.filter(user__profile__position_id=group_id)
         if group_name:
-            qs = qs.filter(user__groups__name__icontains=group_name)
+            qs = qs.filter(user__profile__position__department_code__icontains=group_name)
 
         if status_param:
             qs = qs.filter(status=status_param)

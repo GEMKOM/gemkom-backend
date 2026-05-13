@@ -20,17 +20,21 @@ from .approval_service import (
 )
 
 
+def _user_in_dept(user, dept_code: str) -> bool:
+    try:
+        return user.profile.position.department_code == dept_code
+    except AttributeError:
+        return False
+
+
 def _is_qc_member(user):
-    return (
-        user.is_superuser
-        or user.groups.filter(name='qualitycontrol_team').exists()
-    )
+    return user.is_superuser or _user_in_dept(user, 'qualitycontrol')
 
 
 def _can_submit_ncr(user, ncr):
     if user.is_superuser:
         return True
-    if ncr.assigned_team_id and user.groups.filter(pk=ncr.assigned_team_id).exists():
+    if ncr.assigned_team and _user_in_dept(user, ncr.assigned_team.department_code):
         return True
     if ncr.assigned_members.filter(pk=user.pk).exists():
         return True

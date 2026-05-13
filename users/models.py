@@ -38,6 +38,13 @@ class UserProfile(models.Model):
         null=True, blank=True,
         help_text="Date of birth. Used for age-based leave entitlement (under 18 / over 50 → min 20 days).",
     )
+    position = models.ForeignKey(
+        'organization.Position',
+        null=True, blank=True,
+        on_delete=models.SET_NULL,
+        related_name='holders',
+        help_text="Position in the org tree. Determines approval chain and permissions.",
+    )
 
     class Meta:
         default_permissions = ()  # suppress add/change/delete/view_userprofile

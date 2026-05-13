@@ -347,7 +347,7 @@ def _notify_dept_heads_on_consultation(offer: SalesOffer, tasks: list):
     """
     try:
         from django.contrib.auth.models import User as DjangoUser
-        from users.helpers import _team_manager_user_ids
+        from organization.services import get_dept_members
         route_users, route_link = get_route(Notification.SALES_CONSULTATION)
         route_ids = set(route_users.values_list('id', flat=True))
 
@@ -364,7 +364,11 @@ def _notify_dept_heads_on_consultation(offer: SalesOffer, tasks: list):
             }
             title, body, link = render_notification(Notification.SALES_CONSULTATION, ctx, route_link)
 
-            manager_ids = set(_team_manager_user_ids(task.department))
+            manager_ids = set(
+                get_dept_members(task.department)
+                .filter(profile__position__level__lte=4, profile__position__is_active=True)
+                .values_list('id', flat=True)
+            )
             recipient_ids = manager_ids | route_ids
             if task.assigned_to_id:
                 recipient_ids.add(task.assigned_to_id)
@@ -414,20 +418,20 @@ def _notify_creator_on_decision(offer: SalesOffer, approved: bool, comment: str 
 # Approval workflow
 # =============================================================================
 
-SALES_OFFER_POLICY_NAME = "Satış Teklif Onayı"
+SALES_OFFER_SUBJECT_TYPE = "sales_offer"
 
 
 def _get_sales_offer_policy():
     from approvals.models import ApprovalPolicy
     policy = (
         ApprovalPolicy.objects
-        .filter(is_active=True, name=SALES_OFFER_POLICY_NAME)
+        .filter(is_active=True, subject_type=SALES_OFFER_SUBJECT_TYPE)
         .order_by('selection_priority')
         .first()
     )
     if not policy:
         raise ValueError(
-            f"'{SALES_OFFER_POLICY_NAME}' adlı aktif onay politikası bulunamadı. "
+            "Satış teklifi için aktif onay politikası bulunamadı. "
             "Lütfen yönetici panelinden politikayı oluşturun."
         )
     return policy

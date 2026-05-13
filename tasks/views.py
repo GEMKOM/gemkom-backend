@@ -276,11 +276,11 @@ class GenericTimerListView(APIView):
         if task_type in ('machine_fault', 'linear_cutting'):
             query = Q(content_type=ct)
         elif task_type == 'cnc_cutting':
-            null_content_type_filter = Q(content_type__isnull=True, user__groups__name='cutting_team')
+            null_content_type_filter = Q(content_type__isnull=True, user__profile__position__department_code='cutting')
             query = Q(content_type=ct) | null_content_type_filter
         else:
             # For 'operation' and 'machining', show timers from machining team users
-            null_content_type_filter = Q(content_type__isnull=True, user__groups__name='machining_team')
+            null_content_type_filter = Q(content_type__isnull=True, user__profile__position__department_code='machining')
             query = Q(content_type=ct) | null_content_type_filter
 
         if request.GET.get("is_active") == "true":

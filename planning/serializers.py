@@ -5,7 +5,7 @@ from django.utils import timezone
 from decimal import Decimal
 from datetime import datetime
 import json
-from users.helpers import primary_team_from_groups
+from users.helpers import get_dept_code_for_user
 
 from .models import (
     DepartmentRequest, PlanningRequest, PlanningRequestItem,
@@ -204,7 +204,7 @@ class DepartmentRequestSerializer(serializers.ModelSerializer):
             validated_data['requestor'] = request.user
             # Also ensure department matches the user's team
             try:
-                team = primary_team_from_groups(request.user)
+                team = get_dept_code_for_user(request.user)
                 if team:
                     validated_data['department'] = team
             except Exception:

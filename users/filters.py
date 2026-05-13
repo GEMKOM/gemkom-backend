@@ -2,7 +2,6 @@ from django.contrib.auth.models import User
 from django_filters import rest_framework as filters
 from django_filters.filters import BaseInFilter, CharFilter
 from rest_framework.filters import OrderingFilter
-from users.constants import OFFICE_GROUPS, WORKSHOP_GROUPS
 
 
 class CharInFilter(BaseInFilter, CharFilter):
@@ -13,26 +12,29 @@ class CharInFilter(BaseInFilter, CharFilter):
 class UserFilter(filters.FilterSet):
     username = filters.CharFilter(field_name='username', lookup_expr='icontains')
     occupation = CharInFilter(field_name='profile__occupation', lookup_expr='in')
-    group = CharInFilter(field_name='groups__name', lookup_expr='in')
+    department_code = CharInFilter(field_name='profile__position__department_code', lookup_expr='in')
+    position = filters.NumberFilter(field_name='profile__position_id')
+    position_level = filters.NumberFilter(field_name='profile__position__level')
     reset_password_request = filters.BooleanFilter(field_name='profile__reset_password_request')
     is_active = filters.BooleanFilter(field_name='is_active')
 
-    # ?office_access=true  → users in any OFFICE_GROUP
-    # ?office_access=false → users NOT in any OFFICE_GROUP
     office_access = filters.BooleanFilter(method='filter_office_access')
     workshop_access = filters.BooleanFilter(method='filter_workshop_access')
 
     def filter_office_access(self, queryset, name, value):
-        qs = queryset.filter(groups__name__in=OFFICE_GROUPS).distinct()
+        qs = queryset.filter(user_permissions__codename='office_access').distinct()
         return qs if value else queryset.exclude(id__in=qs.values('id'))
 
     def filter_workshop_access(self, queryset, name, value):
-        qs = queryset.filter(groups__name__in=WORKSHOP_GROUPS).distinct()
+        qs = queryset.filter(user_permissions__codename='workshop_access').distinct()
         return qs if value else queryset.exclude(id__in=qs.values('id'))
 
     class Meta:
         model = User
-        fields = ['username', 'occupation', 'group', 'reset_password_request', 'is_active', 'office_access', 'workshop_access']
+        fields = [
+            'username', 'occupation', 'department_code', 'position', 'position_level',
+            'reset_password_request', 'is_active', 'office_access', 'workshop_access',
+        ]
 
 
 class WageOrderingFilter(OrderingFilter):

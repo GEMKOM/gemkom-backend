@@ -20,17 +20,6 @@ def _notify_subject(wf: ApprovalWorkflow, event: str, payload: Optional[dict] = 
     if callable(handler):
         handler(workflow=wf, event=event, payload=payload or {})
 
-# --------- Small generic utilities ---------
-def resolve_group_user_ids(group_ids) -> list[int]:
-    """Expand Django Group ids to active user ids (deduped)."""
-    if not group_ids:
-        return []
-    return list(
-        User.objects.filter(groups__id__in=group_ids, is_active=True)
-        .values_list("id", flat=True)
-        .distinct()
-    )
-
 
 def get_workflow(subject) -> ApprovalWorkflow:
     """
@@ -80,10 +69,9 @@ def create_workflow(
 
     for s in policy.stages.all().order_by("order"):
         if approver_user_ids_builder:
-            u_ids, g_ids = approver_user_ids_builder(s, subject)
+            u_ids, _g_ids = approver_user_ids_builder(s, subject)
         else:
             u_ids = list(s.approver_users.values_list("id", flat=True))
-            g_ids = list(s.approver_groups.values_list("id", flat=True))
 
         ApprovalStageInstance.objects.create(
             workflow=wf,
@@ -91,7 +79,7 @@ def create_workflow(
             name=s.name,
             required_approvals=s.required_approvals,
             approver_user_ids=list(dict.fromkeys(u_ids)),  # dedupe, keep order
-            approver_group_ids=g_ids,
+            approver_group_ids=[],
         )
     return wf
 

@@ -2,10 +2,19 @@ from rest_framework import serializers
 from .models import Notification, NotificationPreference, NotificationConfig
 from .service import NOTIFICATION_DEFAULTS, NOTIFICATION_CONFIG_DEFAULTS
 from users.helpers import TEAM_CHOICES as _TEAM_CHOICES
-from users.constants import GROUP_DISPLAY_NAMES as _GROUP_DISPLAY_NAMES
 
-_VALID_TEAMS = set(_GROUP_DISPLAY_NAMES.keys())
 TEAM_CHOICES = [{'value': v, 'label': l} for v, l in _TEAM_CHOICES]
+
+
+def _get_dept_display_map():
+    """Return {code: code} — no Department model, just return the code as display."""
+    from users.helpers import TEAM_CHOICES as _TEAM_CHOICES
+    return dict(_TEAM_CHOICES)
+
+
+def _get_valid_dept_codes():
+    from users.helpers import TEAM_CHOICES as _TEAM_CHOICES
+    return set(v for v, _ in _TEAM_CHOICES)
 
 
 class NotificationSerializer(serializers.ModelSerializer):
@@ -137,9 +146,9 @@ class NotificationConfigSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         ret = super().to_representation(instance)
-        from users.constants import GROUP_DISPLAY_NAMES
+        dept_map = _get_dept_display_map()
         ret['groups'] = [
-            {'name': n, 'display': GROUP_DISPLAY_NAMES.get(n, n)}
+            {'name': n, 'display': dept_map.get(n, n)}
             for n in (ret.get('groups') or [])
         ]
         return ret
@@ -177,9 +186,10 @@ class NotificationConfigSerializer(serializers.ModelSerializer):
     def validate_groups(self, value):
         if not value:
             return value
-        invalid = set(value) - _VALID_TEAMS
+        valid = _get_valid_dept_codes()
+        invalid = set(value) - valid
         if invalid:
-            raise serializers.ValidationError(f"Geçersiz takım(lar): {', '.join(sorted(invalid))}")
+            raise serializers.ValidationError(f"Geçersiz departman kodu(ları): {', '.join(sorted(invalid))}")
         return value
 
     class Meta:

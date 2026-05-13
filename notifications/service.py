@@ -678,21 +678,20 @@ def get_route(notification_type: str) -> tuple:
 
         team_ids = set()
         if cfg.teams:
-            from users.helpers import TEAM_TO_GROUP
-            group_names = [TEAM_TO_GROUP[t] for t in cfg.teams if t in TEAM_TO_GROUP]
-            if group_names:
-                team_ids = set(
-                    User.objects.filter(groups__name__in=group_names, is_active=True)
-                    .values_list('id', flat=True)
+            from organization.services import get_dept_members
+            for dept_code in cfg.teams:
+                team_ids.update(
+                    get_dept_members(dept_code).values_list('id', flat=True)
                 )
 
         group_ids = set()
         if cfg.groups:
-            from django.contrib.auth.models import Group
-            group_ids = set(
-                User.objects.filter(groups__name__in=cfg.groups, is_active=True)
-                .values_list('id', flat=True)
-            )
+            # cfg.groups stores department codes (legacy field name kept for DB compat)
+            from organization.services import get_dept_members
+            for dept_code in cfg.groups:
+                group_ids.update(
+                    get_dept_members(dept_code).values_list('id', flat=True)
+                )
 
         all_ids = explicit_ids | team_ids | group_ids
         link = cfg.link_template or ''

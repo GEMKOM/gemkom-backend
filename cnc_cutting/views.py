@@ -433,7 +433,7 @@ def _cnc_get_day_timers(report_date, tz_business, now_ms, user_filter=None):
         .filter(
             start_time__gte=day_start_ms,
             start_time__lt=day_end_ms + 86400000,
-            user__groups__name='cutting_team',
+            user__profile__position__department_code='cutting',
         )
         .order_by('user_id', 'start_time')
     )
@@ -573,7 +573,7 @@ class CncUserReportView(APIView):
         now_ms = int(timezone.now().timestamp() * 1000)
 
         # Fetch all cutting team users upfront so those with no timers still appear
-        users = User.objects.filter(groups__name='cutting_team', is_active=True).select_related('profile')
+        users = User.objects.filter(profile__position__department_code='cutting', is_active=True).select_related('profile').distinct()
         users_by_id = {u.id: u for u in users}
         if not users_by_id:
             return Response({"start_date": start_date.isoformat(), "end_date": end_date.isoformat(), "users": []})
@@ -736,7 +736,7 @@ class CncUserTaskDetailView(APIView):
 
         try:
             user = User.objects.select_related('profile').get(
-                id=user_id, groups__name='cutting_team'
+                id=user_id, profile__position__department_code='cutting'
             )
         except User.DoesNotExist:
             return Response({"error": "User not found or not in cutting team"}, status=404)

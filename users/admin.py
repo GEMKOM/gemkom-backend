@@ -3,7 +3,7 @@ from django.contrib.auth.admin import UserAdmin as BaseUserAdmin, GroupAdmin as 
 from django.contrib.auth.models import User, Group, Permission
 from django.contrib.contenttypes.models import ContentType
 from .models import UserProfile, WageRate, UserPermissionOverride, PermissionMeta
-from .constants import GROUP_DISPLAY_NAMES
+
 
 # Inline profile for User admin
 class UserProfileInline(admin.StackedInline):
@@ -16,12 +16,7 @@ class UserAdmin(BaseUserAdmin):
     inlines = [UserProfileInline]
 
     def portals(self, instance):
-        perms = set(
-            instance.user_permissions.values_list('codename', flat=True)
-        ) | set(
-            p for g in instance.groups.prefetch_related('permissions').all()
-            for p in g.permissions.values_list('codename', flat=True)
-        )
+        perms = set(instance.user_permissions.values_list('codename', flat=True))
         result = []
         if instance.is_superuser or 'office_access' in perms:
             result.append('office')
@@ -31,8 +26,8 @@ class UserAdmin(BaseUserAdmin):
     portals.short_description = 'Portals'
 
     list_display = BaseUserAdmin.list_display + ('portals',)
-    search_fields = BaseUserAdmin.search_fields + ('groups__name',)
-    list_filter = BaseUserAdmin.list_filter + ('groups',)
+    search_fields = BaseUserAdmin.search_fields + ('profile__position__title',)
+    list_filter = BaseUserAdmin.list_filter + ('profile__position__department_code',)
 
 @admin.register(WageRate)
 class WageRateAdmin(admin.ModelAdmin):
@@ -41,19 +36,19 @@ class WageRateAdmin(admin.ModelAdmin):
 
     def has_view_permission(self, request, obj=None):
         u = request.user
-        return u.is_superuser or u.groups.filter(name__in=["HR", "Management"]).exists() or u.has_perm("payroll.view_wage")
+        return u.is_superuser or u.has_perm("users.manage_hr") or u.has_perm("payroll.view_wage")
 
     def has_change_permission(self, request, obj=None):
         u = request.user
-        return u.is_superuser or u.groups.filter(name__in=["HR"]).exists() or u.has_perm("payroll.change_wage")
+        return u.is_superuser or u.has_perm("users.manage_hr") or u.has_perm("payroll.change_wage")
 
     def has_add_permission(self, request):
         u = request.user
-        return u.is_superuser or u.groups.filter(name__in=["HR"]).exists() or u.has_perm("payroll.add_wage")
+        return u.is_superuser or u.has_perm("users.manage_hr") or u.has_perm("payroll.add_wage")
 
     def has_delete_permission(self, request, obj=None):
         u = request.user
-        return u.is_superuser or u.groups.filter(name__in=["HR"]).exists() or u.has_perm("payroll.delete_wage")
+        return u.is_superuser or u.has_perm("users.manage_hr") or u.has_perm("payroll.delete_wage")
 
 @admin.register(UserPermissionOverride)
 class UserPermissionOverrideAdmin(admin.ModelAdmin):
@@ -92,7 +87,7 @@ class GroupAdmin(BaseGroupAdmin):
     inlines = [GroupMemberInline]
 
     def display_name(self, obj):
-        return GROUP_DISPLAY_NAMES.get(obj.name, obj.name)
+        return obj.name
     display_name.short_description = 'Display Name'
     display_name.admin_order_field = 'name'
 

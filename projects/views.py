@@ -1143,6 +1143,51 @@ class JobOrderViewSet(viewsets.ModelViewSet):
             'adjustments': adj_data,
         })
 
+    @action(detail=False, methods=['get'], url_path='history-by-template-node')
+    def history_by_template_node(self, request):
+        """
+        GET /projects/job-orders/history-by-template-node/?node_id=42
+
+        Returns all root-level job orders linked to the given OfferTemplateNode
+        (either via template_node directly or via source_offer_item__template_node),
+        with cost summary and offer unit price. Children that also have a template
+        node are nested recursively.
+        """
+        from .serializers import JobOrderNodeHistorySerializer
+        from django.db.models import Q, Prefetch
+
+        node_id = request.query_params.get('node_id')
+        if not node_id:
+            return Response({'detail': 'node_id query parameter is required.'}, status=400)
+
+        exclude_offer_id = request.query_params.get('exclude_offer_id')
+
+        qs = (
+            JobOrder.objects
+            .filter(
+                Q(template_node_id=node_id) |
+                Q(source_offer_item__template_node_id=node_id)
+            )
+            .filter(parent__isnull=True)
+            .select_related(
+                'customer',
+                'source_offer_item',
+                'cost_summary',
+            )
+            .prefetch_related(
+                Prefetch(
+                    'children',
+                    queryset=JobOrder.objects.select_related(
+                        'customer', 'source_offer_item', 'cost_summary'
+                    ).prefetch_related('children__source_offer_item', 'children__cost_summary')
+                )
+            )
+            .order_by('-created_at')
+        )
+        if exclude_offer_id:
+            qs = qs.exclude(source_offer_id=exclude_offer_id)
+        return Response(JobOrderNodeHistorySerializer(qs, many=True).data)
+
     @action(detail=False, methods=['get'], url_path='procurement_pending')
     def procurement_pending(self, request):
         """

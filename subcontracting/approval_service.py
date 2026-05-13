@@ -4,7 +4,7 @@ from django.db import transaction
 from django.contrib.auth.models import User
 from django.utils import timezone
 
-from approvals.services import create_workflow, record_decision, resolve_group_user_ids
+from approvals.services import create_workflow, record_decision
 from approvals.models import ApprovalPolicy, ApprovalWorkflow
 
 from .models import SubcontractorStatement
@@ -17,17 +17,16 @@ from notifications.models import Notification
 # Policy selection
 # ---------------------------------------------------------------------------
 
+SUBCONTRACTOR_SUBJECT_TYPE = "subcontractor_statement"
+
+
 def pick_policy_for_statement(statement: SubcontractorStatement) -> ApprovalPolicy | None:
-    """
-    Select an active approval policy for subcontractor statements.
-    Looks for any policy with 'taseron' or 'subcontract' in its name (case-insensitive).
-    Falls back to any active policy with no amount constraints if none found.
-    """
-    from django.db.models import Q
-    qs = ApprovalPolicy.objects.filter(is_active=True).filter(
-        Q(name__icontains='taseron') | Q(name__icontains='subcontract')
+    return (
+        ApprovalPolicy.objects
+        .filter(is_active=True, subject_type=SUBCONTRACTOR_SUBJECT_TYPE)
+        .order_by('selection_priority')
+        .first()
     )
-    return qs.order_by('selection_priority').first()
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +125,6 @@ def submit_statement(statement: SubcontractorStatement, by_user: User) -> Approv
                     'name': s.name,
                     'required_approvals': s.required_approvals,
                     'users': list(s.approver_users.values_list('id', flat=True)),
-                    'groups': list(s.approver_groups.values_list('id', flat=True)),
                 }
                 for s in stages_qs
             ],
@@ -134,14 +132,12 @@ def submit_statement(statement: SubcontractorStatement, by_user: User) -> Approv
 
         def _builder(stage, _subject):
             u_ids = list(stage.approver_users.values_list('id', flat=True))
-            g_ids = list(stage.approver_groups.values_list('id', flat=True))
-            u_ids += resolve_group_user_ids(g_ids)
             seen, ordered = set(), []
             for uid in u_ids:
                 if uid not in seen:
                     seen.add(uid)
                     ordered.append(uid)
-            return ordered, g_ids
+            return ordered, []
 
         wf = create_workflow(statement, policy, snapshot=snapshot, approver_user_ids_builder=_builder)
 

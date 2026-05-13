@@ -937,19 +937,20 @@ class ProcurementReportViewSet(viewsets.GenericViewSet):
         Ordering: ?ordering=... (default -total_spent_eur). Pagination applied.
         """
         from .reports.employees import build_procurement_staff_report
+        from organization.models import Department
 
-        from users.helpers import TEAM_TO_GROUP
         User = get_user_model()
-        base_qs = User.objects.all()
 
-        # Groups: default to procurement_team
+        # Filter by department code(s); default to procurement
         teams_param = request.query_params.get("teams") or request.query_params.get("team")
         if teams_param:
-            team_codes = [t.strip() for t in teams_param.split(",") if t.strip()]
-            group_names = [TEAM_TO_GROUP[t] for t in team_codes if t in TEAM_TO_GROUP]
+            dept_codes = [t.strip() for t in teams_param.split(",") if t.strip()]
         else:
-            group_names = ["procurement_team"]
-        base_qs = base_qs.filter(groups__name__in=group_names)
+            dept_codes = ["procurement"]
+        base_qs = User.objects.filter(
+            profile__position__department_code__in=dept_codes,
+            profile__position__is_active=True,
+        ).distinct()
 
         # User filters
         username_q = request.query_params.get("username")
