@@ -743,18 +743,17 @@ def _notify_hr_checkout_override(record: AttendanceRecord):
             )
             link = "/attendance/hr/pending-overrides/"
 
+            from notifications.models import Notification as N
             for u in hr_users:
-                try:
-                    from notifications.models import Notification as N
-                    N.objects.create(
-                        recipient=u,
-                        notification_type='attendance_checkout_override_requested',
-                        title=title,
-                        body=body,
-                        link=link,
-                    )
-                except Exception:
-                    pass
+                N.objects.create(
+                    user=u,
+                    notification_type=N.PASSWORD_RESET,
+                    title=title,
+                    body=body,
+                    link=link,
+                    source_type='attendance_record',
+                    source_id=record.pk,
+                )
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning(
@@ -805,15 +804,17 @@ def _notify_hr_override(record: AttendanceRecord):
             )
             link = f"/attendance/hr/pending-overrides/"
 
+            from notifications.models import Notification as N
             for u in hr_users:
                 try:
-                    from notifications.models import Notification as N
                     N.objects.create(
-                        recipient=u,
-                        notification_type='attendance_override_requested',
+                        user=u,
+                        notification_type=N.PASSWORD_RESET,
                         title=title,
                         body=body,
                         link=link,
+                        source_type='attendance_record',
+                        source_id=record.pk,
                     )
                 except Exception:
                     pass

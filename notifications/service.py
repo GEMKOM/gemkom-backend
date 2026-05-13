@@ -72,6 +72,9 @@ NOTIFICATION_DEFAULTS: dict[str, tuple[bool, bool]] = {
     Notification.TASK_ASSIGNED:            (True,  True),
     Notification.SALES_CONSULT_COMPLETED:  (True,  True),
     Notification.LC_STOCK_ENTRY_COMPLETE:  (True,  True),
+    Notification.VR_APPROVAL_REQUESTED:    (True,  True),
+    Notification.VR_APPROVED:             (True,  True),
+    Notification.VR_REJECTED:             (True,  True),
 }
 
 

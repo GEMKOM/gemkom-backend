@@ -117,6 +117,14 @@ ALWAYS_NOTIFIED = {
     Notification.LC_STOCK_ENTRY_COMPLETE: 'Kesim oturumunu oluşturan planlama uzmanı',
     # Auth
     Notification.PASSWORD_RESET:         'IT yöneticileri',
+    # Vacation
+    Notification.VR_APPROVAL_REQUESTED:  'Onay aşamasındaki onaylayıcılar',
+    Notification.VR_APPROVED:            'Talebi oluşturan kişi',
+    Notification.VR_REJECTED:            'Talebi oluşturan kişi',
+    # Tasks
+    Notification.TASK_ASSIGNED:          'Göreve atanan kullanıcı',
+    # Job date
+    Notification.JOB_DATE_CHANGED:       'Rota aracılığıyla yapılandırılan kullanıcılar',
 }
 
 
