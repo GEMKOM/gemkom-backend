@@ -1,7 +1,30 @@
+from zoneinfo import ZoneInfo
+
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
 
 from .models import AttendanceLeaveInterval, AttendanceRecord, AttendanceSite, ShiftRule
+
+_ISTANBUL = ZoneInfo(settings.APP_DEFAULT_TZ)
+
+
+class IstanbulDateTimeField(serializers.DateTimeField):
+    """
+    Interprets naive datetime strings sent by HR as Europe/Istanbul local time
+    and converts them to UTC-aware datetimes before saving.
+    Aware datetimes (with explicit offset) are passed through unchanged.
+    """
+    def to_internal_value(self, value):
+        # Stamp naive strings with Istanbul tz before DRF's aware-only enforcement rejects them.
+        if isinstance(value, str) and value and not any(c in value for c in ('+', 'Z')) and 'T' in value:
+            from datetime import datetime as _dt
+            try:
+                naive = _dt.fromisoformat(value)
+                value = naive.replace(tzinfo=_ISTANBUL).isoformat()
+            except ValueError:
+                pass
+        return super().to_internal_value(value)
 
 User = get_user_model()
 
@@ -96,6 +119,8 @@ class HRAttendanceRecordSerializer(serializers.ModelSerializer):
     leave_type_display = serializers.CharField(source='get_leave_type_display', read_only=True)
     is_paid_leave = serializers.BooleanField(read_only=True)
     leave_intervals = AttendanceLeaveIntervalSerializer(many=True, read_only=True)
+    check_in_time = IstanbulDateTimeField(required=False, allow_null=True)
+    check_out_time = IstanbulDateTimeField(required=False, allow_null=True)
 
     class Meta:
         model = AttendanceRecord
@@ -150,6 +175,8 @@ class HRAttendanceCreateSerializer(serializers.ModelSerializer):
     For normal attendance: provide check_in_time and check_out_time.
     For leave: provide leave_type only — no times needed.
     """
+    check_in_time = IstanbulDateTimeField(required=False, allow_null=True)
+    check_out_time = IstanbulDateTimeField(required=False, allow_null=True)
 
     class Meta:
         model = AttendanceRecord
@@ -230,6 +257,8 @@ class HRLeaveIntervalCreateSerializer(serializers.ModelSerializer):
     `record` is set from the URL, not the request body.
     """
     leave_type_display = serializers.CharField(source='get_leave_type_display', read_only=True)
+    start_time = IstanbulDateTimeField()
+    end_time = IstanbulDateTimeField()
 
     class Meta:
         model = AttendanceLeaveInterval
