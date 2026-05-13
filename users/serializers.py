@@ -176,8 +176,7 @@ class AdminUserUpdateSerializer(serializers.ModelSerializer):
         profile = instance.profile
         for attr, value in profile_data.items():
             setattr(profile, attr, value)
-        if profile_data:
-            profile.save()
+        profile.save(update_fields=list(profile_data.keys()) if profile_data else None)
 
         return instance
 
