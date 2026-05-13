@@ -143,6 +143,9 @@ class NotificationConfigSerializer(serializers.ModelSerializer):
     groups = serializers.ListField(
         child=serializers.CharField(), required=False
     )
+    user_groups = serializers.ListField(
+        child=serializers.IntegerField(), required=False
+    )
 
     def to_representation(self, instance):
         ret = super().to_representation(instance)
@@ -150,6 +153,16 @@ class NotificationConfigSerializer(serializers.ModelSerializer):
         ret['groups'] = [
             {'name': n, 'display': dept_map.get(n, n)}
             for n in (ret.get('groups') or [])
+        ]
+        from organization.models import UserGroup
+        ug_map = dict(
+            UserGroup.objects.filter(
+                id__in=(ret.get('user_groups') or [])
+            ).values_list('id', 'name')
+        )
+        ret['user_groups'] = [
+            {'id': ug_id, 'name': ug_map.get(ug_id, str(ug_id))}
+            for ug_id in (ret.get('user_groups') or [])
         ]
         return ret
 
@@ -192,6 +205,16 @@ class NotificationConfigSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(f"Geçersiz departman kodu(ları): {', '.join(sorted(invalid))}")
         return value
 
+    def validate_user_groups(self, value):
+        if not value:
+            return value
+        from organization.models import UserGroup
+        existing = set(UserGroup.objects.filter(id__in=value, is_active=True).values_list('id', flat=True))
+        invalid = set(value) - existing
+        if invalid:
+            raise serializers.ValidationError(f"Bulunamayan kullanıcı grubu ID(leri): {', '.join(str(i) for i in sorted(invalid))}")
+        return value
+
     class Meta:
         model = NotificationConfig
         fields = [
@@ -211,6 +234,7 @@ class NotificationConfigSerializer(serializers.ModelSerializer):
             'users',
             'user_ids',
             'groups',
+            'user_groups',
             'enabled',
         ]
         read_only_fields = ['notification_type', 'category', 'category_display', 'available_vars', 'updated_at']
@@ -220,7 +244,7 @@ class NotificationConfigSerializer(serializers.ModelSerializer):
         for attr in (
             'title_template', 'body_template', 'link_template',
             'default_send_email', 'default_send_in_app',
-            'groups', 'enabled',
+            'groups', 'user_groups', 'enabled',
         ):
             if attr in validated_data:
                 setattr(instance, attr, validated_data[attr])

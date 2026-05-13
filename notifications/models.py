@@ -291,9 +291,13 @@ class NotificationConfig(models.Model):
     default_send_in_app = models.BooleanField(default=True)
 
     # Routing — only meaningful for ROUTABLE_TYPES
-    users   = models.ManyToManyField(User, blank=True, related_name='notification_configs')
-    teams   = models.JSONField(default=list, blank=True)
-    groups  = models.JSONField(default=list, blank=True)  # Django Group names
+    users       = models.ManyToManyField(User, blank=True, related_name='notification_configs')
+    teams       = models.JSONField(default=list, blank=True)
+    groups      = models.JSONField(default=list, blank=True)  # department codes (legacy field name)
+    user_groups = models.JSONField(
+        default=list, blank=True,
+        help_text="UserGroup IDs whose members receive this notification.",
+    )
     enabled = models.BooleanField(default=True)
 
     class Meta:

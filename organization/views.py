@@ -8,13 +8,16 @@ from rest_framework.views import APIView
 
 from users.permissions import IsAdmin, user_has_role_perm
 
-from .models import Position
+from .models import Position, UserGroup
 from .serializers import (
     PositionDetailSerializer,
     PositionHolderSerializer,
     PositionSerializer,
     PositionTreeSerializer,
     PositionWriteSerializer,
+    UserGroupDetailSerializer,
+    UserGroupSerializer,
+    UserGroupWriteSerializer,
 )
 
 
@@ -111,3 +114,58 @@ class PositionTreeView(APIView):
     def get(self, request):
         roots = Position.objects.filter(parent__isnull=True, is_active=True).order_by('level', 'title')
         return Response(PositionTreeSerializer(roots, many=True).data)
+
+
+# =============================================================================
+# UserGroups
+# =============================================================================
+
+class UserGroupListCreateView(generics.ListCreateAPIView):
+    """
+    GET  /organization/groups/   — list all groups (any authenticated user)
+    POST /organization/groups/   — create group (admin only)
+    """
+    def get_permissions(self):
+        if self.request.method == 'POST':
+            return [IsAdmin()]
+        return [IsAuthenticated()]
+
+    def get_queryset(self):
+        return UserGroup.objects.prefetch_related('positions').order_by('name')
+
+    def get_serializer_class(self):
+        if self.request.method == 'POST':
+            return UserGroupWriteSerializer
+        return UserGroupSerializer
+
+
+class UserGroupDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """
+    GET    /organization/groups/{id}/   — detail with members (admin only)
+    PATCH  /organization/groups/{id}/   — update name/description/is_active (admin only)
+    DELETE /organization/groups/{id}/   — delete (admin only)
+    """
+    permission_classes = [IsAdmin]
+    queryset = UserGroup.objects.prefetch_related('positions')
+
+    def get_serializer_class(self):
+        if self.request.method in ('PUT', 'PATCH'):
+            return UserGroupWriteSerializer
+        return UserGroupDetailSerializer
+
+
+class UserGroupPositionsView(APIView):
+    """
+    PATCH /organization/groups/{pk}/positions/
+    Body: {"position_ids": [1, 2, 3, ...]}
+    Replaces the entire position list. Admin only.
+    """
+    permission_classes = [IsAdmin]
+
+    def patch(self, request, pk):
+        group = generics.get_object_or_404(UserGroup, pk=pk)
+        position_ids = request.data.get('position_ids')
+        if not isinstance(position_ids, list):
+            return Response({'detail': 'position_ids must be a list.'}, status=status.HTTP_400_BAD_REQUEST)
+        group.positions.set(Position.objects.filter(id__in=position_ids))
+        return Response(UserGroupDetailSerializer(group).data)

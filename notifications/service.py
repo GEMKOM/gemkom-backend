@@ -693,7 +693,13 @@ def get_route(notification_type: str) -> tuple:
                     get_dept_members(dept_code).values_list('id', flat=True)
                 )
 
-        all_ids = explicit_ids | team_ids | group_ids
+        user_group_ids = set()
+        if cfg.user_groups:
+            from organization.models import UserGroup
+            for ug in UserGroup.objects.filter(id__in=cfg.user_groups, is_active=True):
+                user_group_ids.update(ug.get_members().values_list('id', flat=True))
+
+        all_ids = explicit_ids | team_ids | group_ids | user_group_ids
         link = cfg.link_template or ''
         if not all_ids:
             return User.objects.none(), link

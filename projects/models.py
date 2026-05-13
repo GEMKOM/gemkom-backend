@@ -19,9 +19,9 @@ def _extract_mentions(text: str):
 
     Supported syntax:
       @username           → individual user
-      @[group:group_name] → all active members of the named Django Group
+      @[group:group_name] → all active members of the named UserGroup
     """
-    from django.contrib.auth.models import Group
+    from organization.models import UserGroup
 
     user_ids: set[int] = set()
 
@@ -29,9 +29,9 @@ def _extract_mentions(text: str):
     cleaned = text
     for group_name in _GROUP_MENTION_RE.findall(text):
         try:
-            g = Group.objects.get(name=group_name)
-            user_ids.update(g.user_set.filter(is_active=True).values_list('id', flat=True))
-        except Group.DoesNotExist:
+            ug = UserGroup.objects.get(name=group_name, is_active=True)
+            user_ids.update(ug.get_members().values_list('id', flat=True))
+        except UserGroup.DoesNotExist:
             pass
     cleaned = _GROUP_MENTION_RE.sub('', cleaned)
 

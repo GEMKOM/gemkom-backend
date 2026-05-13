@@ -11,7 +11,6 @@ class CharInFilter(BaseInFilter, CharFilter):
 
 class UserFilter(filters.FilterSet):
     username = filters.CharFilter(field_name='username', lookup_expr='icontains')
-    occupation = CharInFilter(field_name='profile__occupation', lookup_expr='in')
     department_code = CharInFilter(field_name='profile__position__department_code', lookup_expr='in')
     position = filters.NumberFilter(field_name='profile__position_id')
     position_level = filters.NumberFilter(field_name='profile__position__level')
@@ -32,7 +31,7 @@ class UserFilter(filters.FilterSet):
     class Meta:
         model = User
         fields = [
-            'username', 'occupation', 'department_code', 'position', 'position_level',
+            'username', 'department_code', 'position', 'position_level',
             'reset_password_request', 'is_active', 'office_access', 'workshop_access',
         ]
 
@@ -69,7 +68,6 @@ class WageOrderingFilter(OrderingFilter):
             ("username", "username"),
             ("first_name", "first_name"),
             ("last_name", "last_name"),
-            ("occupation", "profile__occupation"),
             ("has_wage", "has_wage"),
             ("current_effective_from", "current_effective_from"),
             ("current_currency", "current_currency"),

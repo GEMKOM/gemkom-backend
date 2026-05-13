@@ -267,15 +267,13 @@ class VacationRequestViewSet(viewsets.ModelViewSet):
 
         results = []
 
-        # ── Pending workflow approvals (HR stage only) ────────────────────
-        from .approval_service import TEAM_MANAGER_STAGE_ORDER
+        # ── Pending workflow approvals ────────────────────────────────────
         stage_filter = ApprovalStageInstance.objects.filter(
             workflow__content_type=ct,
             workflow__is_complete=False,
             workflow__is_rejected=False,
             workflow__is_cancelled=False,
             order=F("workflow__current_stage_order"),
-            order__gt=TEAM_MANAGER_STAGE_ORDER,
             is_complete=False,
             is_rejected=False,
         )

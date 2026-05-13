@@ -132,30 +132,22 @@ class PasswordResetSerializer(serializers.Serializer):
 
 
 class CurrentUserUpdateSerializer(serializers.ModelSerializer):
-    jira_api_token = serializers.CharField(source="profile.jira_api_token", allow_blank=True, required=False)
 
     class Meta:
         model = User
-        fields = ['first_name', 'last_name', 'email', 'jira_api_token']
+        fields = ['first_name', 'last_name', 'email']
 
     def update(self, instance, validated_data):
-        profile_data = validated_data.pop('profile', {})
-
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         instance.save()
-
-        profile = instance.profile
-        for attr, value in profile_data.items():
-            setattr(profile, attr, value)
-        profile.save()
-
         return instance
 
 
 class AdminUserUpdateSerializer(serializers.ModelSerializer):
-    jira_api_token      = serializers.CharField(source="profile.jira_api_token", allow_blank=True, required=False)
     must_reset_password = serializers.BooleanField(source='profile.must_reset_password', required=False)
+    birth_date          = serializers.DateField(source='profile.birth_date', required=False, allow_null=True)
+    hire_date           = serializers.DateField(source='profile.hire_date', required=False, allow_null=True)
     position = serializers.PrimaryKeyRelatedField(
         source='profile.position',
         queryset=Position.objects.filter(is_active=True),
@@ -166,8 +158,9 @@ class AdminUserUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = [
-            'first_name', 'last_name', 'email', 'jira_api_token',
+            'first_name', 'last_name', 'email',
             'position', 'must_reset_password', 'is_active',
+            'birth_date', 'hire_date',
         ]
 
     def update(self, instance, validated_data):

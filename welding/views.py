@@ -81,7 +81,7 @@ class WeldingTimeEntryViewSet(viewsets.ModelViewSet):
         active_welders = User.objects.filter(
             is_active=True,
             profile__position__department_code='welding'
-        ).select_related('profile').order_by('first_name', 'last_name', 'username')
+        ).select_related('profile', 'profile__position').order_by('first_name', 'last_name', 'username')
 
         # Format response
         employees = [
@@ -90,7 +90,7 @@ class WeldingTimeEntryViewSet(viewsets.ModelViewSet):
                 'username': user.username,
                 'full_name': f"{user.first_name} {user.last_name}".strip() or user.username,
                 'team': get_dept_code_for_user(user),
-                'occupation': user.profile.occupation if hasattr(user, 'profile') else None,
+                'position': user.profile.position.title if hasattr(user, 'profile') and user.profile.position_id else None,
             }
             for user in active_welders
         ]

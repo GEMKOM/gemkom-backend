@@ -13,6 +13,7 @@ from .models import QCReview, NCR
 from notifications.service import notify, bulk_notify, render_notification
 from notifications.models import Notification
 from organization.services import get_dept_members
+from organization.models import Position
 
 
 QC_REVIEW_SUBJECT_TYPE = "qc_review"
@@ -27,6 +28,21 @@ def _user_in_dept(user, dept_code: str) -> bool:
         return user.profile.position.department_code == dept_code
     except AttributeError:
         return False
+
+
+def _position_for_task(task) -> 'Position | None':
+    """Return the best Position matching a task's department code (L4 manager preferred)."""
+    dept_code = task.department
+    if not dept_code:
+        return None
+    return (
+        Position.objects.filter(department_code=dept_code, level=4, is_active=True).first()
+        or Position.objects.filter(department_code=dept_code, is_active=True).order_by('level').first()
+    )
+
+
+# Keep _dept_for_task as an alias used when auto-creating NCRs from rejected QC reviews
+_dept_for_task = _position_for_task
 
 
 def _get_or_create_policy(subject_type: str, policy_name: str) -> ApprovalPolicy:

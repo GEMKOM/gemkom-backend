@@ -6,6 +6,9 @@ from .views import (
     PositionListCreateView,
     PositionPermissionsView,
     PositionTreeView,
+    UserGroupDetailView,
+    UserGroupListCreateView,
+    UserGroupPositionsView,
 )
 
 urlpatterns = [
@@ -14,4 +17,8 @@ urlpatterns = [
     path('positions/<int:pk>/', PositionDetailView.as_view(), name='position-detail'),
     path('positions/<int:pk>/permissions/', PositionPermissionsView.as_view(), name='position-permissions'),
     path('positions/<int:pk>/holders/', PositionHoldersView.as_view(), name='position-holders'),
+
+    path('groups/', UserGroupListCreateView.as_view(), name='usergroup-list'),
+    path('groups/<int:pk>/', UserGroupDetailView.as_view(), name='usergroup-detail'),
+    path('groups/<int:pk>/positions/', UserGroupPositionsView.as_view(), name='usergroup-positions'),
 ]

@@ -4,25 +4,9 @@ from django.contrib.auth import get_user_model
 User = get_user_model()
 
 class UserProfile(models.Model):
-    OCCUPATION_CHOICES = [
-        ('manager', 'Müdür'),
-        ('welder', 'Kaynakçı'),
-        ('foreman', 'Formen'),
-        ('assembler', 'Montajcı'),
-        ('helper', 'Yardımcı'),
-        ('operator', 'Operatör'),
-        ('office', 'Ofis çalışanı')
-    ]
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
     must_reset_password = models.BooleanField(default=False)
     reset_password_request = models.BooleanField(default=False)
-    jira_api_token = models.CharField(max_length=255, blank=True, null=True)
-    occupation = models.CharField(max_length=50, choices=OCCUPATION_CHOICES, null=True, blank=True)
-    location_type = [
-        ('workshop', 'Atölye'),
-        ('office', 'Ofis'),
-    ]
-    work_location = models.CharField(max_length=10, choices=location_type, default='workshop')
     shift_rule = models.ForeignKey(
         'attendance.ShiftRule',
         null=True, blank=True,
