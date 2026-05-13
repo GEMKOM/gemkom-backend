@@ -53,6 +53,8 @@ class UserListSerializer(serializers.ModelSerializer):
     position_title      = serializers.SerializerMethodField()
     position_level      = serializers.SerializerMethodField()
     department_code     = serializers.SerializerMethodField()
+    birth_date          = serializers.DateField(source='profile.birth_date', read_only=True)
+    hire_date           = serializers.DateField(source='profile.hire_date', read_only=True)
 
     class Meta:
         model = User
@@ -61,6 +63,7 @@ class UserListSerializer(serializers.ModelSerializer):
             'position_id', 'position_title', 'position_level',
             'department_code',
             'must_reset_password', 'is_active',
+            'birth_date', 'hire_date',
         ]
 
     def get_position_title(self, obj):
@@ -171,10 +174,10 @@ class AdminUserUpdateSerializer(serializers.ModelSerializer):
         instance.save()
 
         profile = instance.profile
-        position_changed = 'position' in profile_data
         for attr, value in profile_data.items():
             setattr(profile, attr, value)
-        profile.save(update_fields=list(profile_data.keys()) if profile_data else None)
+        if profile_data:
+            profile.save()
 
         return instance
 
