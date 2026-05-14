@@ -1,5 +1,5 @@
 from django.conf import settings
-from django.db import IntegrityError, models
+from django.db import models
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
@@ -7,26 +7,28 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework import generics
 
-from .models import AttendanceLeaveInterval, AttendanceRecord, AttendanceSite, ShiftRule
+from .models import AttendanceLeaveInterval, AttendanceRecord, AttendanceSession, AttendanceSite, ShiftRule
 from .permissions import IsHROrAdmin
 from .serializers import (
     AttendanceRecordSerializer,
+    AttendanceSessionSerializer,
     CheckInSerializer,
     CheckOutSerializer,
     HRAttendanceCreateSerializer,
     HRAttendanceRecordSerializer,
+    HRAttendanceSummarySerializer,
     HRLeaveIntervalCreateSerializer,
+    HRSessionSerializer,
     AttendanceSiteSerializer,
     ShiftRuleSerializer,
     UserShiftRuleAssignSerializer,
 )
 from .services import (
     attempt_ip_checkin,
-    compute_overtime_minutes,
-    compute_shift_compliance,
-    create_checkin_record,
+    create_session,
+    get_or_create_record,
     get_client_ip,
-    recompute_compliance_for_record,
+    recompute_record_aggregates,
 )
 
 
@@ -43,57 +45,70 @@ class CheckInView(APIView):
 
         override_reason = ser.validated_data.get('override_reason', '').strip()
         user = request.user
-
-        # Prevent duplicate check-in for today
         today = timezone.localdate()
-        if AttendanceRecord.objects.filter(user=user, date=today).exists():
+
+        # Reject if a leave record already exists for today
+        existing = AttendanceRecord.objects.filter(user=user, date=today).first()
+        if existing and existing.status == AttendanceRecord.STATUS_LEAVE:
             return Response(
-                {'detail': 'You already have an attendance record for today.'},
+                {'detail': 'You are marked as on leave today.'},
                 status=status.HTTP_409_CONFLICT,
             )
 
-        # --- IP check (white collar path) ---
-        if not override_reason:
-            success, reason = attempt_ip_checkin(request, user)
-            if success:
-                try:
-                    record = create_checkin_record(
-                        user=user,
-                        method=AttendanceRecord.METHOD_IP,
-                        client_ip=get_client_ip(request),
-                    )
-                except IntegrityError:
-                    return Response(
-                        {'detail': 'You already have an attendance record for today.'},
-                        status=status.HTTP_409_CONFLICT,
-                    )
+        # Reject if there is already an open session today
+        if existing:
+            open_session = existing.sessions.filter(
+                status__in=[AttendanceSession.STATUS_OPEN, AttendanceSession.STATUS_PENDING]
+            ).first()
+            if open_session:
                 return Response(
-                    AttendanceRecordSerializer(record).data,
-                    status=status.HTTP_201_CREATED,
+                    {'detail': 'You already have an open session today. Check out first.'},
+                    status=status.HTTP_409_CONFLICT,
                 )
 
-            # IP check failed — tell client why so frontend can offer override
+        # --- IP check (standard path) ---
+        if not override_reason:
+            success, reason = attempt_ip_checkin(request, user)
+            if not success:
+                return Response(
+                    {'detail': 'Check-in failed.', 'reason': reason},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+            record = get_or_create_record(user, today)
+            # Reactivate a completed record (user is returning after a break)
+            if record.status in (AttendanceRecord.STATUS_COMPLETE, AttendanceRecord.STATUS_REJECTED):
+                record.status = AttendanceRecord.STATUS_ACTIVE
+                record.save(update_fields=['status', 'updated_at'])
+
+            session = create_session(
+                record=record,
+                method=AttendanceSession.METHOD_IP,
+                client_ip=get_client_ip(request),
+            )
             return Response(
-                {'detail': 'Check-in failed.', 'reason': reason},
-                status=status.HTTP_403_FORBIDDEN,
+                AttendanceRecordSerializer(record).data,
+                status=status.HTTP_201_CREATED,
             )
 
         # --- Manual override path ---
-        try:
-            record = create_checkin_record(
-                user=user,
-                method=AttendanceRecord.METHOD_OVERRIDE,
-                client_ip=get_client_ip(request),
-                override_reason=override_reason,
-            )
-        except IntegrityError:
-            return Response(
-                {'detail': 'You already have an attendance record for today.'},
-                status=status.HTTP_409_CONFLICT,
-            )
+        record = get_or_create_record(user, today)
+        if record.status in (AttendanceRecord.STATUS_COMPLETE, AttendanceRecord.STATUS_REJECTED):
+            record.status = AttendanceRecord.STATUS_ACTIVE
+            record.save(update_fields=['status', 'updated_at'])
 
-        # Notify HR — fire-and-forget in a thread to avoid slowing the response
-        _notify_hr_override(record)
+        session = create_session(
+            record=record,
+            method=AttendanceSession.METHOD_OVERRIDE,
+            client_ip=get_client_ip(request),
+            override_reason=override_reason,
+        )
+
+        # Mark the day record as pending so HR can see it
+        record.status = AttendanceRecord.STATUS_PENDING
+        record.save(update_fields=['status', 'updated_at'])
+
+        _notify_hr_override(record, session)
 
         return Response(
             AttendanceRecordSerializer(record).data,
@@ -109,8 +124,8 @@ class CheckOutView(APIView):
         ser.is_valid(raise_exception=True)
 
         checkout_override_reason = ser.validated_data.get('override_reason', '').strip()
-
         today = timezone.localdate()
+
         try:
             record = AttendanceRecord.objects.get(
                 user=request.user,
@@ -123,12 +138,26 @@ class CheckOutView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
+        # Find the currently open session
+        open_session = record.sessions.filter(status=AttendanceSession.STATUS_OPEN).first()
+        if open_session is None:
+            return Response(
+                {'detail': 'No open session found. You are not currently checked in.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
         # --- Checkout override path ---
         if checkout_override_reason:
-            record.override_reason = (record.override_reason + ' | Çıkış: ' + checkout_override_reason).strip(' | ')
+            open_session.override_reason = (
+                (open_session.override_reason + ' | Çıkış: ' + checkout_override_reason).strip(' | ')
+            )
+            open_session.status = AttendanceSession.STATUS_PENDING_CHECKOUT
+            open_session.save(update_fields=['override_reason', 'status', 'updated_at'])
+
             record.status = AttendanceRecord.STATUS_PENDING_CHECKOUT
-            record.save(update_fields=['override_reason', 'status', 'updated_at'])
-            _notify_hr_checkout_override(record)
+            record.save(update_fields=['status', 'updated_at'])
+
+            _notify_hr_checkout_override(record, open_session)
             return Response(AttendanceRecordSerializer(record).data, status=status.HTTP_200_OK)
 
         # --- IP verification ---
@@ -140,18 +169,17 @@ class CheckOutView(APIView):
             )
 
         now = timezone.now()
-        overtime = compute_overtime_minutes(request.user, record.check_in_time, now)
-        late_minutes, early_leave_minutes = compute_shift_compliance(request.user, record.check_in_time, now)
+        open_session.check_out_time = now
+        open_session.status = AttendanceSession.STATUS_CLOSED
+        open_session.save(update_fields=['check_out_time', 'status', 'updated_at'])
 
-        record.check_out_time = now
-        record.overtime_minutes = overtime
-        record.late_minutes = late_minutes
-        record.early_leave_minutes = early_leave_minutes
-        record.status = AttendanceRecord.STATUS_COMPLETE
-        record.save(update_fields=[
-            'check_out_time', 'overtime_minutes', 'late_minutes',
-            'early_leave_minutes', 'status', 'updated_at',
-        ])
+        # Check if any sessions are still open
+        has_open = record.sessions.filter(status=AttendanceSession.STATUS_OPEN).exists()
+        if not has_open:
+            record.status = AttendanceRecord.STATUS_COMPLETE
+            record.save(update_fields=['status', 'updated_at'])
+
+        recompute_record_aggregates(record)
 
         return Response(AttendanceRecordSerializer(record).data)
 
@@ -161,7 +189,12 @@ class TodayRecordView(APIView):
 
     def get(self, request):
         today = timezone.localdate()
-        record = AttendanceRecord.objects.filter(user=request.user, date=today).first()
+        record = (
+            AttendanceRecord.objects
+            .filter(user=request.user, date=today)
+            .prefetch_related('sessions', 'leave_intervals')
+            .first()
+        )
         if record is None:
             return Response(None, status=status.HTTP_200_OK)
         return Response(AttendanceRecordSerializer(record).data)
@@ -175,6 +208,7 @@ class AttendanceHistoryView(generics.ListAPIView):
         return (
             AttendanceRecord.objects
             .filter(user=self.request.user)
+            .prefetch_related('sessions', 'leave_intervals')
             .order_by('-date')
         )
 
@@ -192,25 +226,24 @@ class HRRecordListCreateView(generics.ListCreateAPIView):
         return HRAttendanceRecordSerializer
 
     def get_queryset(self):
-        qs = AttendanceRecord.objects.select_related('user', 'reviewed_by').prefetch_related('leave_intervals').order_by('-date', '-check_in_time')
+        qs = (
+            AttendanceRecord.objects
+            .select_related('user', 'reviewed_by')
+            .prefetch_related('sessions', 'leave_intervals')
+            .order_by('-date')
+        )
 
         params = self.request.query_params
 
-        # Single date: ?date=2025-01-20
         date_param = params.get('date')
-        # Date range: ?date_from=2025-01-01&date_to=2025-01-31
         date_from = params.get('date_from')
         date_to = params.get('date_to')
-        # User filters: ?user_id=5 or ?username=john or ?name=john (searches first+last name)
         user_id = params.get('user_id')
         username = params.get('username')
         name = params.get('name')
-        # Group filter: ?group_id=3 or ?group_name=Kaynak
         group_id = params.get('group_id')
         group_name = params.get('group_name')
-
         status_param = params.get('status')
-        method_param = params.get('method')
 
         if date_param:
             qs = qs.filter(date=date_param)
@@ -237,53 +270,249 @@ class HRRecordListCreateView(generics.ListCreateAPIView):
 
         if status_param:
             qs = qs.filter(status=status_param)
-        if method_param:
-            qs = qs.filter(method=method_param)
 
         return qs.distinct()
 
     def perform_create(self, serializer):
-        # For leave records the serializer already sets status=leave and method=hr_manual.
-        # For normal attendance records, default to complete + hr_manual.
         leave_type = serializer.validated_data.get('leave_type')
         if leave_type:
             serializer.save()
         else:
-            serializer.save(
-                method=AttendanceRecord.METHOD_HR,
-                status=AttendanceRecord.STATUS_COMPLETE,
-            )
+            serializer.save()
 
 
 class HRRecordDetailView(generics.RetrieveUpdateAPIView):
     permission_classes = [IsHROrAdmin]
     serializer_class = HRAttendanceRecordSerializer
-    queryset = AttendanceRecord.objects.select_related('user', 'reviewed_by')
+    queryset = (
+        AttendanceRecord.objects
+        .select_related('user', 'reviewed_by')
+        .prefetch_related('sessions', 'leave_intervals')
+    )
+
+
+class HRAttendanceSummaryView(APIView):
+    """
+    GET /attendance/hr/summary/
+
+    Returns one row per user covering the queried date range.
+    Each row aggregates all AttendanceRecord rows for that user within the range.
+
+    Query params (all optional):
+      date_from, date_to  — ISO dates; default to today if omitted
+      user_id             — filter to a single user
+      username            — icontains filter
+      name                — first/last name icontains filter
+      group_id            — position pk filter
+      group_name          — position department_code icontains filter
+
+    Response fields per user row:
+      user_id, user_display,
+      date_from, date_to,
+      total_working_days        — weekdays minus public holidays in range
+      days_present              — days with active/complete/pending record
+      days_leave                — days with leave record
+      days_absent               — past working days with no record or rejected
+      total_present_minutes     — sum of record.total_present_minutes
+      total_expected_minutes    — working_days × user's shift length in minutes
+      total_overtime_minutes    — sum
+      total_late_minutes        — sum
+      total_early_leave_minutes — sum
+      session_count             — total sessions across all records in range
+    """
+    permission_classes = [IsHROrAdmin]
+
+    def get(self, request):
+        from datetime import date, timedelta
+        from django.contrib.auth import get_user_model
+        from django.db.models import Count, Sum, Q
+
+        User = get_user_model()
+        params = request.query_params
+        today = timezone.localdate()
+
+        # --- Date range ---
+        try:
+            date_from = date.fromisoformat(params['date_from']) if params.get('date_from') else today
+            date_to = date.fromisoformat(params['date_to']) if params.get('date_to') else today
+        except ValueError:
+            return Response({'detail': 'Invalid date format. Use YYYY-MM-DD.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if date_from > date_to:
+            return Response({'detail': 'date_from must be <= date_to.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # --- Build working-day set for the range (weekdays minus full public holidays) ---
+        from .models import PublicHoliday
+        holiday_dates = set(
+            PublicHoliday.objects.filter(
+                date__gte=date_from,
+                date__lte=date_to,
+                is_half_day=False,
+            ).values_list('date', flat=True)
+        )
+        all_working_days = set()
+        cur = date_from
+        while cur <= date_to:
+            if cur.weekday() < 5 and cur not in holiday_dates:
+                all_working_days.add(cur)
+            cur += timedelta(days=1)
+        total_working_days_in_range = len(all_working_days)
+
+        # --- Filter records ---
+        qs = (
+            AttendanceRecord.objects
+            .filter(date__gte=date_from, date__lte=date_to)
+            .select_related('user__profile__shift_rule')
+            .prefetch_related('sessions')
+        )
+
+        user_id = params.get('user_id')
+        username = params.get('username')
+        name = params.get('name')
+        group_id = params.get('group_id')
+        group_name = params.get('group_name')
+
+        if user_id:
+            qs = qs.filter(user_id=user_id)
+        if username:
+            qs = qs.filter(user__username__icontains=username)
+        if name:
+            qs = qs.filter(
+                Q(user__first_name__icontains=name) | Q(user__last_name__icontains=name)
+            )
+        if group_id:
+            qs = qs.filter(user__profile__position_id=group_id)
+        if group_name:
+            qs = qs.filter(user__profile__position__department_code__icontains=group_name)
+
+        # --- Aggregate per user in Python (avoids complex multi-join SQL) ---
+        from collections import defaultdict
+        from .services import _get_shift_rule
+
+        user_records = defaultdict(list)
+        for rec in qs.distinct():
+            user_records[rec.user_id].append(rec)
+
+        # If filtering by user, also ensure users with zero records in range appear
+        # (only when user_id is explicitly requested)
+        if user_id and not user_records:
+            try:
+                target_user = User.objects.select_related('profile__shift_rule').get(pk=user_id)
+                user_records[target_user.pk] = []
+            except User.DoesNotExist:
+                return Response({'detail': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        # Pre-fetch users we need
+        user_ids = list(user_records.keys())
+        users = {
+            u.pk: u
+            for u in User.objects.select_related('profile__shift_rule').filter(pk__in=user_ids)
+        }
+
+        rows = []
+        for uid, records in user_records.items():
+            user_obj = users.get(uid)
+            if not user_obj:
+                continue
+
+            rule = _get_shift_rule(user_obj)
+            shift_minutes = 0
+            if rule:
+                from datetime import datetime as _dt
+                start_dt = _dt.combine(date_from, rule.expected_start)
+                end_dt = _dt.combine(date_from, rule.expected_end)
+                shift_minutes = max(0, int((end_dt - start_dt).total_seconds() // 60))
+
+            total_expected_minutes = total_working_days_in_range * shift_minutes
+
+            # Aggregate from records
+            total_present_minutes = 0
+            total_overtime = 0
+            total_late = 0
+            total_early_leave = 0
+            session_count = 0
+            days_present = 0
+            days_leave = 0
+            days_absent = 0
+
+            # Track which working days are accounted for
+            accounted_days = set()
+
+            for rec in records:
+                if rec.status == AttendanceRecord.STATUS_LEAVE:
+                    days_leave += 1
+                    accounted_days.add(rec.date)
+                elif rec.status in (
+                    AttendanceRecord.STATUS_ACTIVE,
+                    AttendanceRecord.STATUS_COMPLETE,
+                    AttendanceRecord.STATUS_PENDING,
+                    AttendanceRecord.STATUS_PENDING_CHECKOUT,
+                ):
+                    days_present += 1
+                    accounted_days.add(rec.date)
+                elif rec.status == AttendanceRecord.STATUS_REJECTED:
+                    accounted_days.add(rec.date)  # rejected still counts as attempted
+
+                total_present_minutes += rec.total_present_minutes or 0
+                total_overtime += rec.overtime_minutes or 0
+                total_late += rec.late_minutes or 0
+                total_early_leave += rec.early_leave_minutes or 0
+                session_count += rec.sessions.count()
+
+            # Absent = past working days with no record or a rejected record
+            for d in all_working_days:
+                if d >= today:
+                    continue  # don't count today or future as absent
+                rec_for_day = next((r for r in records if r.date == d), None)
+                if rec_for_day is None or rec_for_day.status == AttendanceRecord.STATUS_REJECTED:
+                    days_absent += 1
+
+            rows.append({
+                'user_id': uid,
+                'user_display': user_obj.get_full_name() or user_obj.username,
+                'date_from': date_from,
+                'date_to': date_to,
+                'total_working_days': total_working_days_in_range,
+                'days_present': days_present,
+                'days_leave': days_leave,
+                'days_absent': days_absent,
+                'total_present_minutes': total_present_minutes,
+                'total_expected_minutes': total_expected_minutes,
+                'total_overtime_minutes': total_overtime,
+                'total_late_minutes': total_late,
+                'total_early_leave_minutes': total_early_leave,
+                'session_count': session_count,
+            })
+
+        rows.sort(key=lambda r: r['user_display'])
+        ser = HRAttendanceSummarySerializer(rows, many=True)
+        return Response(ser.data)
 
 
 class HRApproveOverrideView(APIView):
     """
-    Unified approve endpoint for both check-in and checkout overrides.
+    Unified approve endpoint for both check-in and checkout session overrides.
 
-    pending_override (check-in):
-      - Optional body: {"check_in_time": "..."}  — defaults to the existing check_in_time
-      - Sets status → active
+    pending_override (check-in session):
+      - Optional body: {"check_in_time": "..."}  — defaults to the session's existing time
+      - Session status → open; record status → active
 
-    pending_checkout_override (checkout):
+    pending_checkout_override (checkout session):
       - Optional body: {"check_out_time": "..."}  — defaults to now
-      - Sets check_out_time, computes overtime, sets status → complete
+      - Session status → closed; aggregates recomputed; record status → complete (if no open sessions)
     """
     permission_classes = [IsHROrAdmin]
 
     def post(self, request, pk):
+        # pk refers to the AttendanceSession, not the record
         try:
-            record = AttendanceRecord.objects.get(
+            session = AttendanceSession.objects.select_related('record__user').get(
                 pk=pk,
-                status__in=[AttendanceRecord.STATUS_PENDING, AttendanceRecord.STATUS_PENDING_CHECKOUT],
+                status__in=[AttendanceSession.STATUS_PENDING, AttendanceSession.STATUS_PENDING_CHECKOUT],
             )
-        except AttendanceRecord.DoesNotExist:
+        except AttendanceSession.DoesNotExist:
             return Response(
-                {'detail': 'Record not found or not in a pending override status.'},
+                {'detail': 'Session not found or not in a pending override status.'},
                 status=status.HTTP_404_NOT_FOUND,
             )
 
@@ -292,13 +521,9 @@ class HRApproveOverrideView(APIView):
 
         app_tz = ZoneInfo(settings.APP_DEFAULT_TZ)
         now = timezone.now()
-        update_fields = ['status', 'reviewed_by', 'reviewed_at', 'updated_at']
+        record = session.record
 
         def _parse_time(raw):
-            """
-            Parse datetime string. If naive (no tz offset), treat as APP_DEFAULT_TZ (Istanbul)
-            and convert to UTC-aware. If already tz-aware, keep as-is.
-            """
             try:
                 dt = datetime.fromisoformat(str(raw))
             except ValueError:
@@ -307,19 +532,24 @@ class HRApproveOverrideView(APIView):
                 dt = dt.replace(tzinfo=app_tz)
             return dt
 
-        if record.status == AttendanceRecord.STATUS_PENDING:
-            # Check-in override — optionally correct the check-in time
+        if session.status == AttendanceSession.STATUS_PENDING:
+            # Check-in override approval
             time_raw = (request.data or {}).get('check_in_time')
             if time_raw:
                 try:
-                    record.check_in_time = _parse_time(time_raw)
-                    update_fields.append('check_in_time')
+                    session.check_in_time = _parse_time(time_raw)
                 except Exception:
                     return Response({'detail': 'Invalid check_in_time format.'}, status=status.HTTP_400_BAD_REQUEST)
+            session.status = AttendanceSession.STATUS_OPEN
+            session.save(update_fields=['check_in_time', 'status', 'updated_at'])
+
             record.status = AttendanceRecord.STATUS_ACTIVE
+            record.reviewed_by = request.user
+            record.reviewed_at = now
+            record.save(update_fields=['status', 'reviewed_by', 'reviewed_at', 'updated_at'])
 
         else:
-            # Checkout override — optionally set an explicit checkout time
+            # Checkout override approval
             time_raw = (request.data or {}).get('check_out_time')
             if time_raw:
                 try:
@@ -329,30 +559,30 @@ class HRApproveOverrideView(APIView):
             else:
                 checkout_time = now
 
-            late_minutes, early_leave_minutes = compute_shift_compliance(record.user, record.check_in_time, checkout_time)
-            record.check_out_time = checkout_time
-            record.overtime_minutes = compute_overtime_minutes(record.user, record.check_in_time, checkout_time)
-            record.late_minutes = late_minutes
-            record.early_leave_minutes = early_leave_minutes
-            record.status = AttendanceRecord.STATUS_COMPLETE
-            update_fields += ['check_out_time', 'overtime_minutes', 'late_minutes', 'early_leave_minutes']
+            session.check_out_time = checkout_time
+            session.status = AttendanceSession.STATUS_CLOSED
+            session.save(update_fields=['check_out_time', 'status', 'updated_at'])
 
-        record.reviewed_by = request.user
-        record.reviewed_at = now
-        record.save(update_fields=update_fields)
+            has_open = record.sessions.filter(status=AttendanceSession.STATUS_OPEN).exists()
+            record.status = AttendanceRecord.STATUS_ACTIVE if has_open else AttendanceRecord.STATUS_COMPLETE
+            record.reviewed_by = request.user
+            record.reviewed_at = now
+            record.save(update_fields=['status', 'reviewed_by', 'reviewed_at', 'updated_at'])
+
+            recompute_record_aggregates(record)
 
         return Response(HRAttendanceRecordSerializer(record).data)
 
 
 class HRRejectOverrideView(APIView):
     """
-    Unified reject endpoint for both check-in and checkout overrides.
+    Unified reject endpoint for both check-in and checkout session overrides.
 
     pending_override (check-in):
-      - Sets status → override_rejected
+      - Session status → override_rejected; record status → override_rejected
 
     pending_checkout_override (checkout):
-      - Reverts status → active (worker is still checked in, HR must resolve manually)
+      - Session status → open (reverts); record status → active
 
     Optional body: {"notes": "..."}
     """
@@ -360,24 +590,36 @@ class HRRejectOverrideView(APIView):
 
     def post(self, request, pk):
         try:
-            record = AttendanceRecord.objects.get(
+            session = AttendanceSession.objects.select_related('record').get(
                 pk=pk,
-                status__in=[AttendanceRecord.STATUS_PENDING, AttendanceRecord.STATUS_PENDING_CHECKOUT],
+                status__in=[AttendanceSession.STATUS_PENDING, AttendanceSession.STATUS_PENDING_CHECKOUT],
             )
-        except AttendanceRecord.DoesNotExist:
+        except AttendanceSession.DoesNotExist:
             return Response(
-                {'detail': 'Record not found or not in a pending override status.'},
+                {'detail': 'Session not found or not in a pending override status.'},
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        if record.status == AttendanceRecord.STATUS_PENDING:
-            record.status = AttendanceRecord.STATUS_REJECTED
+        record = session.record
+        now = timezone.now()
+
+        if session.status == AttendanceSession.STATUS_PENDING:
+            session.status = AttendanceSession.STATUS_REJECTED
+            session.save(update_fields=['status', 'updated_at'])
+            # Mark record rejected only if there are no other active/open sessions
+            has_open = record.sessions.filter(
+                status__in=[AttendanceSession.STATUS_OPEN, AttendanceSession.STATUS_PENDING]
+            ).exists()
+            if not has_open:
+                record.status = AttendanceRecord.STATUS_REJECTED
         else:
-            # Checkout rejection — revert to active so worker/HR can resolve
+            # Revert checkout session to open — worker still checked in
+            session.status = AttendanceSession.STATUS_OPEN
+            session.save(update_fields=['status', 'updated_at'])
             record.status = AttendanceRecord.STATUS_ACTIVE
 
         record.reviewed_by = request.user
-        record.reviewed_at = timezone.now()
+        record.reviewed_at = now
         notes = (request.data or {}).get('notes', '')
         if notes:
             record.notes = notes
@@ -398,8 +640,66 @@ class HRPendingOverridesView(generics.ListAPIView):
                 AttendanceRecord.STATUS_PENDING_CHECKOUT,
             ])
             .select_related('user', 'reviewed_by')
-            .order_by('check_in_time')
+            .prefetch_related('sessions', 'leave_intervals')
+            .order_by('date')
         )
+
+
+# ---------------------------------------------------------------------------
+# HR — session management
+# ---------------------------------------------------------------------------
+
+class HRSessionListCreateView(generics.ListCreateAPIView):
+    """
+    GET  /attendance/hr/records/{record_id}/sessions/  — list sessions for a record
+    POST /attendance/hr/records/{record_id}/sessions/  — manually add a session
+    """
+    permission_classes = [IsHROrAdmin]
+    serializer_class = HRSessionSerializer
+
+    def _get_record(self):
+        try:
+            return AttendanceRecord.objects.get(pk=self.kwargs['record_id'])
+        except AttendanceRecord.DoesNotExist:
+            from rest_framework.exceptions import NotFound
+            raise NotFound('Attendance record not found.')
+
+    def get_queryset(self):
+        return AttendanceSession.objects.filter(record_id=self.kwargs['record_id'])
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx['record'] = self._get_record()
+        return ctx
+
+    def perform_create(self, serializer):
+        record = self.get_serializer_context()['record']
+        session = serializer.save(record=record, method=AttendanceSession.METHOD_HR)
+        if session.check_out_time:
+            session.status = AttendanceSession.STATUS_CLOSED
+            session.save(update_fields=['status', 'updated_at'])
+            recompute_record_aggregates(record)
+            if record.status not in (AttendanceRecord.STATUS_LEAVE,):
+                record.status = AttendanceRecord.STATUS_COMPLETE
+                record.save(update_fields=['status', 'updated_at'])
+
+
+class HRSessionDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """
+    GET/PATCH/DELETE /attendance/hr/sessions/{id}/
+    """
+    permission_classes = [IsHROrAdmin]
+    serializer_class = HRSessionSerializer
+    queryset = AttendanceSession.objects.select_related('record__user')
+
+    def perform_update(self, serializer):
+        session = serializer.save()
+        recompute_record_aggregates(session.record)
+
+    def perform_destroy(self, instance):
+        record = instance.record
+        instance.delete()
+        recompute_record_aggregates(record)
 
 
 # ---------------------------------------------------------------------------
@@ -442,8 +742,8 @@ class ShiftRuleAssignView(APIView):
     """
     Assign or unassign a shift rule for a user.
     POST /attendance/hr/shift-rules/assign/
-    Body: {"user_id": 5, "shift_rule_id": 2}  — assign rule 2 to user 5
-    Body: {"user_id": 5, "shift_rule_id": null} — clear assignment, user falls back to default
+    Body: {"user_id": 5, "shift_rule_id": 2}   — assign rule 2 to user 5
+    Body: {"user_id": 5, "shift_rule_id": null} — clear assignment
     """
     permission_classes = [IsHROrAdmin]
 
@@ -491,7 +791,6 @@ class ShiftRuleAssignView(APIView):
 class MonthlySummaryView(APIView):
     """
     Returns a full day-by-day breakdown of a user's attendance for a given month.
-    Includes weekends, public holidays, and absent days.
 
     GET /attendance/monthly-summary/?user_id=5&year=2026&month=4
     HR can query any user. Employees can only query themselves.
@@ -507,7 +806,6 @@ class MonthlySummaryView(APIView):
 
         User = get_user_model()
 
-        # --- Parse params ---
         try:
             year = int(request.query_params.get('year', timezone.localdate().year))
             month = int(request.query_params.get('month', timezone.localdate().month))
@@ -529,15 +827,13 @@ class MonthlySummaryView(APIView):
         except User.DoesNotExist:
             return Response({'detail': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
 
-        # --- Build date range ---
         first_day = date(year, month, 1)
         last_day = date(year, month, monthrange(year, month)[1])
 
-        # --- Fetch data ---
         records = {
             r.date: r for r in AttendanceRecord.objects.filter(
                 user=target_user, date__gte=first_day, date__lte=last_day
-            ).select_related('reviewed_by').prefetch_related('leave_intervals')
+            ).prefetch_related('sessions', 'leave_intervals').select_related('reviewed_by')
         }
         holidays = {
             h.date: h for h in PublicHoliday.objects.filter(
@@ -545,7 +841,6 @@ class MonthlySummaryView(APIView):
             )
         }
 
-        # --- Build day-by-day response ---
         days = []
         current = first_day
         total_working_days = 0
@@ -554,9 +849,10 @@ class MonthlySummaryView(APIView):
         total_overtime_minutes = 0
         total_late_minutes = 0
         total_early_leave_minutes = 0
+        total_present_minutes = 0
 
         while current <= last_day:
-            is_weekend = current.weekday() >= 5  # Saturday=5, Sunday=6
+            is_weekend = current.weekday() >= 5
             holiday = holidays.get(current)
             record = records.get(current)
 
@@ -571,9 +867,11 @@ class MonthlySummaryView(APIView):
 
             if day_type == 'working':
                 total_working_days += 1
-                if record and record.status in (AttendanceRecord.STATUS_ACTIVE, AttendanceRecord.STATUS_COMPLETE):
-                    total_present += 1
-                elif record and record.status == AttendanceRecord.STATUS_PENDING:
+                if record and record.status in (
+                    AttendanceRecord.STATUS_ACTIVE,
+                    AttendanceRecord.STATUS_COMPLETE,
+                    AttendanceRecord.STATUS_PENDING,
+                ):
                     total_present += 1
                 elif not record or record.status == AttendanceRecord.STATUS_REJECTED:
                     if current < timezone.localdate():
@@ -589,16 +887,13 @@ class MonthlySummaryView(APIView):
 
             if record:
                 day_data['record'] = AttendanceRecordSerializer(record).data
-                if record.overtime_minutes:
-                    total_overtime_minutes += record.overtime_minutes
-                if record.late_minutes:
-                    total_late_minutes += record.late_minutes
-                if record.early_leave_minutes:
-                    total_early_leave_minutes += record.early_leave_minutes
+                total_overtime_minutes += record.overtime_minutes
+                total_late_minutes += record.late_minutes
+                total_early_leave_minutes += record.early_leave_minutes
+                total_present_minutes += record.total_present_minutes
             else:
                 day_data['record'] = None
 
-            # Flag — only for past working days
             if day_type == 'working' and current < timezone.localdate():
                 if not record or record.status == AttendanceRecord.STATUS_REJECTED:
                     day_data['flag'] = 'absent'
@@ -633,6 +928,7 @@ class MonthlySummaryView(APIView):
                 'total_working_days': total_working_days,
                 'total_present': total_present,
                 'total_absent': total_absent,
+                'total_present_minutes': total_present_minutes,
                 'total_overtime_minutes': total_overtime_minutes,
                 'total_late_minutes': total_late_minutes,
                 'total_early_leave_minutes': total_early_leave_minutes,
@@ -647,8 +943,8 @@ class MonthlySummaryView(APIView):
 
 class HRLeaveIntervalListCreateView(generics.ListCreateAPIView):
     """
-    GET  /attendance/hr/records/{record_id}/intervals/  — list intervals for a record
-    POST /attendance/hr/records/{record_id}/intervals/  — add a partial-day leave interval
+    GET  /attendance/hr/records/{record_id}/intervals/
+    POST /attendance/hr/records/{record_id}/intervals/
     """
     permission_classes = [IsHROrAdmin]
     serializer_class = HRLeaveIntervalCreateSerializer
@@ -671,29 +967,27 @@ class HRLeaveIntervalListCreateView(generics.ListCreateAPIView):
     def perform_create(self, serializer):
         record = self.get_serializer_context()['record']
         interval = serializer.save(record=record)
-        recompute_compliance_for_record(interval.record)
+        recompute_record_aggregates(interval.record)
 
 
 class HRLeaveIntervalDetailView(generics.RetrieveUpdateDestroyAPIView):
-    """
-    GET/PATCH/DELETE /attendance/hr/intervals/{id}/
-    """
+    """GET/PATCH/DELETE /attendance/hr/intervals/{id}/"""
     permission_classes = [IsHROrAdmin]
     serializer_class = HRLeaveIntervalCreateSerializer
     queryset = AttendanceLeaveInterval.objects.select_related('record__user')
 
     def perform_update(self, serializer):
         interval = serializer.save()
-        recompute_compliance_for_record(interval.record)
+        recompute_record_aggregates(interval.record)
 
     def perform_destroy(self, instance):
         record = instance.record
         instance.delete()
-        recompute_compliance_for_record(record)
+        recompute_record_aggregates(record)
 
 
 # ---------------------------------------------------------------------------
-# Debug (only in DEBUG mode)
+# Debug (superuser / staff only)
 # ---------------------------------------------------------------------------
 
 class DebugIPView(APIView):
@@ -711,17 +1005,66 @@ class DebugIPView(APIView):
 
 
 # ---------------------------------------------------------------------------
-# Internal helper
+# Internal helpers
 # ---------------------------------------------------------------------------
 
-def _notify_hr_checkout_override(record: AttendanceRecord):
-    """Notify HR about a pending checkout override request."""
+def _notify_hr_override(record: AttendanceRecord, session: AttendanceSession):
     import threading
 
     def _send():
         try:
             from django.contrib.auth import get_user_model
             from users.permissions import user_has_role_perm
+            from notifications.models import Notification as N
+
+            User = get_user_model()
+            hr_users = list(User.objects.filter(is_active=True, is_staff=True))
+            try:
+                for u in User.objects.filter(is_active=True, is_staff=False):
+                    if user_has_role_perm(u, 'manage_hr') and u not in hr_users:
+                        hr_users.append(u)
+            except Exception:
+                pass
+
+            if not hr_users:
+                return
+
+            user_display = record.user.get_full_name() or record.user.username
+            title = f"Devam Kaydı: Manuel Onay Gerekiyor — {user_display}"
+            body = (
+                f"{user_display} bugün ({record.date}) için manuel devam onayı talep etti.\n"
+                f"Neden: {session.override_reason or '—'}"
+            )
+            for u in hr_users:
+                try:
+                    N.objects.create(
+                        user=u,
+                        notification_type=N.PASSWORD_RESET,
+                        title=title,
+                        body=body,
+                        link="/attendance/hr/pending-overrides/",
+                        source_type='attendance_record',
+                        source_id=record.pk,
+                    )
+                except Exception:
+                    pass
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning(
+                "attendance: failed to send HR override notification: %s", exc
+            )
+
+    threading.Thread(target=_send, daemon=True).start()
+
+
+def _notify_hr_checkout_override(record: AttendanceRecord, session: AttendanceSession):
+    import threading
+
+    def _send():
+        try:
+            from django.contrib.auth import get_user_model
+            from users.permissions import user_has_role_perm
+            from notifications.models import Notification as N
 
             User = get_user_model()
             hr_users = list(User.objects.filter(is_active=True, is_staff=True))
@@ -739,72 +1082,8 @@ def _notify_hr_checkout_override(record: AttendanceRecord):
             title = f"Çıkış Kaydı: Manuel Onay Gerekiyor — {user_display}"
             body = (
                 f"{user_display} bugün ({record.date}) için manuel çıkış onayı talep etti.\n"
-                f"Neden: {record.override_reason or '—'}"
+                f"Neden: {session.override_reason or '—'}"
             )
-            link = "/attendance/hr/pending-overrides/"
-
-            from notifications.models import Notification as N
-            for u in hr_users:
-                N.objects.create(
-                    user=u,
-                    notification_type=N.PASSWORD_RESET,
-                    title=title,
-                    body=body,
-                    link=link,
-                    source_type='attendance_record',
-                    source_id=record.pk,
-                )
-        except Exception as exc:
-            import logging
-            logging.getLogger(__name__).warning(
-                "attendance: failed to send HR checkout override notification: %s", exc
-            )
-
-    threading.Thread(target=_send, daemon=True).start()
-
-
-def _notify_hr_override(record: AttendanceRecord):
-    """
-    Fire-and-forget: send an in-app notification to all HR users about
-    a pending manual override request.
-    """
-    import threading
-
-    def _send():
-        try:
-            from django.contrib.auth import get_user_model
-            from notifications.service import bulk_notify, render_notification
-            from notifications.models import Notification
-
-            User = get_user_model()
-
-            # HR = staff users or users with manage_hr permission
-            hr_users = list(
-                User.objects.filter(is_active=True)
-                .filter(is_staff=True)
-            )
-            # Also include users with manage_hr via group/override (best-effort)
-            try:
-                from users.permissions import user_has_role_perm
-                all_users = User.objects.filter(is_active=True, is_staff=False)
-                for u in all_users:
-                    if user_has_role_perm(u, 'manage_hr') and u not in hr_users:
-                        hr_users.append(u)
-            except Exception:
-                pass
-
-            if not hr_users:
-                return
-
-            user_display = record.user.get_full_name() or record.user.username
-            title = f"Devam Kaydı: Manuel Onay Gerekiyor — {user_display}"
-            body = (
-                f"{user_display} bugün ({record.date}) için manuel devam onayı talep etti.\n"
-                f"Neden: {record.override_reason or '—'}"
-            )
-            link = f"/attendance/hr/pending-overrides/"
-
-            from notifications.models import Notification as N
             for u in hr_users:
                 try:
                     N.objects.create(
@@ -812,17 +1091,16 @@ def _notify_hr_override(record: AttendanceRecord):
                         notification_type=N.PASSWORD_RESET,
                         title=title,
                         body=body,
-                        link=link,
+                        link="/attendance/hr/pending-overrides/",
                         source_type='attendance_record',
                         source_id=record.pk,
                     )
                 except Exception:
                     pass
-
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning(
-                "attendance: failed to send HR override notification: %s", exc
+                "attendance: failed to send HR checkout override notification: %s", exc
             )
 
     threading.Thread(target=_send, daemon=True).start()

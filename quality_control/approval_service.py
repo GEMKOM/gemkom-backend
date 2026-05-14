@@ -12,8 +12,7 @@ from .models import QCReview, NCR
 
 from notifications.service import notify, bulk_notify, render_notification
 from notifications.models import Notification
-from organization.services import get_dept_members
-from organization.models import Position
+from organization.models import UserGroup
 
 
 QC_REVIEW_SUBJECT_TYPE = "qc_review"
@@ -22,27 +21,31 @@ NCR_SUBJECT_TYPE = "ncr"
 QC_REVIEW_POLICY_NAME = "KK İnceleme Onay Politikası"
 NCR_POLICY_NAME = "NCR Onay Politikası"
 
+# Maps task.department slugs to UserGroup names
+DEPT_TO_GROUP: dict[str, str] = {
+    'design':        'Dizayn',
+    'planning':      'Planlama',
+    'procurement':   'Satın Alma',
+    'manufacturing': 'İmalat',
+    'logistics':     'Lojistik',
+    'painting':      'İmalat',  # no dedicated group; fall back to İmalat
+}
 
-def _user_in_dept(user, dept_code: str) -> bool:
+
+def _user_in_group(user, group_name: str) -> bool:
     try:
-        return user.profile.position.department_code == dept_code
-    except AttributeError:
+        group = UserGroup.objects.get(name=group_name, is_active=True)
+        return group.get_members().filter(pk=user.pk).exists()
+    except UserGroup.DoesNotExist:
         return False
 
 
-def _position_for_task(task) -> 'Position | None':
-    """Return the best Position matching a task's department code (L4 manager preferred)."""
-    dept_code = task.department
-    if not dept_code:
+def _group_for_task(task) -> 'UserGroup | None':
+    """Return the UserGroup responsible for the task's department, or None."""
+    group_name = DEPT_TO_GROUP.get(task.department)
+    if not group_name:
         return None
-    return (
-        Position.objects.filter(department_code=dept_code, level=4, is_active=True).first()
-        or Position.objects.filter(department_code=dept_code, is_active=True).order_by('level').first()
-    )
-
-
-# Keep _dept_for_task as an alias used when auto-creating NCRs from rejected QC reviews
-_dept_for_task = _position_for_task
+    return UserGroup.objects.filter(name=group_name, is_active=True).first()
 
 
 def _get_or_create_policy(subject_type: str, policy_name: str) -> ApprovalPolicy:
@@ -93,7 +96,7 @@ def submit_for_qc_review(task, submitted_by, part_data=None) -> QCReview:
             "Bu görev KK incelemesine uygun değil. Yalnızca imalat ana görevleri ve "
             "parça görevleri KK incelemesine gönderilebilir."
         )
-    if not submitted_by.is_superuser and not _user_in_dept(submitted_by, task.department) and not _user_in_dept(submitted_by, 'qualitycontrol'):
+    if not submitted_by.is_superuser and not _user_in_group(submitted_by, DEPT_TO_GROUP.get(task.department, '')) and not _user_in_group(submitted_by, 'Kalite Kontrol'):
         raise ValueError("Bu görevi KK için gönderme yetkiniz yok.")
 
     with transaction.atomic():
@@ -121,7 +124,7 @@ def bulk_submit_for_qc_review(task, submitted_by, part_data_list: list) -> list:
             "Bu görev KK incelemesine uygun değil. Yalnızca imalat ana görevleri ve "
             "parça görevleri KK incelemesine gönderilebilir."
         )
-    if not submitted_by.is_superuser and not _user_in_dept(submitted_by, task.department) and not _user_in_dept(submitted_by, 'qualitycontrol'):
+    if not submitted_by.is_superuser and not _user_in_group(submitted_by, DEPT_TO_GROUP.get(task.department, '')) and not _user_in_group(submitted_by, 'Kalite Kontrol'):
         raise ValueError("Bu görevi KK için gönderme yetkiniz yok.")
 
     policy = _get_or_create_policy(QC_REVIEW_SUBJECT_TYPE, QC_REVIEW_POLICY_NAME)
@@ -186,7 +189,7 @@ def _on_qc_review_rejected(review: QCReview, comment: str = ""):
         detected_by=reviewer,
         affected_quantity=prefill.get('affected_quantity') or 1,
         disposition=prefill.get('disposition') or 'pending',
-        assigned_team=_dept_for_task(task),
+        assigned_team=_group_for_task(task),
         status='draft',
         created_by=reviewer,
     )
@@ -264,6 +267,14 @@ def _on_ncr_rejected(ncr: NCR, comment: str = ""):
 # Notification helpers
 # =============================================================================
 
+def _get_qc_team_users():
+    try:
+        group = UserGroup.objects.get(name='Kalite Kontrol', is_active=True)
+        return group.get_members()
+    except UserGroup.DoesNotExist:
+        return User.objects.none()
+
+
 def _notify_qc_team_review_submitted(review: QCReview):
     qc_users = _get_qc_team_users()
     if not qc_users.exists():
@@ -306,8 +317,8 @@ def _notify_qc_team_bulk_reviews_submitted(reviews: list, task, submitted_by):
 
 def _notify_review_approved(review: QCReview):
     task = review.task
-    dept_users = get_dept_members(task.department)
-    recipients_qs = set(dept_users.values_list('id', flat=True))
+    group = _group_for_task(task)
+    recipients_qs = set(group.get_members().values_list('id', flat=True)) if group else set()
     recipients_qs.add(review.submitted_by_id)
     recipients = User.objects.filter(id__in=recipients_qs, is_active=True)
     ctx = {
@@ -337,7 +348,8 @@ def _notify_ncr_created_on_rejection(ncr: NCR):
     task = ncr.department_task
     if not task:
         return
-    dept_users = get_dept_members(task.department)
+    group = _group_for_task(task)
+    dept_users = group.get_members() if group else User.objects.none()
     if not dept_users.exists():
         return
     ctx = {
@@ -368,16 +380,13 @@ def _notify_qc_team_ncr_submitted(ncr: NCR):
 
 
 def _ncr_assigned_team_users(ncr: NCR):
-    """Return active users in the position/department responsible for the NCR."""
-    position = ncr.assigned_team
-    if not position and ncr.department_task:
-        position = _position_for_task(ncr.department_task)
-    if not position:
+    """Return active members of the UserGroup responsible for the NCR."""
+    group = ncr.assigned_team
+    if not group and ncr.department_task:
+        group = _group_for_task(ncr.department_task)
+    if not group:
         return User.objects.none()
-    return User.objects.filter(
-        is_active=True,
-        profile__position__department_code=position.department_code,
-    ).distinct()
+    return group.get_members()
 
 
 def _notify_ncr_approved(ncr: NCR):
@@ -422,10 +431,7 @@ def _notify_ncr_rejected(ncr: NCR, comment: str = ""):
 def email_ncr_assigned_team(ncr: NCR):
     if not ncr.assigned_team_id:
         return
-    dept_users = User.objects.filter(
-        is_active=True,
-        profile__position__department_code=ncr.assigned_team.department_code,
-    ).distinct()
+    dept_users = ncr.assigned_team.get_members()
     if not dept_users.exists():
         return
     ctx = {

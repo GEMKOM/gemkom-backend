@@ -200,15 +200,9 @@ class PasswordResetRequestView(APIView):
             if recipients.exists():
                 requested_at = timezone.localtime().strftime("%d.%m.%Y %H:%M")
                 full_name = user.get_full_name() or user.username
-                dept_name = (
-                    profile.position.department_code
-                    if profile.position_id and profile.position.department_code
-                    else "—"
-                )
                 ctx = {
                     'username': user.username,
                     'full_name': full_name,
-                    'team': dept_name,
                     'requested_at': requested_at,
                 }
                 title, body, link = render_notification(Notification.PASSWORD_RESET, ctx)
@@ -233,7 +227,7 @@ class AdminListResetRequestsView(generics.ListAPIView):
     def get_queryset(self):
         return User.objects.filter(
             profile__reset_password_request=True
-        ).select_related("profile", "profile__position", "profile__position__department")
+        ).select_related("profile", "profile__position")
 
 
 class AdminResetPasswordView(APIView):
@@ -291,7 +285,7 @@ class WageRateListCreateView(ListCreateAPIView):
         )
         qs = (
             User.objects
-            .select_related("profile", "profile__position", "profile__position__department")
+            .select_related("profile", "profile__position")
             .annotate(
                 current_wage_id=Subquery(latest.values("id")[:1]),
                 current_effective_from=Subquery(latest.values("effective_from")[:1]),

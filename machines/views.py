@@ -25,8 +25,6 @@ from django.db.models import Q
 from config.pagination import CustomPageNumberPagination
 
 
-
-
 # Create your views here.
 
 from rest_framework import generics, permissions
@@ -540,7 +538,7 @@ class MachineFaultCompleteView(APIView):
         if fault.resolved_at:
             return Response({'error': 'This fault is already resolved.'}, status=400)
 
-        is_maintenance = _user_in_dept(request.user, 'maintenance')
+        is_maintenance = user_has_role_perm(request.user, 'access_maintenance')
         is_admin = request.user.is_superuser or request.user.is_staff
 
         if not is_maintenance and not is_admin:

@@ -14,13 +14,11 @@ def resolve_approvers_for_stage(stage, requester) -> list[int]:
     """
     user_ids: list[int] = list(stage.approver_users.values_list('id', flat=True))
 
-    if stage.role_department_code:
-        from organization.services import get_dept_members
-        dept_ids = list(
-            get_dept_members(stage.role_department_code)
-            .values_list('id', flat=True)
+    if stage.role_user_group_id:
+        group_ids = list(
+            stage.role_user_group.get_members().values_list('id', flat=True)
         )
-        user_ids += dept_ids
+        user_ids += group_ids
 
     elif stage.climb_levels is not None and requester is not None:
         try:

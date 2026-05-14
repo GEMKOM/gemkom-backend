@@ -20,21 +20,23 @@ from .approval_service import (
 )
 
 
-def _user_in_dept(user, dept_code: str) -> bool:
+def _user_in_group(user, group_name: str) -> bool:
+    from organization.models import UserGroup
     try:
-        return user.profile.position.department_code == dept_code
-    except AttributeError:
+        group = UserGroup.objects.get(name=group_name, is_active=True)
+        return group.get_members().filter(pk=user.pk).exists()
+    except UserGroup.DoesNotExist:
         return False
 
 
 def _is_qc_member(user):
-    return user.is_superuser or _user_in_dept(user, 'qualitycontrol')
+    return user.is_superuser or _user_in_group(user, 'Kalite Kontrol')
 
 
 def _can_submit_ncr(user, ncr):
     if user.is_superuser:
         return True
-    if ncr.assigned_team and _user_in_dept(user, ncr.assigned_team.department_code):
+    if ncr.assigned_team and ncr.assigned_team.get_members().filter(pk=user.pk).exists():
         return True
     if ncr.assigned_members.filter(pk=user.pk).exists():
         return True

@@ -197,7 +197,7 @@ class NCR(models.Model):
 
     # Assignment
     assigned_team = models.ForeignKey(
-        'organization.Position',
+        'organization.UserGroup',
         on_delete=models.SET_NULL,
         null=True,
         blank=True,

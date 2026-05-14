@@ -97,9 +97,12 @@ class ApprovalStage(models.Model):
         null=True, blank=True,
         help_text="Walk N levels up the requester's position tree to find approvers. Vacant positions are skipped.",
     )
-    role_department_code = models.SlugField(
+    role_user_group = models.ForeignKey(
+        'organization.UserGroup',
         null=True, blank=True,
-        help_text="When set, resolve approvers to all active users in this department (ignores climb_levels). E.g. 'human_resources' for an HR stage.",
+        on_delete=models.SET_NULL,
+        related_name='approval_stages',
+        help_text="When set, resolve approvers to all active members of this UserGroup (ignores climb_levels).",
     )
 
     class Meta:

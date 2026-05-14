@@ -31,7 +31,7 @@ class AttendanceSite(models.Model):
 
 class ShiftRule(models.Model):
     """
-    Defines expected working hours for overtime calculation.
+    Defines expected working hours for overtime / compliance calculation.
     One rule can be marked as is_default — used when a user has no explicit assignment.
     """
     name = models.CharField(max_length=100)
@@ -57,7 +57,6 @@ class ShiftRule(models.Model):
         return f"{self.name}{default_tag}"
 
     def save(self, *args, **kwargs):
-        # Ensure only one rule is default at a time
         if self.is_default:
             ShiftRule.objects.exclude(pk=self.pk).filter(is_default=True).update(is_default=False)
         super().save(*args, **kwargs)
@@ -86,18 +85,21 @@ class PublicHoliday(models.Model):
 
 
 class AttendanceRecord(models.Model):
-    METHOD_IP = 'ip'
-    METHOD_GPS = 'gps'
-    METHOD_OVERRIDE = 'manual_override'
-    METHOD_HR = 'hr_manual'
+    """
+    One record per user per day. Acts as the daily anchor.
 
-    METHOD_CHOICES = [
-        (METHOD_IP, 'IP (Ofis Ağı)'),
-        (METHOD_GPS, 'GPS'),
-        (METHOD_OVERRIDE, 'Manuel Değişim Talebi'),
-        (METHOD_HR, 'HR Değişikliği'),
-    ]
+    It does NOT store check-in/out times directly — those live on
+    AttendanceSession rows. This model aggregates the day:
+    total_present_minutes, late_minutes, early_leave_minutes, overtime_minutes.
 
+    status reflects the overall state of the day:
+      active              — at least one open session (user currently in office)
+      complete            — all sessions closed for the day
+      pending_override    — check-in override awaiting HR approval
+      pending_checkout_override — checkout override awaiting HR approval
+      override_rejected   — HR rejected the override request
+      leave               — full-day leave (no sessions expected)
+    """
     STATUS_ACTIVE = 'active'
     STATUS_COMPLETE = 'complete'
     STATUS_PENDING = 'pending_override'
@@ -106,12 +108,12 @@ class AttendanceRecord(models.Model):
     STATUS_LEAVE = 'leave'
 
     STATUS_CHOICES = [
-        (STATUS_ACTIVE, 'Aktif (Giriş Yapıldı)'),
-        (STATUS_COMPLETE, 'Tamamlandı (Çıkış Yapıldı)'),
-        (STATUS_PENDING, 'İnsan Kaynakları Onayı Bekliyor (GİRİŞ)'),
-        (STATUS_PENDING_CHECKOUT, 'İnsan Kaynakları Onayı Bekliyor (ÇIKIŞ)'),
-        (STATUS_REJECTED, 'Reddedildi'),
-        (STATUS_LEAVE, 'İzinli'),
+        (STATUS_ACTIVE,            'Aktif (Giriş Yapıldı)'),
+        (STATUS_COMPLETE,          'Tamamlandı (Çıkış Yapıldı)'),
+        (STATUS_PENDING,           'İnsan Kaynakları Onayı Bekliyor (GİRİŞ)'),
+        (STATUS_PENDING_CHECKOUT,  'İnsan Kaynakları Onayı Bekliyor (ÇIKIŞ)'),
+        (STATUS_REJECTED,          'Reddedildi'),
+        (STATUS_LEAVE,             'İzinli'),
     ]
 
     # Leave / absence day types — only set when status=leave
@@ -131,20 +133,20 @@ class AttendanceRecord(models.Model):
 
     LEAVE_TYPE_CHOICES = [
         # Paid
-        (LEAVE_ANNUAL,       'Yıllık İzin'),
-        (LEAVE_SICK,         'Hastalık İzni'),
-        (LEAVE_MATERNITY,    'Doğum İzni'),
-        (LEAVE_PATERNITY,    'Babalık İzni'),
-        (LEAVE_BEREAVEMENT,  'Ölüm İzni'),
-        (LEAVE_MARRIAGE,     'Evlilik İzni'),
-        (LEAVE_PUBLIC_DUTY,  'Resmi Görev'),
-        (LEAVE_COMPENSATORY, 'Mazeret İzni'),
-        (LEAVE_BUSINESS_TRIP,'Görev Seyahati'),
-        (LEAVE_HALF_DAY,     'Yarım Gün'),
-        (LEAVE_PAID,         'Ücretli İzin'),
+        (LEAVE_ANNUAL,        'Yıllık İzin'),
+        (LEAVE_SICK,          'Hastalık İzni'),
+        (LEAVE_MATERNITY,     'Doğum İzni'),
+        (LEAVE_PATERNITY,     'Babalık İzni'),
+        (LEAVE_BEREAVEMENT,   'Ölüm İzni'),
+        (LEAVE_MARRIAGE,      'Evlilik İzni'),
+        (LEAVE_PUBLIC_DUTY,   'Resmi Görev'),
+        (LEAVE_COMPENSATORY,  'Mazeret İzni'),
+        (LEAVE_BUSINESS_TRIP, 'Görev Seyahati'),
+        (LEAVE_HALF_DAY,      'Yarım Gün'),
+        (LEAVE_PAID,          'Ücretli İzin'),
         # Unpaid
-        (LEAVE_UNPAID,       'Ücretsiz İzin'),
-        (LEAVE_UNAUTHORIZED, 'İzinsiz Devamsızlık'),
+        (LEAVE_UNPAID,        'Ücretsiz İzin'),
+        (LEAVE_UNAUTHORIZED,  'İzinsiz Devamsızlık'),
     ]
 
     PAID_LEAVE_TYPES = {
@@ -155,49 +157,39 @@ class AttendanceRecord(models.Model):
 
     user = models.ForeignKey(User, on_delete=models.PROTECT, related_name='attendance_records')
     date = models.DateField(db_index=True)
-
-    check_in_time = models.DateTimeField(null=True, blank=True)
-    check_out_time = models.DateTimeField(null=True, blank=True)
-
-    method = models.CharField(max_length=20, choices=METHOD_CHOICES)
     status = models.CharField(max_length=30, choices=STATUS_CHOICES, default=STATUS_ACTIVE)
 
-    # Audit coordinates (for future GPS support — stored but not enforced for IP check-ins)
-    check_in_lat = models.DecimalField(max_digits=12, decimal_places=6, null=True, blank=True)
-    check_in_lon = models.DecimalField(max_digits=12, decimal_places=6, null=True, blank=True)
-    check_out_lat = models.DecimalField(max_digits=12, decimal_places=6, null=True, blank=True)
-    check_out_lon = models.DecimalField(max_digits=12, decimal_places=6, null=True, blank=True)
-
-    client_ip = models.GenericIPAddressField(null=True, blank=True)
-
-    # Leave type — only set when status=leave
+    # Leave type — only set when status=leave (full-day absence)
     leave_type = models.CharField(
         max_length=30, choices=LEAVE_TYPE_CHOICES,
         null=True, blank=True,
     )
 
-    # Override fields — used for both check-in and checkout override reasons
-    override_reason = models.TextField(blank=True)
+    # Daily aggregates — recomputed on every session close
+    total_present_minutes = models.IntegerField(
+        default=0,
+        help_text="Sum of all closed session durations for the day.",
+    )
+    overtime_minutes = models.IntegerField(default=0)
+    late_minutes = models.IntegerField(
+        default=0,
+        help_text="Minutes after expected_start the first session started. 0 = on time or early.",
+    )
+    early_leave_minutes = models.IntegerField(
+        default=0,
+        help_text="Minutes before expected_end the last session ended. 0 = stayed full shift or later.",
+    )
+
+    # HR override tracking
     reviewed_by = models.ForeignKey(
         User, null=True, blank=True,
         on_delete=models.SET_NULL,
         related_name='reviewed_attendance_overrides',
     )
     reviewed_at = models.DateTimeField(null=True, blank=True)
-
-    overtime_minutes = models.IntegerField(default=0)
-    # Shift compliance — computed on checkout against the user's ShiftRule
-    late_minutes = models.IntegerField(
-        default=0,
-        help_text="Minutes after expected_start the user checked in. 0 = on time or early.",
-    )
-    early_leave_minutes = models.IntegerField(
-        default=0,
-        help_text="Minutes before expected_end the user checked out. 0 = stayed full shift or later.",
-    )
     notes = models.TextField(
         blank=True,
-        help_text="HR notes. For leave records, use this to record leave context (e.g. approval info, compensatory details).",
+        help_text="HR notes. For leave records, use this to record leave context.",
     )
 
     created_at = models.DateTimeField(auto_now_add=True)
@@ -206,9 +198,8 @@ class AttendanceRecord(models.Model):
     class Meta:
         verbose_name = "Attendance Record"
         verbose_name_plural = "Attendance Records"
-        ordering = ['-date', '-check_in_time']
+        ordering = ['-date']
         constraints = [
-            # One record per user per day (prevents duplicate check-ins)
             models.UniqueConstraint(fields=['user', 'date'], name='uniq_attendance_user_date'),
         ]
         indexes = [
@@ -221,18 +212,105 @@ class AttendanceRecord(models.Model):
     def is_paid_leave(self):
         return self.leave_type in self.PAID_LEAVE_TYPES
 
+    @property
+    def first_check_in(self):
+        """Earliest session check_in_time for this day."""
+        s = self.sessions.order_by('check_in_time').first()
+        return s.check_in_time if s else None
+
+    @property
+    def last_check_out(self):
+        """Latest closed session check_out_time for this day."""
+        s = self.sessions.filter(check_out_time__isnull=False).order_by('-check_out_time').first()
+        return s.check_out_time if s else None
+
     def __str__(self):
         if self.leave_type:
             return f"{self.user} | {self.date} | {self.get_leave_type_display()}"
         return f"{self.user} | {self.date} | {self.status}"
 
 
+class AttendanceSession(models.Model):
+    """
+    One check-in / check-out pair within a day.
+    A single AttendanceRecord can have multiple sessions (e.g. morning + afternoon
+    after a mid-day leave). Compliance and overtime are computed from the full
+    set of closed sessions on the parent record.
+    """
+    METHOD_IP = 'ip'
+    METHOD_GPS = 'gps'
+    METHOD_OVERRIDE = 'manual_override'
+    METHOD_HR = 'hr_manual'
+
+    METHOD_CHOICES = [
+        (METHOD_IP,       'IP (Ofis Ağı)'),
+        (METHOD_GPS,      'GPS'),
+        (METHOD_OVERRIDE, 'Manuel Değişim Talebi'),
+        (METHOD_HR,       'HR Değişikliği'),
+    ]
+
+    STATUS_OPEN = 'open'
+    STATUS_CLOSED = 'closed'
+    STATUS_PENDING = 'pending_override'
+    STATUS_PENDING_CHECKOUT = 'pending_checkout_override'
+    STATUS_REJECTED = 'override_rejected'
+
+    STATUS_CHOICES = [
+        (STATUS_OPEN,             'Açık (Ofiste)'),
+        (STATUS_CLOSED,           'Kapalı (Çıkış Yapıldı)'),
+        (STATUS_PENDING,          'HR Onayı Bekliyor (Giriş)'),
+        (STATUS_PENDING_CHECKOUT, 'HR Onayı Bekliyor (Çıkış)'),
+        (STATUS_REJECTED,         'Reddedildi'),
+    ]
+
+    record = models.ForeignKey(
+        AttendanceRecord,
+        on_delete=models.CASCADE,
+        related_name='sessions',
+    )
+
+    check_in_time = models.DateTimeField()
+    check_out_time = models.DateTimeField(null=True, blank=True)
+
+    method = models.CharField(max_length=20, choices=METHOD_CHOICES)
+    status = models.CharField(max_length=30, choices=STATUS_CHOICES, default=STATUS_OPEN)
+
+    check_in_lat = models.DecimalField(max_digits=12, decimal_places=6, null=True, blank=True)
+    check_in_lon = models.DecimalField(max_digits=12, decimal_places=6, null=True, blank=True)
+    check_out_lat = models.DecimalField(max_digits=12, decimal_places=6, null=True, blank=True)
+    check_out_lon = models.DecimalField(max_digits=12, decimal_places=6, null=True, blank=True)
+
+    client_ip = models.GenericIPAddressField(null=True, blank=True)
+
+    override_reason = models.TextField(blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Attendance Session"
+        verbose_name_plural = "Attendance Sessions"
+        ordering = ['check_in_time']
+
+    @property
+    def duration_minutes(self):
+        """Duration in minutes if session is closed, else None."""
+        if self.check_in_time and self.check_out_time:
+            delta = self.check_out_time - self.check_in_time
+            return max(0, int(delta.total_seconds() // 60))
+        return None
+
+    def __str__(self):
+        out = self.check_out_time.strftime('%H:%M') if self.check_out_time else '…'
+        return f"{self.record.user} | {self.record.date} | {self.check_in_time:%H:%M}–{out}"
+
+
 class AttendanceLeaveInterval(models.Model):
     """
     A partial-day leave window attached to an AttendanceRecord.
-    Used when an employee works part of the day but has approved leave for a specific time interval
-    (e.g. arrived 90 min late, or left 2h early).
-    The parent record retains the actual work session check_in/check_out times.
+    Used when an employee works part of the day but has approved leave for a specific
+    time interval (e.g. arrived 90 min late, or left 2h early for a doctor appointment).
+    Compliance recalculation subtracts overlapping leave intervals from late/early penalties.
     """
     record = models.ForeignKey(
         AttendanceRecord,

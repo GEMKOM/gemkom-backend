@@ -1,6 +1,13 @@
 from django.contrib import admin
 
-from .models import AttendanceLeaveInterval, AttendanceSite, AttendanceRecord, ShiftRule, PublicHoliday
+from .models import AttendanceLeaveInterval, AttendanceSite, AttendanceRecord, AttendanceSession, ShiftRule, PublicHoliday
+
+
+class SessionInline(admin.TabularInline):
+    model = AttendanceSession
+    extra = 0
+    fields = ['check_in_time', 'check_out_time', 'method', 'status', 'client_ip', 'override_reason']
+    readonly_fields = ['created_at', 'updated_at']
 
 
 class LeaveIntervalInline(admin.TabularInline):
@@ -32,11 +39,21 @@ class PublicHolidayAdmin(admin.ModelAdmin):
 
 @admin.register(AttendanceRecord)
 class AttendanceRecordAdmin(admin.ModelAdmin):
-    list_display = ['user', 'date', 'check_in_time', 'check_out_time',
-                    'method', 'status', 'overtime_minutes']
-    list_filter = ['status', 'method', 'date']
+    list_display = ['user', 'date', 'status', 'total_present_minutes',
+                    'late_minutes', 'early_leave_minutes', 'overtime_minutes']
+    list_filter = ['status', 'date']
     search_fields = ['user__username', 'user__first_name', 'user__last_name']
     raw_id_fields = ['user', 'reviewed_by']
     date_hierarchy = 'date'
-    ordering = ['-date', '-check_in_time']
-    inlines = [LeaveIntervalInline]
+    ordering = ['-date']
+    readonly_fields = ['total_present_minutes', 'late_minutes', 'early_leave_minutes', 'overtime_minutes']
+    inlines = [SessionInline, LeaveIntervalInline]
+
+
+@admin.register(AttendanceSession)
+class AttendanceSessionAdmin(admin.ModelAdmin):
+    list_display = ['record', 'check_in_time', 'check_out_time', 'method', 'status', 'client_ip']
+    list_filter = ['status', 'method']
+    search_fields = ['record__user__username', 'record__user__first_name', 'record__user__last_name']
+    raw_id_fields = ['record']
+    ordering = ['-check_in_time']

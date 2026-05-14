@@ -555,12 +555,11 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
         'body': (
             'Parola sıfırlama talebi gönderildi.\n\n'
             'Kullanıcı: {full_name} (username: {username})\n'
-            'Takım: {team}\n'
             'Tarih: {requested_at}\n\n'
             'Lütfen sistemden onaylayın.'
         ),
         'link': '',
-        'vars': ['username', 'full_name', 'team', 'requested_at', 'link'],
+        'vars': ['username', 'full_name', 'requested_at', 'link'],
     },
     Notification.TASK_ASSIGNED: {
         'title': 'Göreve Atandınız: {task_title}',
