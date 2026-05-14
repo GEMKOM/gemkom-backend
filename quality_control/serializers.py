@@ -217,7 +217,7 @@ class NCRListSerializer(serializers.ModelSerializer):
     def get_assigned_team_name(self, obj):
         if obj.assigned_team is None:
             return None
-        return obj.assigned_team.title
+        return obj.assigned_team.name
 
     class Meta:
         model = NCR
@@ -247,7 +247,7 @@ class NCRDetailSerializer(serializers.ModelSerializer):
     def get_assigned_team_name(self, obj):
         if obj.assigned_team is None:
             return None
-        return obj.assigned_team.title
+        return obj.assigned_team.name
     assigned_members_data = serializers.SerializerMethodField()
 
     class Meta:

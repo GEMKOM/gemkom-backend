@@ -183,8 +183,7 @@ class NCRViewSet(viewsets.ModelViewSet):
         'severity': ['exact', 'in'],
         'defect_type': ['exact'],
         'assigned_team': ['exact', 'isnull'],
-        'assigned_team__title': ['exact'],
-        'assigned_team__department_code': ['exact'],
+        'assigned_team__name': ['exact'],
         'department_task': ['exact'],
     }
     search_fields = ['ncr_number', 'title', 'description', 'job_order__job_no']
