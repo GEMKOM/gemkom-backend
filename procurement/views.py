@@ -12,11 +12,11 @@ from rest_framework import status, permissions
 
 from rest_framework.permissions import IsAuthenticated
 from .models import (
-    PaymentSchedule, PaymentTerms, PurchaseOrder, PurchaseOrderLine, PurchaseRequestDraft,
+    DBSPayment, PaymentSchedule, PaymentTerms, PurchaseOrder, PurchaseOrderLine, PurchaseRequestDraft,
     Supplier, Item, PurchaseRequest, PurchaseRequestItem, SupplierOffer, ItemOffer
 )
 from .serializers import (
-    PaymentTermsSerializer, PurchaseRequestDraftDetailSerializer, PurchaseRequestDraftListSerializer,
+    DBSPaymentSerializer, PaymentTermsSerializer, PurchaseRequestDraftDetailSerializer, PurchaseRequestDraftListSerializer,
     SupplierSerializer, ItemSerializer, PurchaseRequestSerializer, PurchaseRequestListSerializer,
     PurchaseRequestCreateSerializer, PurchaseRequestItemSerializer, SupplierOfferSerializer, ItemOfferSerializer
 )
@@ -92,20 +92,115 @@ class PaymentTermsViewSet(viewsets.ModelViewSet):
         instance.active = False
         instance.save()
 
+class DBSPaymentViewSet(viewsets.ModelViewSet):
+    """
+    CRUD for DBS repayments. POST decrements supplier.dbs_used atomically.
+    Filters: ?supplier=<id>, ?paid_at_gte=YYYY-MM-DD, ?paid_at_lte=YYYY-MM-DD
+    """
+    serializer_class = DBSPaymentSerializer
+    permission_classes = [IsAuthenticated]
+    http_method_names = ["get", "post", "head", "options"]  # no edit/delete — payments are immutable
+
+    def get_queryset(self):
+        qs = DBSPayment.objects.select_related("supplier", "paid_by")
+        supplier_id = self.request.query_params.get("supplier")
+        paid_at_gte = self.request.query_params.get("paid_at_gte")
+        paid_at_lte = self.request.query_params.get("paid_at_lte")
+        if supplier_id:
+            qs = qs.filter(supplier_id=supplier_id)
+        if paid_at_gte:
+            qs = qs.filter(paid_at__date__gte=paid_at_gte)
+        if paid_at_lte:
+            qs = qs.filter(paid_at__date__lte=paid_at_lte)
+        return qs
+
+
 class SupplierViewSet(viewsets.ModelViewSet):
     queryset = Supplier.objects.filter(is_active=True)
     serializer_class = SupplierSerializer
     filter_backends = [SearchFilter, OrderingFilter]
     permission_classes = [IsAuthenticated]
     search_fields = ["name", "contact_person", "email", "default_payment_terms"]
-    ordering_fields = ["id", "name", "updated_at"]
-    
+    ordering_fields = ["id", "name", "updated_at", "has_dbs", "dbs_used", "dbs_limit"]
+
     def get_queryset(self):
         queryset = Supplier.objects.filter(is_active=True)
-        name = self.request.query_params.get('name', None)
+        name = self.request.query_params.get("name")
+        has_dbs = self.request.query_params.get("has_dbs")
         if name:
             queryset = queryset.filter(name__icontains=name)
+        if has_dbs is not None:
+            queryset = queryset.filter(has_dbs=has_dbs.lower() in ("true", "1", "yes"))
         return queryset
+
+    @action(detail=True, methods=["get"], url_path="dbs-usage")
+    def dbs_usage(self, request, pk=None):
+        """
+        Returns all ItemOffer lines that contributed to this DBS supplier's used amount,
+        grouped by purchase request. Only approved PRs are included.
+        """
+        from .models import ItemOffer
+
+        supplier = self.get_object()
+        if not supplier.has_dbs:
+            return Response({"detail": "This supplier does not have a DBS facility."}, status=400)
+
+        lines = (
+            ItemOffer.objects
+            .filter(
+                is_recommended=True,
+                supplier_offer__supplier=supplier,
+                supplier_offer__purchase_request__status="approved",
+            )
+            .select_related(
+                "purchase_request_item__item",
+                "purchase_request_item__purchase_request",
+                "supplier_offer",
+            )
+            .order_by("-supplier_offer__purchase_request__updated_at")
+        )
+
+        # Group by PR
+        by_pr = {}
+        for io in lines:
+            pr = io.purchase_request_item.purchase_request
+            so = io.supplier_offer
+            pri = io.purchase_request_item
+            item = pri.item
+
+            if pr.id not in by_pr:
+                by_pr[pr.id] = {
+                    "purchase_request_id": pr.id,
+                    "pr_reference": getattr(pr, "reference", None) or f"PR-{pr.id}",
+                    "pr_status": pr.status,
+                    "pr_approved_at": pr.updated_at,
+                    "currency": so.currency or supplier.dbs_currency,
+                    "lines": [],
+                    "total": Decimal("0.00"),
+                }
+
+            qty = pri.quantity or Decimal("0")
+            unit_price = io.unit_price or Decimal("0")
+            line_total = (qty * unit_price).quantize(Decimal("0.01"))
+
+            by_pr[pr.id]["lines"].append({
+                "item_id": item.id if item else None,
+                "item_code": item.code if item else None,
+                "item_name": item.name if item else pri.description,
+                "quantity": str(qty),
+                "unit": item.unit if item else None,
+                "unit_price": str(unit_price),
+                "total": str(line_total),
+            })
+            by_pr[pr.id]["total"] += line_total
+
+        result = []
+        for row in by_pr.values():
+            row["total"] = str(row["total"])
+            result.append(row)
+
+        return Response(result)
+
 
 class ItemViewSet(viewsets.ModelViewSet):
     serializer_class = ItemSerializer

@@ -4,7 +4,7 @@ from decimal import Decimal
 from collections import defaultdict
 from django.db.models import Q
 from django.utils import timezone
-from ..models import PurchaseOrder
+from ..models import PurchaseOrder, Supplier
 from .common import q2, extract_rates, get_fallback_rates, to_eur
 
 # procurement/reports/cash_forecast.py
@@ -60,7 +60,6 @@ def build_executive_overview(request):
     created_gte = request.query_params.get("created_gte")
     created_lte = request.query_params.get("created_lte")
 
-    # Base PO set (still allow filtering by created/ordered if you want to scope which POs contribute)
     qs = (
         PurchaseOrder.objects
         .exclude(status="cancelled")
@@ -74,49 +73,56 @@ def build_executive_overview(request):
 
     fb = get_fallback_rates()
 
-    # We aggregate by PaymentSchedule.due_date month (all amounts NET in EUR)
     by_month = defaultdict(lambda: {
-        "total_spent_eur": Decimal("0.00"),  # here: total scheduled NET due in that month
+        "total_spent_eur": Decimal("0.00"),
         "paid_eur": Decimal("0.00"),
         "awaiting_eur": Decimal("0.00"),
-        "po_ids": set(),            # to count distinct POs for the month
-        "active_suppliers": set(),  # distinct suppliers with dues that month
+        "po_ids": set(),
+        "active_suppliers": set(),
     })
+
+    # Undated schedules bucket — same structure but no month key
+    undated = {
+        "total_eur": Decimal("0.00"),
+        "paid_eur": Decimal("0.00"),
+        "awaiting_eur": Decimal("0.00"),
+        "po_ids": set(),
+        "supplier_ids": set(),
+    }
 
     suppliers_all = set()
 
-    # Walk through POs and their schedules; attribute values to schedule.due_date month
     for po in qs:
         pr_rates = extract_rates(getattr(po.pr, "currency_rates_snapshot", {}) or {})
         rate = (po.tax_rate or Decimal("0")) / Decimal("100")
 
         for sch in po.payment_schedules.all():
-            # Skip schedules without a due date (optional: bucket them separately if you prefer)
+            sch_ccy = sch.currency or (po.currency or "TRY")
+            amt_eur = to_eur(sch.amount or Decimal("0.00"), sch_ccy, pr_rates, fb) or Decimal("0.00")
+            net_component = (amt_eur / (Decimal("1.00") + rate)) if sch.paid_with_tax else amt_eur
+
             if not sch.due_date:
+                undated["total_eur"] += net_component
+                if sch.is_paid:
+                    undated["paid_eur"] += net_component
+                undated["po_ids"].add(po.id)
+                if po.supplier_id:
+                    undated["supplier_ids"].add(po.supplier_id)
                 continue
 
             mk = f"{sch.due_date.year:04d}-{sch.due_date.month:02d}"
-
-            # Convert schedule amount to EUR
-            sch_ccy = sch.currency or (po.currency or "TRY")
-            amt_eur = to_eur(sch.amount or Decimal("0.00"), sch_ccy, pr_rates, fb) or Decimal("0.00")
-
-            # Normalize to NET for comparability with PO net figures.
-            # If this specific installment/payment is marked "paid_with_tax", strip tax.
-            # (If your schedules represent GROSS by definition, set paid_with_tax=True on creation.)
-            net_component = (amt_eur / (Decimal("1.00") + rate)) if sch.paid_with_tax else amt_eur
-
-            # Aggregate to the schedule's due month
             by_month[mk]["total_spent_eur"] += net_component
             if sch.is_paid:
                 by_month[mk]["paid_eur"] += net_component
-
             by_month[mk]["po_ids"].add(po.id)
             if po.supplier_id:
                 by_month[mk]["active_suppliers"].add(po.supplier_id)
                 suppliers_all.add(po.supplier_id)
 
-    # Finalize awaiting and build series
+    # Finalize undated awaiting
+    undated["awaiting_eur"] = max(Decimal("0.00"), undated["total_eur"] - undated["paid_eur"])
+
+    # Finalize monthly series
     months = sorted(by_month.keys())
     series = []
     total_spent_all = Decimal("0.00")
@@ -125,9 +131,7 @@ def build_executive_overview(request):
 
     for m in months:
         row = by_month[m]
-        awaiting = row["total_spent_eur"] - row["paid_eur"]
-        if awaiting < 0:
-            awaiting = Decimal("0.00")  # guard against rounding/over-payment
+        awaiting = max(Decimal("0.00"), row["total_spent_eur"] - row["paid_eur"])
         row["awaiting_eur"] = awaiting
 
         total_spent_all += row["total_spent_eur"]
@@ -136,7 +140,6 @@ def build_executive_overview(request):
 
         series.append({
             "month": m,
-            # kept key name for compatibility; semantically: total scheduled (NET) due in month
             "total_spent_eur": str(q2(row["total_spent_eur"])),
             "po_count": len(row["po_ids"]),
             "active_suppliers": len(row["active_suppliers"]),
@@ -144,7 +147,7 @@ def build_executive_overview(request):
             "awaiting_eur": str(q2(row["awaiting_eur"])),
         })
 
-    # MoM / YoY based on scheduled dues (total_spent_eur) of the latest month
+    # MoM / YoY based on latest month's scheduled dues
     latest = months[-1] if months else None
     mom = yoy = None
     if latest:
@@ -160,19 +163,64 @@ def build_executive_overview(request):
             yoy = float((cur_val - base) / base) * 100.0
 
     kpis = {
-        # Totals across all due months in range (NET, EUR)
         "total_spent_eur": str(q2(total_spent_all)),
         "total_paid_eur": str(q2(total_paid_all)),
         "total_awaiting_eur": str(q2(total_awaiting_all)),
-        # Distinct counts across all months
         "po_count": sum(len(v["po_ids"]) for v in by_month.values()),
         "active_suppliers": len(suppliers_all),
-        # Trend on due-based totals
         "mom_percent": (round(mom, 2) if mom is not None else None),
         "yoy_percent": (round(yoy, 2) if yoy is not None else None),
     }
 
-    return {"kpis": kpis, "series": series}
+    # --- DBS summary ---
+    dbs_suppliers = Supplier.objects.filter(has_dbs=True, is_active=True)
+    dbs_rows = []
+    total_dbs_used_eur = Decimal("0.00")
+    total_dbs_limit_eur = Decimal("0.00")
+
+    for sup in dbs_suppliers:
+        used_eur = to_eur(sup.dbs_used or Decimal("0.00"), sup.dbs_currency or "TRY", {}, fb) or Decimal("0.00")
+        limit_eur = (
+            to_eur(sup.dbs_limit, sup.dbs_currency or "TRY", {}, fb)
+            if sup.dbs_limit is not None else None
+        )
+        available_eur = max(Decimal("0.00"), limit_eur - used_eur) if limit_eur is not None else None
+
+        total_dbs_used_eur += used_eur
+        if limit_eur is not None:
+            total_dbs_limit_eur += limit_eur
+
+        dbs_rows.append({
+            "supplier_id": sup.id,
+            "supplier_name": sup.name,
+            "dbs_bank": sup.dbs_bank,
+            "dbs_currency": sup.dbs_currency,
+            "dbs_used": str(q2(sup.dbs_used or Decimal("0.00"))),
+            "dbs_limit": str(q2(sup.dbs_limit)) if sup.dbs_limit is not None else None,
+            "dbs_used_eur": str(q2(used_eur)),
+            "dbs_limit_eur": str(q2(limit_eur)) if limit_eur is not None else None,
+            "dbs_available_eur": str(q2(available_eur)) if available_eur is not None else None,
+            "dbs_expiry_date": str(sup.dbs_expiry_date) if sup.dbs_expiry_date else None,
+        })
+
+    dbs_summary = {
+        "total_dbs_used_eur": str(q2(total_dbs_used_eur)),
+        "total_dbs_limit_eur": str(q2(total_dbs_limit_eur)) if total_dbs_limit_eur else None,
+        "suppliers": dbs_rows,
+    }
+
+    return {
+        "kpis": kpis,
+        "series": series,
+        "undated_schedules": {
+            "total_eur": str(q2(undated["total_eur"])),
+            "paid_eur": str(q2(undated["paid_eur"])),
+            "awaiting_eur": str(q2(undated["awaiting_eur"])),
+            "po_count": len(undated["po_ids"]),
+            "supplier_count": len(undated["supplier_ids"]),
+        },
+        "dbs_summary": dbs_summary,
+    }
 
 
 def build_concentration_report(request):

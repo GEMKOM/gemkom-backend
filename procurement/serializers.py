@@ -4,7 +4,7 @@ from django.utils import timezone
 
 from approvals.serializers import WorkflowSerializer
 from .models import (
-    PaymentSchedule, PaymentTerms, PurchaseOrder, PurchaseOrderLine, PurchaseOrderLineAllocation,
+    DBSPayment, PaymentSchedule, PaymentTerms, PurchaseOrder, PurchaseOrderLine, PurchaseOrderLineAllocation,
     PurchaseRequestDraft, PurchaseRequestItemAllocation, Supplier, Item, PurchaseRequest,
     PurchaseRequestItem, SupplierOffer, ItemOffer
 )
@@ -68,6 +68,45 @@ class SupplierSerializer(serializers.ModelSerializer):
             'id', 'name', 'contact_person', 'phone', 'address', 'email', 'default_currency', 'default_payment_terms',
             'is_active', 'created_at', 'updated_at', 'default_tax_rate', 'has_dbs', 'dbs_limit', 'dbs_used', 'dbs_currency'
         ]
+
+
+class DBSPaymentSerializer(serializers.ModelSerializer):
+    paid_by_username = serializers.CharField(source="paid_by.username", read_only=True)
+    supplier_name = serializers.CharField(source="supplier.name", read_only=True)
+
+    class Meta:
+        model = DBSPayment
+        fields = [
+            "id", "supplier", "supplier_name",
+            "amount", "currency",
+            "paid_at", "paid_by", "paid_by_username",
+            "note", "created_at",
+        ]
+        read_only_fields = ["currency", "paid_by", "created_at"]
+
+    def validate_supplier(self, supplier):
+        if not supplier.has_dbs:
+            raise serializers.ValidationError("Supplier does not have a DBS facility.")
+        return supplier
+
+    def create(self, validated_data):
+        from django.db.models import F
+        supplier = validated_data["supplier"]
+        # Snapshot the currency at time of payment
+        validated_data["currency"] = supplier.dbs_currency
+        validated_data["paid_by"] = self.context["request"].user
+
+        payment = DBSPayment.objects.create(**validated_data)
+        # Decrement dbs_used atomically, clamp to 0
+        Supplier.objects.filter(pk=supplier.pk).update(
+            dbs_used=models.Case(
+                models.When(dbs_used__gte=payment.amount, then=F("dbs_used") - payment.amount),
+                default=models.Value(Decimal("0.00")),
+                output_field=models.DecimalField(),
+            )
+        )
+        return payment
+
 
 class ItemSerializer(serializers.ModelSerializer):
     unit_label = serializers.CharField(source='get_unit_display', read_only=True)

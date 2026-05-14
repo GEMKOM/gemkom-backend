@@ -522,6 +522,30 @@ class PurchaseOrderLine(models.Model):
         if q_sum != self.quantity or a_sum != self.total_price.quantize(Decimal('0.01')):
             raise ValueError("Allocations must sum to line quantity and total price.")
         
+class DBSPayment(models.Model):
+    """
+    Records a repayment against a DBS supplier's used credit.
+    Each payment decrements Supplier.dbs_used by the recorded amount.
+    """
+    supplier = models.ForeignKey(
+        Supplier, on_delete=models.PROTECT, related_name="dbs_payments",
+        limit_choices_to={"has_dbs": True},
+    )
+    amount = models.DecimalField(max_digits=16, decimal_places=2, validators=[MinValueValidator(Decimal("0.01"))])
+    currency = models.CharField(max_length=3)  # snapshot of supplier.dbs_currency at time of payment
+    paid_at = models.DateTimeField(default=timezone.now)
+    paid_by = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, related_name="dbs_payments_made")
+    note = models.TextField(blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-paid_at"]
+
+    def __str__(self):
+        return f"DBS Payment {self.amount} {self.currency} → {self.supplier.name}"
+
+
 class PurchaseOrderLineAllocation(models.Model):
     """
     Splits a PO line across one or more job numbers.
