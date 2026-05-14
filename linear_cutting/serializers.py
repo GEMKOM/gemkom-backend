@@ -42,7 +42,7 @@ class LinearCuttingPartSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'session', 'item', 'item_code', 'item_name', 'item_unit',
             'stock_length_mm',
-            'label', 'job_no',
+            'label', 'job_no', 'image_no',
             'nominal_length_mm', 'quantity',
             'angle_left_deg', 'angle_right_deg', 'profile_height_mm',
             'order',
@@ -56,7 +56,7 @@ class LinearCuttingPartWriteSerializer(serializers.ModelSerializer):
         model = LinearCuttingPart
         fields = [
             'item', 'stock_length_mm',
-            'label', 'job_no',
+            'label', 'job_no', 'image_no',
             'nominal_length_mm', 'quantity',
             'angle_left_deg', 'angle_right_deg', 'profile_height_mm',
             'order',

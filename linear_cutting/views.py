@@ -153,6 +153,7 @@ class OptimizeView(APIView):
                     'angle_left_deg': float(p.angle_left_deg),
                     'angle_right_deg': float(p.angle_right_deg),
                     'profile_height_mm': p.profile_height_mm,
+                    'image_no': p.image_no,
                 }
                 for p in group_parts
             ]

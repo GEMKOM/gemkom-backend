@@ -118,6 +118,10 @@ class LinearCuttingPart(models.Model):
         default=0,
         help_text="Profile height in mm, used to calculate extra material consumed by angle cuts"
     )
+    image_no = models.CharField(
+        max_length=100, blank=True,
+        help_text="Drawing / image reference number for this part"
+    )
     order = models.PositiveIntegerField(default=0, help_text="Display order in the UI")
 
     class Meta:

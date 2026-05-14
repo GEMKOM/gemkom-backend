@@ -66,6 +66,71 @@ def _fmt_angle(val) -> str:
     return f"{f:g}\u00b0"   # \u00b0 = °
 
 
+
+def _cut_polygon_points(
+    x_left,
+    effective_mm,
+    angle_left_deg,
+    angle_right_deg,
+    profile_height_mm,
+    scale,
+    y_bar,
+    bar_h,
+    is_nest_a=False,
+    is_nest_b=False,
+    shared_offset_mm=0.0,
+    shared_angle_deg=0.0,
+):
+    """
+    Compute the four corners of a cut segment as a quadrilateral.
+
+    Sign convention (matches physical miter cuts on a horizontal bar):
+      Left end:  positive angle → top-left shifts RIGHT  (the face leans inward)
+                 negative angle → top-left shifts LEFT   (the face leans outward)
+      Right end: positive angle → top-right shifts LEFT  (the face leans inward)
+                 negative angle → top-right shifts RIGHT (the face leans outward)
+
+    For a nested pair the shared boundary uses the actual angle of the shared cut
+    (stored as shared_angle_deg) so the direction is preserved correctly.
+    """
+    import math
+
+    def _signed_slant(deg, h):
+        """Signed slant in canvas units. Sign encodes lean direction."""
+        if deg == 0 or h == 0:
+            return 0.0
+        return math.copysign(h * abs(math.tan(math.radians(float(deg)))) * scale, deg)
+
+    w = effective_mm * scale
+
+    if is_nest_a:
+        # Left end: A's own left angle
+        # Right end: the shared diagonal — same formula as right end of standalone
+        left_slant_signed  = _signed_slant(angle_left_deg, profile_height_mm)
+        right_slant_signed = _signed_slant(shared_angle_deg, profile_height_mm)
+    elif is_nest_b:
+        # Left end: the shared diagonal — must produce the same top-x as A's right top-x.
+        # A's right top = A_bottom_right - right_slant_signed(shared)
+        #               = (A_offset + A_eff) - signed_slant(shared_angle)
+        # B's left top must equal that x, i.e. B_offset + left_slant_signed = A right top.
+        # Since B_offset == A_offset + A_eff, we need left_slant_signed = -right_slant_signed.
+        # So for the left end of B we negate the right-end convention:
+        left_slant_signed  = -_signed_slant(shared_angle_deg, profile_height_mm)
+        right_slant_signed = _signed_slant(angle_right_deg, profile_height_mm)
+    else:
+        left_slant_signed  = _signed_slant(angle_left_deg, profile_height_mm)
+        right_slant_signed = _signed_slant(angle_right_deg, profile_height_mm)
+
+    # Left end:  top-left  = bottom-left + left_slant_signed  (positive = rightward)
+    # Right end: top-right = bottom-right - right_slant_signed (positive = leftward/inward)
+    x0 = x_left                              # bottom-left
+    x1 = x_left + left_slant_signed          # top-left
+    x2 = x_left + w - right_slant_signed     # top-right
+    x3 = x_left + w                          # bottom-right
+
+    return [x0, y_bar, x1, y_bar + bar_h, x2, y_bar + bar_h, x3, y_bar]
+
+
 # ─── Custom Flowable: bar diagram ─────────────────────────────────────────────
 
 class BarDiagram(Flowable):
@@ -106,16 +171,66 @@ class BarDiagram(Flowable):
             w = cut['effective_mm'] * scale
             seg_color = self.cut_colors[i % len(self.cut_colors)]
 
+            nest_role = cut.get('nest_role') or ''
+            # For nested pairs the shared boundary uses the actual angle of the cut:
+            # role A's right end = the shared diagonal; role B's left end = same diagonal
+            shared_angle = (
+                cut.get('angle_right_deg', 0) or 0 if nest_role == 'A'
+                else cut.get('angle_left_deg',  0) or 0 if nest_role == 'B'
+                else 0
+            )
+            pts = _cut_polygon_points(
+                x_left=x,
+                effective_mm=cut['effective_mm'],
+                angle_left_deg=cut.get('angle_left_deg', 0) or 0,
+                angle_right_deg=cut.get('angle_right_deg', 0) or 0,
+                profile_height_mm=cut.get('profile_height_mm', 0) or 0,
+                scale=scale,
+                y_bar=y_bar,
+                bar_h=self.BAR_H,
+                is_nest_a=(nest_role == 'A'),
+                is_nest_b=(nest_role == 'B'),
+                shared_offset_mm=cut.get('shared_angle_offset_mm', 0.0) or 0.0,
+                shared_angle_deg=shared_angle,
+            )
+
             c.setFillColor(seg_color)
             c.setStrokeColor(colors.white)
             c.setLineWidth(0.5)
-            c.rect(x, y_bar, w, self.BAR_H, fill=1, stroke=1)
+            p = c.beginPath()
+            p.moveTo(pts[0], pts[1])
+            p.lineTo(pts[2], pts[3])
+            p.lineTo(pts[4], pts[5])
+            p.lineTo(pts[6], pts[7])
+            p.close()
+            c.drawPath(p, fill=1, stroke=1)
 
             # Segment index label (white, centered, only if wide enough)
+            # Use the centroid x of the polygon for label placement
+            x_center = (pts[0] + pts[2] + pts[4] + pts[6]) / 4
             if w > 6 * mm:
                 c.setFillColor(colors.white)
                 c.setFont('VeraBd', 7)
-                c.drawCentredString(x + w / 2, y_bar + self.BAR_H / 2 - 2.5, str(i + 1))
+                c.drawCentredString(x_center, y_bar + self.BAR_H / 2 - 2.5, str(i + 1))
+
+        # ── Draw shared nest-pair boundary accent lines ────────────────────
+        import math as _m
+        for cut in cuts:
+            if cut.get('nest_role') == 'A':
+                angle = cut.get('angle_right_deg') or 0.0
+                ph    = cut.get('profile_height_mm') or 0
+                if ph and angle:
+                    signed_shift = _m.copysign(
+                        ph * abs(_m.tan(_m.radians(float(angle)))) * scale,
+                        angle
+                    )
+                else:
+                    signed_shift = 0.0
+                x_bot = (cut['offset_mm'] + cut['effective_mm']) * scale
+                x_top = x_bot - signed_shift  # right end: positive angle → top shifts left
+                c.setStrokeColor(colors.white)
+                c.setLineWidth(1.5)
+                c.line(x_bot, y_bar, x_top, y_bar + self.BAR_H)
 
         # ── Draw waste segment ─────────────────────────────────────────────
         if waste_mm > 0:
@@ -207,7 +322,8 @@ def _render_group(group: dict, part_lookup: dict, styles: dict, usable_width: fl
     Returns a list of flowables.
     """
     story = []
-    col_w = [10*mm, 17*mm, 50*mm, 20*mm, 20*mm, 17*mm, 17*mm, 24*mm]
+    # Columns: #, Ofset, Resim No, Parça adı, Nominal, Efektif, Profil, Sol açı, Sağ açı, İş No
+    col_w = [8*mm, 14*mm, 18*mm, 38*mm, 18*mm, 18*mm, 14*mm, 15*mm, 15*mm, 17*mm]
 
     item_name    = group.get('item_name', '—')
     item_code    = group.get('item_code', '')
@@ -256,9 +372,12 @@ def _render_group(group: dict, part_lookup: dict, styles: dict, usable_width: fl
         eff       = round((1 - waste / bar_stock) * 100, 1) if bar_stock else 0
         cuts      = bar['cuts']
 
+        bar_material = bar.get('item_name') or group.get('item_name', '')
+        mat_part = f"  |  <font color='grey'>{bar_material}</font>" if bar_material else ''
         story.append(Paragraph(
             f"Çubuk #{bar_idx}  –  {bar_stock} mm"
-            f"  |  Fire: {waste} mm  |  Verimlilik: {eff}\u00a0%",
+            f"{mat_part}"
+            f"  |  Fire: {waste} mm  |  Verimlilik: {eff} %",
             styles['bar_header'],
         ))
 
@@ -277,8 +396,8 @@ def _render_group(group: dict, part_lookup: dict, styles: dict, usable_width: fl
 
         # Cut table
         header_row = [
-            '#', 'Ofset (mm)', 'Parça adı',
-            'Nominal (mm)', 'Efektif (mm)',
+            '#', 'Ofset (mm)', 'Resim No', 'Parça adı',
+            'Nominal (mm)', 'Efektif (mm)', 'Profil (mm)',
             'Sol açı', 'Sağ açı', 'İş No',
         ]
         rows = [header_row]
@@ -295,17 +414,18 @@ def _render_group(group: dict, part_lookup: dict, styles: dict, usable_width: fl
             rows.append([
                 str(i),
                 str(round(cut.get('offset_mm', 0), 1)),
+                cut.get('image_no') or (part.image_no if part else '') or '—',
                 cut.get('label', ''),
                 str(cut.get('nominal_mm', '')),
                 str(round(cut.get('effective_mm', cut.get('nominal_mm', 0)), 1)),
+                str(cut.get('profile_height_mm') or '') or '—',
                 _fmt_angle(angle_left),
                 _fmt_angle(angle_right),
                 cut.get('job_no', '') or '—',
             ])
 
         # Fire (waste) row
-        rows.append(['', '', '⟶ FİRE', f"{waste} mm", '', '', '', ''])
-
+        rows.append(['', '', '', '⟶ FİRE', f"{waste} mm", '', '', '', '', ''])
         cut_table = Table(rows, colWidths=col_w, repeatRows=1)
         cut_table.setStyle(TableStyle([
             ('BACKGROUND',     (0, 0), (-1, 0),  DARK_BLUE),
@@ -328,8 +448,8 @@ def _render_group(group: dict, part_lookup: dict, styles: dict, usable_width: fl
             ('RIGHTPADDING',   (0, 0), (-1, -1), 4),
             ('ALIGN',          (0, 1), (0, -1), 'CENTER'),
             ('ALIGN',          (1, 1), (1, -1), 'RIGHT'),
-            ('ALIGN',          (3, 1), (4, -1), 'RIGHT'),
-            ('ALIGN',          (5, 1), (6, -1), 'CENTER'),
+            ('ALIGN',          (4, 1), (5, -1), 'RIGHT'),
+            ('ALIGN',          (7, 1), (8, -1), 'CENTER'),
         ]))
         story.append(cut_table)
         story.append(Spacer(1, 3 * mm))
@@ -499,8 +619,8 @@ def build_task_pdf(task) -> bytes:
 
     # ── Cut table ─────────────────────────────────────────────────────────────
     col_w = [10*mm, 17*mm, 50*mm, 20*mm, 20*mm, 17*mm, 17*mm, 24*mm]
-    rows = [['#', 'Ofset (mm)', 'Parça adı', 'Nominal (mm)', 'Efektif (mm)', 'Sol açı', 'Sağ açı', 'İş No']]
-
+    col_w = [8*mm, 14*mm, 18*mm, 38*mm, 18*mm, 18*mm, 14*mm, 15*mm, 15*mm, 17*mm]
+    rows = [['#', 'Ofset (mm)', 'Resim No', 'Parça adı', 'Nominal (mm)', 'Efektif (mm)', 'Profil (mm)', 'Sol açı', 'Sağ açı', 'İş No']]
     for i, cut in enumerate(bar['cuts'], start=1):
         part        = part_lookup.get(cut.get('part_id'))
         angle_left  = cut.get('angle_left_deg')
@@ -513,15 +633,16 @@ def build_task_pdf(task) -> bytes:
         rows.append([
             str(i),
             str(round(cut.get('offset_mm', 0), 1)),
+            cut.get('image_no') or (part.image_no if part else '') or '—',
             cut.get('label', ''),
             str(cut.get('nominal_mm', '')),
             str(round(cut.get('effective_mm', cut.get('nominal_mm', 0)), 1)),
+            str(cut.get('profile_height_mm') or '') or '—',
             _fmt_angle(angle_left),
             _fmt_angle(angle_right),
             cut.get('job_no', '') or '—',
         ])
-
-    rows.append(['', '', '⟶ FİRE', f"{task.waste_mm} mm", '', '', '', ''])
+    rows.append(['', '', '', '⟶ FİRE', f"{task.waste_mm} mm", '', '', '', '', ''])
 
     cut_table = Table(rows, colWidths=col_w, repeatRows=1)
     cut_table.setStyle(TableStyle([
@@ -545,8 +666,8 @@ def build_task_pdf(task) -> bytes:
         ('RIGHTPADDING',   (0, 0), (-1, -1), 4),
         ('ALIGN',          (0, 1), (0, -1), 'CENTER'),
         ('ALIGN',          (1, 1), (1, -1), 'RIGHT'),
-        ('ALIGN',          (3, 1), (4, -1), 'RIGHT'),
-        ('ALIGN',          (5, 1), (6, -1), 'CENTER'),
+        ('ALIGN',          (4, 1), (5, -1), 'RIGHT'),
+        ('ALIGN',          (7, 1), (8, -1), 'CENTER'),
     ]))
     story.append(cut_table)
 
