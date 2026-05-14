@@ -1,5 +1,6 @@
 from django.conf import settings
 from django.db import models
+from django.utils.text import slugify
 
 
 class Position(models.Model):
@@ -56,6 +57,10 @@ class UserGroup(models.Model):
     Used for notification routing and @mentions in comments.
     """
     name        = models.CharField(max_length=100, unique=True)
+    slug        = models.SlugField(
+        max_length=100, unique=True, blank=True,
+        help_text="Machine-readable identifier (e.g. 'planning', 'management'). Auto-derived from name if left blank.",
+    )
     description = models.TextField(blank=True)
     positions   = models.ManyToManyField(
         'organization.Position',
@@ -69,6 +74,11 @@ class UserGroup(models.Model):
         ordering = ['name']
         verbose_name = 'Kullanıcı Grubu'
         verbose_name_plural = 'Kullanıcı Grupları'
+
+    def save(self, *args, **kwargs):
+        if not self.slug:
+            self.slug = slugify(self.name)
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return self.name

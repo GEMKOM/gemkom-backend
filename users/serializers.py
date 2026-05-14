@@ -1,7 +1,7 @@
 from django.contrib.auth.models import User
 from rest_framework import serializers
 from .models import UserProfile, WageRate
-from organization.models import Position
+from organization.models import Position, UserGroup
 
 
 # ---------------------------------------------------------------------------
@@ -55,6 +55,7 @@ class UserListSerializer(serializers.ModelSerializer):
     department_code     = serializers.SerializerMethodField()
     birth_date          = serializers.DateField(source='profile.birth_date', read_only=True)
     hire_date           = serializers.DateField(source='profile.hire_date', read_only=True)
+    user_groups         = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -64,6 +65,7 @@ class UserListSerializer(serializers.ModelSerializer):
             'department_code',
             'must_reset_password', 'is_active',
             'birth_date', 'hire_date',
+            'user_groups',
         ]
 
     def get_position_title(self, obj):
@@ -83,6 +85,20 @@ class UserListSerializer(serializers.ModelSerializer):
             return obj.profile.position.department_code or None
         except Exception:
             return None
+
+    def get_user_groups(self, obj):
+        try:
+            position_id = obj.profile.position_id
+            if not position_id:
+                return []
+            return list(
+                UserGroup.objects.filter(
+                    is_active=True,
+                    positions__id=position_id,
+                ).values_list('slug', flat=True)
+            )
+        except Exception:
+            return []
 
 
 class UserCreateSerializer(serializers.ModelSerializer):

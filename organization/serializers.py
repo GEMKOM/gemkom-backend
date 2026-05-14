@@ -89,7 +89,7 @@ class UserGroupSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = UserGroup
-        fields = ['id', 'name', 'description', 'is_active', 'position_count', 'member_count', 'created_at']
+        fields = ['id', 'name', 'slug', 'description', 'is_active', 'position_count', 'member_count', 'created_at']
 
     def get_member_count(self, obj):
         return obj.get_members().count()
@@ -116,7 +116,7 @@ class UserGroupWriteSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = UserGroup
-        fields = ['id', 'name', 'description', 'is_active', 'position_ids']
+        fields = ['id', 'name', 'slug', 'description', 'is_active', 'position_ids']
 
     def create(self, validated_data):
         position_ids = validated_data.pop('position_ids', None)
