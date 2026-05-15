@@ -57,6 +57,9 @@ def _month_key(dt):  # YYYY-MM
     return f"{dt.year:04d}-{dt.month:02d}"
 
 def build_executive_overview(request):
+    from finance.services import compute_monthly_wage, expense_applies_to_month
+    from finance.models import MonthlyExpense, LoanInstallment, TaxEntry, AdHocJobCost
+
     created_gte = request.query_params.get("created_gte")
     created_lte = request.query_params.get("created_lte")
 
@@ -74,14 +77,17 @@ def build_executive_overview(request):
     fb = get_fallback_rates()
 
     by_month = defaultdict(lambda: {
-        "total_spent_eur": Decimal("0.00"),
-        "paid_eur": Decimal("0.00"),
-        "awaiting_eur": Decimal("0.00"),
+        "procurement_eur": Decimal("0.00"),
+        "procurement_paid_eur": Decimal("0.00"),
+        "wages_eur": Decimal("0.00"),
+        "expenses_eur": Decimal("0.00"),
+        "loans_eur": Decimal("0.00"),
+        "taxes_eur": Decimal("0.00"),
+        "adhoc_eur": Decimal("0.00"),
         "po_ids": set(),
         "active_suppliers": set(),
     })
 
-    # Undated schedules bucket — same structure but no month key
     undated = {
         "total_eur": Decimal("0.00"),
         "paid_eur": Decimal("0.00"),
@@ -92,6 +98,7 @@ def build_executive_overview(request):
 
     suppliers_all = set()
 
+    # --- Procurement payment schedules ---
     for po in qs:
         pr_rates = extract_rates(getattr(po.pr, "currency_rates_snapshot", {}) or {})
         rate = (po.tax_rate or Decimal("0")) / Decimal("100")
@@ -111,61 +118,117 @@ def build_executive_overview(request):
                 continue
 
             mk = f"{sch.due_date.year:04d}-{sch.due_date.month:02d}"
-            by_month[mk]["total_spent_eur"] += net_component
+            by_month[mk]["procurement_eur"] += net_component
             if sch.is_paid:
-                by_month[mk]["paid_eur"] += net_component
+                by_month[mk]["procurement_paid_eur"] += net_component
             by_month[mk]["po_ids"].add(po.id)
             if po.supplier_id:
                 by_month[mk]["active_suppliers"].add(po.supplier_id)
                 suppliers_all.add(po.supplier_id)
 
-    # Finalize undated awaiting
     undated["awaiting_eur"] = max(Decimal("0.00"), undated["total_eur"] - undated["paid_eur"])
 
-    # Finalize monthly series
+    # --- Finance: expenses (need all active ones to check recurrence) ---
+    active_expenses = list(MonthlyExpense.objects.filter(status="active"))
+
+    # --- Finance: loans, taxes, adhoc — group by month key ---
+    for inst in LoanInstallment.objects.select_related("loan").exclude(loan__status="cancelled"):
+        mk = f"{inst.due_date.year:04d}-{inst.due_date.month:02d}"
+        amt_eur = to_eur(inst.total_payment, inst.loan.currency, {}, fb) or Decimal("0")
+        by_month[mk]["loans_eur"] += amt_eur
+
+    for tax in TaxEntry.objects.all():
+        mk = f"{tax.due_date.year:04d}-{tax.due_date.month:02d}"
+        amt_eur = to_eur(tax.amount, tax.currency, {}, fb) or Decimal("0")
+        by_month[mk]["taxes_eur"] += amt_eur
+
+    for cost in AdHocJobCost.objects.all():
+        mk = f"{cost.cost_date.year:04d}-{cost.cost_date.month:02d}"
+        amt_eur = to_eur(cost.amount, cost.currency, {}, fb) or Decimal("0")
+        by_month[mk]["adhoc_eur"] += amt_eur
+
+    # --- Build sorted series, computing wages + expenses per month on the fly ---
     months = sorted(by_month.keys())
     series = []
-    total_spent_all = Decimal("0.00")
-    total_paid_all = Decimal("0.00")
-    total_awaiting_all = Decimal("0.00")
+    total_procurement_all = Decimal("0.00")
+    total_wages_all = Decimal("0.00")
+    total_expenses_all = Decimal("0.00")
+    total_loans_all = Decimal("0.00")
+    total_taxes_all = Decimal("0.00")
+    total_adhoc_all = Decimal("0.00")
 
     for m in months:
         row = by_month[m]
-        awaiting = max(Decimal("0.00"), row["total_spent_eur"] - row["paid_eur"])
-        row["awaiting_eur"] = awaiting
+        y, mo = map(int, m.split("-"))
 
-        total_spent_all += row["total_spent_eur"]
-        total_paid_all += row["paid_eur"]
-        total_awaiting_all += awaiting
+        wages = compute_monthly_wage(y, mo)
+        wages_eur = Decimal(wages["total_eur"])
+        row["wages_eur"] = wages_eur
+
+        expenses_eur = Decimal("0.00")
+        for exp in active_expenses:
+            if expense_applies_to_month(exp, y, mo):
+                expenses_eur += to_eur(exp.amount, exp.currency, {}, fb) or Decimal("0")
+        row["expenses_eur"] = expenses_eur
+
+        procurement_awaiting = max(Decimal("0.00"), row["procurement_eur"] - row["procurement_paid_eur"])
+        total_outflow = row["procurement_eur"] + wages_eur + expenses_eur + row["loans_eur"] + row["taxes_eur"] + row["adhoc_eur"]
+
+        total_procurement_all += row["procurement_eur"]
+        total_wages_all += wages_eur
+        total_expenses_all += expenses_eur
+        total_loans_all += row["loans_eur"]
+        total_taxes_all += row["taxes_eur"]
+        total_adhoc_all += row["adhoc_eur"]
 
         series.append({
             "month": m,
-            "total_spent_eur": str(q2(row["total_spent_eur"])),
+            "procurement_eur": str(q2(row["procurement_eur"])),
+            "procurement_paid_eur": str(q2(row["procurement_paid_eur"])),
+            "procurement_awaiting_eur": str(q2(procurement_awaiting)),
             "po_count": len(row["po_ids"]),
             "active_suppliers": len(row["active_suppliers"]),
-            "paid_eur": str(q2(row["paid_eur"])),
-            "awaiting_eur": str(q2(row["awaiting_eur"])),
+            "wages_eur": str(q2(wages_eur)),
+            "employee_count": wages["employee_count"],
+            "expenses_eur": str(q2(expenses_eur)),
+            "loans_eur": str(q2(row["loans_eur"])),
+            "taxes_eur": str(q2(row["taxes_eur"])),
+            "adhoc_eur": str(q2(row["adhoc_eur"])),
+            "total_outflow_eur": str(q2(total_outflow)),
         })
 
-    # MoM / YoY based on latest month's scheduled dues
+    # MoM / YoY on total_outflow of latest month
     latest = months[-1] if months else None
     mom = yoy = None
     if latest:
         yyyy, mm = map(int, latest.split("-"))
         prev_m = f"{(yyyy if mm > 1 else yyyy - 1):04d}-{(mm - 1 if mm > 1 else 12):02d}"
         last_year = f"{yyyy - 1:04d}-{mm:02d}"
-        cur_val = by_month[latest]["total_spent_eur"]
-        if prev_m in by_month and by_month[prev_m]["total_spent_eur"] > 0:
-            base = by_month[prev_m]["total_spent_eur"]
-            mom = float((cur_val - base) / base) * 100.0
-        if last_year in by_month and by_month[last_year]["total_spent_eur"] > 0:
-            base = by_month[last_year]["total_spent_eur"]
-            yoy = float((cur_val - base) / base) * 100.0
+
+        def _total(mk):
+            r = by_month.get(mk)
+            if not r:
+                return Decimal("0")
+            return r["procurement_eur"] + r["wages_eur"] + r["expenses_eur"] + r["loans_eur"] + r["taxes_eur"] + r["adhoc_eur"]
+
+        cur_val = _total(latest)
+        prev_val = _total(prev_m)
+        yr_val = _total(last_year)
+        if prev_val > 0:
+            mom = float((cur_val - prev_val) / prev_val) * 100.0
+        if yr_val > 0:
+            yoy = float((cur_val - yr_val) / yr_val) * 100.0
+
+    grand_total = total_procurement_all + total_wages_all + total_expenses_all + total_loans_all + total_taxes_all + total_adhoc_all
 
     kpis = {
-        "total_spent_eur": str(q2(total_spent_all)),
-        "total_paid_eur": str(q2(total_paid_all)),
-        "total_awaiting_eur": str(q2(total_awaiting_all)),
+        "total_outflow_eur": str(q2(grand_total)),
+        "total_procurement_eur": str(q2(total_procurement_all)),
+        "total_wages_eur": str(q2(total_wages_all)),
+        "total_expenses_eur": str(q2(total_expenses_all)),
+        "total_loans_eur": str(q2(total_loans_all)),
+        "total_taxes_eur": str(q2(total_taxes_all)),
+        "total_adhoc_eur": str(q2(total_adhoc_all)),
         "po_count": sum(len(v["po_ids"]) for v in by_month.values()),
         "active_suppliers": len(suppliers_all),
         "mom_percent": (round(mom, 2) if mom is not None else None),

@@ -34,6 +34,8 @@ def _resolve_installment_date(basis, offset_days, offer, job):
 
 
 def build_sales_revenue_forecast(request):
+    from finance.models import ExpectedReceiptInstallment
+
     created_gte = request.query_params.get("created_gte")
     created_lte = request.query_params.get("created_lte")
 
@@ -51,15 +53,18 @@ def build_sales_revenue_forecast(request):
     fb = get_fallback_rates()
 
     by_month = defaultdict(lambda: {
-        "revenue_eur": Decimal("0.00"),
+        "sales_offers_eur": Decimal("0.00"),
+        "expected_receipts_eur": Decimal("0.00"),
         "offer_ids": set(),
         "customer_ids": set(),
     })
     undated = {
-        "revenue_eur": Decimal("0.00"),
+        "sales_offers_eur": Decimal("0.00"),
+        "expected_receipts_eur": Decimal("0.00"),
         "offer_ids": set(),
     }
 
+    # --- Sales offer installments ---
     for offer in qs:
         current_price = next(
             (r for r in offer.price_revisions.all() if r.is_current),
@@ -68,18 +73,12 @@ def build_sales_revenue_forecast(request):
         if not current_price or not current_price.amount:
             continue
 
-        total_eur = to_eur(
-            current_price.amount,
-            current_price.currency or "EUR",
-            {},
-            fb,
-        )
+        total_eur = to_eur(current_price.amount, current_price.currency or "EUR", {}, fb)
         if not total_eur:
             continue
 
         job = offer.converted_job_order
 
-        # Build installment lines — use payment terms if set, else treat as single 100% completion payment
         if offer.payment_terms and offer.payment_terms.default_lines:
             lines = offer.payment_terms.default_lines
         else:
@@ -93,52 +92,84 @@ def build_sales_revenue_forecast(request):
             offset_days = line.get("offset_days") or 0
             installment_eur = q2(total_eur * pct / Decimal("100"))
 
-            date = _resolve_installment_date(basis, offset_days, offer, job)
+            resolved = _resolve_installment_date(basis, offset_days, offer, job)
 
-            if date is None:
-                undated["revenue_eur"] += installment_eur
+            if resolved is None:
+                undated["sales_offers_eur"] += installment_eur
                 undated["offer_ids"].add(offer.id)
             else:
-                mk = f"{date.year:04d}-{date.month:02d}"
-                by_month[mk]["revenue_eur"] += installment_eur
+                mk = f"{resolved.year:04d}-{resolved.month:02d}"
+                by_month[mk]["sales_offers_eur"] += installment_eur
                 by_month[mk]["offer_ids"].add(offer.id)
                 by_month[mk]["customer_ids"].add(offer.customer_id)
 
-    # Build sorted series
+    # --- Expected receipt installments ---
+    receipt_installments = (
+        ExpectedReceiptInstallment.objects
+        .select_related("receipt")
+        .exclude(receipt__status="cancelled")
+    )
+    for inst in receipt_installments:
+        amt_eur = to_eur(inst.amount, inst.currency, {}, fb) or Decimal("0")
+        if not inst.due_date:
+            undated["expected_receipts_eur"] += amt_eur
+        else:
+            mk = f"{inst.due_date.year:04d}-{inst.due_date.month:02d}"
+            by_month[mk]["expected_receipts_eur"] += amt_eur
+
+    # --- Build sorted series ---
     months = sorted(by_month.keys())
     series = []
-    total_revenue_all = Decimal("0.00")
+    total_sales_all = Decimal("0.00")
+    total_receipts_all = Decimal("0.00")
     all_offer_ids = set()
     all_customer_ids = set()
 
     for m in months:
         row = by_month[m]
-        total_revenue_all += row["revenue_eur"]
+        total_sales_all += row["sales_offers_eur"]
+        total_receipts_all += row["expected_receipts_eur"]
         all_offer_ids |= row["offer_ids"]
         all_customer_ids |= row["customer_ids"]
+        total_inflow = row["sales_offers_eur"] + row["expected_receipts_eur"]
         series.append({
             "month": m,
-            "revenue_eur": str(q2(row["revenue_eur"])),
+            "sales_offers_eur": str(q2(row["sales_offers_eur"])),
+            "expected_receipts_eur": str(q2(row["expected_receipts_eur"])),
+            "total_inflow_eur": str(q2(total_inflow)),
             "offer_count": len(row["offer_ids"]),
             "customer_count": len(row["customer_ids"]),
         })
 
-    # MoM / YoY on latest month
+    # MoM / YoY on total_inflow of latest month
     latest = months[-1] if months else None
     mom = yoy = None
     if latest:
         yyyy, mm = map(int, latest.split("-"))
         prev_m = f"{(yyyy if mm > 1 else yyyy - 1):04d}-{(mm - 1 if mm > 1 else 12):02d}"
         last_year = f"{yyyy - 1:04d}-{mm:02d}"
-        cur_val = by_month[latest]["revenue_eur"]
-        if prev_m in by_month and by_month[prev_m]["revenue_eur"] > 0:
-            mom = float((cur_val - by_month[prev_m]["revenue_eur"]) / by_month[prev_m]["revenue_eur"]) * 100.0
-        if last_year in by_month and by_month[last_year]["revenue_eur"] > 0:
-            yoy = float((cur_val - by_month[last_year]["revenue_eur"]) / by_month[last_year]["revenue_eur"]) * 100.0
+
+        def _total_inflow(mk):
+            r = by_month.get(mk)
+            if not r:
+                return Decimal("0")
+            return r["sales_offers_eur"] + r["expected_receipts_eur"]
+
+        cur_val = _total_inflow(latest)
+        prev_val = _total_inflow(prev_m)
+        yr_val = _total_inflow(last_year)
+        if prev_val > 0:
+            mom = float((cur_val - prev_val) / prev_val) * 100.0
+        if yr_val > 0:
+            yoy = float((cur_val - yr_val) / yr_val) * 100.0
+
+    grand_total = total_sales_all + total_receipts_all
 
     return {
         "kpis": {
-            "total_revenue_eur": str(q2(total_revenue_all)),
+            "total_inflow_eur": str(q2(grand_total)),
+            "total_sales_offers_eur": str(q2(total_sales_all)),
+            "total_expected_receipts_eur": str(q2(total_receipts_all)),
             "offer_count": len(all_offer_ids),
             "customer_count": len(all_customer_ids),
             "mom_percent": round(mom, 2) if mom is not None else None,
@@ -146,7 +177,8 @@ def build_sales_revenue_forecast(request):
         },
         "series": series,
         "undated": {
-            "revenue_eur": str(q2(undated["revenue_eur"])),
+            "sales_offers_eur": str(q2(undated["sales_offers_eur"])),
+            "expected_receipts_eur": str(q2(undated["expected_receipts_eur"])),
             "offer_count": len(undated["offer_ids"]),
         },
     }
