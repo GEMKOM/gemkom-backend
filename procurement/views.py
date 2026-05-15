@@ -1075,11 +1075,24 @@ class ProcurementReportViewSet(viewsets.GenericViewSet):
             return self.get_paginated_response(page)
         return Response(rows)
     
-    @action(detail=False, methods=["get"], url_path="executive")
-    def executive(self, request):
+    @action(detail=False, methods=["get"], url_path="payment-forecast")
+    def payment_forecast(self, request):
         from .reports.finance import build_executive_overview
         payload = build_executive_overview(request) or {}
         return Response(payload)
+
+    @action(detail=False, methods=["get"], url_path="outflow-detail")
+    def outflow_detail(self, request):
+        """
+        Per-installment outflow detail for a given month.
+        Required: ?month=YYYY-MM
+        """
+        from .reports.finance import build_outflow_detail
+        month = request.query_params.get("month", "")
+        if not month:
+            return Response({"detail": "month parameter is required (YYYY-MM)."}, status=400)
+        rows = build_outflow_detail(month) or []
+        return Response(rows)
 
     @action(detail=False, methods=["get"], url_path="concentration")
     def concentration(self, request):

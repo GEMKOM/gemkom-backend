@@ -990,3 +990,34 @@ class SalesOfferViewSet(viewsets.ModelViewSet):
         return Response(
             SalesOfferApprovalPageSerializer(offer, context={'request': request}).data
         )
+
+
+class SalesReportViewSet(viewsets.GenericViewSet):
+    """
+    Sales revenue forecast reports under /sales/reports/<report-name>/.
+    """
+    permission_classes = [IsAuthenticated]
+
+    @action(detail=False, methods=["get"], url_path="revenue")
+    def revenue(self, request):
+        """
+        Revenue forecast: spreads converted offer prices across months
+        using payment term installment percentages and job order dates.
+        Filters: ?created_gte=YYYY-MM-DD, ?created_lte=YYYY-MM-DD
+        """
+        from .reports.finance import build_sales_revenue_forecast
+        payload = build_sales_revenue_forecast(request) or {}
+        return Response(payload)
+
+    @action(detail=False, methods=["get"], url_path="inflow-detail")
+    def inflow_detail(self, request):
+        """
+        Per-offer inflow detail for a given month.
+        Required: ?month=YYYY-MM
+        """
+        from .reports.finance import build_inflow_detail
+        month = request.query_params.get("month", "")
+        if not month:
+            return Response({"detail": "month parameter is required (YYYY-MM)."}, status=400)
+        rows = build_inflow_detail(month) or []
+        return Response(rows)

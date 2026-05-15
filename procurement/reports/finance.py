@@ -223,6 +223,72 @@ def build_executive_overview(request):
     }
 
 
+def build_outflow_detail(month: str):
+    """
+    Returns per-installment outflow detail for a given month (YYYY-MM).
+    Each row is one PaymentSchedule whose due_date falls in that month.
+    """
+    try:
+        year, mon = map(int, month.split("-"))
+    except (ValueError, AttributeError):
+        return []
+
+    fb = get_fallback_rates()
+
+    schedules = (
+        PaymentSchedule.objects
+        .filter(due_date__year=year, due_date__month=mon)
+        .select_related(
+            "purchase_order__supplier",
+            "purchase_order__pr",
+        )
+        .exclude(purchase_order__status="cancelled")
+        .order_by("due_date", "purchase_order__supplier__name", "sequence")
+    )
+
+    rows = []
+    for sch in schedules:
+        po = sch.purchase_order
+        pr = po.pr
+        supplier = po.supplier
+
+        pr_rates = extract_rates(getattr(pr, "currency_rates_snapshot", {}) or {})
+        rate = (po.tax_rate or Decimal("0")) / Decimal("100")
+        sch_ccy = sch.currency or po.currency or "TRY"
+        amt_eur = to_eur(sch.amount or Decimal("0"), sch_ccy, pr_rates, fb) or Decimal("0")
+        net_eur = (amt_eur / (Decimal("1") + rate)) if sch.paid_with_tax else amt_eur
+
+        rows.append({
+            "schedule_id": sch.id,
+            "due_date": sch.due_date.isoformat(),
+            "label": sch.label or sch.basis,
+            "basis": sch.basis,
+            "sequence": sch.sequence,
+            "percentage": str(sch.percentage),
+            "amount": str(q2(sch.amount or Decimal("0"))),
+            "currency": sch_ccy,
+            "amount_eur": str(q2(net_eur)),
+            "is_paid": sch.is_paid,
+            "paid_at": sch.paid_at.date().isoformat() if sch.paid_at else None,
+            "paid_with_tax": sch.paid_with_tax,
+            "po_id": po.id,
+            "po_status": po.status,
+            "po_total_amount": str(q2(po.total_amount or Decimal("0"))),
+            "po_currency": po.currency,
+            "po_tax_rate": str(po.tax_rate or Decimal("0")),
+            "po_ordered_at": po.ordered_at.date().isoformat() if po.ordered_at else None,
+            "supplier_id": supplier.id if supplier else None,
+            "supplier_name": supplier.name if supplier else None,
+            "supplier_code": supplier.code if supplier else None,
+            "pr_id": pr.id if pr else None,
+            "pr_number": getattr(pr, "request_number", None),
+            "pr_title": getattr(pr, "title", None),
+            "pr_needed_date": pr.needed_date.isoformat() if pr and pr.needed_date else None,
+        })
+
+    return rows
+
+
 def build_concentration_report(request):
     created_gte = request.query_params.get("created_gte")
     created_lte = request.query_params.get("created_lte")
