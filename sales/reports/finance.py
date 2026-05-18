@@ -2,7 +2,6 @@ from __future__ import annotations
 from decimal import Decimal
 from collections import defaultdict
 from datetime import timedelta, date as date_type
-from django.db.models import Q
 
 from ..models import SalesOffer
 from procurement.reports.common import q2, get_fallback_rates, to_eur
@@ -36,19 +35,12 @@ def _resolve_installment_date(basis, offset_days, offer, job):
 def build_sales_revenue_forecast(request):
     from finance.models import ExpectedReceiptInstallment
 
-    created_gte = request.query_params.get("created_gte")
-    created_lte = request.query_params.get("created_lte")
-
     qs = (
         SalesOffer.objects
         .filter(status="converted")
         .select_related("converted_job_order", "payment_terms", "customer")
         .prefetch_related("price_revisions")
     )
-    if created_gte:
-        qs = qs.filter(Q(won_at__date__gte=created_gte) | Q(created_at__date__gte=created_gte))
-    if created_lte:
-        qs = qs.filter(Q(won_at__date__lte=created_lte) | Q(created_at__date__lte=created_lte))
 
     fb = get_fallback_rates()
 
@@ -63,6 +55,13 @@ def build_sales_revenue_forecast(request):
         "expected_receipts_eur": Decimal("0.00"),
         "offer_ids": set(),
     }
+
+    # Pre-fetch all receipt states for converted offers
+    from finance.models import SalesOfferInstallmentReceipt
+    offer_ids = list(qs.values_list("id", flat=True))
+    receipt_map = {}  # (offer_id, sequence) -> SalesOfferInstallmentReceipt
+    for r in SalesOfferInstallmentReceipt.objects.filter(offer_id__in=offer_ids):
+        receipt_map[(r.offer_id, r.sequence)] = r
 
     # --- Sales offer installments ---
     for offer in qs:
@@ -84,7 +83,7 @@ def build_sales_revenue_forecast(request):
         else:
             lines = [{"percentage": Decimal("100.00"), "basis": "on_delivery", "offset_days": 0}]
 
-        for line in lines:
+        for seq, line in enumerate(lines, start=1):
             pct = Decimal(str(line.get("percentage") or 0))
             if pct <= 0:
                 continue
@@ -93,6 +92,8 @@ def build_sales_revenue_forecast(request):
             installment_eur = q2(total_eur * pct / Decimal("100"))
 
             resolved = _resolve_installment_date(basis, offset_days, offer, job)
+            rec = receipt_map.get((offer.id, seq))
+            is_received = rec.is_received if rec else False
 
             if resolved is None:
                 undated["sales_offers_eur"] += installment_eur
@@ -102,6 +103,9 @@ def build_sales_revenue_forecast(request):
                 by_month[mk]["sales_offers_eur"] += installment_eur
                 by_month[mk]["offer_ids"].add(offer.id)
                 by_month[mk]["customer_ids"].add(offer.customer_id)
+                if is_received:
+                    by_month[mk].setdefault("sales_offers_received_eur", Decimal("0"))
+                    by_month[mk]["sales_offers_received_eur"] += installment_eur
 
     # --- Expected receipt installments ---
     receipt_installments = (
@@ -132,9 +136,12 @@ def build_sales_revenue_forecast(request):
         all_offer_ids |= row["offer_ids"]
         all_customer_ids |= row["customer_ids"]
         total_inflow = row["sales_offers_eur"] + row["expected_receipts_eur"]
+        sales_received = row.get("sales_offers_received_eur", Decimal("0"))
         series.append({
             "month": m,
             "sales_offers_eur": str(q2(row["sales_offers_eur"])),
+            "sales_offers_received_eur": str(q2(sales_received)),
+            "sales_offers_awaiting_eur": str(q2(row["sales_offers_eur"] - sales_received)),
             "expected_receipts_eur": str(q2(row["expected_receipts_eur"])),
             "total_inflow_eur": str(q2(total_inflow)),
             "offer_count": len(row["offer_ids"]),

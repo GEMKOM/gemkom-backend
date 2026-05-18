@@ -248,7 +248,30 @@ class ExpectedReceiptInstallment(models.Model):
 
 
 # ---------------------------------------------------------------------------
-# 5. Ad-hoc Job Cost
+# 5. Sales Offer Installment Receipt
+# ---------------------------------------------------------------------------
+
+class SalesOfferInstallmentReceipt(models.Model):
+    offer    = models.ForeignKey(
+        "sales.SalesOffer", on_delete=models.CASCADE,
+        related_name="installment_receipts",
+    )
+    sequence = models.PositiveIntegerField()  # matches index in payment_terms.default_lines
+    is_received  = models.BooleanField(default=False)
+    received_at  = models.DateTimeField(null=True, blank=True)
+    received_by  = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
+    notes        = models.TextField(blank=True)
+
+    class Meta:
+        unique_together = [("offer", "sequence")]
+        ordering = ["offer", "sequence"]
+
+    def __str__(self):
+        return f"Offer {self.offer_id} installment {self.sequence} — received={self.is_received}"
+
+
+# ---------------------------------------------------------------------------
+# 6. Ad-hoc Job Cost
 # ---------------------------------------------------------------------------
 
 class AdHocJobCost(models.Model):

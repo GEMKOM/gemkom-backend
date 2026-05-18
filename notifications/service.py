@@ -65,6 +65,7 @@ NOTIFICATION_DEFAULTS: dict[str, tuple[bool, bool]] = {
     Notification.JOB_ON_HOLD_REVISION:     (True,  True),
     Notification.JOB_RESUMED:              (False, True),
     Notification.JOB_DATE_CHANGED:         (True,  True),
+    Notification.JOB_CANCELLED:            (True,  True),
     Notification.TOPIC_MENTION:            (True,  True),
     Notification.COMMENT_MENTION:          (True,  True),
     Notification.NEW_COMMENT:              (False, True),
@@ -211,6 +212,16 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
         ),
         'link': f'{_BASE_URL}/projects/project-tracking/?job_no={{job_no}}',
         'vars': ['job_no', 'revision', 'link'],
+    },
+    Notification.JOB_CANCELLED: {
+        'title': '[İş Emri İptal Edildi] {job_no}',
+        'body': (
+            '{job_no} - {job_title} iş emri iptal edilmiştir.\n'
+            'İptal Eden: {actor}\n\n'
+            '{link}'
+        ),
+        'link': f'{_BASE_URL}/projects/project-tracking/?job_no={{job_no}}',
+        'vars': ['job_no', 'job_title', 'actor', 'link'],
     },
     Notification.JOB_DATE_CHANGED: {
         'title': '[Termin Tarihi Değişti] {job_no}',

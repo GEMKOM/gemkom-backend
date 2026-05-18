@@ -212,12 +212,12 @@ class NCRListSerializer(serializers.ModelSerializer):
     defect_type_display = serializers.CharField(source='get_defect_type_display', read_only=True)
     created_by_name = serializers.CharField(source='created_by.get_full_name', read_only=True)
     job_order_title = serializers.CharField(source='job_order.title', read_only=True)
-    assigned_team_name = serializers.SerializerMethodField()
+    assigned_team_data = serializers.SerializerMethodField()
 
-    def get_assigned_team_name(self, obj):
+    def get_assigned_team_data(self, obj):
         if obj.assigned_team is None:
             return None
-        return obj.assigned_team.name
+        return {'id': obj.assigned_team.id, 'name': obj.assigned_team.name, 'slug': obj.assigned_team.slug}
 
     class Meta:
         model = NCR
@@ -228,7 +228,7 @@ class NCRListSerializer(serializers.ModelSerializer):
             'severity', 'severity_display',
             'defect_type', 'defect_type_display',
             'status', 'status_display',
-            'assigned_team', 'assigned_team_name', 'disposition',
+            'assigned_team', 'assigned_team_data', 'disposition',
             'submission_count',
             'created_by', 'created_by_name', 'created_at',
         ]
@@ -242,13 +242,13 @@ class NCRDetailSerializer(serializers.ModelSerializer):
     created_by_name = serializers.CharField(source='created_by.get_full_name', read_only=True)
     detected_by_name = serializers.CharField(source='detected_by.get_full_name', read_only=True)
     job_order_title = serializers.CharField(source='job_order.title', read_only=True)
-    assigned_team_name = serializers.SerializerMethodField()
+    assigned_team_data = serializers.SerializerMethodField()
+    assigned_members_data = serializers.SerializerMethodField()
 
-    def get_assigned_team_name(self, obj):
+    def get_assigned_team_data(self, obj):
         if obj.assigned_team is None:
             return None
-        return obj.assigned_team.name
-    assigned_members_data = serializers.SerializerMethodField()
+        return {'id': obj.assigned_team.id, 'name': obj.assigned_team.name, 'slug': obj.assigned_team.slug}
 
     class Meta:
         model = NCR
@@ -262,7 +262,7 @@ class NCRDetailSerializer(serializers.ModelSerializer):
             'affected_quantity',
             'root_cause', 'corrective_action',
             'disposition', 'disposition_display',
-            'assigned_team', 'assigned_team_name', 'assigned_members', 'assigned_members_data',
+            'assigned_team', 'assigned_team_data', 'assigned_members', 'assigned_members_data',
             'status', 'status_display',
             'submission_count',
             'created_by', 'created_by_name', 'created_at', 'updated_at',

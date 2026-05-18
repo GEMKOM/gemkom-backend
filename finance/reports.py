@@ -7,6 +7,120 @@ from procurement.reports.common import q2, get_fallback_rates, to_eur
 from .services import compute_monthly_wage, expense_applies_to_month
 
 
+def build_inflow_tracker() -> list:
+    """
+    Unified inflow list combining SalesOffer installments and ExpectedReceipt
+    installments. Returns all rows sorted by due_date (nulls last), then customer.
+    """
+    from sales.models import SalesOffer
+    from sales.reports.finance import _resolve_installment_date
+    from .models import ExpectedReceiptInstallment, SalesOfferInstallmentReceipt
+
+    fb = get_fallback_rates()
+    rows = []
+
+    # --- Sales offer installments ---
+    offers = (
+        SalesOffer.objects
+        .filter(status="converted")
+        .select_related("converted_job_order", "payment_terms", "customer")
+        .prefetch_related("price_revisions", "installment_receipts")
+    )
+
+    for offer in offers:
+        current_price = next(
+            (r for r in offer.price_revisions.all() if r.is_current), None
+        )
+        if not current_price or not current_price.amount:
+            continue
+
+        total_eur = to_eur(current_price.amount, current_price.currency or "EUR", {}, fb)
+        if not total_eur:
+            continue
+
+        job = offer.converted_job_order
+        receipt_map = {r.sequence: r for r in offer.installment_receipts.all()}
+
+        lines = (
+            offer.payment_terms.default_lines
+            if offer.payment_terms and offer.payment_terms.default_lines
+            else [{"percentage": Decimal("100.00"), "basis": "on_delivery", "offset_days": 0}]
+        )
+
+        for seq, line in enumerate(lines, start=1):
+            pct = Decimal(str(line.get("percentage") or 0))
+            if pct <= 0:
+                continue
+            installment_eur = q2(total_eur * pct / Decimal("100"))
+            due = _resolve_installment_date(line.get("basis") or "custom", line.get("offset_days") or 0, offer, job)
+            rec = receipt_map.get(seq)
+
+            rows.append({
+                "source": "sales_offer",
+                "offer_id": offer.id,
+                "offer_no": offer.offer_no,
+                "installment_id": None,
+                "receipt_id": None,
+                "sequence": seq,
+                "title": offer.title,
+                "reference_no": offer.order_no or None,
+                "customer_name": offer.customer.name if offer.customer else None,
+                "customer_id": offer.customer_id,
+                "job_no": job.job_no if job else None,
+                "job_title": job.title if job else None,
+                "label": line.get("label") or f"Taksit {seq}",
+                "amount": str(q2(current_price.amount * pct / Decimal("100"))),
+                "currency": current_price.currency or "EUR",
+                "amount_eur": str(installment_eur),
+                "due_date": due.isoformat() if due else None,
+                "is_received": rec.is_received if rec else False,
+                "received_at": rec.received_at.date().isoformat() if rec and rec.received_at else None,
+                "received_by": rec.received_by.username if rec and rec.received_by else None,
+                "notes": rec.notes if rec else "",
+                "editable": False,
+            })
+
+    # --- Expected receipt installments ---
+    installments = (
+        ExpectedReceiptInstallment.objects
+        .select_related("receipt", "receipt__job_order", "received_by")
+        .exclude(receipt__status="cancelled")
+        .order_by("due_date", "receipt__customer_name")
+    )
+
+    for inst in installments:
+        receipt = inst.receipt
+        amt_eur = to_eur(inst.amount, inst.currency, {}, fb) or Decimal("0")
+        rows.append({
+            "source": "expected_receipt",
+            "offer_id": None,
+            "offer_no": None,
+            "installment_id": inst.id,
+            "receipt_id": receipt.id,
+            "sequence": inst.sequence,
+            "title": receipt.title,
+            "reference_no": receipt.reference_no or None,
+            "customer_name": receipt.customer_name,
+            "customer_id": None,
+            "job_no": receipt.job_order.job_no if receipt.job_order else None,
+            "job_title": receipt.job_order.title if receipt.job_order else None,
+            "label": inst.label or f"Taksit {inst.sequence}",
+            "amount": str(q2(inst.amount)),
+            "currency": inst.currency,
+            "amount_eur": str(q2(amt_eur)),
+            "due_date": inst.due_date.isoformat() if inst.due_date else None,
+            "is_received": inst.is_received,
+            "received_at": inst.received_at.date().isoformat() if inst.received_at else None,
+            "received_by": inst.received_by.username if inst.received_by else None,
+            "notes": inst.notes,
+            "editable": True,
+        })
+
+    # Sort: due_date nulls last, then customer_name
+    rows.sort(key=lambda r: (r["due_date"] is None, r["due_date"] or "", r["customer_name"] or ""))
+    return rows
+
+
 def build_finance_outflow_detail(month: str) -> dict:
     """
     All finance-side outflows for a given month (YYYY-MM):

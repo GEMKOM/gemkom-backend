@@ -10,6 +10,7 @@ from .models import (
     Loan,
     LoanInstallment,
     MonthlyExpense,
+    SalesOfferInstallmentReceipt,
     TaxEntry,
 )
 
@@ -105,7 +106,7 @@ class ExpectedReceiptInstallmentSerializer(serializers.ModelSerializer):
             "is_received", "received_at", "received_by", "received_by_username",
             "notes",
         ]
-        read_only_fields = ["receipt", "received_at", "received_by"]
+        read_only_fields = ["receipt", "currency", "received_at", "received_by"]
 
 
 class ExpectedReceiptSerializer(serializers.ModelSerializer):
@@ -126,6 +127,21 @@ class ExpectedReceiptSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         validated_data["created_by"] = self.context["request"].user
         return super().create(validated_data)
+
+
+# ---------------------------------------------------------------------------
+
+class SalesOfferInstallmentReceiptSerializer(serializers.ModelSerializer):
+    received_by_username = serializers.CharField(source="received_by.username", read_only=True)
+
+    class Meta:
+        model = SalesOfferInstallmentReceipt
+        fields = [
+            "id", "offer", "sequence",
+            "is_received", "received_at", "received_by", "received_by_username",
+            "notes",
+        ]
+        read_only_fields = ["offer", "received_at", "received_by"]
 
 
 # ---------------------------------------------------------------------------

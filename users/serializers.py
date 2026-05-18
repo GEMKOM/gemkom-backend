@@ -56,6 +56,7 @@ class UserListSerializer(serializers.ModelSerializer):
     birth_date          = serializers.DateField(source='profile.birth_date', read_only=True)
     hire_date           = serializers.DateField(source='profile.hire_date', read_only=True)
     user_groups         = serializers.SerializerMethodField()
+    user_group_ids      = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -65,7 +66,7 @@ class UserListSerializer(serializers.ModelSerializer):
             'department_code',
             'must_reset_password', 'is_active',
             'birth_date', 'hire_date',
-            'user_groups',
+            'user_groups', 'user_group_ids',
         ]
 
     def get_position_title(self, obj):
@@ -86,19 +87,27 @@ class UserListSerializer(serializers.ModelSerializer):
         except Exception:
             return None
 
+    def _user_groups_data(self, obj):
+        cache_key = f'_ug_{obj.pk}'
+        if not hasattr(self, cache_key):
+            try:
+                position_id = obj.profile.position_id
+                result = list(
+                    UserGroup.objects.filter(
+                        is_active=True,
+                        positions__id=position_id,
+                    ).values('id', 'slug')
+                ) if position_id else []
+            except Exception:
+                result = []
+            setattr(self, cache_key, result)
+        return getattr(self, cache_key)
+
     def get_user_groups(self, obj):
-        try:
-            position_id = obj.profile.position_id
-            if not position_id:
-                return []
-            return list(
-                UserGroup.objects.filter(
-                    is_active=True,
-                    positions__id=position_id,
-                ).values_list('slug', flat=True)
-            )
-        except Exception:
-            return []
+        return [g['slug'] for g in self._user_groups_data(obj)]
+
+    def get_user_group_ids(self, obj):
+        return [g['id'] for g in self._user_groups_data(obj)]
 
 
 class UserCreateSerializer(serializers.ModelSerializer):

@@ -57,6 +57,14 @@ class IsOfficeUser(IsOfficeUserOrAdmin):
     """Office portal users. Delegates to office_access permission."""
 
 
+class IsAdminOrStaff(BasePermission):
+    """Only Django staff / superusers."""
+
+    def has_permission(self, request, view):
+        u = request.user
+        return bool(u and u.is_authenticated and (u.is_staff or u.is_superuser))
+
+
 class IsTopicOwnerOrReadOnly(permissions.BasePermission):
     """Only topic owner can edit/delete."""
 

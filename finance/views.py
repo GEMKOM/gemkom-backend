@@ -13,6 +13,7 @@ from .models import (
     Loan,
     LoanInstallment,
     MonthlyExpense,
+    SalesOfferInstallmentReceipt,
     TaxEntry,
 )
 from .serializers import (
@@ -22,12 +23,14 @@ from .serializers import (
     LoanInstallmentSerializer,
     LoanSerializer,
     MonthlyExpenseSerializer,
+    SalesOfferInstallmentReceiptSerializer,
     TaxEntrySerializer,
 )
 from .reports import (
     build_finance_inflow_detail,
     build_finance_monthly_summary,
     build_finance_outflow_detail,
+    build_inflow_tracker,
 )
 
 
@@ -208,6 +211,43 @@ class AdHocJobCostViewSet(viewsets.ModelViewSet):
         return qs
 
 
+class SalesOfferInstallmentReceiptViewSet(viewsets.ViewSet):
+    permission_classes = [IsAuthenticated]
+
+    def list(self, request, offer_pk=None):
+        qs = SalesOfferInstallmentReceipt.objects.filter(offer_id=offer_pk).order_by("sequence")
+        return Response(SalesOfferInstallmentReceiptSerializer(qs, many=True).data)
+
+    @action(detail=False, methods=["post"], url_path="(?P<sequence>[0-9]+)/mark-received")
+    def mark_received(self, request, offer_pk=None, sequence=None):
+        receipt, created = SalesOfferInstallmentReceipt.objects.get_or_create(
+            offer_id=offer_pk,
+            sequence=sequence,
+        )
+        if receipt.is_received:
+            return Response({"detail": "Already marked as received."}, status=status.HTTP_400_BAD_REQUEST)
+        receipt.is_received = True
+        receipt.received_at = timezone.now()
+        receipt.received_by = request.user
+        receipt.notes = request.data.get("notes", receipt.notes)
+        receipt.save(update_fields=["is_received", "received_at", "received_by", "notes"])
+        return Response(SalesOfferInstallmentReceiptSerializer(receipt).data)
+
+    @action(detail=False, methods=["post"], url_path="(?P<sequence>[0-9]+)/unmark-received")
+    def unmark_received(self, request, offer_pk=None, sequence=None):
+        try:
+            receipt = SalesOfferInstallmentReceipt.objects.get(offer_id=offer_pk, sequence=sequence)
+        except SalesOfferInstallmentReceipt.DoesNotExist:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not receipt.is_received:
+            return Response({"detail": "Not marked as received."}, status=status.HTTP_400_BAD_REQUEST)
+        receipt.is_received = False
+        receipt.received_at = None
+        receipt.received_by = None
+        receipt.save(update_fields=["is_received", "received_at", "received_by"])
+        return Response(SalesOfferInstallmentReceiptSerializer(receipt).data)
+
+
 class FinanceReportViewSet(viewsets.ViewSet):
     permission_classes = [IsAuthenticated]
 
@@ -232,3 +272,7 @@ class FinanceReportViewSet(viewsets.ViewSet):
         except (ValueError, TypeError):
             months_ahead = 12
         return Response(build_finance_monthly_summary(months_ahead))
+
+    @action(detail=False, methods=["get"], url_path="inflow-tracker")
+    def inflow_tracker(self, request):
+        return Response(build_inflow_tracker())

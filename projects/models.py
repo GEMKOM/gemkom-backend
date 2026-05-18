@@ -556,20 +556,8 @@ class JobOrder(models.Model):
         self.department_tasks.filter(status='on_hold').update(status='in_progress')
 
     def cancel(self, user=None):
-        """Cancel the job order. Cascades to all children and department tasks."""
-        if self.status == 'completed':
-            raise ValueError("Tamamlanmış işler iptal edilemez.")
-        self.status = 'cancelled'
-        self.save(update_fields=['status'])
-
-        # Cascade to children (except completed ones)
-        for child in self.children.exclude(status='completed'):
-            child.cancel(user=user)
-
-        # Cascade to department tasks (cancel non-completed/skipped tasks)
-        self.department_tasks.exclude(
-            status__in=['completed', 'skipped']
-        ).update(status='cancelled')
+        from projects.cancel_service import cancel_job_order
+        cancel_job_order(self, user=user)
 
 
 # =============================================================================

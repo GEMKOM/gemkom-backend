@@ -66,6 +66,8 @@ class Notification(models.Model):
     VR_APPROVAL_REQUESTED    = 'vr_approval_requested'
     VR_APPROVED              = 'vr_approved'
     VR_REJECTED              = 'vr_rejected'
+    # Job Orders
+    JOB_CANCELLED            = 'job_cancelled'
     # Auth
     PASSWORD_RESET           = 'password_reset'
 
@@ -124,6 +126,7 @@ class Notification(models.Model):
         JOB_ON_HOLD_REVISION:     CATEGORY_DESIGN,
         JOB_RESUMED:              CATEGORY_GENERAL,
         JOB_DATE_CHANGED:         CATEGORY_GENERAL,
+        JOB_CANCELLED:            CATEGORY_GENERAL,
         TASK_ASSIGNED:            CATEGORY_GENERAL,
         SALES_CONSULT_COMPLETED:  CATEGORY_SALES,
         LC_STOCK_ENTRY_COMPLETE:  CATEGORY_PLANNING,
@@ -178,6 +181,7 @@ class Notification(models.Model):
         (JOB_ON_HOLD_REVISION,     'İş Revizyonda Beklemede'),
         (JOB_RESUMED,              'İş Devam Ediyor'),
         (JOB_DATE_CHANGED,         'İş Emri Tarihi Değişti'),
+        (JOB_CANCELLED,            'İş Emri İptal Edildi'),
         (TOPIC_MENTION,            'Konuda Etiketlendiniz'),
         (COMMENT_MENTION,          'Yorumda Etiketlendiniz'),
         (NEW_COMMENT,              'Yeni Yorum'),
@@ -264,6 +268,7 @@ class NotificationConfig(models.Model):
         Notification.JOB_ON_HOLD_REVISION,
         Notification.JOB_RESUMED,
         Notification.JOB_DATE_CHANGED,
+        Notification.JOB_CANCELLED,
         Notification.DRAWING_RELEASED,
         Notification.REVISION_REQUESTED,
         Notification.REVISION_APPROVED,

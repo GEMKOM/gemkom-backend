@@ -60,19 +60,12 @@ def build_executive_overview(request):
     from finance.services import compute_monthly_wage, expense_applies_to_month
     from finance.models import MonthlyExpense, LoanInstallment, TaxEntry, AdHocJobCost
 
-    created_gte = request.query_params.get("created_gte")
-    created_lte = request.query_params.get("created_lte")
-
     qs = (
         PurchaseOrder.objects
         .exclude(status="cancelled")
         .select_related("pr", "supplier")
         .prefetch_related("payment_schedules")
     )
-    if created_gte:
-        qs = qs.filter(Q(created_at__gte=created_gte) | Q(ordered_at__gte=created_gte))
-    if created_lte:
-        qs = qs.filter(Q(created_at__lte=created_lte) | Q(ordered_at__lte=created_lte))
 
     fb = get_fallback_rates()
 
@@ -286,70 +279,139 @@ def build_executive_overview(request):
     }
 
 
-def build_outflow_detail(month: str):
+def build_outflow_detail(month: str) -> dict:
     """
-    Returns per-installment outflow detail for a given month (YYYY-MM).
-    Each row is one PaymentSchedule whose due_date falls in that month.
+    Full outflow detail for a given month (YYYY-MM).
+    Matches the totals in the payment-forecast series row for the same month.
     """
     try:
         year, mon = map(int, month.split("-"))
     except (ValueError, AttributeError):
-        return []
+        return {}
+
+    from finance.services import compute_monthly_wage, expense_applies_to_month
+    from finance.models import MonthlyExpense, LoanInstallment, TaxEntry, AdHocJobCost
 
     fb = get_fallback_rates()
 
+    # --- Procurement payment schedules ---
     schedules = (
         PaymentSchedule.objects
         .filter(due_date__year=year, due_date__month=mon)
-        .select_related(
-            "purchase_order__supplier",
-            "purchase_order__pr",
-        )
+        .select_related("purchase_order__supplier", "purchase_order__pr")
         .exclude(purchase_order__status="cancelled")
         .order_by("due_date", "purchase_order__supplier__name", "sequence")
     )
 
-    rows = []
+    procurement_rows = []
+    procurement_total = Decimal("0")
     for sch in schedules:
         po = sch.purchase_order
         pr = po.pr
         supplier = po.supplier
-
         pr_rates = extract_rates(getattr(pr, "currency_rates_snapshot", {}) or {})
         rate = (po.tax_rate or Decimal("0")) / Decimal("100")
         sch_ccy = sch.currency or po.currency or "TRY"
         amt_eur = to_eur(sch.amount or Decimal("0"), sch_ccy, pr_rates, fb) or Decimal("0")
         net_eur = (amt_eur / (Decimal("1") + rate)) if sch.paid_with_tax else amt_eur
-
-        rows.append({
-            "schedule_id": sch.id,
+        procurement_total += net_eur
+        procurement_rows.append({
+            "id": sch.id,
             "due_date": sch.due_date.isoformat(),
             "label": sch.label or sch.basis,
             "basis": sch.basis,
-            "sequence": sch.sequence,
-            "percentage": str(sch.percentage),
-            "amount": str(q2(sch.amount or Decimal("0"))),
-            "currency": sch_ccy,
             "amount_eur": str(q2(net_eur)),
             "is_paid": sch.is_paid,
-            "paid_at": sch.paid_at.date().isoformat() if sch.paid_at else None,
-            "paid_with_tax": sch.paid_with_tax,
-            "po_id": po.id,
-            "po_status": po.status,
-            "po_total_amount": str(q2(po.total_amount or Decimal("0"))),
-            "po_currency": po.currency,
-            "po_tax_rate": str(po.tax_rate or Decimal("0")),
-            "po_ordered_at": po.ordered_at.date().isoformat() if po.ordered_at else None,
-            "supplier_id": supplier.id if supplier else None,
-            "supplier_name": supplier.name if supplier else None,
             "supplier_code": supplier.code if supplier else None,
-            "pr_id": pr.id if pr else None,
-            "pr_number": getattr(pr, "request_number", None),
+            "supplier_name": supplier.name if supplier else None,
             "pr_title": getattr(pr, "title", None),
-            "pr_needed_date": pr.needed_date.isoformat() if pr and pr.needed_date else None,
         })
 
-    return rows
+    # --- Wages ---
+    wages = compute_monthly_wage(year, mon)
+    wages_eur = Decimal(wages["total_eur"])
+
+    # --- Monthly expenses ---
+    expense_rows = []
+    expenses_total = Decimal("0")
+    for exp in MonthlyExpense.objects.filter(status="active"):
+        if not expense_applies_to_month(exp, year, mon):
+            continue
+        amt_eur = to_eur(exp.amount, exp.currency, {}, fb) or Decimal("0")
+        expenses_total += amt_eur
+        expense_rows.append({
+            "id": exp.id,
+            "category": exp.category,
+            "description": exp.description,
+            "amount_eur": str(q2(amt_eur)),
+            "recurrence": exp.recurrence,
+        })
+
+    # --- Loan installments ---
+    loan_rows = []
+    loans_total = Decimal("0")
+    for inst in LoanInstallment.objects.filter(due_date__year=year, due_date__month=mon).select_related("loan").exclude(loan__status="cancelled"):
+        amt_eur = to_eur(inst.total_payment, inst.loan.currency, {}, fb) or Decimal("0")
+        loans_total += amt_eur
+        loan_rows.append({
+            "id": inst.id,
+            "loan_name": inst.loan.name,
+            "sequence": inst.sequence,
+            "due_date": inst.due_date.isoformat(),
+            "amount_eur": str(q2(amt_eur)),
+            "is_paid": inst.is_paid,
+        })
+
+    # --- Tax entries ---
+    tax_rows = []
+    taxes_total = Decimal("0")
+    for tax in TaxEntry.objects.filter(due_date__year=year, due_date__month=mon):
+        amt_eur = to_eur(tax.amount, tax.currency, {}, fb) or Decimal("0")
+        taxes_total += amt_eur
+        tax_rows.append({
+            "id": tax.id,
+            "tax_type": tax.tax_type,
+            "period_label": tax.period_label,
+            "amount_eur": str(q2(amt_eur)),
+            "due_date": tax.due_date.isoformat(),
+            "is_paid": tax.is_paid,
+        })
+
+    # --- Ad-hoc job costs ---
+    adhoc_rows = []
+    adhoc_total = Decimal("0")
+    for cost in AdHocJobCost.objects.filter(cost_date__year=year, cost_date__month=mon).select_related("job_order"):
+        amt_eur = to_eur(cost.amount, cost.currency, {}, fb) or Decimal("0")
+        adhoc_total += amt_eur
+        adhoc_rows.append({
+            "id": cost.id,
+            "job_no": cost.job_order.job_no if cost.job_order else None,
+            "description": cost.description,
+            "category": cost.category,
+            "amount_eur": str(q2(amt_eur)),
+            "cost_date": cost.cost_date.isoformat(),
+        })
+
+    grand_total = procurement_total + wages_eur + expenses_total + loans_total + taxes_total + adhoc_total
+
+    return {
+        "month": f"{year:04d}-{mon:02d}",
+        "totals": {
+            "procurement_eur": str(q2(procurement_total)),
+            "wages_eur": str(q2(wages_eur)),
+            "expenses_eur": str(q2(expenses_total)),
+            "loans_eur": str(q2(loans_total)),
+            "taxes_eur": str(q2(taxes_total)),
+            "adhoc_eur": str(q2(adhoc_total)),
+            "grand_total_eur": str(q2(grand_total)),
+        },
+        "procurement": procurement_rows,
+        "wages": wages,
+        "expenses": expense_rows,
+        "loans": loan_rows,
+        "taxes": tax_rows,
+        "adhoc_costs": adhoc_rows,
+    }
 
 
 def build_concentration_report(request):

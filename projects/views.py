@@ -58,7 +58,7 @@ from .serializers import (
 )
 from .permissions import (
     IsOfficeUser, IsTopicOwnerOrReadOnly, IsCommentAuthorOrReadOnly,
-    IsCostAuthorized, IsPlanning,
+    IsCostAuthorized, IsPlanning, IsAdminOrStaff,
 )
 
 
@@ -322,9 +322,10 @@ class JobOrderViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-    @action(detail=True, methods=['post'])
+    @action(detail=True, methods=['post'], permission_classes=[IsAdminOrStaff])
     def cancel(self, request, job_no=None):
-        """Cancel the job order."""
+        """Cancel the job order and all dependent open records. Admin/staff only."""
+        from django.core.exceptions import ValidationError as DjangoValidationError
         job_order = self.get_object()
         try:
             job_order.cancel(user=request.user)
@@ -333,9 +334,10 @@ class JobOrderViewSet(viewsets.ModelViewSet):
                 'message': 'İş emri iptal edildi.',
                 'job_order': JobOrderDetailSerializer(job_order).data
             })
-        except ValueError as e:
+        except (ValueError, DjangoValidationError) as e:
+            msg = e.message if hasattr(e, 'message') else str(e)
             return Response(
-                {'status': 'error', 'message': str(e)},
+                {'status': 'error', 'message': msg},
                 status=status.HTTP_400_BAD_REQUEST
             )
 

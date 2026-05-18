@@ -36,9 +36,14 @@ def _is_qc_member(user):
 def _can_submit_ncr(user, ncr):
     if user.is_superuser:
         return True
-    if ncr.assigned_team and ncr.assigned_team.get_members().filter(pk=user.pk).exists():
+    if ncr.created_by_id == user.pk:
         return True
     if ncr.assigned_members.filter(pk=user.pk).exists():
+        return True
+    if ncr.assigned_team and ncr.assigned_team.get_members().filter(pk=user.pk).exists():
+        return True
+    # NCR has no assigned team — allow any authenticated user to submit so old open NCRs aren't stuck
+    if not ncr.assigned_team and not ncr.assigned_members.exists():
         return True
     return False
 
@@ -174,7 +179,7 @@ class NCRViewSet(viewsets.ModelViewSet):
     """
     queryset = NCR.objects.select_related(
         'job_order', 'department_task', 'qc_review',
-        'created_by', 'detected_by'
+        'created_by', 'detected_by', 'assigned_team',
     ).prefetch_related('assigned_members').order_by('-created_at')
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     filterset_fields = {
