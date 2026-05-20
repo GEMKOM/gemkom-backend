@@ -4,9 +4,22 @@ from django.contrib.auth import get_user_model
 User = get_user_model()
 
 class UserProfile(models.Model):
+    GENDER_CHOICES = [
+        ('M', 'Erkek'),
+        ('F', 'Kadın'),
+    ]
+    SIGORTA_CHOICES = [
+        ('normal',  'Normal'),
+        ('emekli', 'Emekli'),
+    ]
+
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
     must_reset_password = models.BooleanField(default=False)
     reset_password_request = models.BooleanField(default=False)
+    personel_kodu = models.CharField(max_length=20, null=True, blank=True, unique=True)
+    tc_kimlik_no = models.CharField(max_length=11, null=True, blank=True, unique=True)
+    gender = models.CharField(max_length=1, choices=GENDER_CHOICES, null=True, blank=True)
+    sigorta_yuzde_grubu = models.CharField(max_length=10, choices=SIGORTA_CHOICES, null=True, blank=True)
     shift_rule = models.ForeignKey(
         'attendance.ShiftRule',
         null=True, blank=True,

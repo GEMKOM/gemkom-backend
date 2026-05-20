@@ -76,7 +76,7 @@ class Migration(migrations.Migration):
             INSERT INTO notifications_notificationconfig
                 (notification_type, title_template, body_template, link_template,
                  available_vars, default_send_email, default_send_in_app,
-                 teams, groups, enabled, updated_at)
+                 teams, groups, user_groups, enabled, updated_at)
             VALUES (
                 'job_cancelled',
                 '[İş Emri İptal Edildi] {job_no}',
@@ -84,7 +84,7 @@ class Migration(migrations.Migration):
                 'https://ofis.gemcore.com.tr/projects/project-tracking/?job_no={job_no}',
                 '["job_no", "job_title", "actor", "link"]',
                 TRUE, TRUE,
-                '[]', '[]',
+                '[]', '[]', '[]',
                 TRUE,
                 NOW()
             )
