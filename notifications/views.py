@@ -277,8 +277,8 @@ def _verify_task_secret(request):
 
     secret = getattr(settings, 'QUEUE_SECRET', '')
     if not secret:
-        logger.warning('QUEUE_SECRET is not set — task endpoint is unprotected')
-        return
+        logger.error('QUEUE_SECRET is not set; refusing task callback')
+        raise PermissionDenied('Task secret is not configured')
 
     incoming = request.headers.get('X-Task-Secret', '')
     if incoming != secret:
