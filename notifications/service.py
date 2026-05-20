@@ -76,6 +76,8 @@ NOTIFICATION_DEFAULTS: dict[str, tuple[bool, bool]] = {
     Notification.VR_APPROVAL_REQUESTED:    (True,  True),
     Notification.VR_APPROVED:             (True,  True),
     Notification.VR_REJECTED:             (True,  True),
+    Notification.BUG_REPORT_AGENT_REPLY:  (True,  True),
+    Notification.BUG_REPORT_PR_CREATED:   (True,  True),
 }
 
 
@@ -588,6 +590,25 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
         ),
         'link': f'{_BASE_URL}/linear-cutting/sessions/{{session_key}}',
         'vars': ['session_key', 'session_title', 'actor', 'link'],
+    },
+    Notification.BUG_REPORT_AGENT_REPLY: {
+        'title': '[Hata Raporu] #{bug_report_id} – Ajan yanıt verdi',
+        'body': (
+            'Hata raporunuz (#{bug_report_id}: {bug_report_title}) için ajan bir soru sordu veya güncelleme yaptı.\n\n'
+            '{link}'
+        ),
+        'link': f'{_BASE_URL}/bug-reports/{{bug_report_id}}',
+        'vars': ['bug_report_id', 'bug_report_title', 'link'],
+    },
+    Notification.BUG_REPORT_PR_CREATED: {
+        'title': '[Hata Raporu] #{bug_report_id} – PR oluşturuldu',
+        'body': (
+            'Hata raporunuz (#{bug_report_id}: {bug_report_title}) için bir düzeltme PR\'ı oluşturuldu.\n\n'
+            '{pr_url}\n\n'
+            '{link}'
+        ),
+        'link': f'{_BASE_URL}/bug-reports/{{bug_report_id}}',
+        'vars': ['bug_report_id', 'bug_report_title', 'pr_url', 'link'],
     },
 }
 

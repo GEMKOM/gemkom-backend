@@ -70,6 +70,9 @@ class Notification(models.Model):
     JOB_CANCELLED            = 'job_cancelled'
     # Auth
     PASSWORD_RESET           = 'password_reset'
+    # Bug Reports
+    BUG_REPORT_AGENT_REPLY   = 'bug_report_agent_reply'
+    BUG_REPORT_PR_CREATED    = 'bug_report_pr_created'
 
     # -------------------------------------------------------------------------
     # Category constants
@@ -128,6 +131,8 @@ class Notification(models.Model):
         JOB_DATE_CHANGED:         CATEGORY_GENERAL,
         JOB_CANCELLED:            CATEGORY_GENERAL,
         TASK_ASSIGNED:            CATEGORY_GENERAL,
+        BUG_REPORT_AGENT_REPLY:   CATEGORY_GENERAL,
+        BUG_REPORT_PR_CREATED:    CATEGORY_GENERAL,
         SALES_CONSULT_COMPLETED:  CATEGORY_SALES,
         LC_STOCK_ENTRY_COMPLETE:  CATEGORY_PLANNING,
         PASSWORD_RESET:           CATEGORY_GENERAL,
@@ -192,6 +197,8 @@ class Notification(models.Model):
         (VR_APPROVED,              'İzin Talebi Onaylandı'),
         (VR_REJECTED,              'İzin Talebi Reddedildi'),
         (PASSWORD_RESET,           'Parola Sıfırlama Talebi'),
+        (BUG_REPORT_AGENT_REPLY,   'Hata Raporu: Ajan Yanıtı'),
+        (BUG_REPORT_PR_CREATED,    'Hata Raporu: PR Oluşturuldu'),
     ]
 
     # -------------------------------------------------------------------------

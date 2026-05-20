@@ -49,6 +49,11 @@ EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD")  # that user's passw
 
 QUEUE_SECRET = os.getenv("QUEUE_SECRET", "")
 
+GITHUB_TOKEN          = os.getenv("GITHUB_TOKEN", "")
+GITHUB_BACKEND_REPO   = os.getenv("GITHUB_BACKEND_REPO", "GEMKOM/gemkom-backend")
+GITHUB_FRONTEND_REPO  = os.getenv("GITHUB_FRONTEND_REPO", "GEMKOM/office-gemkom-app")
+ANTHROPIC_API_KEY     = os.getenv("ANTHROPIC_API_KEY", "")
+
 # -------------------------------------------------------------------------
 # Google Cloud Tasks — async email delivery
 # -------------------------------------------------------------------------
@@ -109,6 +114,7 @@ INSTALLED_APPS = [
     'teams',
     'vacation_requests',
     'finance.apps.FinanceConfig',
+    'bug_reports',
 ]
 
 MIDDLEWARE = [

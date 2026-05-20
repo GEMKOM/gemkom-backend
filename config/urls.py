@@ -46,4 +46,5 @@ urlpatterns = [
     path('organization/', include('organization.urls')),
     path('approvals/', include('approvals.urls')),
     path('finance/', include('finance.urls')),
+    path('bug-reports/', include('bug_reports.urls')),
 ]
