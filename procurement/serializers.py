@@ -9,7 +9,7 @@ from .models import (
     PurchaseRequestItem, SupplierOffer, ItemOffer
 )
 from decimal import Decimal
-from django.db import models
+from django.db import transaction
 
 from django.contrib.contenttypes.models import ContentType
 
@@ -89,22 +89,31 @@ class DBSPaymentSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Supplier does not have a DBS facility.")
         return supplier
 
-    def create(self, validated_data):
-        from django.db.models import F
-        supplier = validated_data["supplier"]
-        # Snapshot the currency at time of payment
-        validated_data["currency"] = supplier.dbs_currency
-        validated_data["paid_by"] = self.context["request"].user
+    def validate(self, attrs):
+        supplier = attrs.get("supplier")
+        amount = attrs.get("amount")
+        if supplier and amount is not None and amount > supplier.dbs_used:
+            raise serializers.ValidationError({"amount": "Payment amount exceeds the supplier's DBS used balance."})
+        return attrs
 
-        payment = DBSPayment.objects.create(**validated_data)
-        # Decrement dbs_used atomically, clamp to 0
-        Supplier.objects.filter(pk=supplier.pk).update(
-            dbs_used=models.Case(
-                models.When(dbs_used__gte=payment.amount, then=F("dbs_used") - payment.amount),
-                default=models.Value(Decimal("0.00")),
-                output_field=models.DecimalField(),
-            )
-        )
+    def create(self, validated_data):
+        amount = validated_data["amount"]
+
+        with transaction.atomic():
+            supplier = Supplier.objects.select_for_update().get(pk=validated_data["supplier"].pk)
+            if not supplier.has_dbs:
+                raise serializers.ValidationError({"supplier": "Supplier does not have a DBS facility."})
+            if amount > supplier.dbs_used:
+                raise serializers.ValidationError({"amount": "Payment amount exceeds the supplier's DBS used balance."})
+
+            # Snapshot the currency at time of payment.
+            validated_data["supplier"] = supplier
+            validated_data["currency"] = supplier.dbs_currency
+            validated_data["paid_by"] = self.context["request"].user
+
+            payment = DBSPayment.objects.create(**validated_data)
+            supplier.dbs_used -= amount
+            supplier.save(update_fields=["dbs_used"])
         return payment
 
 

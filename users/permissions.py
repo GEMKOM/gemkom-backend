@@ -53,6 +53,14 @@ class IsOfficeUserOrAdmin(BasePermission):
         return user_has_role_perm(request.user, 'office_access')
 
 
+class IsFinanceAuthorized(BasePermission):
+    def has_permission(self, request, view):
+        u = request.user
+        return u and u.is_authenticated and (
+            u.is_superuser or u.is_staff or user_has_role_perm(u, 'access_finance')
+        )
+
+
 # ---------------------------------------------------------------------------
 # HR / wage rate permissions
 # ---------------------------------------------------------------------------

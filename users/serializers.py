@@ -56,7 +56,6 @@ class UserListSerializer(serializers.ModelSerializer):
     birth_date           = serializers.DateField(source='profile.birth_date', read_only=True)
     hire_date            = serializers.DateField(source='profile.hire_date', read_only=True)
     personel_kodu        = serializers.CharField(source='profile.personel_kodu', read_only=True)
-    tc_kimlik_no         = serializers.CharField(source='profile.tc_kimlik_no', read_only=True)
     gender               = serializers.CharField(source='profile.gender', read_only=True)
     sigorta_yuzde_grubu  = serializers.CharField(source='profile.sigorta_yuzde_grubu', read_only=True)
     user_groups          = serializers.SerializerMethodField()
@@ -70,7 +69,7 @@ class UserListSerializer(serializers.ModelSerializer):
             'department_code',
             'must_reset_password', 'is_active',
             'birth_date', 'hire_date',
-            'personel_kodu', 'tc_kimlik_no', 'gender', 'sigorta_yuzde_grubu',
+            'personel_kodu', 'gender', 'sigorta_yuzde_grubu',
             'user_groups', 'user_group_ids',
         ]
 
