@@ -1,7 +1,7 @@
 from django.urls import path
 from .views import (
     AdminBulkCreateUsers, AdminListResetRequestsView, AdminResetPasswordView,
-    CurrentUserView, ForcedPasswordResetView,
+    CurrentUserView, ForcedPasswordResetView, ImpersonateUserView,
     PasswordResetRequestView, UserViewSet, UserWageRateListView,
     WageRateDetailView, WageRateListCreateView, UserPermissionsView,
     UserPermissionDetailView, UserPermissionOverrideView,
@@ -17,6 +17,7 @@ router.register(r'', UserViewSet, basename='user')
 # swallow slug-like paths such as "permissions/matrix/".
 urlpatterns = [
     path("me/", CurrentUserView.as_view(), name="current-user"),
+    path("impersonate/", ImpersonateUserView.as_view(), name="impersonate-user"),
     path("me/permissions/", UserPermissionsView.as_view(), name="user-permissions"),
     path('admin/bulk-create-user/', AdminBulkCreateUsers.as_view(), name='admin-create-user-bulk'),
     path("reset-password/", ForcedPasswordResetView.as_view(), name="forced-password-reset"),

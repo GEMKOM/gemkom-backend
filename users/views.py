@@ -1,6 +1,7 @@
 import re
 import unicodedata
 from django.contrib.auth.models import User
+from rest_framework_simplejwt.tokens import RefreshToken
 from django.core.exceptions import ValidationError
 from django.shortcuts import get_object_or_404
 from rest_framework.views import APIView
@@ -635,3 +636,25 @@ class UserPermissionsMatrixView(APIView):
             })
 
         return Response({'codenames': perm_codenames, 'users': users_data})
+
+
+class ImpersonateUserView(APIView):
+    """POST /users/impersonate/ — superuser-only: get JWT tokens for any user."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        if not request.user.is_superuser:
+            return Response({'detail': 'Superuser access required.'}, status=403)
+
+        user_id = request.data.get('user_id')
+        if not user_id:
+            return Response({'detail': '"user_id" is required.'}, status=400)
+
+        target = get_object_or_404(User, pk=user_id)
+        refresh = RefreshToken.for_user(target)
+        return Response({
+            'refresh': str(refresh),
+            'access': str(refresh.access_token),
+            'user_id': target.pk,
+            'username': target.username,
+        })
