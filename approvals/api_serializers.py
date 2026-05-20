@@ -18,20 +18,27 @@ from .models import (
 
 class ApprovalStageSerializer(serializers.ModelSerializer):
     approver_users_detail = serializers.SerializerMethodField()
+    role_user_group_name = serializers.SerializerMethodField()
 
     class Meta:
         model = ApprovalStage
         fields = [
             "id", "order", "name", "required_approvals",
             "approver_users", "approver_users_detail",
-            "climb_levels", "role_department_code",
+            "climb_levels",
+            "role_user_group", "role_user_group_name",
         ]
 
     def get_approver_users_detail(self, obj):
         return [
             {"id": u.id, "username": u.username, "full_name": u.get_full_name() or u.username}
-            for u in obj.approver_users.select_related().all()
+            for u in obj.approver_users.all()
         ]
+
+    def get_role_user_group_name(self, obj):
+        if obj.role_user_group_id:
+            return obj.role_user_group.name
+        return None
 
 
 class ApprovalStageWriteSerializer(serializers.ModelSerializer):
@@ -39,16 +46,16 @@ class ApprovalStageWriteSerializer(serializers.ModelSerializer):
         model = ApprovalStage
         fields = [
             "id", "order", "name", "required_approvals",
-            "approver_users", "climb_levels", "role_department_code",
+            "approver_users", "climb_levels",
+            "role_user_group",
         ]
 
     def validate(self, attrs):
         climb = attrs.get("climb_levels", getattr(self.instance, "climb_levels", None))
-        dept = attrs.get("role_department_code", getattr(self.instance, "role_department_code", None))
-        if climb and dept:
+        group = attrs.get("role_user_group", getattr(self.instance, "role_user_group", None))
+        if climb and group:
             raise serializers.ValidationError(
-                "climb_levels and role_department_code are mutually exclusive; "
-                "role_department_code takes priority when both are set."
+                "climb_levels and role_user_group are mutually exclusive."
             )
         return attrs
 
