@@ -92,6 +92,7 @@ class QCReviewListSerializer(serializers.ModelSerializer):
     job_order = serializers.CharField(source='task.job_order_id', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     ncr_number = serializers.CharField(source='ncr.ncr_number', read_only=True, default=None)
+    open_ncr_count = serializers.SerializerMethodField()
 
     class Meta:
         model = QCReview
@@ -101,7 +102,17 @@ class QCReviewListSerializer(serializers.ModelSerializer):
             'status', 'status_display',
             'reviewed_by', 'reviewed_by_name', 'reviewed_at',
             'comment', 'part_data', 'ncr', 'ncr_number',
+            'open_ncr_count',
         ]
+
+    def get_open_ncr_count(self, obj):
+        job_order = obj.task.job_order if obj.task else None
+        if not job_order:
+            return 0
+        return sum(
+            1 for ncr in job_order.ncrs.all()
+            if ncr.status not in ('approved', 'closed')
+        )
 
 
 class QCReviewDetailSerializer(serializers.ModelSerializer):
@@ -225,6 +236,7 @@ class NCRListSerializer(serializers.ModelSerializer):
             'id', 'ncr_number', 'title',
             'job_order', 'job_order_title',
             'department_task',
+            'qc_review',
             'severity', 'severity_display',
             'defect_type', 'defect_type_display',
             'status', 'status_display',

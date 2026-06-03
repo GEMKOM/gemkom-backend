@@ -203,6 +203,7 @@ class JobOrderListSerializer(serializers.ModelSerializer):
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     priority_display = serializers.CharField(source='get_priority_display', read_only=True)
     children_count = serializers.IntegerField(read_only=True)
+    department_task_count = serializers.IntegerField(read_only=True)
     hierarchy_level = serializers.SerializerMethodField()
     ncr_count = serializers.IntegerField(read_only=True)
     revision_count = serializers.IntegerField(read_only=True)
@@ -219,7 +220,7 @@ class JobOrderListSerializer(serializers.ModelSerializer):
             'job_no', 'title', 'quantity', 'customer', 'customer_name', 'customer_short_name', 'customer_code',
             'status', 'status_display', 'priority', 'priority_display',
             'target_completion_date', 'previous_target_date_revision', 'completion_percentage',
-            'parent', 'children_count', 'hierarchy_level',
+            'parent', 'children_count', 'department_task_count', 'hierarchy_level',
             'ncr_count',
             'revision_count',
             'target_date_revisions_count',
@@ -366,9 +367,16 @@ class JobOrderDetailSerializer(serializers.ModelSerializer):
         ]
 
     def get_children(self, obj):
-        from django.db.models import Prefetch
+        from django.db.models import Count, Prefetch, Q
         from .models import JobOrderProgressLog
-        children = obj.children.prefetch_related(
+        children = obj.children.annotate(
+            children_count=Count('children', distinct=True),
+            department_task_count=Count(
+                'department_tasks',
+                filter=Q(department_tasks__parent__isnull=True),
+                distinct=True,
+            ),
+        ).prefetch_related(
             Prefetch(
                 'progress_logs',
                 queryset=JobOrderProgressLog.objects.only('job_order_id', 'new_pct', 'logged_at').order_by('logged_at'),

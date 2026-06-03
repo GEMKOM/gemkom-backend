@@ -171,6 +171,11 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         ).annotate(
             ncr_count=Count('ncrs', distinct=True),
             children_count=Count('children', distinct=True),
+            department_task_count=Count(
+                'department_tasks',
+                filter=Q(department_tasks__parent__isnull=True),
+                distinct=True,
+            ),
             revision_count=Count(
                 'technical_drawing_releases',
                 filter=Q(technical_drawing_releases__status='superseded'),

@@ -64,6 +64,7 @@ class QCReviewViewSet(viewsets.ReadOnlyModelViewSet):
         'task', 'task__job_order', 'submitted_by', 'reviewed_by', 'ncr',
         'discussion_topic', 'discussion_topic__created_by',
     ).prefetch_related(
+        'task__job_order__ncrs',
         'discussion_topic__mentioned_users',
         'discussion_topic__attachments',
         'discussion_topic__comments__created_by',
