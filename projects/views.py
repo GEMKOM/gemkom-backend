@@ -949,6 +949,42 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         elif facility == 'meltshop':
             base_qs = base_qs.exclude(job_no__istartswith='RM')
 
+        # Filter by catalog item (OfferTemplateNode). Accepts ?template_node=1 or
+        # ?template_node=1,2,3. Includes all descendants of each selected node.
+        template_node_param = request.query_params.get('template_node')
+        if template_node_param:
+            from django.db.models import Q as _Q
+            from sales.models import OfferTemplateNode
+            try:
+                node_ids = [int(x) for x in template_node_param.split(',') if x.strip()]
+            except ValueError:
+                node_ids = []
+            if node_ids:
+                # BFS to collect all descendant IDs using a single flat query
+                # of (id, parent_id) pairs for the relevant templates.
+                seed_templates = OfferTemplateNode.objects.filter(
+                    pk__in=node_ids
+                ).values_list('template_id', flat=True)
+                all_pairs = OfferTemplateNode.objects.filter(
+                    template_id__in=seed_templates
+                ).values_list('id', 'parent_id')
+                children_map = {}
+                for nid, pid in all_pairs:
+                    if pid is not None:
+                        children_map.setdefault(pid, []).append(nid)
+                expanded = set(node_ids)
+                queue = list(node_ids)
+                while queue:
+                    current = queue.pop()
+                    for child_id in children_map.get(current, []):
+                        if child_id not in expanded:
+                            expanded.add(child_id)
+                            queue.append(child_id)
+                base_qs = base_qs.filter(
+                    _Q(source_offer_item__template_node__in=expanded) |
+                    _Q(template_node__in=expanded)
+                ).distinct()
+
         if ordering_param in annotation_ordering:
             ann_name, ann_expr, descending = annotation_ordering[ordering_param]
             base_qs = base_qs.annotate(**{ann_name: ann_expr})
