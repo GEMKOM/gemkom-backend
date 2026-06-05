@@ -19,6 +19,7 @@ from .models import (
 )
 from rest_framework.permissions import IsAuthenticated
 from django.db.models import Q
+from users.permissions import IsFinanceAuthorized
 
 from .serializers import (
     OfferTemplateListSerializer,
@@ -996,7 +997,7 @@ class SalesReportViewSet(viewsets.GenericViewSet):
     """
     Sales revenue forecast reports under /sales/reports/<report-name>/.
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsFinanceAuthorized]
 
     @action(detail=False, methods=["get"], url_path="revenue")
     def revenue(self, request):

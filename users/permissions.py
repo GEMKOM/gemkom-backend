@@ -54,6 +54,28 @@ class IsOfficeUserOrAdmin(BasePermission):
 
 
 # ---------------------------------------------------------------------------
+# Finance permissions
+# ---------------------------------------------------------------------------
+
+FINANCE_PERMISSION_CODENAMES = (
+    'access_finance',
+    'access_finance_purchase_orders',
+    'access_finance_reports',
+    'access_finance_reports_executive_overview',
+    'access_finance_reports_projects',
+)
+
+
+def has_finance_access(user) -> bool:
+    return any(user_has_role_perm(user, codename) for codename in FINANCE_PERMISSION_CODENAMES)
+
+
+class IsFinanceAuthorized(BasePermission):
+    def has_permission(self, request, view):
+        return has_finance_access(request.user)
+
+
+# ---------------------------------------------------------------------------
 # HR / wage rate permissions
 # ---------------------------------------------------------------------------
 
