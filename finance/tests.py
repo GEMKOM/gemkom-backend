@@ -1,4 +1,5 @@
 from django.test import SimpleTestCase
+from rest_framework.routers import DefaultRouter
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 from finance.views import FinanceReportViewSet, MonthlyExpenseViewSet
@@ -23,10 +24,18 @@ class FinanceAuthorizationTests(SimpleTestCase):
     def setUp(self):
         self.factory = APIRequestFactory()
 
-    def _response_for(self, view, method, path, user=None, data=None):
+    def _response_for(self, view, method, path, user=None, data=None, **view_kwargs):
         request = getattr(self.factory, method.lower())(path, data=data or {}, format="json")
         force_authenticate(request, user=user or _FakeUser())
-        return view(request)
+        return view(request, **view_kwargs)
+
+    def _router_callback(self, prefix, viewset, basename, url_name):
+        router = DefaultRouter()
+        router.register(prefix, viewset, basename=basename)
+        for pattern in router.urls:
+            if pattern.name == url_name:
+                return pattern.callback
+        self.fail(f"Router URL named {url_name!r} was not registered.")
 
     def test_finance_permission_accepts_existing_finance_codenames(self):
         request = self.factory.get("/finance/reports/inflow-tracker/")
@@ -62,7 +71,12 @@ class FinanceAuthorizationTests(SimpleTestCase):
         self.assertEqual(response.status_code, 403)
 
     def test_procurement_finance_reports_reject_non_finance_user_before_report_build(self):
-        view = ProcurementReportViewSet.as_view({"get": "payment_forecast"})
+        view = self._router_callback(
+            "reports",
+            ProcurementReportViewSet,
+            "procurement-report",
+            "procurement-report-payment-forecast",
+        )
 
         response = self._response_for(view, "get", "/procurement/reports/payment-forecast/")
 
@@ -76,13 +90,19 @@ class FinanceAuthorizationTests(SimpleTestCase):
         self.assertEqual(response.status_code, 403)
 
     def test_purchase_order_paid_action_rejects_non_finance_user_before_lookup(self):
-        view = PurchaseOrderViewSet.as_view({"post": "mark_schedule_paid"})
+        view = self._router_callback(
+            "purchase-orders",
+            PurchaseOrderViewSet,
+            "purchase-order",
+            "purchase-order-mark-schedule-paid",
+        )
 
         response = self._response_for(
             view,
             "post",
             "/procurement/purchase-orders/1/mark_schedule_paid/",
             data={"schedule_id": 1, "paid_with_tax": True},
+            pk=1,
         )
 
         self.assertEqual(response.status_code, 403)
