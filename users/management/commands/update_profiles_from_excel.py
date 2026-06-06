@@ -30,18 +30,23 @@ def _xls_date(value):
         return None
 
 
+def _cell_text(value):
+    if value in (None, ""):
+        return None
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    text = str(value).strip()
+    return text or None
+
+
 class Command(BaseCommand):
-    help = "Update UserProfile fields from personel listesi-gemcore.xls"
+    help = "Update UserProfile fields from an explicitly supplied personnel XLS file"
 
     def add_arguments(self, parser):
         parser.add_argument(
             "--xls",
-            default=os.path.join(
-                os.path.dirname(os.path.dirname(os.path.dirname(
-                    os.path.dirname(os.path.abspath(__file__))))),
-                "personel listesi-gemcore.xls",
-            ),
-            help="Path to the XLS file (default: project root)",
+            required=True,
+            help="Path to the personnel XLS file",
         )
         parser.add_argument(
             "--dry-run",
@@ -82,8 +87,8 @@ class Command(BaseCommand):
 
             profile, _ = UserProfile.objects.get_or_create(user=user)
 
-            personel_kodu       = str(row[0]).strip() if row[0] else None
-            tc_kimlik_no        = str(int(row[3])) if row[3] else None
+            personel_kodu       = _cell_text(row[0])
+            tc_kimlik_no        = _cell_text(row[3])
             gender              = GENDER_MAP.get(str(row[5]).strip().lower())
             sigorta_yuzde_grubu = SIGORTA_MAP.get(str(row[9]).strip().lower())
             hire_date           = _xls_date(row[4])

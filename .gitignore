@@ -29,6 +29,9 @@ static/
 # Logs
 *.log
 
+# Sensitive personnel exports
+personel listesi-gemcore.xls
+
 # Coverage & testing
 htmlcov/
 .coverage

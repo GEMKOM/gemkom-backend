@@ -11,6 +11,7 @@ from rest_framework.response import Response
 from rest_framework import status, permissions
 
 from rest_framework.permissions import IsAuthenticated
+from users.permissions import CanAccessFinance
 from .models import (
     DBSPayment, PaymentSchedule, PaymentTerms, PurchaseOrder, PurchaseOrderLine, PurchaseRequestDraft,
     Supplier, Item, PurchaseRequest, PurchaseRequestItem, SupplierOffer, ItemOffer
@@ -98,7 +99,7 @@ class DBSPaymentViewSet(viewsets.ModelViewSet):
     Filters: ?supplier=<id>, ?paid_at_gte=YYYY-MM-DD, ?paid_at_lte=YYYY-MM-DD
     """
     serializer_class = DBSPaymentSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, CanAccessFinance]
     http_method_names = ["get", "post", "head", "options"]  # no edit/delete — payments are immutable
 
     def get_queryset(self):
