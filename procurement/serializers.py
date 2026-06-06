@@ -9,7 +9,7 @@ from .models import (
     PurchaseRequestItem, SupplierOffer, ItemOffer
 )
 from decimal import Decimal
-from django.db import models
+from django.db import transaction
 
 from django.contrib.contenttypes.models import ContentType
 
@@ -90,22 +90,23 @@ class DBSPaymentSerializer(serializers.ModelSerializer):
         return supplier
 
     def create(self, validated_data):
-        from django.db.models import F
-        supplier = validated_data["supplier"]
-        # Snapshot the currency at time of payment
-        validated_data["currency"] = supplier.dbs_currency
-        validated_data["paid_by"] = self.context["request"].user
+        amount = validated_data["amount"]
+        with transaction.atomic():
+            supplier = Supplier.objects.select_for_update().get(pk=validated_data["supplier"].pk)
+            if amount > supplier.dbs_used:
+                raise serializers.ValidationError({
+                    "amount": "Payment amount cannot exceed the supplier's current DBS used balance."
+                })
 
-        payment = DBSPayment.objects.create(**validated_data)
-        # Decrement dbs_used atomically, clamp to 0
-        Supplier.objects.filter(pk=supplier.pk).update(
-            dbs_used=models.Case(
-                models.When(dbs_used__gte=payment.amount, then=F("dbs_used") - payment.amount),
-                default=models.Value(Decimal("0.00")),
-                output_field=models.DecimalField(),
-            )
-        )
-        return payment
+            # Snapshot the currency at time of payment.
+            validated_data["supplier"] = supplier
+            validated_data["currency"] = supplier.dbs_currency
+            validated_data["paid_by"] = self.context["request"].user
+
+            payment = DBSPayment.objects.create(**validated_data)
+            supplier.dbs_used -= amount
+            supplier.save(update_fields=["dbs_used", "updated_at"])
+            return payment
 
 
 class ItemSerializer(serializers.ModelSerializer):

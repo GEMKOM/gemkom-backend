@@ -53,6 +53,13 @@ class IsOfficeUserOrAdmin(BasePermission):
         return user_has_role_perm(request.user, 'office_access')
 
 
+class CanAccessFinance(BasePermission):
+    message = 'Finance access required.'
+
+    def has_permission(self, request, view):
+        return user_has_role_perm(request.user, 'access_finance')
+
+
 # ---------------------------------------------------------------------------
 # HR / wage rate permissions
 # ---------------------------------------------------------------------------

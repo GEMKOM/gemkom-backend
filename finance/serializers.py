@@ -1,7 +1,6 @@
 from __future__ import annotations
-from decimal import Decimal
+from django.db import transaction
 from rest_framework import serializers
-from django.utils import timezone
 
 from .models import (
     AdHocJobCost,
@@ -67,8 +66,9 @@ class LoanSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         validated_data["created_by"] = self.context["request"].user
-        loan = super().create(validated_data)
-        loan.generate_installments()
+        with transaction.atomic():
+            loan = super().create(validated_data)
+            loan.generate_installments()
         return loan
 
 
