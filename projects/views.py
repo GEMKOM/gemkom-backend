@@ -2732,7 +2732,14 @@ class TechnicalDrawingReleaseViewSet(viewsets.ModelViewSet):
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        self.perform_create(serializer)
+        try:
+            with transaction.atomic():
+                self.perform_create(serializer)
+        except ValueError as e:
+            return Response(
+                {'status': 'error', 'message': str(e)},
+                status=status.HTTP_400_BAD_REQUEST
+            )
         detail_serializer = TechnicalDrawingReleaseDetailSerializer(
             serializer.instance, context={'request': request}
         )
@@ -2953,64 +2960,71 @@ class TechnicalDrawingReleaseViewSet(viewsets.ModelViewSet):
         hardcopy_count = serializer.validated_data.get('hardcopy_count', 0)
         topic_content = serializer.validated_data.get('topic_content', '')
 
-        # Mark old release as superseded
-        release.status = 'superseded'
-        release.save(update_fields=['status', 'updated_at'])
+        try:
+            with transaction.atomic():
+                # Mark old release as superseded
+                release.status = 'superseded'
+                release.save(update_fields=['status', 'updated_at'])
 
-        # Mark revision topic as resolved
-        active_revision_topic = release.revision_topics.filter(
-            revision_status='in_progress',
-            is_deleted=False
-        ).first()
-        if active_revision_topic:
-            active_revision_topic.revision_status = 'resolved'
-            active_revision_topic.save(update_fields=['revision_status', 'updated_at'])
+                # Mark revision topic as resolved
+                active_revision_topic = release.revision_topics.filter(
+                    revision_status='in_progress',
+                    is_deleted=False
+                ).first()
+                if active_revision_topic:
+                    active_revision_topic.revision_status = 'resolved'
+                    active_revision_topic.save(update_fields=['revision_status', 'updated_at'])
 
-        # Create new release
-        new_release = TechnicalDrawingRelease.objects.create(
-            job_order=release.job_order,
-            revision_number=TechnicalDrawingRelease.get_next_revision_number(release.job_order),
-            revision_code=revision_code,
-            folder_path=folder_path,
-            changelog=changelog,
-            hardcopy_count=hardcopy_count,
-            status='released',
-            released_by=request.user
-        )
+                # Create new release
+                new_release = TechnicalDrawingRelease.objects.create(
+                    job_order=release.job_order,
+                    revision_number=TechnicalDrawingRelease.get_next_revision_number(release.job_order),
+                    revision_code=revision_code,
+                    folder_path=folder_path,
+                    changelog=changelog,
+                    hardcopy_count=hardcopy_count,
+                    status='released',
+                    released_by=request.user
+                )
 
-        # Create release topic
-        topic_title = f"Teknik Çizim Yayını - Rev.{new_release.revision_code or new_release.revision_number}"
-        content = topic_content or changelog
+                # Create release topic
+                topic_title = f"Teknik Çizim Yayını - Rev.{new_release.revision_code or new_release.revision_number}"
+                content = topic_content or changelog
 
-        new_topic = JobOrderDiscussionTopic.objects.create(
-            job_order=release.job_order,
-            title=topic_title,
-            content=content,
-            priority='normal',
-            topic_type='drawing_release',
-            created_by=request.user
-        )
+                new_topic = JobOrderDiscussionTopic.objects.create(
+                    job_order=release.job_order,
+                    title=topic_title,
+                    content=content,
+                    priority='normal',
+                    topic_type='drawing_release',
+                    created_by=request.user
+                )
 
-        # Extract and set mentions
-        mentioned_users = new_topic.extract_mentions()
-        if mentioned_users.exists():
-            new_topic.mentioned_users.set(mentioned_users)
+                # Extract and set mentions
+                mentioned_users = new_topic.extract_mentions()
+                if mentioned_users.exists():
+                    new_topic.mentioned_users.set(mentioned_users)
 
-        # Link topic to release
-        new_release.release_topic = new_topic
-        new_release.save(update_fields=['release_topic'])
+                # Link topic to release
+                new_release.release_topic = new_topic
+                new_release.save(update_fields=['release_topic'])
 
-        # Complete the design department task
-        job_order = release.job_order
-        design_task = job_order.department_tasks.filter(
-            department='design',
-            parent__isnull=True
-        ).first()
-        if design_task and design_task.status == 'in_progress':
-            design_task.complete(user=request.user)
+                # Complete the design department task
+                job_order = release.job_order
+                design_task = job_order.department_tasks.filter(
+                    department='design',
+                    parent__isnull=True
+                ).first()
+                if design_task and design_task.status == 'in_progress':
+                    design_task.complete(user=request.user)
 
-        # Resume job order
-        job_order.resume()
+                # Resume job order
+                job_order.resume()
+        except ValueError as e:
+            return Response(
+                {'status': 'error', 'message': str(e)},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         # Send notifications
         from .signals import send_revision_completed_notifications
