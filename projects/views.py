@@ -2860,17 +2860,18 @@ class TechnicalDrawingReleaseViewSet(viewsets.ModelViewSet):
             created_by=request.user
         )
 
-        # Put job order on hold
         job_order = release.job_order
-        job_order.hold(reason=f"Revizyon: {topic.title}")
 
-        # Uncomplete design department task
+        # Uncomplete design task before hold so hold() puts it to on_hold
         design_task = job_order.department_tasks.filter(
             department='design',
             parent__isnull=True
         ).first()
         if design_task and design_task.status == 'completed':
             design_task.uncomplete()
+
+        # Put job order on hold (cascades in_progress tasks → on_hold)
+        job_order.hold(reason=f"Revizyon: {topic.title}")
 
         # Send notifications
         from .signals import send_revision_approved_notifications
@@ -2907,17 +2908,18 @@ class TechnicalDrawingReleaseViewSet(viewsets.ModelViewSet):
         release.status = 'in_revision'
         release.save(update_fields=['status', 'updated_at'])
 
-        # Put job order on hold
         job_order = release.job_order
-        job_order.hold(reason=f"Revizyon: Rev.{release.revision_code or release.revision_number}")
 
-        # Uncomplete design department task
+        # Uncomplete design task before hold so hold() puts it to on_hold
         design_task = job_order.department_tasks.filter(
             department='design',
             parent__isnull=True
         ).first()
         if design_task and design_task.status == 'completed':
             design_task.uncomplete()
+
+        # Put job order on hold (cascades in_progress tasks → on_hold)
+        job_order.hold(reason=f"Revizyon: Rev.{release.revision_code or release.revision_number}")
 
         # Send notifications
         from .signals import send_self_revision_notifications
@@ -3000,17 +3002,18 @@ class TechnicalDrawingReleaseViewSet(viewsets.ModelViewSet):
         new_release.release_topic = new_topic
         new_release.save(update_fields=['release_topic'])
 
-        # Complete the design department task
         job_order = release.job_order
+
+        # Resume job order first so on_hold tasks (including design task) return to in_progress
+        job_order.resume()
+
+        # Complete the design department task (now in_progress after resume)
         design_task = job_order.department_tasks.filter(
             department='design',
             parent__isnull=True
         ).first()
         if design_task and design_task.status == 'in_progress':
             design_task.complete(user=request.user)
-
-        # Resume job order
-        job_order.resume()
 
         # Send notifications
         from .signals import send_revision_completed_notifications

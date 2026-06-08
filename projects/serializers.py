@@ -1328,7 +1328,9 @@ class DepartmentTaskUpdateSerializer(serializers.ModelSerializer):
         ]
 
     def validate(self, attrs):
-        """Prevent updates on completed/skipped tasks, except weight."""
+        """Prevent updates on completed/skipped tasks, except weight.
+        Also prevent editing by users who are not the task assignee,
+        unless they are only changing the assignment."""
         instance = self.instance
         if instance and instance.status in ['completed', 'skipped']:
             non_weight = {k for k in attrs if k != 'weight'}
@@ -1336,6 +1338,18 @@ class DepartmentTaskUpdateSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     "Tamamlanmış veya atlanan görevler güncellenemez."
                 )
+
+        # Block editing by non-assignees (assignment changes are always allowed)
+        if instance:
+            non_assignment_fields = {k for k in attrs if k != 'assigned_to'}
+            if non_assignment_fields:
+                request = self.context.get('request')
+                user = request.user if request else None
+                if user and instance.assigned_to_id and instance.assigned_to_id != user.id:
+                    raise serializers.ValidationError(
+                        "Bu görevi düzenleyemezsiniz. Yalnızca görevin atandığı kişi düzenleyebilir."
+                    )
+
         return attrs
 
     def update(self, instance, validated_data):
