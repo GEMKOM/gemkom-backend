@@ -992,8 +992,11 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         else:
             db_order = db_ordering.get(ordering_param, ('job_no',))[0]
 
-        base_qs = base_qs.order_by(db_order)
-        filtered_qs = self.filter_queryset(base_qs)
+        # Apply DRF filter backends first, then our own ordering last so that
+        # OrderingFilter (which only knows about `ordering_fields` and would
+        # otherwise reset to the default `-created_at` for computed/aliased
+        # sorts like margin_pct/margin_eur/price_per_kg) cannot clobber it.
+        filtered_qs = self.filter_queryset(base_qs).order_by(db_order)
 
         # One lightweight query to learn the full parent/child structure.
         # Use values_list to get an ordered list of (job_no, parent_id) pairs;
