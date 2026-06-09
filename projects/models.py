@@ -1068,10 +1068,12 @@ class JobOrderDepartmentTask(models.Model):
                 )
 
         # NCR gate: block completion if the job order has open or rejected NCRs
-        if self.job_order_id and self.job_order.ncrs.exclude(status__in=['approved', 'closed']).exists():
-            raise ValueError(
-                "Bu iş emrinde açık veya reddedilmiş NCR'lar çözülmeden görev tamamlanamaz."
-            )
+        # Design tasks are exempt — NCRs are typically raised against manufacturing/QC work
+        if self.job_order_id and self.department != 'design':
+            if self.job_order.ncrs.exclude(status__in=['approved', 'closed']).exists():
+                raise ValueError(
+                    "Bu iş emrinde açık veya reddedilmiş NCR'lar çözülmeden görev tamamlanamaz."
+                )
 
         # For subtasks: ensure parent is not blocked
         if self.parent and self.parent.status == 'blocked':
