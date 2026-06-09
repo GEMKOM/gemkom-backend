@@ -2862,7 +2862,7 @@ class TechnicalDrawingReleaseViewSet(viewsets.ModelViewSet):
 
         job_order = release.job_order
 
-        # Uncomplete design task before hold so hold() puts it to on_hold
+        # Uncomplete design task before hold
         design_task = job_order.department_tasks.filter(
             department='design',
             parent__isnull=True
@@ -2872,6 +2872,11 @@ class TechnicalDrawingReleaseViewSet(viewsets.ModelViewSet):
 
         # Put job order on hold (cascades in_progress tasks → on_hold)
         job_order.hold(reason=f"Revizyon: {topic.title}")
+
+        # Keep design task in_progress so the designer can complete it
+        if design_task and design_task.status == 'on_hold':
+            design_task.status = 'in_progress'
+            design_task.save(update_fields=['status'])
 
         # Send notifications
         from .signals import send_revision_approved_notifications
@@ -2910,7 +2915,7 @@ class TechnicalDrawingReleaseViewSet(viewsets.ModelViewSet):
 
         job_order = release.job_order
 
-        # Uncomplete design task before hold so hold() puts it to on_hold
+        # Uncomplete design task before hold
         design_task = job_order.department_tasks.filter(
             department='design',
             parent__isnull=True
@@ -2920,6 +2925,11 @@ class TechnicalDrawingReleaseViewSet(viewsets.ModelViewSet):
 
         # Put job order on hold (cascades in_progress tasks → on_hold)
         job_order.hold(reason=f"Revizyon: Rev.{release.revision_code or release.revision_number}")
+
+        # Keep design task in_progress so the designer can complete it
+        if design_task and design_task.status == 'on_hold':
+            design_task.status = 'in_progress'
+            design_task.save(update_fields=['status'])
 
         # Send notifications
         from .signals import send_self_revision_notifications
@@ -3004,10 +3014,10 @@ class TechnicalDrawingReleaseViewSet(viewsets.ModelViewSet):
 
         job_order = release.job_order
 
-        # Resume job order first so on_hold tasks (including design task) return to in_progress
+        # Resume job order first so the job is active when complete() checks for auto-completion
         job_order.resume()
 
-        # Complete the design department task (now in_progress after resume)
+        # Complete the design department task (stays in_progress during revision)
         design_task = job_order.department_tasks.filter(
             department='design',
             parent__isnull=True
