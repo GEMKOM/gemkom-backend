@@ -153,6 +153,12 @@ class VacationRequestViewSet(viewsets.ModelViewSet):
         approver_ids = stage.approver_user_ids or []
         if user.id in approver_ids or user.is_superuser or user.is_staff:
             return wf, stage, "ok"
+        is_last_stage = not ApprovalStageInstance.objects.filter(
+            workflow=wf,
+            order__gt=stage.order,
+        ).exists()
+        if is_last_stage and user_has_role_perm(user, "manage_hr"):
+            return wf, stage, "ok"
         return wf, stage, "forbidden"
 
     @action(detail=True, methods=["post"])
@@ -240,7 +246,9 @@ class VacationRequestViewSet(viewsets.ModelViewSet):
         """
         user   = request.user
         ct     = ContentType.objects.get_for_model(VacationRequest)
-        is_hr  = user.is_staff or user.is_superuser or user_has_role_perm(user, "manage_hr")
+        is_staff_like = user.is_staff or user.is_superuser
+        is_manage_hr = user_has_role_perm(user, "manage_hr")
+        is_hr = is_staff_like or is_manage_hr
 
         leave_type_map = dict(LEAVE_TYPE_CHOICES)
         from users.helpers import TEAM_LABELS
@@ -277,7 +285,19 @@ class VacationRequestViewSet(viewsets.ModelViewSet):
             is_complete=False,
             is_rejected=False,
         )
-        if not is_hr:
+        if is_staff_like:
+            pass
+        elif is_manage_hr:
+            later_stage_exists = ApprovalStageInstance.objects.filter(
+                workflow=OuterRef("workflow"),
+                order__gt=OuterRef("order"),
+            )
+            stage_filter = (
+                stage_filter
+                .annotate(has_later_stage=Exists(later_stage_exists))
+                .filter(Q(approver_user_ids__contains=[user.id]) | Q(has_later_stage=False))
+            )
+        else:
             stage_filter = stage_filter.filter(approver_user_ids__contains=[user.id])
 
         workflow_vr_ids = stage_filter.values_list("workflow__object_id", flat=True)
