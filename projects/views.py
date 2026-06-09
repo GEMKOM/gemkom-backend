@@ -2876,8 +2876,9 @@ class TechnicalDrawingReleaseViewSet(viewsets.ModelViewSet):
         # Put job order on hold (cascades in_progress tasks → on_hold)
         job_order.hold(reason=f"Revizyon: {topic.title}")
 
-        # Keep design task in_progress so the designer can complete it
-        if design_task and design_task.status == 'on_hold':
+        # Keep design task in_progress so the designer can complete it after revision
+        # (hold() bulk-updated the DB so we can't rely on the in-memory status value)
+        if design_task:
             design_task.status = 'in_progress'
             design_task.save(update_fields=['status'])
 
@@ -2929,8 +2930,9 @@ class TechnicalDrawingReleaseViewSet(viewsets.ModelViewSet):
         # Put job order on hold (cascades in_progress tasks → on_hold)
         job_order.hold(reason=f"Revizyon: Rev.{release.revision_code or release.revision_number}")
 
-        # Keep design task in_progress so the designer can complete it
-        if design_task and design_task.status == 'on_hold':
+        # Keep design task in_progress so the designer can complete it after revision
+        # (hold() bulk-updated the DB so we can't rely on the in-memory status value)
+        if design_task:
             design_task.status = 'in_progress'
             design_task.save(update_fields=['status'])
 
