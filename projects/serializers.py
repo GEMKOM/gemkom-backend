@@ -2209,9 +2209,9 @@ class CostTableRowSerializer(serializers.Serializer):
     employee_overhead_rate = serializers.SerializerMethodField()
     employee_overhead_cost = serializers.SerializerMethodField()
     actual_total_cost = serializers.SerializerMethodField()
+    estimated_total_cost = serializers.SerializerMethodField()
 
     # From JobOrder
-    estimated_cost = serializers.DecimalField(max_digits=16, decimal_places=2)
     general_expenses_rate = serializers.DecimalField(max_digits=10, decimal_places=4)
     total_weight_kg = serializers.SerializerMethodField()
     completion_pct = serializers.DecimalField(source='completion_percentage', max_digits=5, decimal_places=2)
@@ -2290,6 +2290,13 @@ class CostTableRowSerializer(serializers.Serializer):
     def get_actual_total_cost(self, obj):
         s = self._summary(obj)
         return str(s.actual_total_cost) if s else '0.00'
+
+    def get_estimated_total_cost(self, obj):
+        cache = self.context.setdefault('estimated_total_costs', {})
+        if obj.job_no not in cache:
+            from projects.services.costing import build_job_cost_payload
+            cache[obj.job_no] = build_job_cost_payload(obj)['estimated']['total_cost']
+        return cache[obj.job_no]
 
     def _offer_price(self, obj):
         """Return the current SalesOfferPriceRevision for the job's source offer, or None."""

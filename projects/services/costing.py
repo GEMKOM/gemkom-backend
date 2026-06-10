@@ -348,7 +348,7 @@ def build_job_cost_payload(job_order) -> dict:
     progress_ratio = completion / Decimal('100') if completion > 0 else Decimal('0')
 
     today = date.today()
-    non_paint_assignments = (
+    non_paint_assignments = list(
         SubcontractingAssignment.objects
         .filter(
             department_task__job_order_id=job_order.job_no,
@@ -374,21 +374,30 @@ def build_job_cost_payload(job_order) -> dict:
         task_type='painting',
     ).exclude(status='skipped').exists()
     historical_paint_rate = _historical_paint_rate_eur_per_kg(job_order.job_no)
+    paint_assignments = []
     if has_painting and total_weight > 0 and historical_paint_rate > 0:
         paint_estimate = q2(historical_paint_rate * total_weight)
         paint_source = 'completed_job_orders_avg_eur_per_kg'
     else:
-        paint_estimate = q2(sum(
-            convert_to_eur(a.allocated_weight_kg * a.price_tier.price_per_kg, a.price_tier.currency, today)
-            for a in SubcontractingAssignment.objects.filter(
+        paint_assignments = list(
+            SubcontractingAssignment.objects.filter(
                 department_task__job_order_id=job_order.job_no,
                 department_task__task_type='painting',
                 price_tier__isnull=False,
                 allocated_weight_kg__gt=0,
                 is_retired=False,
             ).select_related('price_tier')
+        )
+        paint_estimate = q2(sum(
+            convert_to_eur(a.allocated_weight_kg * a.price_tier.price_per_kg, a.price_tier.currency, today)
+            for a in paint_assignments
         ))
         paint_source = 'paint_assignment_at_100' if paint_estimate else 'none'
+    paint_assignment_count = (
+        len(paint_assignments)
+        if paint_source == 'paint_assignment_at_100'
+        else 0
+    )
 
     paint_material_estimate = q2(
         convert_to_eur(summary.paint_material_rate * total_weight, 'TRY', today)
@@ -466,6 +475,8 @@ def build_job_cost_payload(job_order) -> dict:
                 'paint_cost_source': paint_source,
                 'historical_paint_rate_eur_per_kg': _decimal_str(historical_paint_rate),
                 'material_cost_floored_to_actual': material_cost_floored,
+                'non_paint_assignment_count': len(non_paint_assignments),
+                'paint_assignment_count': paint_assignment_count,
             },
             'material_lines': material_lines,
             'children': child_payloads,
@@ -476,6 +487,249 @@ def build_job_cost_payload(job_order) -> dict:
             'cost_not_applicable': summary.cost_not_applicable,
         },
         'last_updated': summary.last_updated.isoformat() if summary.last_updated else None,
+    }
+
+
+_ESTIMATED_COMPONENT_ORDER = (
+    'subcontractor_cost',
+    'labor_cost',
+    'paint_cost',
+    'paint_material_cost',
+    'employee_overhead_cost',
+    'qc_cost',
+    'shipping_cost',
+    'material_cost',
+)
+
+_ESTIMATED_COMPONENT_LABELS = {
+    'subcontractor_cost': 'Taşeron',
+    'labor_cost': 'İşçilik',
+    'paint_cost': 'Boya',
+    'paint_material_cost': 'Boya Malzemesi',
+    'employee_overhead_cost': 'Personel Genel Giderleri',
+    'qc_cost': 'Kalite Kontrol',
+    'shipping_cost': 'Sevkiyat',
+    'material_cost': 'Malzeme',
+}
+
+
+def build_estimated_cost_breakdown(job_order) -> dict:
+    """
+    Human-readable breakdown of how estimated total cost is calculated for a job
+    order tree (own job + rolled-up children).
+    """
+    payload = build_job_cost_payload(job_order)
+    estimated = payload['estimated']
+    assumptions = estimated['assumptions']
+    components = estimated['components']
+    actual_components = payload['actual']['components']
+    children = estimated.get('children') or []
+    material_breakdown = build_estimated_material_breakdown(job_order)
+
+    completion = Decimal(str(payload.get('completion_pct') or 0))
+    total_weight = Decimal(str(payload.get('total_weight_kg') or 0))
+    editable = payload.get('editable') or {}
+    paint_material_rate = Decimal(str(editable.get('paint_material_rate') or 0))
+    employee_overhead_rate = Decimal(str(assumptions.get('employee_overhead_rate') or 0))
+
+    child_note = ' Alt iş emri tahminleri bu kaleme dahil edilmiştir.' if children else ''
+
+    def _detail(key, label, amount_eur, description, inputs=None):
+        return {
+            'key': key,
+            'label': label,
+            'amount_eur': amount_eur,
+            'description': description,
+            'inputs': inputs or {},
+        }
+
+    component_details = []
+
+    component_details.append(_detail(
+        'subcontractor_cost',
+        _ESTIMATED_COMPONENT_LABELS['subcontractor_cost'],
+        components['subcontractor_cost'],
+        (
+            'Boya hariç taşeron atamaları: tahsis edilen ağırlık (kg) × birim fiyat, '
+            'para birimi EUR\'a çevrilir.'
+            + child_note
+        ),
+        {
+            'assignment_count': assumptions.get('non_paint_assignment_count'),
+        },
+    ))
+
+    actual_labor = Decimal(str(actual_components.get('labor_cost') or 0))
+    if completion > 0 and actual_labor > 0:
+        labor_desc = (
+            f'Mevcut işçilik maliyeti ({_decimal_str(actual_labor)} EUR), '
+            f'%{_decimal_str(completion)} tamamlanma oranına göre %100\'e ölçeklenir.'
+            + child_note
+        )
+        labor_inputs = {
+            'actual_labor_cost_eur': _decimal_str(actual_labor),
+            'completion_pct': str(completion),
+        }
+    else:
+        labor_desc = (
+            'Mevcut işçilik maliyeti kullanılır (tamamlanma %0 veya işçilik kaydı yok).'
+            + child_note
+        )
+        labor_inputs = {
+            'actual_labor_cost_eur': _decimal_str(actual_labor),
+            'completion_pct': str(completion),
+        }
+    component_details.append(_detail(
+        'labor_cost',
+        _ESTIMATED_COMPONENT_LABELS['labor_cost'],
+        components['labor_cost'],
+        labor_desc,
+        labor_inputs,
+    ))
+
+    paint_source = assumptions.get('paint_cost_source') or 'none'
+    if paint_source == 'completed_job_orders_avg_eur_per_kg':
+        paint_desc = (
+            f'Tamamlanan iş emirlerinden hesaplanan ortalama boya maliyeti '
+            f'({_decimal_str(assumptions.get("historical_paint_rate_eur_per_kg"))} EUR/kg) × '
+            f'toplam ağırlık ({_decimal_str(total_weight)} kg).'
+            + child_note
+        )
+        paint_inputs = {
+            'historical_paint_rate_eur_per_kg': assumptions.get('historical_paint_rate_eur_per_kg'),
+            'total_weight_kg': payload.get('total_weight_kg'),
+            'paint_cost_source': paint_source,
+        }
+    elif paint_source == 'paint_assignment_at_100':
+        paint_desc = (
+            'Boya taşeron atamaları: tahsis edilen ağırlık × birim fiyat (EUR\'a çevrilir).'
+            + child_note
+        )
+        paint_inputs = {
+            'assignment_count': assumptions.get('paint_assignment_count'),
+            'paint_cost_source': paint_source,
+        }
+    else:
+        paint_desc = 'Boya maliyeti tahmini tanımlı değil (boya görevi yok veya atama/fiyat yok).' + child_note
+        paint_inputs = {'paint_cost_source': paint_source}
+    component_details.append(_detail(
+        'paint_cost',
+        _ESTIMATED_COMPONENT_LABELS['paint_cost'],
+        components['paint_cost'],
+        paint_desc,
+        paint_inputs,
+    ))
+
+    component_details.append(_detail(
+        'paint_material_cost',
+        _ESTIMATED_COMPONENT_LABELS['paint_material_cost'],
+        components['paint_material_cost'],
+        (
+            f'Boya malzemesi oranı ({_decimal_str(paint_material_rate)} TRY/kg) × '
+            f'toplam ağırlık ({_decimal_str(total_weight)} kg), EUR\'a çevrilir.'
+            + child_note
+        ),
+        {
+            'paint_material_rate_try_per_kg': str(paint_material_rate),
+            'total_weight_kg': payload.get('total_weight_kg'),
+        },
+    ))
+
+    component_details.append(_detail(
+        'employee_overhead_cost',
+        _ESTIMATED_COMPONENT_LABELS['employee_overhead_cost'],
+        components['employee_overhead_cost'],
+        (
+            f'Tahmini işçilik ({components["labor_cost"]} EUR) × personel genel gider oranı '
+            f'({_decimal_str(employee_overhead_rate)}).'
+            + child_note
+        ),
+        {
+            'estimated_labor_cost_eur': components['labor_cost'],
+            'employee_overhead_rate': str(employee_overhead_rate),
+        },
+    ))
+
+    component_details.append(_detail(
+        'qc_cost',
+        _ESTIMATED_COMPONENT_LABELS['qc_cost'],
+        components['qc_cost'],
+        'Kayıtlı kalite kontrol maliyet satırları toplamı (tahmin = mevcut).' + child_note,
+        {'actual_qc_cost_eur': actual_components.get('qc_cost')},
+    ))
+
+    component_details.append(_detail(
+        'shipping_cost',
+        _ESTIMATED_COMPONENT_LABELS['shipping_cost'],
+        components['shipping_cost'],
+        'Kayıtlı sevkiyat maliyet satırları toplamı (tahmin = mevcut).' + child_note,
+        {'actual_shipping_cost_eur': actual_components.get('shipping_cost')},
+    ))
+
+    material_desc = (
+        'Planlama kalemleri ve kayıtlı satın alma satırlarından hesaplanır; '
+        'kayıtlı satırlar planlama fiyat çözümlemesine göre önceliklidir.'
+        + child_note
+    )
+    if assumptions.get('material_cost_floored_to_actual'):
+        material_desc += (
+            f' Satır toplamı ({material_breakdown["lines_total"]} EUR) mevcut malzeme maliyetinin '
+            f'({material_breakdown["actual_material_cost"]} EUR) altında kaldığı için tahmin bu seviyeye yükseltildi.'
+        )
+    component_details.append(_detail(
+        'material_cost',
+        _ESTIMATED_COMPONENT_LABELS['material_cost'],
+        components['material_cost'],
+        material_desc,
+        {
+            'lines_total_eur': material_breakdown.get('lines_total'),
+            'actual_material_cost_eur': material_breakdown.get('actual_material_cost'),
+            'material_cost_floored_to_actual': assumptions.get('material_cost_floored_to_actual'),
+            'items_count': material_breakdown.get('items_count'),
+        },
+    ))
+
+    assumption_notes = []
+    if completion > 0 and actual_labor > 0:
+        assumption_notes.append(
+            f'İşçilik tahmini, mevcut ilerleme (%{float(completion):.2f}) üzerinden %100\'e ölçeklenmiştir.'
+        )
+    assumption_notes.append(
+        f'Personel genel gider oranı: {float(employee_overhead_rate):.4f}'
+    )
+    if paint_source == 'completed_job_orders_avg_eur_per_kg':
+        assumption_notes.append(
+            'Boya maliyeti kaynağı: tamamlanan iş emirleri ortalaması (€/kg).'
+        )
+    elif paint_source == 'paint_assignment_at_100':
+        assumption_notes.append('Boya maliyeti kaynağı: boya taşeron ataması.')
+    if paint_material_rate > 0:
+        assumption_notes.append(f'Boya malzemesi oranı: {paint_material_rate} TRY/kg.')
+    if assumptions.get('material_cost_floored_to_actual'):
+        assumption_notes.append(
+            'Malzeme tahmini, mevcut kayıtlı maliyetin altına düşmeyecek şekilde ayarlandı.'
+        )
+
+    ordered_details = sorted(
+        component_details,
+        key=lambda row: (
+            _ESTIMATED_COMPONENT_ORDER.index(row['key'])
+            if row['key'] in _ESTIMATED_COMPONENT_ORDER
+            else 99
+        ),
+    )
+
+    return {
+        'job_order': payload['job_order'],
+        'currency': payload.get('currency') or 'EUR',
+        'total_cost': estimated['total_cost'],
+        'completion_pct': payload.get('completion_pct'),
+        'total_weight_kg': payload.get('total_weight_kg'),
+        'components': ordered_details,
+        'assumptions': assumption_notes,
+        'children': children,
+        'material_breakdown': material_breakdown,
+        'last_updated': payload.get('last_updated'),
     }
 
 

@@ -1116,6 +1116,24 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         job_order = self.get_object()
         return Response(build_estimated_material_breakdown(job_order))
 
+    @action(
+        detail=True,
+        methods=['get'],
+        url_path='estimated_cost_breakdown',
+        permission_classes=[IsCostAuthorized],
+    )
+    def estimated_cost_breakdown(self, request, job_no=None):
+        """
+        GET → how estimated total cost is calculated for this job order tree.
+
+        Returns per-component amounts, calculation descriptions, assumptions,
+        child job roll-ups, and line-level material breakdown.
+        """
+        from projects.services.costing import build_estimated_cost_breakdown
+
+        job_order = self.get_object()
+        return Response(build_estimated_cost_breakdown(job_order))
+
     @action(detail=True, methods=['get'], url_path='subcontractor_cost_breakdown', permission_classes=[IsCostAuthorized])
     def subcontractor_cost_breakdown(self, request, job_no=None):
         """
