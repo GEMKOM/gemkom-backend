@@ -242,7 +242,8 @@ class VacationRequestViewSet(viewsets.ModelViewSet):
           - `cancellation_request` — approved requests where the employee requested cancellation
 
         Non-HR users only see workflow_approval items where they are an approver.
-        HR/staff/superuser see both kinds.
+        Staff/superuser see all workflow approvals. manage_hr users see workflow
+        approvals assigned to them plus final-stage workflow approvals.
         """
         user   = request.user
         ct     = ContentType.objects.get_for_model(VacationRequest)
@@ -285,9 +286,18 @@ class VacationRequestViewSet(viewsets.ModelViewSet):
             is_complete=False,
             is_rejected=False,
         )
-        if is_hr:
-            # Staff and manage_hr see every open workflow stage (full HR inbox).
+        if is_staff_like:
             pass
+        elif is_manage_hr:
+            later_stage_exists = ApprovalStageInstance.objects.filter(
+                workflow=OuterRef("workflow"),
+                order__gt=OuterRef("order"),
+            )
+            stage_filter = (
+                stage_filter
+                .annotate(has_later_stage=Exists(later_stage_exists))
+                .filter(Q(approver_user_ids__contains=[user.id]) | Q(has_later_stage=False))
+            )
         else:
             stage_filter = stage_filter.filter(approver_user_ids__contains=[user.id])
 
