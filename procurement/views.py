@@ -52,6 +52,7 @@ from django.db.models.functions import Coalesce
 from decimal import Decimal
 from django.contrib.auth import get_user_model
 from .reports.common import bool_param
+from users.permissions import IsFinanceAuthorized
 
 class PaymentTermsViewSet(viewsets.ModelViewSet):
     """
@@ -98,7 +99,7 @@ class DBSPaymentViewSet(viewsets.ModelViewSet):
     Filters: ?supplier=<id>, ?paid_at_gte=YYYY-MM-DD, ?paid_at_lte=YYYY-MM-DD
     """
     serializer_class = DBSPaymentSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsFinanceAuthorized]
     http_method_names = ["get", "post", "head", "options"]  # no edit/delete — payments are immutable
 
     def get_queryset(self):
@@ -892,7 +893,7 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
                 cancel_purchase_request(pr, self.request.user, reason=f"Related PO-{instance.id} was deleted.")
 
 
-    @action(detail=True, methods=["POST"])
+    @action(detail=True, methods=["POST"], permission_classes=[IsFinanceAuthorized])
     @transaction.atomic
     def mark_schedule_paid(self, request, pk=None):
         po = self.get_object()
@@ -1075,13 +1076,13 @@ class ProcurementReportViewSet(viewsets.GenericViewSet):
             return self.get_paginated_response(page)
         return Response(rows)
     
-    @action(detail=False, methods=["get"], url_path="payment-forecast")
+    @action(detail=False, methods=["get"], url_path="payment-forecast", permission_classes=[IsFinanceAuthorized])
     def payment_forecast(self, request):
         from .reports.finance import build_executive_overview
         payload = build_executive_overview(request) or {}
         return Response(payload)
 
-    @action(detail=False, methods=["get"], url_path="outflow-detail")
+    @action(detail=False, methods=["get"], url_path="outflow-detail", permission_classes=[IsFinanceAuthorized])
     def outflow_detail(self, request):
         """
         Per-installment outflow detail for a given month.
@@ -1094,25 +1095,25 @@ class ProcurementReportViewSet(viewsets.GenericViewSet):
         rows = build_outflow_detail(month) or []
         return Response(rows)
 
-    @action(detail=False, methods=["get"], url_path="concentration")
+    @action(detail=False, methods=["get"], url_path="concentration", permission_classes=[IsFinanceAuthorized])
     def concentration(self, request):
         from .reports.finance import build_concentration_report
         payload = build_concentration_report(request) or {}
         return Response(payload)
 
-    @action(detail=False, methods=["get"], url_path="cash-forecast")
+    @action(detail=False, methods=["get"], url_path="cash-forecast", permission_classes=[IsFinanceAuthorized])
     def cash_forecast(self, request):
         from .reports.finance import build_cash_forecast
         payload = build_cash_forecast(request) or {}
         return Response(payload)
 
-    @action(detail=False, methods=["get"], url_path="cycle-time")
+    @action(detail=False, methods=["get"], url_path="cycle-time", permission_classes=[IsFinanceAuthorized])
     def cycle_time(self, request):
         from .reports.finance import build_cycle_time_report
         payload = build_cycle_time_report(request) or {}
         return Response(payload)
 
-    @action(detail=False, methods=["get"], url_path="price-variance")
+    @action(detail=False, methods=["get"], url_path="price-variance", permission_classes=[IsFinanceAuthorized])
     def price_variance(self, request):
         from .reports.finance import build_price_variance_report
         rows = build_price_variance_report(request) or []
@@ -1121,7 +1122,7 @@ class ProcurementReportViewSet(viewsets.GenericViewSet):
             return self.get_paginated_response(page)
         return Response(rows)
 
-    @action(detail=False, methods=["get"], url_path="projects")
+    @action(detail=False, methods=["get"], url_path="projects", permission_classes=[IsFinanceAuthorized])
     def projects(self, request):
         from .reports.finance import build_projects_report
         rows = build_projects_report(request) or []

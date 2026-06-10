@@ -3,8 +3,8 @@ from __future__ import annotations
 from django.utils import timezone
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
-from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from users.permissions import IsFinanceAuthorized
 
 from .models import (
     AdHocJobCost,
@@ -35,7 +35,7 @@ from .reports import (
 
 
 class MonthlyExpenseViewSet(viewsets.ModelViewSet):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsFinanceAuthorized]
     serializer_class = MonthlyExpenseSerializer
 
     def get_queryset(self):
@@ -59,7 +59,7 @@ class MonthlyExpenseViewSet(viewsets.ModelViewSet):
 
 
 class LoanViewSet(viewsets.ModelViewSet):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsFinanceAuthorized]
     serializer_class = LoanSerializer
     http_method_names = ["get", "post", "patch", "head", "options"]
 
@@ -103,7 +103,7 @@ class LoanViewSet(viewsets.ModelViewSet):
 
 
 class TaxEntryViewSet(viewsets.ModelViewSet):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsFinanceAuthorized]
     serializer_class = TaxEntrySerializer
 
     def get_queryset(self):
@@ -132,7 +132,7 @@ class TaxEntryViewSet(viewsets.ModelViewSet):
 
 
 class ExpectedReceiptViewSet(viewsets.ModelViewSet):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsFinanceAuthorized]
     serializer_class = ExpectedReceiptSerializer
 
     def get_queryset(self):
@@ -187,7 +187,7 @@ class ExpectedReceiptViewSet(viewsets.ModelViewSet):
 
 
 class AdHocJobCostViewSet(viewsets.ModelViewSet):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsFinanceAuthorized]
     serializer_class = AdHocJobCostSerializer
 
     def get_queryset(self):
@@ -212,7 +212,7 @@ class AdHocJobCostViewSet(viewsets.ModelViewSet):
 
 
 class SalesOfferInstallmentReceiptViewSet(viewsets.ViewSet):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsFinanceAuthorized]
 
     def list(self, request, offer_pk=None):
         qs = SalesOfferInstallmentReceipt.objects.filter(offer_id=offer_pk).order_by("sequence")
@@ -249,7 +249,7 @@ class SalesOfferInstallmentReceiptViewSet(viewsets.ViewSet):
 
 
 class FinanceReportViewSet(viewsets.ViewSet):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsFinanceAuthorized]
 
     @action(detail=False, methods=["get"], url_path="outflow-detail")
     def outflow_detail(self, request):
