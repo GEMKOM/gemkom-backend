@@ -405,6 +405,11 @@ def build_job_cost_payload(job_order) -> dict:
     )
     employee_overhead_rate = Decimal(str(summary.employee_overhead_rate or Decimal('0.65')))
     employee_overhead_estimate = q2(labor_estimate * employee_overhead_rate)
+    general_expenses_rate = Decimal(str(job_order.general_expenses_rate or 0))
+    general_expenses_estimate = q2(
+        general_expenses_rate * total_weight
+        if (general_expenses_rate > 0 and total_weight > 0) else Decimal('0.00')
+    )
     material_estimate, material_lines = _estimate_material_cost(job_order.job_no)
 
     estimated_components = {
@@ -415,6 +420,7 @@ def build_job_cost_payload(job_order) -> dict:
         'employee_overhead_cost': employee_overhead_estimate,
         'qc_cost': q2(summary.qc_cost),
         'shipping_cost': q2(summary.shipping_cost),
+        'general_expenses_cost': general_expenses_estimate,
         'material_cost': material_estimate,
     }
 
@@ -477,6 +483,7 @@ def build_job_cost_payload(job_order) -> dict:
                 'material_cost_floored_to_actual': material_cost_floored,
                 'non_paint_assignment_count': len(non_paint_assignments),
                 'paint_assignment_count': paint_assignment_count,
+                'general_expenses_rate': str(general_expenses_rate),
             },
             'material_lines': material_lines,
             'children': child_payloads,
@@ -484,6 +491,7 @@ def build_job_cost_payload(job_order) -> dict:
         'editable': {
             'paint_material_rate': str(summary.paint_material_rate),
             'employee_overhead_rate': str(summary.employee_overhead_rate),
+            'general_expenses_rate': str(general_expenses_rate),
             'cost_not_applicable': summary.cost_not_applicable,
         },
         'last_updated': summary.last_updated.isoformat() if summary.last_updated else None,
@@ -498,6 +506,7 @@ _ESTIMATED_COMPONENT_ORDER = (
     'employee_overhead_cost',
     'qc_cost',
     'shipping_cost',
+    'general_expenses_cost',
     'material_cost',
 )
 
@@ -509,6 +518,7 @@ _ESTIMATED_COMPONENT_LABELS = {
     'employee_overhead_cost': 'Personel Genel Giderleri',
     'qc_cost': 'Kalite Kontrol',
     'shipping_cost': 'Sevkiyat',
+    'general_expenses_cost': 'Genel Giderler',
     'material_cost': 'Malzeme',
 }
 
@@ -666,6 +676,22 @@ def build_estimated_cost_breakdown(job_order) -> dict:
         {'actual_shipping_cost_eur': actual_components.get('shipping_cost')},
     ))
 
+    general_expenses_rate = Decimal(str(assumptions.get('general_expenses_rate') or 0))
+    component_details.append(_detail(
+        'general_expenses_cost',
+        _ESTIMATED_COMPONENT_LABELS['general_expenses_cost'],
+        components['general_expenses_cost'],
+        (
+            f'Genel gider oranı ({_decimal_str(general_expenses_rate)}) × '
+            f'toplam ağırlık ({_decimal_str(total_weight)} kg).'
+            + child_note
+        ),
+        {
+            'general_expenses_rate': str(general_expenses_rate),
+            'total_weight_kg': payload.get('total_weight_kg'),
+        },
+    ))
+
     material_desc = (
         'Planlama kalemleri ve kayıtlı satın alma satırlarından hesaplanır; '
         'kayıtlı satırlar planlama fiyat çözümlemesine göre önceliklidir.'
@@ -705,6 +731,10 @@ def build_estimated_cost_breakdown(job_order) -> dict:
         assumption_notes.append('Boya maliyeti kaynağı: boya taşeron ataması.')
     if paint_material_rate > 0:
         assumption_notes.append(f'Boya malzemesi oranı: {paint_material_rate} TRY/kg.')
+    if general_expenses_rate > 0:
+        assumption_notes.append(
+            f'Genel gider oranı: {float(general_expenses_rate):.4f} (ağırlık × oran).'
+        )
     if assumptions.get('material_cost_floored_to_actual'):
         assumption_notes.append(
             'Malzeme tahmini, mevcut kayıtlı maliyetin altına düşmeyecek şekilde ayarlandı.'

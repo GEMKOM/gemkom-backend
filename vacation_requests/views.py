@@ -285,18 +285,9 @@ class VacationRequestViewSet(viewsets.ModelViewSet):
             is_complete=False,
             is_rejected=False,
         )
-        if is_staff_like:
+        if is_hr:
+            # Staff and manage_hr see every open workflow stage (full HR inbox).
             pass
-        elif is_manage_hr:
-            later_stage_exists = ApprovalStageInstance.objects.filter(
-                workflow=OuterRef("workflow"),
-                order__gt=OuterRef("order"),
-            )
-            stage_filter = (
-                stage_filter
-                .annotate(has_later_stage=Exists(later_stage_exists))
-                .filter(Q(approver_user_ids__contains=[user.id]) | Q(has_later_stage=False))
-            )
         else:
             stage_filter = stage_filter.filter(approver_user_ids__contains=[user.id])
 
