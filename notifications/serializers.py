@@ -118,9 +118,12 @@ ALWAYS_NOTIFIED = {
     # Auth
     Notification.PASSWORD_RESET:         'IT yöneticileri',
     # Vacation
-    Notification.VR_APPROVAL_REQUESTED:  'Onay aşamasındaki onaylayıcılar',
-    Notification.VR_APPROVED:            'Talebi oluşturan kişi',
-    Notification.VR_REJECTED:            'Talebi oluşturan kişi',
+    Notification.VR_APPROVAL_REQUESTED:      'Onay aşamasındaki onaylayıcılar',
+    Notification.VR_APPROVED:              'Talebi oluşturan kişi',
+    Notification.VR_REJECTED:              'Talebi oluşturan kişi',
+    Notification.VR_CANCELLATION_REQUESTED: 'İK (manage_hr) kullanıcıları',
+    Notification.VR_CANCELLATION_APPROVED:   'Talebi oluşturan kişi',
+    Notification.VR_CANCELLATION_REJECTED:   'Talebi oluşturan kişi',
     # Tasks
     Notification.TASK_ASSIGNED:          'Göreve atanan kullanıcı',
     # Job date

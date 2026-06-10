@@ -73,9 +73,12 @@ NOTIFICATION_DEFAULTS: dict[str, tuple[bool, bool]] = {
     Notification.TASK_ASSIGNED:            (True,  True),
     Notification.SALES_CONSULT_COMPLETED:  (True,  True),
     Notification.LC_STOCK_ENTRY_COMPLETE:  (True,  True),
-    Notification.VR_APPROVAL_REQUESTED:    (True,  True),
-    Notification.VR_APPROVED:             (True,  True),
-    Notification.VR_REJECTED:             (True,  True),
+    Notification.VR_APPROVAL_REQUESTED:      (True,  True),
+    Notification.VR_APPROVED:               (True,  True),
+    Notification.VR_REJECTED:               (True,  True),
+    Notification.VR_CANCELLATION_REQUESTED: (True,  True),
+    Notification.VR_CANCELLATION_APPROVED:  (True,  True),
+    Notification.VR_CANCELLATION_REJECTED:  (True,  True),
 }
 
 
@@ -588,6 +591,96 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
         ),
         'link': f'{_BASE_URL}/linear-cutting/sessions/{{session_key}}',
         'vars': ['session_key', 'session_title', 'actor', 'link'],
+    },
+    Notification.VR_APPROVAL_REQUESTED: {
+        'title': '[Onay Gerekli] İzin Talebi #{vr_id} – {vr_title}',
+        'body': (
+            'İzin talebi (#{vr_id}) için onayınız bekleniyor.\n'
+            'Aşama: {stage_name} (Gerekli onay sayısı: {required_approvals})\n'
+            'Talep Eden: {requestor}\n'
+            'Takım: {team}\n'
+            'Tarih: {start_date} → {end_date} ({duration_days} gün)\n'
+            'Gerekçe: {reason}\n\n'
+            '{link}'
+        ),
+        'link': '{approver_link}',
+        'vars': [
+            'vr_id', 'vr_title', 'stage_name', 'required_approvals',
+            'requestor', 'team', 'reason', 'start_date', 'end_date',
+            'duration_days', 'approver_link', 'link',
+        ],
+    },
+    Notification.VR_APPROVED: {
+        'title': '[İzin Talebi Onaylandı] #{vr_id} – {vr_title}',
+        'body': (
+            'İzin talebiniz (#{vr_id}) onaylandı.\n'
+            'Tarih: {start_date} → {end_date} ({duration_days} gün)\n'
+            '{comment}\n\n'
+            '{link}'
+        ),
+        'link': f'{_BASE_URL}/general/vacation/requests/',
+        'vars': [
+            'vr_id', 'vr_title', 'comment', 'requestor', 'team',
+            'start_date', 'end_date', 'duration_days', 'link',
+        ],
+    },
+    Notification.VR_REJECTED: {
+        'title': '[İzin Talebi Reddedildi] #{vr_id} – {vr_title}',
+        'body': (
+            'İzin talebiniz (#{vr_id}) reddedildi.\n'
+            'Tarih: {start_date} → {end_date} ({duration_days} gün)\n'
+            '{comment}\n\n'
+            '{link}'
+        ),
+        'link': f'{_BASE_URL}/general/vacation/requests/',
+        'vars': [
+            'vr_id', 'vr_title', 'comment', 'requestor', 'team',
+            'start_date', 'end_date', 'duration_days', 'link',
+        ],
+    },
+    Notification.VR_CANCELLATION_REQUESTED: {
+        'title': '[İptal Talebi] İzin #{vr_id} – {vr_title}',
+        'body': (
+            'Onaylanmış bir izin için iptal talebi gönderildi.\n'
+            'Talep Eden: {requestor}\n'
+            'Takım: {team}\n'
+            'Tarih: {start_date} → {end_date} ({duration_days} gün)\n'
+            'İptal Gerekçesi: {cancellation_reason}\n\n'
+            '{link}'
+        ),
+        'link': f'{_BASE_URL}/human_resources/vacation/',
+        'vars': [
+            'vr_id', 'vr_title', 'requestor', 'team', 'cancellation_reason',
+            'start_date', 'end_date', 'duration_days', 'link',
+        ],
+    },
+    Notification.VR_CANCELLATION_APPROVED: {
+        'title': '[İptal Onaylandı] İzin #{vr_id} – {vr_title}',
+        'body': (
+            'İzin iptal talebiniz (#{vr_id}) HR tarafından onaylandı.\n'
+            'Tarih: {start_date} → {end_date} ({duration_days} gün)\n'
+            'İzin kaydınız iptal edildi ve bakiyeniz güncellendi.\n\n'
+            '{link}'
+        ),
+        'link': f'{_BASE_URL}/general/vacation/requests/',
+        'vars': [
+            'vr_id', 'vr_title', 'requestor', 'team',
+            'start_date', 'end_date', 'duration_days', 'link',
+        ],
+    },
+    Notification.VR_CANCELLATION_REJECTED: {
+        'title': '[İptal Reddedildi] İzin #{vr_id} – {vr_title}',
+        'body': (
+            'İzin iptal talebiniz (#{vr_id}) HR tarafından reddedildi.\n'
+            'Tarih: {start_date} → {end_date} ({duration_days} gün)\n'
+            'İzniniz onaylı olarak devam etmektedir.\n\n'
+            '{link}'
+        ),
+        'link': f'{_BASE_URL}/general/vacation/requests/',
+        'vars': [
+            'vr_id', 'vr_title', 'requestor', 'team',
+            'start_date', 'end_date', 'duration_days', 'link',
+        ],
     },
 }
 

@@ -200,7 +200,6 @@ class VacationRequest(models.Model):
                 defaults={
                     "status": AttendanceRecord.STATUS_LEAVE,
                     "leave_type": LEAVE_COMPENSATORY,
-                    "method": AttendanceRecord.METHOD_HR,
                     "notes": tag,
                 },
             )
@@ -223,7 +222,6 @@ class VacationRequest(models.Model):
                         defaults={
                             "status": AttendanceRecord.STATUS_LEAVE,
                             "leave_type": self.leave_type,
-                            "method": AttendanceRecord.METHOD_HR,
                             "notes": tag,
                         },
                     )

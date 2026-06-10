@@ -17,7 +17,12 @@ from approvals.services import get_workflow
 from machining.permissions import HasQueueSecret
 from users.permissions import user_has_role_perm
 
-from .approval_service import decide as vr_decide
+from .approval_service import (
+    decide as vr_decide,
+    notify_cancellation_approved,
+    notify_cancellation_rejected,
+    notify_cancellation_requested,
+)
 from .filters import VacationRequestFilter
 from .models import LEAVE_TYPE_CHOICES, UserLeaveBalance, VacationRequest
 from .serializers import (
@@ -100,6 +105,7 @@ class VacationRequestViewSet(viewsets.ModelViewSet):
         vr.status = VacationRequest.STATUS_CANCELLATION_REQUESTED
         vr.cancellation_reason = reason
         vr.save(update_fields=["status", "cancellation_reason", "updated_at"])
+        notify_cancellation_requested(vr)
         return Response({"detail": "İptal talebiniz HR onayına gönderildi."}, status=200)
 
     @action(detail=True, methods=["post"], url_path="approve-cancellation")
@@ -115,6 +121,7 @@ class VacationRequestViewSet(viewsets.ModelViewSet):
         vr.save(update_fields=["status", "updated_at"])
         vr._rollback_attendance_records()
         vr._refund_leave_balance()
+        notify_cancellation_approved(vr)
         return Response({"detail": "İptal onaylandı, devamsızlık kayıtları ve bakiye güncellendi."}, status=200)
 
     @action(detail=True, methods=["post"], url_path="reject-cancellation")
@@ -129,6 +136,7 @@ class VacationRequestViewSet(viewsets.ModelViewSet):
         vr.status = VacationRequest.STATUS_APPROVED
         vr.cancellation_reason = ""
         vr.save(update_fields=["status", "cancellation_reason", "updated_at"])
+        notify_cancellation_rejected(vr)
         return Response({"detail": "İptal talebi reddedildi, izin onaylı olarak devam ediyor."}, status=200)
 
     # ------------------------------------------------------------------
@@ -241,15 +249,17 @@ class VacationRequestViewSet(viewsets.ModelViewSet):
           - `workflow_approval`   — submitted requests pending a workflow stage decision
           - `cancellation_request` — approved requests where the employee requested cancellation
 
-        Non-HR users only see workflow_approval items where they are an approver.
-        Staff/superuser see all workflow approvals. manage_hr users see workflow
-        approvals assigned to them plus final-stage workflow approvals.
+        HR users (staff, superuser, manage_hr) only see workflow_approval items
+        on the final approval stage. Non-HR users see items where they are an
+        approver on the current stage.
         """
         user   = request.user
         ct     = ContentType.objects.get_for_model(VacationRequest)
-        is_staff_like = user.is_staff or user.is_superuser
-        is_manage_hr = user_has_role_perm(user, "manage_hr")
-        is_hr = is_staff_like or is_manage_hr
+        is_hr = (
+            user.is_staff
+            or user.is_superuser
+            or user_has_role_perm(user, "manage_hr")
+        )
 
         leave_type_map = dict(LEAVE_TYPE_CHOICES)
         from users.helpers import TEAM_LABELS
@@ -263,6 +273,8 @@ class VacationRequestViewSet(viewsets.ModelViewSet):
                 "leave_type_label":   leave_type_map.get(vr.leave_type, vr.leave_type),
                 "start_date":         vr.start_date.isoformat(),
                 "end_date":           vr.end_date.isoformat(),
+                "start_time":         vr.start_time.isoformat() if vr.start_time else None,
+                "end_time":           vr.end_time.isoformat() if vr.end_time else None,
                 "duration_days":      str(vr.duration_days),
                 "requester_id":       vr.requester_id,
                 "requester_username": vr.requester.username,
@@ -286,17 +298,15 @@ class VacationRequestViewSet(viewsets.ModelViewSet):
             is_complete=False,
             is_rejected=False,
         )
-        if is_staff_like:
-            pass
-        elif is_manage_hr:
-            later_stage_exists = ApprovalStageInstance.objects.filter(
-                workflow=OuterRef("workflow"),
-                order__gt=OuterRef("order"),
-            )
+        later_stage_exists = ApprovalStageInstance.objects.filter(
+            workflow=OuterRef("workflow"),
+            order__gt=OuterRef("order"),
+        )
+        if is_hr:
             stage_filter = (
                 stage_filter
                 .annotate(has_later_stage=Exists(later_stage_exists))
-                .filter(Q(approver_user_ids__contains=[user.id]) | Q(has_later_stage=False))
+                .filter(has_later_stage=False)
             )
         else:
             stage_filter = stage_filter.filter(approver_user_ids__contains=[user.id])

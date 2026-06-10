@@ -47,8 +47,40 @@ def _vr_title(vr: VacationRequest) -> str:
     return f"{leave_label} | {vr.start_date} → {vr.end_date} ({vr.duration_days} gün)"
 
 
-def _vr_frontend_url(vr: VacationRequest) -> str:
-    return f"https://ofis.gemcore.com.tr/general/vacation-requests/pending/?request={vr.id}"
+_BASE_URL = "https://ofis.gemcore.com.tr"
+
+
+def _vr_approver_link(vr: VacationRequest, stage) -> str:
+    """Managers use the general pending page; HR final stage uses the HR inbox."""
+    if stage and (stage.order or 0) >= 2:
+        return f"{_BASE_URL}/human_resources/vacation/"
+    return f"{_BASE_URL}/general/vacation/pending/"
+
+
+def _vr_requester_link(_vr: VacationRequest) -> str:
+    return f"{_BASE_URL}/general/vacation/requests/"
+
+
+def _vr_hr_link(_vr: VacationRequest) -> str:
+    return f"{_BASE_URL}/human_resources/vacation/"
+
+
+def _hr_users():
+    from approvals.resolvers import _manage_hr_user_ids
+
+    return _users_from_ids(_manage_hr_user_ids())
+
+
+def _vr_notification_context(vr: VacationRequest) -> dict:
+    return {
+        "vr_id":         vr.id,
+        "vr_title":      _vr_title(vr),
+        "requestor":     vr.requester.get_full_name() or vr.requester.username,
+        "team":          vr.team or "—",
+        "start_date":    str(vr.start_date),
+        "end_date":      str(vr.end_date),
+        "duration_days": str(vr.duration_days),
+    }
 
 
 def _notify_approvers_for_current_stage(wf: ApprovalWorkflow, reason: str = "pending"):
@@ -75,6 +107,7 @@ def _notify_approvers_for_current_stage(wf: ApprovalWorkflow, reason: str = "pen
         "start_date":         str(vr.start_date),
         "end_date":           str(vr.end_date),
         "duration_days":      str(vr.duration_days),
+        "approver_link":      _vr_approver_link(vr, stage),
     }
     title, body, link = render_notification(Notification.VR_APPROVAL_REQUESTED, ctx)
     bulk_notify(
@@ -93,17 +126,69 @@ def _notify_requester(vr: VacationRequest, status_str: str, comment: str = ""):
     ctx = {
         "vr_id":         vr.id,
         "vr_title":      _vr_title(vr),
-        "comment":       comment,
+        "comment":       comment or "",
         "requestor":     vr.requester.get_full_name() or vr.requester.username,
         "team":          vr.team or "—",
         "start_date":    str(vr.start_date),
         "end_date":      str(vr.end_date),
         "duration_days": str(vr.duration_days),
+        "requester_link": _vr_requester_link(vr),
     }
     title, body, link = render_notification(notification_type, ctx)
     notify(
         user=vr.requester,
         notification_type=notification_type,
+        title=title,
+        body=body,
+        link=link,
+        source_type="vacation_request",
+        source_id=vr.id,
+    )
+
+
+def notify_cancellation_requested(vr: VacationRequest):
+    """Notify HR when an employee requests cancellation of an approved leave."""
+    hr_users = _hr_users()
+    if not hr_users.exists():
+        return
+    ctx = {
+        **_vr_notification_context(vr),
+        "cancellation_reason": vr.cancellation_reason or "—",
+    }
+    title, body, link = render_notification(Notification.VR_CANCELLATION_REQUESTED, ctx)
+    bulk_notify(
+        users=hr_users,
+        notification_type=Notification.VR_CANCELLATION_REQUESTED,
+        title=title,
+        body=body,
+        link=link,
+        source_type="vacation_request",
+        source_id=vr.id,
+    )
+
+
+def notify_cancellation_approved(vr: VacationRequest):
+    """Notify the requester when HR approves their cancellation request."""
+    ctx = _vr_notification_context(vr)
+    title, body, link = render_notification(Notification.VR_CANCELLATION_APPROVED, ctx)
+    notify(
+        user=vr.requester,
+        notification_type=Notification.VR_CANCELLATION_APPROVED,
+        title=title,
+        body=body,
+        link=link,
+        source_type="vacation_request",
+        source_id=vr.id,
+    )
+
+
+def notify_cancellation_rejected(vr: VacationRequest):
+    """Notify the requester when HR rejects their cancellation request."""
+    ctx = _vr_notification_context(vr)
+    title, body, link = render_notification(Notification.VR_CANCELLATION_REJECTED, ctx)
+    notify(
+        user=vr.requester,
+        notification_type=Notification.VR_CANCELLATION_REJECTED,
         title=title,
         body=body,
         link=link,
