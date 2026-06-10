@@ -1066,11 +1066,8 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         job_order = self.get_object()
 
         if request.method == 'GET':
-            summary, _ = JobOrderCostSummary.objects.get_or_create(
-                job_order=job_order
-            )
-            summary.job_order = job_order  # avoids extra query for general_expenses_rate
-            return Response(JobOrderCostSummarySerializer(summary).data)
+            from projects.services.costing import build_job_cost_payload
+            return Response(build_job_cost_payload(job_order))
 
         # PATCH
         summary, _ = JobOrderCostSummary.objects.get_or_create(
@@ -1096,7 +1093,28 @@ class JobOrderViewSet(viewsets.ModelViewSet):
             summary.refresh_from_db()
             summary.job_order = job_order
 
-        return Response(JobOrderCostSummarySerializer(summary).data)
+        from projects.services.costing import build_job_cost_payload
+        return Response(build_job_cost_payload(job_order))
+
+    @action(
+        detail=True,
+        methods=['get'],
+        url_path='estimated_material_breakdown',
+        permission_classes=[IsCostAuthorized],
+    )
+    def estimated_material_breakdown(self, request, job_no=None):
+        """
+        GET → line-level estimated material cost breakdown for this job order
+        (includes direct children recursively).
+
+        Each item row: catalog item, quantity, EUR unit price, line amount,
+        price_source (po_line, recommended_offer, procurement_line, …), and
+        original price/currency when applicable.
+        """
+        from projects.services.costing import build_estimated_material_breakdown
+
+        job_order = self.get_object()
+        return Response(build_estimated_material_breakdown(job_order))
 
     @action(detail=True, methods=['get'], url_path='subcontractor_cost_breakdown', permission_classes=[IsCostAuthorized])
     def subcontractor_cost_breakdown(self, request, job_no=None):
@@ -3200,6 +3218,7 @@ class JobOrderProcurementLineViewSet(viewsets.ModelViewSet):
         pr_items = (
             PlanningRequestItem.objects
             .filter(job_no=job_no)
+            .exclude(planning_request__status='cancelled')
             .select_related('item')
             .prefetch_related(
                 'purchase_request_items__offers__supplier_offer',

@@ -5,7 +5,8 @@ from decimal import Decimal
 from functools import lru_cache
 
 from django.db import transaction
-from django.db.models import Sum
+from django.db.models import Q, Sum
+from django.db.models.functions import Coalesce
 
 
 q2 = lambda x: Decimal(x).quantize(Decimal('0.01'))  # noqa: E731
@@ -60,6 +61,422 @@ def convert_to_eur(amount: Decimal, currency: str, on_date: date) -> Decimal:
     if src_rate == 0 or eur_rate == 0:
         return Decimal('0.00')
     return q2(amount * (eur_rate / src_rate))
+
+
+def _decimal_str(value: Decimal) -> str:
+    return str(q2(value or Decimal('0.00')))
+
+
+def _effective_selling_price(job_order, summary=None) -> dict:
+    """
+    Return the best known selling price converted to EUR.
+
+    Sales offer current price is preferred because converted job orders keep the
+    commercial source there. The manual summary price remains the fallback.
+    """
+    today = date.today()
+    offer_price = None
+    if getattr(job_order, 'source_offer_id', None):
+        offer_price = job_order.source_offer.current_price
+
+    if offer_price:
+        original_amount = offer_price.amount
+        original_currency = offer_price.currency
+        source = 'sales_offer_current_price'
+    elif summary:
+        original_amount = summary.selling_price
+        original_currency = summary.selling_price_currency
+        source = 'cost_summary'
+    else:
+        original_amount = Decimal('0.00')
+        original_currency = 'EUR'
+        source = 'none'
+
+    amount_eur = convert_to_eur(original_amount, original_currency, today)
+    return {
+        'amount_eur': _decimal_str(amount_eur),
+        'currency': 'EUR',
+        'original_amount': _decimal_str(original_amount),
+        'original_currency': original_currency,
+        'source': source,
+    }
+
+
+def _planning_items_with_price_annotations(job_no: str):
+    from django.db.models import OuterRef, Prefetch, Subquery
+    from planning.models import PlanningRequestItem
+    from procurement.models import PurchaseOrderLine, PurchaseRequestItem, ItemOffer
+
+    pol_m2m_base = PurchaseOrderLine.objects.filter(
+        purchase_request_item__purchase_request__planning_request_items=OuterRef('pk'),
+        purchase_request_item__item_id=OuterRef('item_id'),
+    ).exclude(
+        Q(purchase_request_item__purchase_request__status='cancelled') |
+        Q(po__status='cancelled')
+    ).order_by('-po__ordered_at', '-po__created_at', '-id')
+
+    pol_hist_base = PurchaseOrderLine.objects.filter(
+        purchase_request_item__item_id=OuterRef('item_id'),
+    ).exclude(
+        Q(purchase_request_item__purchase_request__status='cancelled') |
+        Q(po__status='cancelled')
+    ).order_by('-po__ordered_at', '-po__created_at', '-id')
+
+    return (
+        PlanningRequestItem.objects
+        .filter(job_no=job_no)
+        .exclude(planning_request__status='cancelled')
+        .select_related('item')
+        .prefetch_related(
+            Prefetch(
+                'purchase_request_items',
+                queryset=PurchaseRequestItem.objects.select_related('purchase_request'),
+            ),
+            Prefetch(
+                'purchase_request_items__po_lines',
+                queryset=PurchaseOrderLine.objects.select_related('po').order_by('-id'),
+            ),
+            Prefetch(
+                'purchase_request_items__offers',
+                queryset=ItemOffer.objects.select_related('supplier_offer').order_by('-id'),
+            ),
+        )
+        .annotate(
+            _t2_price=Subquery(pol_m2m_base.values('unit_price')[:1]),
+            _t2_currency=Subquery(pol_m2m_base.values('po__currency')[:1]),
+            _t2_tax=Subquery(pol_m2m_base.values('po__tax_rate')[:1]),
+            _t2_date=Subquery(
+                pol_m2m_base.annotate(_ref_date=Coalesce('po__ordered_at', 'po__created_at'))
+                .values('_ref_date')[:1]
+            ),
+            _t5_price=Subquery(pol_hist_base.values('unit_price')[:1]),
+            _t5_currency=Subquery(pol_hist_base.values('po__currency')[:1]),
+            _t5_tax=Subquery(pol_hist_base.values('po__tax_rate')[:1]),
+            _t5_date=Subquery(
+                pol_hist_base.annotate(_ref_date=Coalesce('po__ordered_at', 'po__created_at'))
+                .values('_ref_date')[:1]
+            ),
+        )
+        .order_by('id')
+    )
+
+
+def _procurement_line_to_material_dict(pl) -> dict:
+    return {
+        'procurement_line_id': pl.pk,
+        'planning_request_item': pl.planning_request_item_id,
+        'item': pl.item_id,
+        'item_code': pl.item.code if pl.item else None,
+        'item_name': pl.item.name if pl.item else (pl.item_description or None),
+        'item_unit': pl.item.unit if pl.item else None,
+        'quantity': str(pl.quantity),
+        'unit_price_eur': _decimal_str(pl.unit_price),
+        'original_unit_price': _decimal_str(pl.unit_price),
+        'original_currency': 'EUR',
+        'amount_eur': _decimal_str(pl.amount_eur),
+        'price_source': 'procurement_line',
+        'price_date': pl.created_at.date().isoformat() if pl.created_at else None,
+    }
+
+
+def _resolved_price_to_material_dict(pri, price, quantity, unit_price, amount) -> dict:
+    row = {
+        'procurement_line_id': None,
+        'planning_request_item': pri.pk,
+        'item': pri.item_id,
+        'item_code': pri.item.code if pri.item else None,
+        'item_name': pri.item.name if pri.item else None,
+        'item_unit': pri.item.unit if pri.item else None,
+        'quantity': str(quantity),
+        'unit_price_eur': _decimal_str(unit_price),
+        'amount_eur': _decimal_str(amount),
+        'price_source': price['price_source'] if price else 'none',
+        'price_date': price['price_date'].isoformat() if price and price.get('price_date') else None,
+    }
+    if price:
+        row['original_unit_price'] = _decimal_str(price['original_unit_price'])
+        row['original_currency'] = price['original_currency']
+    else:
+        row['original_unit_price'] = _decimal_str(Decimal('0.00'))
+        row['original_currency'] = None
+    return row
+
+
+def _estimate_material_cost(job_no: str) -> tuple[Decimal, list[dict]]:
+    """
+    Estimate full material cost from planning items.
+
+    Saved procurement lines take precedence over price-resolution for the same
+    planning item. Orphan procurement lines (no planning link) are included too.
+    """
+    from planning.price_utils import resolve_planning_item_price
+    from projects.models import JobOrderProcurementLine
+
+    procurement_by_pri: dict[int, list] = {}
+    orphan_procurement_lines = []
+    for pl in (
+        JobOrderProcurementLine.objects
+        .filter(job_order_id=job_no)
+        .select_related('item')
+        .order_by('order', 'id')
+    ):
+        if pl.planning_request_item_id:
+            procurement_by_pri.setdefault(pl.planning_request_item_id, []).append(pl)
+        else:
+            orphan_procurement_lines.append(pl)
+
+    total = Decimal('0.00')
+    lines = []
+    covered_pri_ids: set[int] = set()
+    for pri in _planning_items_with_price_annotations(job_no):
+        covered_pri_ids.add(pri.pk)
+        saved_lines = procurement_by_pri.get(pri.pk)
+        if saved_lines:
+            for pl in saved_lines:
+                amount = q2(pl.amount_eur)
+                total += amount
+                lines.append(_procurement_line_to_material_dict(pl))
+            continue
+
+        price = resolve_planning_item_price(pri)
+        unit_price = price['unit_price_eur'] if price else Decimal('0.00')
+        quantity = Decimal(str(pri.quantity or 0))
+        amount = q2(quantity * unit_price)
+        total += amount
+        lines.append(_resolved_price_to_material_dict(pri, price, quantity, unit_price, amount))
+
+    for pri_id, saved_lines in procurement_by_pri.items():
+        if pri_id in covered_pri_ids:
+            continue
+        for pl in saved_lines:
+            amount = q2(pl.amount_eur)
+            total += amount
+            lines.append(_procurement_line_to_material_dict(pl))
+
+    for pl in orphan_procurement_lines:
+        amount = q2(pl.amount_eur)
+        total += amount
+        lines.append(_procurement_line_to_material_dict(pl))
+
+    return q2(total), lines
+
+
+def _collect_estimated_material_items(job_order, items_out: list[dict]) -> Decimal:
+    """Append own material lines (tagged with job_order) and recurse into children."""
+    from projects.models import JobOrder
+
+    own_total, own_lines = _estimate_material_cost(job_order.job_no)
+    for line in own_lines:
+        items_out.append({**line, 'job_order': job_order.job_no})
+    rolled_up = own_total
+    for child in JobOrder.objects.filter(parent_id=job_order.job_no).order_by('job_no'):
+        rolled_up += _collect_estimated_material_items(child, items_out)
+    return q2(rolled_up)
+
+
+def build_estimated_material_breakdown(job_order) -> dict:
+    """
+    Line-level breakdown of estimated material cost for a job order tree.
+
+    Each item row includes quantity, EUR unit price, amount, price source, and
+    original price/currency when resolved from PO or offer data.
+    """
+    from projects.models import JobOrderCostSummary
+
+    summary, _ = JobOrderCostSummary.objects.get_or_create(job_order=job_order)
+    items: list[dict] = []
+    lines_total = _collect_estimated_material_items(job_order, items)
+    actual_material_cost = q2(summary.material_cost)
+    estimated_material_cost = lines_total
+    material_cost_floored = False
+    if estimated_material_cost < actual_material_cost:
+        estimated_material_cost = actual_material_cost
+        material_cost_floored = True
+    floor_adjustment = q2(estimated_material_cost - lines_total)
+
+    return {
+        'job_order': job_order.job_no,
+        'currency': 'EUR',
+        'items': items,
+        'items_count': len(items),
+        'lines_total': _decimal_str(lines_total),
+        'estimated_material_cost': _decimal_str(estimated_material_cost),
+        'actual_material_cost': _decimal_str(actual_material_cost),
+        'floor_adjustment_eur': _decimal_str(floor_adjustment),
+        'material_cost_floored_to_actual': material_cost_floored,
+    }
+
+
+def _historical_paint_rate_eur_per_kg(exclude_job_no: str) -> Decimal:
+    from projects.models import JobOrderCostSummary
+
+    rows = (
+        JobOrderCostSummary.objects
+        .filter(
+            job_order__status='completed',
+            paint_cost__gt=0,
+            job_order__total_weight_kg__gt=0,
+        )
+        .exclude(job_order_id=exclude_job_no)
+        .values_list('paint_cost', 'job_order__total_weight_kg')
+    )
+    total_cost = Decimal('0.00')
+    total_weight = Decimal('0.00')
+    for paint_cost, weight in rows:
+        total_cost += Decimal(str(paint_cost or 0))
+        total_weight += Decimal(str(weight or 0))
+    if total_weight <= 0:
+        return Decimal('0.00')
+    return total_cost / total_weight
+
+
+def build_job_cost_payload(job_order) -> dict:
+    """
+    Build the endpoint payload for current actual cost and estimated full cost.
+
+    Actual values come from JobOrderCostSummary. Estimate is calculated from the
+    current system state and projected to 100% progress where appropriate.
+    """
+    from subcontracting.models import SubcontractingAssignment
+    from projects.models import JobOrder, JobOrderCostSummary, JobOrderDepartmentTask
+
+    summary, _ = JobOrderCostSummary.objects.get_or_create(job_order=job_order)
+    summary.job_order = job_order
+
+    total_weight = Decimal(str(job_order.total_weight_kg or 0))
+    completion = Decimal(str(job_order.completion_percentage or 0))
+    progress_ratio = completion / Decimal('100') if completion > 0 else Decimal('0')
+
+    today = date.today()
+    non_paint_assignments = (
+        SubcontractingAssignment.objects
+        .filter(
+            department_task__job_order_id=job_order.job_no,
+            price_tier__isnull=False,
+            is_retired=False,
+        )
+        .exclude(department_task__task_type='painting')
+        .select_related('price_tier')
+    )
+    subcontractor_estimate = q2(sum(
+        convert_to_eur(a.allocated_weight_kg * a.price_tier.price_per_kg, a.price_tier.currency, today)
+        for a in non_paint_assignments
+    ))
+
+    labor_estimate = q2(
+        summary.labor_cost / progress_ratio
+        if progress_ratio > 0 and summary.labor_cost > 0
+        else summary.labor_cost
+    )
+
+    has_painting = JobOrderDepartmentTask.objects.filter(
+        job_order_id=job_order.job_no,
+        task_type='painting',
+    ).exclude(status='skipped').exists()
+    historical_paint_rate = _historical_paint_rate_eur_per_kg(job_order.job_no)
+    if has_painting and total_weight > 0 and historical_paint_rate > 0:
+        paint_estimate = q2(historical_paint_rate * total_weight)
+        paint_source = 'completed_job_orders_avg_eur_per_kg'
+    else:
+        paint_estimate = q2(sum(
+            convert_to_eur(a.allocated_weight_kg * a.price_tier.price_per_kg, a.price_tier.currency, today)
+            for a in SubcontractingAssignment.objects.filter(
+                department_task__job_order_id=job_order.job_no,
+                department_task__task_type='painting',
+                price_tier__isnull=False,
+                allocated_weight_kg__gt=0,
+                is_retired=False,
+            ).select_related('price_tier')
+        ))
+        paint_source = 'paint_assignment_at_100' if paint_estimate else 'none'
+
+    paint_material_estimate = q2(
+        convert_to_eur(summary.paint_material_rate * total_weight, 'TRY', today)
+        if total_weight > 0 else Decimal('0.00')
+    )
+    employee_overhead_rate = Decimal(str(summary.employee_overhead_rate or Decimal('0.65')))
+    employee_overhead_estimate = q2(labor_estimate * employee_overhead_rate)
+    material_estimate, material_lines = _estimate_material_cost(job_order.job_no)
+
+    estimated_components = {
+        'subcontractor_cost': subcontractor_estimate,
+        'labor_cost': labor_estimate,
+        'paint_cost': paint_estimate,
+        'paint_material_cost': paint_material_estimate,
+        'employee_overhead_cost': employee_overhead_estimate,
+        'qc_cost': q2(summary.qc_cost),
+        'shipping_cost': q2(summary.shipping_cost),
+        'material_cost': material_estimate,
+    }
+
+    child_payloads = []
+    for child in JobOrder.objects.filter(parent_id=job_order.job_no).select_related('source_offer'):
+        child_payload = build_job_cost_payload(child)
+        child_payloads.append({
+            'job_order': child.job_no,
+            'estimated_total_cost': child_payload['estimated']['total_cost'],
+            'actual_total_cost': child_payload['actual']['total_cost'],
+        })
+        for key in estimated_components:
+            estimated_components[key] += Decimal(child_payload['estimated']['components'][key])
+
+    # Material already committed (procurement lines) must not be below actual.
+    actual_material_total = q2(summary.material_cost)
+    material_cost_floored = False
+    if estimated_components['material_cost'] < actual_material_total:
+        estimated_components['material_cost'] = actual_material_total
+        material_cost_floored = True
+
+    estimated_total = q2(sum(estimated_components.values(), Decimal('0.00')))
+    actual_components = {
+        'labor_cost': summary.labor_cost,
+        'material_cost': summary.material_cost,
+        'subcontractor_cost': summary.subcontractor_cost,
+        'paint_cost': summary.paint_cost,
+        'paint_material_cost': summary.paint_material_cost,
+        'employee_overhead_cost': summary.employee_overhead_cost,
+        'qc_cost': summary.qc_cost,
+        'shipping_cost': summary.shipping_cost,
+        'general_expenses_cost': summary.general_expenses_cost,
+        'other_cost': summary.other_cost,
+    }
+
+    selling_price = _effective_selling_price(job_order, summary)
+    return {
+        'job_order': job_order.job_no,
+        'total_weight_kg': str(total_weight) if job_order.total_weight_kg is not None else None,
+        'completion_pct': str(completion),
+        'currency': 'EUR',
+        'selling_price': selling_price['amount_eur'],
+        'selling_price_currency': 'EUR',
+        'selling_price_eur': selling_price['amount_eur'],
+        'selling_price_effective': selling_price,
+        'actual': {
+            'currency': 'EUR',
+            'total_cost': _decimal_str(summary.actual_total_cost),
+            'components': {key: _decimal_str(value) for key, value in actual_components.items()},
+        },
+        'estimated': {
+            'currency': 'EUR',
+            'total_cost': _decimal_str(estimated_total),
+            'components': {key: _decimal_str(value) for key, value in estimated_components.items()},
+            'assumptions': {
+                'labor_projected_from_completion_pct': str(completion),
+                'employee_overhead_rate': str(employee_overhead_rate),
+                'paint_cost_source': paint_source,
+                'historical_paint_rate_eur_per_kg': _decimal_str(historical_paint_rate),
+                'material_cost_floored_to_actual': material_cost_floored,
+            },
+            'material_lines': material_lines,
+            'children': child_payloads,
+        },
+        'editable': {
+            'paint_material_rate': str(summary.paint_material_rate),
+            'employee_overhead_rate': str(summary.employee_overhead_rate),
+            'cost_not_applicable': summary.cost_not_applicable,
+        },
+        'last_updated': summary.last_updated.isoformat() if summary.last_updated else None,
+    }
 
 
 @transaction.atomic
