@@ -3,9 +3,9 @@ from django.db import migrations
 UPDATED_CONFIGS = [
     {
         'notification_type': 'release_approval_requested',
-        'title_template': '[Akran İncelemesi] {job_no} Rev.{revision}',
+        'title_template': '[Çizim İncelemesi] {job_no} Rev.{revision}',
         'body_template': (
-            '{actor} yeni teknik çizim yayını oluşturdu ve akran incelemenizi bekliyor.\n'
+            '{actor} yeni teknik çizim yayını oluşturdu ve incelemenizi bekliyor.\n'
             'İş Emri: {job_no} - {job_title}\n'
             'Revizyon: {revision}\n\n'
             'Klasör Yolu:\n{folder_path}\n\n'
@@ -15,7 +15,7 @@ UPDATED_CONFIGS = [
     },
     {
         'notification_type': 'release_approved',
-        'title_template': '[Akran İncelemesi Olumlu] {job_no} Rev.{revision}',
+        'title_template': '[Çizim İncelemesi Olumlu] {job_no} Rev.{revision}',
         'body_template': (
             '{actor} teknik çizim yayınınızı olumlu değerlendirdi.\n'
             'İş Emri: {job_no} - {job_title}\n'

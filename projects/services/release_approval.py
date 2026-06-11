@@ -127,7 +127,7 @@ def create_pending_release_topic(release, topic_content=''):
         content = topic_content
     else:
         creator_name = release.released_by.get_full_name() if release.released_by else 'Bilinmeyen'
-        content = f"""{creator_name} yeni teknik çizim yayını oluşturdu (akran incelemesi bekliyor):
+        content = f"""{creator_name} yeni teknik çizim yayını oluşturdu (inceleme bekliyor):
 
 İş Emri: {job_order.job_no} - {job_order.title}
 Revizyon: {rev}
@@ -139,14 +139,14 @@ Klasör Yolu:
 Değişiklikler:
 {release.changelog}
 
-Bu yayın tasarım ekibi akran incelemesi beklemektedir (en az 2 değerlendirme gerekli)."""
+Bu yayın tasarım ekibi incelemesi beklemektedir (en az 2 değerlendirme gerekli)."""
 
     topic = JobOrderDiscussionTopic.objects.create(
         job_order=job_order,
         title=topic_title,
         content=content,
         priority='normal',
-        topic_type='drawing_release',
+        topic_type='release_review',
         created_by=release.released_by,
     )
 
@@ -191,7 +191,8 @@ def publish_release(release, final_approver=None):
         topic.title = (
             f'Teknik Çizim Yayını - Rev.{release.revision_code or release.revision_number}'
         )
-        topic.save(update_fields=['title', 'updated_at'])
+        topic.topic_type = 'drawing_release'
+        topic.save(update_fields=['title', 'topic_type', 'updated_at'])
 
         stakeholder_users = get_drawing_release_stakeholders()
         mentioned_ids = set(topic.mentioned_users.values_list('id', flat=True))

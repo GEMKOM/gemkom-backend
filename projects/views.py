@@ -2583,6 +2583,15 @@ class JobOrderDiscussionTopicViewSet(viewsets.ModelViewSet):
         is_deleted=False
     ).select_related('job_order', 'task', 'created_by').prefetch_related('mentioned_users', 'attachments')
 
+    def get_queryset(self):
+        qs = super().get_queryset()
+        if self.action == 'list':
+            topic_type = self.request.query_params.get('topic_type')
+            include_release_review = self.request.query_params.get('include_release_review')
+            if topic_type != 'release_review' and include_release_review != 'true':
+                qs = qs.exclude(topic_type='release_review')
+        return qs
+
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     search_fields = ['title', 'content', 'job_order__job_no', 'job_order__title']
     ordering_fields = ['created_at', 'priority', 'updated_at']
@@ -3039,7 +3048,7 @@ class TechnicalDrawingReleaseViewSet(viewsets.ModelViewSet):
 
         return Response({
             'status': 'success',
-            'message': 'Revizyon tamamlandı. Yeni yayın akran incelemesine gönderildi.',
+            'message': 'Revizyon tamamlandı. Yeni yayın incelemeye gönderildi.',
             'release': TechnicalDrawingReleaseDetailSerializer(new_release, context={'request': request}).data,
             'topic': JobOrderDiscussionTopicDetailSerializer(topic, context={'request': request}).data
         }, status=status.HTTP_201_CREATED)
@@ -3189,7 +3198,8 @@ class TechnicalDrawingReleaseViewSet(viewsets.ModelViewSet):
             topic = release.release_topic
             rev = release.revision_code or release.revision_number
             topic.title = f'Teknik Çizim Yayını (İnceleme Bekliyor) - Rev.{rev}'
-            topic.save(update_fields=['title', 'updated_at'])
+            topic.topic_type = 'release_review'
+            topic.save(update_fields=['title', 'topic_type', 'updated_at'])
         else:
             topic = create_pending_release_topic(release)
 

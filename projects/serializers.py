@@ -1534,6 +1534,7 @@ class JobOrderDiscussionTopicDetailSerializer(serializers.ModelSerializer):
         source='revision_assigned_to.get_full_name', read_only=True, default=None
     )
     related_release_data = serializers.SerializerMethodField()
+    linked_release_id = serializers.SerializerMethodField()
     mentioned_users_data = serializers.SerializerMethodField()
     attachments_data = serializers.SerializerMethodField()
 
@@ -1546,7 +1547,7 @@ class JobOrderDiscussionTopicDetailSerializer(serializers.ModelSerializer):
             'topic_type', 'topic_type_display',
             'revision_status', 'revision_status_display',
             'revision_assigned_to', 'revision_assigned_to_name',
-            'related_release', 'related_release_data',
+            'related_release', 'related_release_data', 'linked_release_id',
             'created_by', 'created_by_name', 'created_by_username',
             'mentioned_users', 'mentioned_users_data',
             'attachments_data',
@@ -1557,6 +1558,11 @@ class JobOrderDiscussionTopicDetailSerializer(serializers.ModelSerializer):
 
     def get_revision_status_display(self, obj):
         return obj.get_revision_status_display() if obj.revision_status else None
+
+    def get_linked_release_id(self, obj):
+        return TechnicalDrawingRelease.objects.filter(
+            release_topic_id=obj.id,
+        ).values_list('id', flat=True).first()
 
     def get_related_release_data(self, obj):
         if not obj.related_release:

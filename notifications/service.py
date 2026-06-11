@@ -122,9 +122,9 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
         'vars': ['actor', 'job_no', 'topic_title', 'comment_content', 'topic_id', 'link'],
     },
     Notification.RELEASE_APPROVAL_REQUESTED: {
-        'title': '[Akran İncelemesi] {job_no} Rev.{revision}',
+        'title': '[Çizim İncelemesi] {job_no} Rev.{revision}',
         'body': (
-            '{actor} yeni teknik çizim yayını oluşturdu ve akran incelemenizi bekliyor.\n'
+            '{actor} yeni teknik çizim yayını oluşturdu ve incelemenizi bekliyor.\n'
             'İş Emri: {job_no} - {job_title}\n'
             'Revizyon: {revision}\n\n'
             'Klasör Yolu:\n{folder_path}\n\n'
@@ -135,7 +135,7 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
         'vars': ['actor', 'job_no', 'job_title', 'revision', 'folder_path', 'changelog', 'topic_id', 'release_id', 'link'],
     },
     Notification.RELEASE_APPROVED: {
-        'title': '[Akran İncelemesi Olumlu] {job_no} Rev.{revision}',
+        'title': '[Çizim İncelemesi Olumlu] {job_no} Rev.{revision}',
         'body': (
             '{actor} teknik çizim yayınınızı olumlu değerlendirdi.\n'
             'İş Emri: {job_no} - {job_title}\n'

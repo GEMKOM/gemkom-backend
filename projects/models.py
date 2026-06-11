@@ -1646,6 +1646,7 @@ class JobOrderDiscussionTopic(models.Model):
     TOPIC_TYPE_CHOICES = [
         ('general', 'Genel'),
         ('drawing_release', 'Çizim Yayını'),
+        ('release_review', 'Çizim İncelemesi'),
         ('revision_request', 'Revizyon Talebi'),
     ]
 
