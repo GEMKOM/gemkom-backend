@@ -1838,13 +1838,21 @@ class TechnicalDrawingReleaseCreateSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         job_order = attrs.get('job_order')
-        if job_order and TechnicalDrawingRelease.objects.filter(
-            job_order=job_order,
-            status='pending_approval',
-        ).exists():
-            raise serializers.ValidationError(
-                'Bu iş emri için zaten inceleme bekleyen bir yayın var.'
-            )
+        if job_order:
+            if TechnicalDrawingRelease.objects.filter(
+                job_order=job_order,
+                status='pending_approval',
+            ).exists():
+                raise serializers.ValidationError(
+                    'Bu iş emri için zaten inceleme bekleyen bir yayın var.'
+                )
+            if TechnicalDrawingRelease.objects.filter(
+                job_order=job_order,
+                status='rejected',
+            ).exists():
+                raise serializers.ValidationError(
+                    'Bu iş emri için reddedilmiş bir yayın var. Lütfen yeniden gönderin.'
+                )
         return attrs
 
     def create(self, validated_data):
