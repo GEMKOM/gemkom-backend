@@ -2094,6 +2094,10 @@ class JobOrderCostSummary(models.Model):
         max_digits=16, decimal_places=2, default=Decimal('0.00'),
         help_text='Sum of all cost components (EUR)'
     )
+    estimated_total_cost = models.DecimalField(
+        max_digits=16, decimal_places=2, null=True, blank=True,
+        help_text='Cached projected full cost at 100% (EUR); refreshed on cost recompute'
+    )
     selling_price = models.DecimalField(
         max_digits=16, decimal_places=2, default=Decimal('0.00')
     )

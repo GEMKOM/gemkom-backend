@@ -7,6 +7,7 @@ from django_filters.rest_framework import DjangoFilterBackend
 import django_filters
 from django.utils import timezone
 from django.db import transaction
+from django.db.models import Q, Max
 from datetime import timedelta
 
 from .models import (
@@ -48,6 +49,7 @@ from .serializers import (
     JobOrderDiscussionCommentUpdateSerializer,
     DiscussionAttachmentSerializer,
     TechnicalDrawingReleaseListSerializer,
+    TechnicalDrawingReleaseReviewHistorySerializer,
     TechnicalDrawingReleaseDetailSerializer,
     TechnicalDrawingReleaseCreateSerializer,
     RevisionRequestSerializer,
@@ -856,12 +858,35 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         return {jno: val for jno in parent_nos if (val := subtree_weight(jno))}
 
     @staticmethod
+    def _cost_table_base_queryset():
+        from django.db.models import Prefetch
+        from sales.models import SalesOfferPriceRevision
+
+        return (
+            JobOrder.objects
+            .select_related('cost_summary', 'customer', 'source_offer')
+            .prefetch_related(
+                Prefetch(
+                    'source_offer__price_revisions',
+                    queryset=SalesOfferPriceRevision.objects.filter(is_current=True),
+                    to_attr='_current_price_revisions',
+                ),
+            )
+            .exclude(job_no='LEGACY-ARCHIVE')
+            .exclude(cost_summary__cost_not_applicable=True)
+        )
+
+    @staticmethod
     def _serialize_cost_rows(jobs, jobs_with_children, context):
         """
         Serialize a list of JobOrder instances with CostTableRowSerializer and
         inject the has_children flag from the provided set.
         """
+        from projects.services.costing import ensure_estimated_totals_cached
         from .serializers import CostTableRowSerializer
+
+        if jobs:
+            ensure_estimated_totals_cached(jobs)
         serializer = CostTableRowSerializer(jobs, many=True, context=context)
         return [
             {**item, 'has_children': item['job_no'] in jobs_with_children}
@@ -939,13 +964,7 @@ class JobOrderViewSet(viewsets.ModelViewSet):
             '-price_per_kg':('price_per_kg_order', price_per_kg_expr, True),
         }
 
-        base_qs = (
-            JobOrder.objects
-            .select_related('cost_summary', 'customer', 'source_offer')
-            .prefetch_related('source_offer__price_revisions')
-            .exclude(job_no='LEGACY-ARCHIVE')
-            .exclude(cost_summary__cost_not_applicable=True)
-        )
+        base_qs = self._cost_table_base_queryset()
 
         facility = request.query_params.get('facility')
         if facility == 'rolling_mill':
@@ -1039,9 +1058,7 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         a further expand button.
         """
         children = list(
-            JobOrder.objects
-            .select_related('cost_summary', 'customer', 'source_offer')
-            .prefetch_related('source_offer__price_revisions')
+            self._cost_table_base_queryset()
             .filter(parent_id=job_no)
             .order_by('job_no')
         )
@@ -3066,6 +3083,76 @@ class TechnicalDrawingReleaseViewSet(viewsets.ModelViewSet):
         serializer = TechnicalDrawingReleaseListSerializer(
             qs, many=True, context={'request': request}
         )
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['get'], url_path='completed_reviews')
+    def completed_reviews(self, request):
+        """List releases with completed peer review."""
+        qs = self.get_queryset().filter(
+            approvals__isnull=False,
+        ).exclude(
+            status__in=['pending_approval', 'in_revision'],
+        ).annotate(
+            review_completed_at=Max('approvals__created_at'),
+        ).distinct()
+
+        status = request.query_params.get('status')
+        status_in = request.query_params.get('status__in')
+        if status:
+            qs = qs.filter(status=status)
+        elif status_in:
+            qs = qs.filter(status__in=[s.strip() for s in status_in.split(',') if s.strip()])
+        else:
+            qs = qs.filter(status__in=['released', 'rejected', 'superseded'])
+
+        job_no = request.query_params.get('job_order') or request.query_params.get('job_order__job_no')
+        if job_no:
+            qs = qs.filter(job_order__job_no__icontains=job_no)
+
+        released_by = request.query_params.get('released_by')
+        if released_by:
+            qs = qs.filter(released_by_id=released_by)
+
+        reviewer = request.query_params.get('reviewer')
+        if reviewer:
+            qs = qs.filter(approvals__approver_id=reviewer)
+
+        completed_after = request.query_params.get('completed_at_after')
+        if completed_after:
+            qs = qs.filter(review_completed_at__date__gte=completed_after)
+
+        completed_before = request.query_params.get('completed_at_before')
+        if completed_before:
+            qs = qs.filter(review_completed_at__date__lte=completed_before)
+
+        search = request.query_params.get('search')
+        if search:
+            qs = qs.filter(
+                Q(job_order__job_no__icontains=search)
+                | Q(job_order__title__icontains=search)
+                | Q(changelog__icontains=search)
+                | Q(folder_path__icontains=search)
+                | Q(revision_code__icontains=search)
+            )
+
+        ordering = request.query_params.get('ordering', '-review_completed_at')
+        allowed_ordering = {
+            'released_at', '-released_at',
+            'review_completed_at', '-review_completed_at',
+            'revision_number', '-revision_number',
+            'job_order__job_no', '-job_order__job_no',
+        }
+        if ordering in allowed_ordering:
+            qs = qs.order_by(ordering)
+        else:
+            qs = qs.order_by('-review_completed_at')
+
+        page = self.paginate_queryset(qs)
+        serializer_class = TechnicalDrawingReleaseReviewHistorySerializer
+        if page is not None:
+            serializer = serializer_class(page, many=True, context={'request': request})
+            return self.get_paginated_response(serializer.data)
+        serializer = serializer_class(qs, many=True, context={'request': request})
         return Response(serializer.data)
 
     @action(detail=True, methods=['post'])

@@ -330,6 +330,34 @@ def _historical_paint_rate_eur_per_kg(exclude_job_no: str) -> Decimal:
     return total_cost / total_weight
 
 
+def _child_cost_summary_map(direct_children) -> dict:
+    """JobOrderCostSummary keyed by job_no for direct children."""
+    from projects.models import JobOrderCostSummary
+
+    if not direct_children:
+        return {}
+    child_nos = [c.job_no for c in direct_children]
+    result = {
+        s.job_order_id: s
+        for s in JobOrderCostSummary.objects.filter(job_order_id__in=child_nos)
+    }
+    for child in direct_children:
+        if child.job_no not in result:
+            result[child.job_no], _ = JobOrderCostSummary.objects.get_or_create(job_order=child)
+    return result
+
+
+def _own_rolled_up_component(parent_summary, field: str, child_summaries: list) -> Decimal:
+    """
+    Parent JobOrderCostSummary stores tree totals (own + direct children).
+    Subtract direct children's rolled-up totals to recover this job's own amount.
+    """
+    own = Decimal(str(getattr(parent_summary, field) or 0))
+    for cs in child_summaries:
+        own -= Decimal(str(getattr(cs, field) or 0))
+    return q2(own)
+
+
 def build_job_cost_payload(job_order) -> dict:
     """
     Build the endpoint payload for current actual cost and estimated full cost.
@@ -342,6 +370,12 @@ def build_job_cost_payload(job_order) -> dict:
 
     summary, _ = JobOrderCostSummary.objects.get_or_create(job_order=job_order)
     summary.job_order = job_order
+
+    direct_children = list(
+        JobOrder.objects.filter(parent_id=job_order.job_no).select_related('source_offer')
+    )
+    child_summary_map = _child_cost_summary_map(direct_children)
+    child_summaries = [child_summary_map[c.job_no] for c in direct_children]
 
     total_weight = Decimal(str(job_order.total_weight_kg or 0))
     completion = Decimal(str(job_order.completion_percentage or 0))
@@ -363,10 +397,11 @@ def build_job_cost_payload(job_order) -> dict:
         for a in non_paint_assignments
     ))
 
+    own_labor = _own_rolled_up_component(summary, 'labor_cost', child_summaries)
     labor_estimate = q2(
-        summary.labor_cost / progress_ratio
-        if progress_ratio > 0 and summary.labor_cost > 0
-        else summary.labor_cost
+        own_labor / progress_ratio
+        if progress_ratio > 0 and own_labor > 0
+        else own_labor
     )
 
     has_painting = JobOrderDepartmentTask.objects.filter(
@@ -418,14 +453,17 @@ def build_job_cost_payload(job_order) -> dict:
         'paint_cost': paint_estimate,
         'paint_material_cost': paint_material_estimate,
         'employee_overhead_cost': employee_overhead_estimate,
-        'qc_cost': q2(summary.qc_cost),
-        'shipping_cost': q2(summary.shipping_cost),
+        'qc_cost': _own_rolled_up_component(summary, 'qc_cost', child_summaries),
+        'shipping_cost': _own_rolled_up_component(summary, 'shipping_cost', child_summaries),
         'general_expenses_cost': general_expenses_estimate,
         'material_cost': material_estimate,
     }
 
+    own_qc = estimated_components['qc_cost']
+    own_shipping = estimated_components['shipping_cost']
+
     child_payloads = []
-    for child in JobOrder.objects.filter(parent_id=job_order.job_no).select_related('source_offer'):
+    for child in direct_children:
         child_payload = build_job_cost_payload(child)
         child_payloads.append({
             'job_order': child.job_no,
@@ -477,6 +515,9 @@ def build_job_cost_payload(job_order) -> dict:
             'components': {key: _decimal_str(value) for key, value in estimated_components.items()},
             'assumptions': {
                 'labor_projected_from_completion_pct': str(completion),
+                'own_labor_cost_eur': _decimal_str(own_labor),
+                'own_qc_cost_eur': _decimal_str(own_qc),
+                'own_shipping_cost_eur': _decimal_str(own_shipping),
                 'employee_overhead_rate': str(employee_overhead_rate),
                 'paint_cost_source': paint_source,
                 'historical_paint_rate_eur_per_kg': _decimal_str(historical_paint_rate),
@@ -549,6 +590,7 @@ def build_estimated_cost_breakdown(job_order) -> dict:
             'key': key,
             'label': label,
             'amount_eur': amount_eur,
+            'actual_amount_eur': actual_components.get(key, '0.00'),
             'description': description,
             'inputs': inputs or {},
         }
@@ -569,23 +611,26 @@ def build_estimated_cost_breakdown(job_order) -> dict:
         },
     ))
 
+    own_labor = Decimal(str(assumptions.get('own_labor_cost_eur') or 0))
     actual_labor = Decimal(str(actual_components.get('labor_cost') or 0))
-    if completion > 0 and actual_labor > 0:
+    if completion > 0 and own_labor > 0:
         labor_desc = (
-            f'Mevcut işçilik maliyeti ({_decimal_str(actual_labor)} EUR), '
+            f'Bu iş emrinin kendi işçilik maliyeti ({_decimal_str(own_labor)} EUR), '
             f'%{_decimal_str(completion)} tamamlanma oranına göre %100\'e ölçeklenir.'
             + child_note
         )
         labor_inputs = {
+            'own_labor_cost_eur': _decimal_str(own_labor),
             'actual_labor_cost_eur': _decimal_str(actual_labor),
             'completion_pct': str(completion),
         }
     else:
         labor_desc = (
-            'Mevcut işçilik maliyeti kullanılır (tamamlanma %0 veya işçilik kaydı yok).'
+            'Bu iş emrinin kendi işçilik maliyeti kullanılır (tamamlanma %0 veya işçilik kaydı yok).'
             + child_note
         )
         labor_inputs = {
+            'own_labor_cost_eur': _decimal_str(own_labor),
             'actual_labor_cost_eur': _decimal_str(actual_labor),
             'completion_pct': str(completion),
         }
@@ -660,20 +705,38 @@ def build_estimated_cost_breakdown(job_order) -> dict:
         },
     ))
 
+    own_qc = assumptions.get('own_qc_cost_eur')
+    qc_desc = (
+        f'Bu iş emrinin kayıtlı KK satırları ({own_qc} EUR, tahmin = mevcut).'
+        if children else
+        'Kayıtlı kalite kontrol maliyet satırları toplamı (tahmin = mevcut).'
+    ) + child_note
     component_details.append(_detail(
         'qc_cost',
         _ESTIMATED_COMPONENT_LABELS['qc_cost'],
         components['qc_cost'],
-        'Kayıtlı kalite kontrol maliyet satırları toplamı (tahmin = mevcut).' + child_note,
-        {'actual_qc_cost_eur': actual_components.get('qc_cost')},
+        qc_desc,
+        {
+            'own_qc_cost_eur': own_qc,
+            'actual_qc_cost_eur': actual_components.get('qc_cost'),
+        },
     ))
 
+    own_shipping = assumptions.get('own_shipping_cost_eur')
+    shipping_desc = (
+        f'Bu iş emrinin kayıtlı sevkiyat satırları ({own_shipping} EUR, tahmin = mevcut).'
+        if children else
+        'Kayıtlı sevkiyat maliyet satırları toplamı (tahmin = mevcut).'
+    ) + child_note
     component_details.append(_detail(
         'shipping_cost',
         _ESTIMATED_COMPONENT_LABELS['shipping_cost'],
         components['shipping_cost'],
-        'Kayıtlı sevkiyat maliyet satırları toplamı (tahmin = mevcut).' + child_note,
-        {'actual_shipping_cost_eur': actual_components.get('shipping_cost')},
+        shipping_desc,
+        {
+            'own_shipping_cost_eur': own_shipping,
+            'actual_shipping_cost_eur': actual_components.get('shipping_cost'),
+        },
     ))
 
     general_expenses_rate = Decimal(str(assumptions.get('general_expenses_rate') or 0))
@@ -716,9 +779,10 @@ def build_estimated_cost_breakdown(job_order) -> dict:
     ))
 
     assumption_notes = []
-    if completion > 0 and actual_labor > 0:
+    if completion > 0 and own_labor > 0:
         assumption_notes.append(
-            f'İşçilik tahmini, mevcut ilerleme (%{float(completion):.2f}) üzerinden %100\'e ölçeklenmiştir.'
+            f'İşçilik tahmini, bu iş emrinin kendi maliyeti ve mevcut ilerleme '
+            f'(%{float(completion):.2f}) üzerinden %100\'e ölçeklenmiştir.'
         )
     assumption_notes.append(
         f'Personel genel gider oranı: {float(employee_overhead_rate):.4f}'
@@ -753,6 +817,7 @@ def build_estimated_cost_breakdown(job_order) -> dict:
         'job_order': payload['job_order'],
         'currency': payload.get('currency') or 'EUR',
         'total_cost': estimated['total_cost'],
+        'actual_total_cost': payload['actual']['total_cost'],
         'completion_pct': payload.get('completion_pct'),
         'total_weight_kg': payload.get('total_weight_kg'),
         'components': ordered_details,
@@ -761,6 +826,36 @@ def build_estimated_cost_breakdown(job_order) -> dict:
         'material_breakdown': material_breakdown,
         'last_updated': payload.get('last_updated'),
     }
+
+
+def _store_estimated_total_cost(job_no: str) -> None:
+    """Persist projected full cost for list views (avoids per-row recompute on cost_table)."""
+    from projects.models import JobOrder, JobOrderCostSummary
+
+    try:
+        job_order = JobOrder.objects.select_related('cost_summary').get(job_no=job_no)
+    except JobOrder.DoesNotExist:
+        return
+
+    estimated = build_job_cost_payload(job_order)['estimated']['total_cost']
+    JobOrderCostSummary.objects.filter(job_order_id=job_no).update(
+        estimated_total_cost=q2(Decimal(str(estimated))),
+    )
+
+
+def ensure_estimated_totals_cached(jobs) -> None:
+    """Populate missing estimated_total_cost rows before cost_table serialization."""
+    from projects.models import JobOrderCostSummary
+
+    for job in jobs:
+        try:
+            summary = job.cost_summary
+        except JobOrderCostSummary.DoesNotExist:
+            _store_estimated_total_cost(job.job_no)
+            continue
+        if summary.estimated_total_cost is None:
+            _store_estimated_total_cost(job.job_no)
+            summary.refresh_from_db(fields=['estimated_total_cost'])
 
 
 @transaction.atomic
@@ -1013,6 +1108,8 @@ def recompute_job_cost_summary(job_no: str) -> None:
             'actual_total_cost': total,
         },
     )
+
+    _store_estimated_total_cost(job_no)
 
     # ------------------------------------------------------------------
     # 11. Chain up: if this job has a parent, recompute the parent too

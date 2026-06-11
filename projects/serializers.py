@@ -1764,6 +1764,44 @@ class TechnicalDrawingReleaseListSerializer(serializers.ModelSerializer):
         return user_can_resubmit(obj, user)
 
 
+class TechnicalDrawingReleaseReviewHistorySerializer(TechnicalDrawingReleaseListSerializer):
+    """Serializer for completed peer-review history list."""
+
+    reviewers_summary = serializers.SerializerMethodField()
+    review_completed_at = serializers.SerializerMethodField()
+    reviewers = serializers.SerializerMethodField()
+
+    class Meta(TechnicalDrawingReleaseListSerializer.Meta):
+        fields = TechnicalDrawingReleaseListSerializer.Meta.fields + [
+            'reviewers_summary', 'review_completed_at', 'reviewers',
+        ]
+
+    def get_reviewers_summary(self, obj):
+        parts = []
+        for approval in obj.approvals.all().order_by('created_at'):
+            name = approval.approver.get_full_name() if approval.approver else ''
+            parts.append(f"{name} ({approval.get_decision_display()})")
+        return ', '.join(parts) if parts else '-'
+
+    def get_review_completed_at(self, obj):
+        annotated = getattr(obj, 'review_completed_at', None)
+        if annotated:
+            return annotated
+        latest = obj.approvals.order_by('-created_at').first()
+        return latest.created_at if latest else obj.released_at
+
+    def get_reviewers(self, obj):
+        return [
+            {
+                'approver_name': a.approver.get_full_name() if a.approver else '',
+                'decision': a.decision,
+                'decision_display': a.get_decision_display(),
+                'created_at': a.created_at,
+            }
+            for a in obj.approvals.all().order_by('created_at')
+        ]
+
+
 class TechnicalDrawingReleaseDetailSerializer(serializers.ModelSerializer):
     """Full serializer for detail views."""
     job_order_no = serializers.CharField(source='job_order.job_no', read_only=True)
@@ -2394,10 +2432,14 @@ class CostTableRowSerializer(serializers.Serializer):
         return str(s.actual_total_cost) if s else '0.00'
 
     def get_estimated_total_cost(self, obj):
+        s = self._summary(obj)
+        if s and s.estimated_total_cost is not None:
+            return str(s.estimated_total_cost)
         cache = self.context.setdefault('estimated_total_costs', {})
         if obj.job_no not in cache:
-            from projects.services.costing import build_job_cost_payload
+            from projects.services.costing import build_job_cost_payload, _store_estimated_total_cost
             cache[obj.job_no] = build_job_cost_payload(obj)['estimated']['total_cost']
+            _store_estimated_total_cost(obj.job_no)
         return cache[obj.job_no]
 
     def _offer_price(self, obj):
@@ -2405,6 +2447,9 @@ class CostTableRowSerializer(serializers.Serializer):
         offer = getattr(obj, 'source_offer', None)
         if offer is None:
             return None
+        revisions = getattr(offer, '_current_price_revisions', None)
+        if revisions is not None:
+            return revisions[0] if revisions else None
         return offer.current_price
 
     def get_selling_price(self, obj):
