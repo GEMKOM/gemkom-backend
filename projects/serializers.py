@@ -1790,6 +1790,15 @@ class TechnicalDrawingReleaseDetailSerializer(serializers.ModelSerializer):
             'supersedes', 'auto_complete_design_task',
             'created_at', 'updated_at'
         ]
+        read_only_fields = [
+            'id', 'job_order', 'job_order_no', 'job_order_title',
+            'revision_number', 'status', 'status_display',
+            'released_by', 'released_by_name', 'released_at',
+            'release_topic_id', 'pending_revision_requests',
+            'approvals', 'approval_state', 'can_approve', 'can_resubmit',
+            'supersedes', 'auto_complete_design_task',
+            'created_at', 'updated_at',
+        ]
 
     def get_approval_state(self, obj):
         if obj.status != 'pending_approval':
