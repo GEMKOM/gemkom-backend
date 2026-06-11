@@ -10,6 +10,7 @@ from .models import (
     JobOrderDiscussionTopic, JobOrderDiscussionComment,
     DiscussionAttachment,
     TechnicalDrawingRelease,
+    TechnicalDrawingReleaseApproval,
     JobOrderTargetDateRevision,
 )
 
@@ -747,6 +748,9 @@ class DepartmentTaskListSerializer(serializers.ModelSerializer):
     is_under_revision = serializers.SerializerMethodField()
     active_revision_release_id = serializers.SerializerMethodField()
     current_release_id = serializers.SerializerMethodField()
+    pending_approval_release_id = serializers.SerializerMethodField()
+    rejected_release_id = serializers.SerializerMethodField()
+    pending_release_approval_state = serializers.SerializerMethodField()
     pending_revision_request = serializers.SerializerMethodField()
     qc_required = serializers.BooleanField(read_only=True)
     has_qc_approval = serializers.BooleanField(read_only=True)
@@ -768,6 +772,8 @@ class DepartmentTaskListSerializer(serializers.ModelSerializer):
             'parent', 'subtasks_count', 'can_start',
             'completion_percentage',
             'is_under_revision', 'active_revision_release_id', 'current_release_id',
+            'pending_approval_release_id', 'rejected_release_id',
+            'pending_release_approval_state',
             'pending_revision_request',
             'qc_required', 'has_qc_approval', 'qc_status',
             'is_consultation', 'offer_summary',
@@ -851,6 +857,25 @@ class DepartmentTaskListSerializer(serializers.ModelSerializer):
         for r in self._get_all_releases(obj):
             if r.status in ('released', 'in_revision'):
                 return r.id
+        return None
+
+    def get_pending_approval_release_id(self, obj):
+        for r in self._get_all_releases(obj):
+            if r.status == 'pending_approval':
+                return r.id
+        return None
+
+    def get_rejected_release_id(self, obj):
+        for r in self._get_all_releases(obj):
+            if r.status == 'rejected':
+                return r.id
+        return None
+
+    def get_pending_release_approval_state(self, obj):
+        for r in self._get_all_releases(obj):
+            if r.status == 'pending_approval':
+                from .services.release_approval import get_approval_state
+                return get_approval_state(r)
         return None
 
     def get_pending_revision_request(self, obj):
@@ -947,6 +972,10 @@ class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
     completion_percentage = serializers.SerializerMethodField()
     is_under_revision = serializers.SerializerMethodField()
     active_revision_release_id = serializers.SerializerMethodField()
+    current_release_id = serializers.SerializerMethodField()
+    pending_approval_release_id = serializers.SerializerMethodField()
+    rejected_release_id = serializers.SerializerMethodField()
+    pending_release_approval_state = serializers.SerializerMethodField()
     pending_revision_request = serializers.SerializerMethodField()
     qc_required = serializers.BooleanField(read_only=True)
     has_qc_approval = serializers.BooleanField(read_only=True)
@@ -970,7 +999,9 @@ class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
             'parent', 'parent_title', 'subtasks', 'subtasks_count',
             'procurement_progress', 'cnc_progress', 'machining_progress',
             'completion_percentage',
-            'is_under_revision', 'active_revision_release_id',
+            'is_under_revision', 'active_revision_release_id', 'current_release_id',
+            'pending_approval_release_id', 'rejected_release_id',
+            'pending_release_approval_state',
             'pending_revision_request',
             'qc_required', 'has_qc_approval', 'qc_status',
             'is_consultation', 'offer_summary', 'shared_files',
@@ -1242,6 +1273,27 @@ class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
     def get_active_revision_release_id(self, obj):
         release = self._get_revision_release(obj)
         return release.id if release else None
+
+    def get_current_release_id(self, obj):
+        release = self._get_design_releases(obj).filter(
+            status__in=('released', 'in_revision')
+        ).order_by('-revision_number').first()
+        return release.id if release else None
+
+    def get_pending_approval_release_id(self, obj):
+        release = self._get_design_releases(obj).filter(status='pending_approval').first()
+        return release.id if release else None
+
+    def get_rejected_release_id(self, obj):
+        release = self._get_design_releases(obj).filter(status='rejected').first()
+        return release.id if release else None
+
+    def get_pending_release_approval_state(self, obj):
+        release = self._get_design_releases(obj).filter(status='pending_approval').first()
+        if not release:
+            return None
+        from .services.release_approval import get_approval_state
+        return get_approval_state(release)
 
     def get_pending_revision_request(self, obj):
         """Return pending revision request data for design tasks."""
@@ -1653,12 +1705,28 @@ class DiscussionAttachmentSerializer(serializers.ModelSerializer):
 # Technical Drawing Release Serializers
 # ============================================================================
 
+class TechnicalDrawingReleaseApprovalSerializer(serializers.ModelSerializer):
+    approver_name = serializers.CharField(source='approver.get_full_name', read_only=True, default='')
+    decision_display = serializers.CharField(source='get_decision_display', read_only=True)
+
+    class Meta:
+        model = TechnicalDrawingReleaseApproval
+        fields = [
+            'id', 'approver', 'approver_name', 'decision', 'decision_display',
+            'comment', 'created_at',
+        ]
+
+
 class TechnicalDrawingReleaseListSerializer(serializers.ModelSerializer):
     """Lightweight serializer for list views."""
     job_order_no = serializers.CharField(source='job_order.job_no', read_only=True)
     job_order_title = serializers.CharField(source='job_order.title', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     released_by_name = serializers.CharField(source='released_by.get_full_name', read_only=True, default='')
+    release_topic_id = serializers.IntegerField(source='release_topic.id', read_only=True, default=None)
+    approval_state = serializers.SerializerMethodField()
+    can_approve = serializers.SerializerMethodField()
+    can_resubmit = serializers.SerializerMethodField()
 
     class Meta:
         model = TechnicalDrawingRelease
@@ -1667,8 +1735,27 @@ class TechnicalDrawingReleaseListSerializer(serializers.ModelSerializer):
             'revision_number', 'revision_code', 'folder_path',
             'status', 'status_display',
             'released_by', 'released_by_name', 'released_at',
-            'hardcopy_count', 'changelog'
+            'hardcopy_count', 'changelog',
+            'release_topic_id', 'approval_state', 'can_approve', 'can_resubmit',
         ]
+
+    def get_approval_state(self, obj):
+        if obj.status != 'pending_approval':
+            return None
+        from .services.release_approval import get_approval_state
+        return get_approval_state(obj)
+
+    def get_can_approve(self, obj):
+        request = self.context.get('request')
+        user = request.user if request else None
+        from .services.release_approval import user_can_approve
+        return user_can_approve(obj, user)
+
+    def get_can_resubmit(self, obj):
+        request = self.context.get('request')
+        user = request.user if request else None
+        from .services.release_approval import user_can_resubmit
+        return user_can_resubmit(obj, user)
 
 
 class TechnicalDrawingReleaseDetailSerializer(serializers.ModelSerializer):
@@ -1679,6 +1766,10 @@ class TechnicalDrawingReleaseDetailSerializer(serializers.ModelSerializer):
     released_by_name = serializers.CharField(source='released_by.get_full_name', read_only=True, default='')
     release_topic_id = serializers.IntegerField(source='release_topic.id', read_only=True, default=None)
     pending_revision_requests = serializers.SerializerMethodField()
+    approvals = TechnicalDrawingReleaseApprovalSerializer(many=True, read_only=True)
+    approval_state = serializers.SerializerMethodField()
+    can_approve = serializers.SerializerMethodField()
+    can_resubmit = serializers.SerializerMethodField()
 
     class Meta:
         model = TechnicalDrawingRelease
@@ -1689,8 +1780,28 @@ class TechnicalDrawingReleaseDetailSerializer(serializers.ModelSerializer):
             'status', 'status_display',
             'released_by', 'released_by_name', 'released_at',
             'release_topic_id', 'pending_revision_requests',
+            'approvals', 'approval_state', 'can_approve', 'can_resubmit',
+            'supersedes', 'auto_complete_design_task',
             'created_at', 'updated_at'
         ]
+
+    def get_approval_state(self, obj):
+        if obj.status != 'pending_approval':
+            return None
+        from .services.release_approval import get_approval_state
+        return get_approval_state(obj)
+
+    def get_can_approve(self, obj):
+        request = self.context.get('request')
+        user = request.user if request else None
+        from .services.release_approval import user_can_approve
+        return user_can_approve(obj, user)
+
+    def get_can_resubmit(self, obj):
+        request = self.context.get('request')
+        user = request.user if request else None
+        from .services.release_approval import user_can_resubmit
+        return user_can_resubmit(obj, user)
 
     def get_pending_revision_requests(self, obj):
         """Get pending revision request topics for this release."""
@@ -1719,74 +1830,33 @@ class TechnicalDrawingReleaseCreateSerializer(serializers.ModelSerializer):
             'auto_complete_design_task'
         ]
 
+    def validate(self, attrs):
+        job_order = attrs.get('job_order')
+        if job_order and TechnicalDrawingRelease.objects.filter(
+            job_order=job_order,
+            status='pending_approval',
+        ).exists():
+            raise serializers.ValidationError(
+                'Bu iş emri için zaten inceleme bekleyen bir yayın var.'
+            )
+        return attrs
+
     def create(self, validated_data):
         topic_content = validated_data.pop('topic_content', '')
         auto_complete_design_task = validated_data.pop('auto_complete_design_task', False)
         job_order = validated_data['job_order']
 
-        # Set revision number
         validated_data['revision_number'] = TechnicalDrawingRelease.get_next_revision_number(job_order)
+        validated_data['status'] = 'pending_approval'
+        validated_data['auto_complete_design_task'] = auto_complete_design_task
 
         release = super().create(validated_data)
 
-        # Create release topic
-        topic_title = f"Teknik Çizim Yayını - Rev.{release.revision_code or release.revision_number}"
+        from .services.release_approval import create_pending_release_topic
+        from .signals import send_release_approval_requested_notifications
 
-        if topic_content:
-            content = topic_content
-        else:
-            released_by_name = release.released_by.get_full_name() if release.released_by else 'Bilinmeyen'
-            content = f"""{released_by_name} yeni teknik çizim yayınladı:
-
-İş Emri: {job_order.job_no} - {job_order.title}
-Revizyon: {release.revision_code or release.revision_number}
-Hardcopy: {release.hardcopy_count} set planlama birimine bırakılacaktır.
-
-Klasör Yolu:
-{release.folder_path}
-
-Değişiklikler:
-{release.changelog}"""
-
-        topic = JobOrderDiscussionTopic.objects.create(
-            job_order=job_order,
-            title=topic_title,
-            content=content,
-            priority='normal',
-            topic_type='drawing_release',
-            created_by=release.released_by
-        )
-
-        # Extract mentions from content and add stakeholder teams
-        mentioned_users_from_content = topic.extract_mentions()
-        stakeholder_users = get_drawing_release_stakeholders()
-
-        all_mentioned_ids = set()
-        if mentioned_users_from_content.exists():
-            all_mentioned_ids.update(mentioned_users_from_content.values_list('id', flat=True))
-        all_mentioned_ids.update(stakeholder_users.values_list('id', flat=True))
-
-        if release.released_by_id:
-            all_mentioned_ids.discard(release.released_by_id)
-
-        if all_mentioned_ids:
-            topic.mentioned_users.set(all_mentioned_ids)
-
-        release.release_topic = topic
-        release.save(update_fields=['release_topic'])
-
-        # Auto-complete design department task if flag is set
-        if auto_complete_design_task:
-            design_task = job_order.department_tasks.filter(
-                department='design',
-                parent__isnull=True
-            ).first()
-            if design_task and design_task.status == 'in_progress':
-                design_task.complete(user=release.released_by)
-
-        # Send notifications
-        from .signals import send_drawing_released_notifications
-        send_drawing_released_notifications(release, topic)
+        topic = create_pending_release_topic(release, topic_content=topic_content)
+        send_release_approval_requested_notifications(release, topic)
 
         return release
 
@@ -1814,6 +1884,24 @@ class CompleteRevisionSerializer(serializers.Serializer):
     revision_code = serializers.CharField(required=False, allow_blank=True)
     hardcopy_count = serializers.IntegerField(required=False, default=0)
     topic_content = serializers.CharField(required=False, allow_blank=True)
+
+
+class ApproveReleaseSerializer(serializers.Serializer):
+    """Serializer for approving a pending release."""
+    comment = serializers.CharField(required=False, allow_blank=True)
+
+
+class RejectReleaseSerializer(serializers.Serializer):
+    """Serializer for rejecting a pending release."""
+    reason = serializers.CharField(required=True)
+
+
+class ResubmitReleaseSerializer(serializers.Serializer):
+    """Serializer for resubmitting a rejected release."""
+    folder_path = serializers.CharField(required=False)
+    revision_code = serializers.CharField(required=False, allow_blank=True)
+    changelog = serializers.CharField(required=False, allow_blank=True)
+    hardcopy_count = serializers.IntegerField(required=False)
 
 
 class RejectRevisionSerializer(serializers.Serializer):

@@ -45,6 +45,9 @@ class Notification(models.Model):
     PLAN_DR_APPROVED         = 'plan_dr_approved'
     # Drawing workflow
     DRAWING_RELEASED         = 'drawing_released'
+    RELEASE_APPROVAL_REQUESTED = 'release_approval_requested'
+    RELEASE_APPROVED         = 'release_approved'
+    RELEASE_REJECTED         = 'release_rejected'
     REVISION_REQUESTED       = 'revision_requested'
     REVISION_APPROVED        = 'revision_approved'
     REVISION_COMPLETED       = 'revision_completed'
@@ -112,6 +115,9 @@ class Notification(models.Model):
         PLAN_REJECTED:            CATEGORY_PLANNING,
         PLAN_DR_APPROVED:         CATEGORY_PLANNING,
         DRAWING_RELEASED:         CATEGORY_DESIGN,
+        RELEASE_APPROVAL_REQUESTED: CATEGORY_DESIGN,
+        RELEASE_APPROVED:         CATEGORY_DESIGN,
+        RELEASE_REJECTED:         CATEGORY_DESIGN,
         REVISION_REQUESTED:       CATEGORY_DESIGN,
         REVISION_APPROVED:        CATEGORY_DESIGN,
         REVISION_COMPLETED:       CATEGORY_DESIGN,
@@ -179,6 +185,9 @@ class Notification(models.Model):
         (PLAN_REJECTED,            'Departman Talebi Reddedildi'),
         (PLAN_DR_APPROVED,         'Departman Talebi Planlama Onayladı'),
         (DRAWING_RELEASED,         'Çizim Yayınlandı'),
+        (RELEASE_APPROVAL_REQUESTED, 'Çizim Akran İncelemesi Bekliyor'),
+        (RELEASE_APPROVED,         'Çizim Akran İncelemesi Olumlu'),
+        (RELEASE_REJECTED,         'Çizim Akran İncelemesi Reddedildi'),
         (REVISION_REQUESTED,       'Revizyon Talep Edildi'),
         (REVISION_APPROVED,        'Revizyon Onaylandı'),
         (REVISION_COMPLETED,       'Revizyon Tamamlandı'),

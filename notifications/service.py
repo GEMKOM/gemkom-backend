@@ -57,6 +57,9 @@ NOTIFICATION_DEFAULTS: dict[str, tuple[bool, bool]] = {
     Notification.PLAN_REJECTED:            (True,  True),
     Notification.PLAN_DR_APPROVED:         (True,  True),
     Notification.DRAWING_RELEASED:         (True,  True),
+    Notification.RELEASE_APPROVAL_REQUESTED: (True,  True),
+    Notification.RELEASE_APPROVED:         (True,  True),
+    Notification.RELEASE_REJECTED:         (True,  True),
     Notification.REVISION_REQUESTED:       (True,  True),
     Notification.REVISION_APPROVED:        (True,  True),
     Notification.REVISION_COMPLETED:       (True,  True),
@@ -117,6 +120,42 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
         ),
         'link': f'{_BASE_URL}/projects/project-tracking/?job_no={{job_no}}&topic_id={{topic_id}}',
         'vars': ['actor', 'job_no', 'topic_title', 'comment_content', 'topic_id', 'link'],
+    },
+    Notification.RELEASE_APPROVAL_REQUESTED: {
+        'title': '[Akran İncelemesi] {job_no} Rev.{revision}',
+        'body': (
+            '{actor} yeni teknik çizim yayını oluşturdu ve akran incelemenizi bekliyor.\n'
+            'İş Emri: {job_no} - {job_title}\n'
+            'Revizyon: {revision}\n\n'
+            'Klasör Yolu:\n{folder_path}\n\n'
+            'Değişiklikler:\n{changelog}\n\n'
+            '{link}'
+        ),
+        'link': f'{_BASE_URL}/design/release-approvals/?release_id={{release_id}}',
+        'vars': ['actor', 'job_no', 'job_title', 'revision', 'folder_path', 'changelog', 'topic_id', 'release_id', 'link'],
+    },
+    Notification.RELEASE_APPROVED: {
+        'title': '[Akran İncelemesi Olumlu] {job_no} Rev.{revision}',
+        'body': (
+            '{actor} teknik çizim yayınınızı olumlu değerlendirdi.\n'
+            'İş Emri: {job_no} - {job_title}\n'
+            'Revizyon: {revision}\n\n'
+            '{link}'
+        ),
+        'link': f'{_BASE_URL}/design/release-approvals/?release_id={{release_id}}',
+        'vars': ['actor', 'job_no', 'job_title', 'revision', 'topic_id', 'release_id', 'link'],
+    },
+    Notification.RELEASE_REJECTED: {
+        'title': '[Çizim Reddedildi] {job_no} Rev.{revision}',
+        'body': (
+            '{actor} teknik çizim yayınınızı reddetti.\n'
+            'İş Emri: {job_no} - {job_title}\n'
+            'Revizyon: {revision}\n\n'
+            'Red Nedeni:\n{reason}\n\n'
+            '{link}'
+        ),
+        'link': f'{_BASE_URL}/design/projects/?task={{task_id}}',
+        'vars': ['actor', 'job_no', 'job_title', 'revision', 'reason', 'topic_id', 'release_id', 'task_id', 'link'],
     },
     Notification.DRAWING_RELEASED: {
         'title': '[Teknik Çizim Yayınlandı] {job_no} Rev.{revision}',

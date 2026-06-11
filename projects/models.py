@@ -1897,6 +1897,8 @@ class TechnicalDrawingRelease(models.Model):
     """Tracks technical drawing releases for a job order."""
 
     STATUS_CHOICES = [
+        ('pending_approval', 'İnceleme Bekliyor'),
+        ('rejected', 'Reddedildi'),
         ('released', 'Yayınlandı'),
         ('in_revision', 'Revizyon Yapılıyor'),
         ('superseded', 'Güncelliğini Kaybetti'),
@@ -1922,8 +1924,22 @@ class TechnicalDrawingRelease(models.Model):
     status = models.CharField(
         max_length=20,
         choices=STATUS_CHOICES,
-        default='released',
+        default='pending_approval',
         db_index=True
+    )
+
+    auto_complete_design_task = models.BooleanField(
+        default=True,
+        help_text='Ana tasarım görevini yayınlandığında otomatik tamamla.',
+    )
+
+    supersedes = models.ForeignKey(
+        'self',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='superseded_by',
+        help_text='Revizyon tamamlama akışında yerini aldığı in_revision yayın.',
     )
 
     # Who released
@@ -1975,6 +1991,38 @@ class TechnicalDrawingRelease(models.Model):
             job_order=job_order,
             status='released'
         ).order_by('-revision_number').first()
+
+
+class TechnicalDrawingReleaseApproval(models.Model):
+    """Peer-review vote on a pending technical drawing release."""
+
+    DECISION_CHOICES = [
+        ('approved', 'Olumlu'),
+        ('rejected', 'Reddedildi'),
+    ]
+
+    release = models.ForeignKey(
+        TechnicalDrawingRelease,
+        on_delete=models.CASCADE,
+        related_name='approvals',
+    )
+    approver = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='drawing_release_approvals',
+    )
+    decision = models.CharField(max_length=20, choices=DECISION_CHOICES)
+    comment = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = [('release', 'approver')]
+        ordering = ['created_at']
+        verbose_name = 'Çizim Yayını Değerlendirmesi'
+        verbose_name_plural = 'Çizim Yayını Değerlendirmeleri'
+
+    def __str__(self):
+        return f'{self.release_id} – {self.approver_id} ({self.decision})'
 
 
 # =============================================================================

@@ -15,7 +15,8 @@ from .models import (
     JobOrderDepartmentTask, DEPARTMENT_CHOICES,
     JobOrderDiscussionTopic, JobOrderDiscussionComment,
     DiscussionAttachment,
-    TechnicalDrawingRelease
+    TechnicalDrawingRelease,
+    TechnicalDrawingReleaseApproval,
 )
 from .serializers import (
     CustomerListSerializer,
@@ -54,6 +55,9 @@ from .serializers import (
     SelfRevisionSerializer,
     CompleteRevisionSerializer,
     RejectRevisionSerializer,
+    ApproveReleaseSerializer,
+    RejectReleaseSerializer,
+    ResubmitReleaseSerializer,
     BulkCreateSubtasksSerializer,
 )
 from .permissions import (
@@ -2740,8 +2744,8 @@ class TechnicalDrawingReleaseViewSet(viewsets.ModelViewSet):
     """
 
     queryset = TechnicalDrawingRelease.objects.select_related(
-        'job_order', 'released_by', 'release_topic'
-    ).prefetch_related('revision_topics')
+        'job_order', 'released_by', 'release_topic', 'supersedes'
+    ).prefetch_related('revision_topics', 'approvals__approver')
 
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     search_fields = ['job_order__job_no', 'job_order__title', 'changelog', 'revision_code']
@@ -2985,15 +2989,23 @@ class TechnicalDrawingReleaseViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def complete_revision(self, request, pk=None):
         """
-        Complete the revision and create a new release.
-        Resumes the job order automatically.
+        Complete the revision and submit a new release for peer review.
+        Job order stays on hold until the release is fully approved.
         """
         release = self.get_object()
 
-        # Validate release status
         if release.status != 'in_revision':
             return Response(
                 {'status': 'error', 'message': 'Sadece revizyon yapılan çizimler tamamlanabilir.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if TechnicalDrawingRelease.objects.filter(
+            supersedes=release,
+            status='pending_approval',
+        ).exists():
+            return Response(
+                {'status': 'error', 'message': 'Bu revizyon için zaten inceleme bekleyen bir yayın var.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -3006,20 +3018,6 @@ class TechnicalDrawingReleaseViewSet(viewsets.ModelViewSet):
         hardcopy_count = serializer.validated_data.get('hardcopy_count', 0)
         topic_content = serializer.validated_data.get('topic_content', '')
 
-        # Mark old release as superseded
-        release.status = 'superseded'
-        release.save(update_fields=['status', 'updated_at'])
-
-        # Mark revision topic as resolved
-        active_revision_topic = release.revision_topics.filter(
-            revision_status='in_progress',
-            is_deleted=False
-        ).first()
-        if active_revision_topic:
-            active_revision_topic.revision_status = 'resolved'
-            active_revision_topic.save(update_fields=['revision_status', 'updated_at'])
-
-        # Create new release
         new_release = TechnicalDrawingRelease.objects.create(
             job_order=release.job_order,
             revision_number=TechnicalDrawingRelease.get_next_revision_number(release.job_order),
@@ -3027,55 +3025,181 @@ class TechnicalDrawingReleaseViewSet(viewsets.ModelViewSet):
             folder_path=folder_path,
             changelog=changelog,
             hardcopy_count=hardcopy_count,
-            status='released',
-            released_by=request.user
+            status='pending_approval',
+            released_by=request.user,
+            auto_complete_design_task=True,
+            supersedes=release,
         )
 
-        # Create release topic
-        topic_title = f"Teknik Çizim Yayını - Rev.{new_release.revision_code or new_release.revision_number}"
-        content = topic_content or changelog
+        from .services.release_approval import create_pending_release_topic
+        from .signals import send_release_approval_requested_notifications
 
-        new_topic = JobOrderDiscussionTopic.objects.create(
-            job_order=release.job_order,
-            title=topic_title,
-            content=content,
-            priority='normal',
-            topic_type='drawing_release',
-            created_by=request.user
-        )
-
-        # Extract and set mentions
-        mentioned_users = new_topic.extract_mentions()
-        if mentioned_users.exists():
-            new_topic.mentioned_users.set(mentioned_users)
-
-        # Link topic to release
-        new_release.release_topic = new_topic
-        new_release.save(update_fields=['release_topic'])
-
-        job_order = release.job_order
-
-        # Resume job order first so the job is active when complete() checks for auto-completion
-        job_order.resume()
-
-        # Complete the design department task (stays in_progress during revision)
-        design_task = job_order.department_tasks.filter(
-            department='design',
-            parent__isnull=True
-        ).first()
-        if design_task and design_task.status == 'in_progress':
-            design_task.complete(user=request.user)
-
-        # Send notifications
-        from .signals import send_revision_completed_notifications
-        send_revision_completed_notifications(new_release, new_topic, active_revision_topic, request.user)
+        topic = create_pending_release_topic(new_release, topic_content=topic_content or changelog)
+        send_release_approval_requested_notifications(new_release, topic)
 
         return Response({
             'status': 'success',
-            'message': 'Revizyon tamamlandı. Yeni çizim yayınlandı ve iş emri devam ediyor.',
+            'message': 'Revizyon tamamlandı. Yeni yayın akran incelemesine gönderildi.',
             'release': TechnicalDrawingReleaseDetailSerializer(new_release, context={'request': request}).data,
-            'topic': JobOrderDiscussionTopicDetailSerializer(new_topic, context={'request': request}).data
+            'topic': JobOrderDiscussionTopicDetailSerializer(topic, context={'request': request}).data
         }, status=status.HTTP_201_CREATED)
+
+    @action(detail=False, methods=['get'], url_path='pending_approvals')
+    def pending_approvals(self, request):
+        """List releases awaiting peer review."""
+        qs = self.get_queryset().filter(status='pending_approval').order_by('-released_at')
+        page = self.paginate_queryset(qs)
+        if page is not None:
+            serializer = TechnicalDrawingReleaseListSerializer(
+                page, many=True, context={'request': request}
+            )
+            return self.get_paginated_response(serializer.data)
+        serializer = TechnicalDrawingReleaseListSerializer(
+            qs, many=True, context={'request': request}
+        )
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['post'])
+    def approve(self, request, pk=None):
+        """Approve a pending release (peer review)."""
+        from .services.release_approval import (
+            user_can_approve,
+            approval_requirements_met,
+            publish_release,
+        )
+        from .signals import send_release_approved_vote_notifications
+
+        release = self.get_object()
+        if not user_can_approve(release, request.user):
+            return Response(
+                {'status': 'error', 'message': 'Bu yayını değerlendirme yetkiniz yok.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        serializer = ApproveReleaseSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        comment = serializer.validated_data.get('comment', '')
+
+        TechnicalDrawingReleaseApproval.objects.create(
+            release=release,
+            approver=request.user,
+            decision='approved',
+            comment=comment,
+        )
+
+        if release.release_topic_id and comment:
+            JobOrderDiscussionComment.objects.create(
+                topic_id=release.release_topic_id,
+                content=f"**Olumlu değerlendirme** — {comment}",
+                created_by=request.user,
+            )
+        elif release.release_topic_id:
+            JobOrderDiscussionComment.objects.create(
+                topic_id=release.release_topic_id,
+                content='**Olumlu değerlendirme**',
+                created_by=request.user,
+            )
+
+        send_release_approved_vote_notifications(release, request.user)
+
+        published = False
+        if approval_requirements_met(release):
+            publish_release(release, final_approver=request.user)
+            published = True
+            release.refresh_from_db()
+
+        return Response({
+            'status': 'success',
+            'message': (
+                'Yeterli değerlendirme alındı; yayın yayınlandı.'
+                if published else
+                'Değerlendirmeniz kaydedildi. Yayın hâlâ inceleme bekliyor.'
+            ),
+            'published': published,
+            'release': TechnicalDrawingReleaseDetailSerializer(release, context={'request': request}).data,
+        })
+
+    @action(detail=True, methods=['post'])
+    def reject(self, request, pk=None):
+        """Reject a pending release (peer review)."""
+        from .services.release_approval import user_can_approve
+        from .signals import send_release_rejected_notifications
+
+        release = self.get_object()
+        if not user_can_approve(release, request.user):
+            return Response(
+                {'status': 'error', 'message': 'Bu yayını reddetme yetkiniz yok.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        serializer = RejectReleaseSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        reason = serializer.validated_data['reason']
+
+        TechnicalDrawingReleaseApproval.objects.create(
+            release=release,
+            approver=request.user,
+            decision='rejected',
+            comment=reason,
+        )
+
+        release.status = 'rejected'
+        release.save(update_fields=['status', 'updated_at'])
+
+        if release.release_topic_id:
+            JobOrderDiscussionComment.objects.create(
+                topic_id=release.release_topic_id,
+                content=f"**Reddedildi**\n\n{reason}",
+                created_by=request.user,
+            )
+
+        send_release_rejected_notifications(release, request.user, reason)
+
+        return Response({
+            'status': 'success',
+            'message': 'Yayın reddedildi.',
+            'release': TechnicalDrawingReleaseDetailSerializer(release, context={'request': request}).data,
+        })
+
+    @action(detail=True, methods=['post'])
+    def resubmit(self, request, pk=None):
+        """Creator resubmits a rejected release for approval."""
+        from .services.release_approval import user_can_resubmit, create_pending_release_topic
+        from .signals import send_release_approval_requested_notifications
+
+        release = self.get_object()
+        if not user_can_resubmit(release, request.user):
+            return Response(
+                {'status': 'error', 'message': 'Bu yayını yeniden gönderme yetkiniz yok.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        serializer = ResubmitReleaseSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        for field in ('folder_path', 'revision_code', 'changelog', 'hardcopy_count'):
+            if field in serializer.validated_data:
+                setattr(release, field, serializer.validated_data[field])
+
+        release.approvals.all().delete()
+        release.status = 'pending_approval'
+        release.save()
+
+        if release.release_topic_id:
+            topic = release.release_topic
+            rev = release.revision_code or release.revision_number
+            topic.title = f'Teknik Çizim Yayını (İnceleme Bekliyor) - Rev.{rev}'
+            topic.save(update_fields=['title', 'updated_at'])
+        else:
+            topic = create_pending_release_topic(release)
+
+        send_release_approval_requested_notifications(release, topic)
+
+        return Response({
+            'status': 'success',
+            'message': 'Yayın yeniden incelemeye gönderildi.',
+            'release': TechnicalDrawingReleaseDetailSerializer(release, context={'request': request}).data,
+        })
 
     @action(detail=True, methods=['post'])
     def reject_revision(self, request, pk=None):

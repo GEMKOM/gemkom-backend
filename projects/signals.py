@@ -245,6 +245,97 @@ def send_comment_notifications(comment):
         )
 
 
+def send_release_approval_requested_notifications(release, topic):
+    """Notify design department members that a release awaits peer review."""
+    from .services.release_approval import get_design_department_users
+
+    job_order = release.job_order
+    rev = release.revision_code or release.revision_number
+    design_users = get_design_department_users()
+    if release.released_by_id:
+        design_users = design_users.exclude(id=release.released_by_id)
+    if not design_users.exists():
+        return
+
+    ctx = {
+        'actor': release.released_by.get_full_name() if release.released_by else 'Bilinmeyen',
+        'job_no': job_order.job_no,
+        'job_title': job_order.title,
+        'revision': rev,
+        'folder_path': release.folder_path,
+        'changelog': release.changelog,
+        'topic_id': topic.id if topic else '',
+        'release_id': release.id,
+    }
+    title, body, link = render_notification(Notification.RELEASE_APPROVAL_REQUESTED, ctx)
+    bulk_notify(
+        users=design_users,
+        notification_type=Notification.RELEASE_APPROVAL_REQUESTED,
+        title=title,
+        body=body,
+        link=link,
+        source_type='drawing_release',
+        source_id=release.id,
+    )
+
+
+def send_release_approved_vote_notifications(release, approver):
+    """Notify the release creator that an approver voted to approve."""
+    if not release.released_by or release.released_by_id == approver.id:
+        return
+    job_order = release.job_order
+    rev = release.revision_code or release.revision_number
+    ctx = {
+        'actor': approver.get_full_name(),
+        'job_no': job_order.job_no,
+        'job_title': job_order.title,
+        'revision': rev,
+        'topic_id': release.release_topic_id or '',
+        'release_id': release.id,
+    }
+    title, body, link = render_notification(Notification.RELEASE_APPROVED, ctx)
+    notify(
+        user=release.released_by,
+        notification_type=Notification.RELEASE_APPROVED,
+        title=title,
+        body=body,
+        link=link,
+        source_type='drawing_release',
+        source_id=release.id,
+    )
+
+
+def send_release_rejected_notifications(release, rejecter, reason):
+    """Notify the release creator that their release was rejected."""
+    if not release.released_by or release.released_by_id == rejecter.id:
+        return
+    job_order = release.job_order
+    rev = release.revision_code or release.revision_number
+    design_task = job_order.department_tasks.filter(
+        department='design', parent__isnull=True
+    ).first()
+    ctx = {
+        'actor': rejecter.get_full_name(),
+        'job_no': job_order.job_no,
+        'job_title': job_order.title,
+        'revision': rev,
+        'reason': reason,
+        'topic_id': release.release_topic_id or '',
+        'release_id': release.id,
+        'task_id': design_task.id if design_task else '',
+    }
+    title, body, link = render_notification(Notification.RELEASE_REJECTED, ctx)
+    notify(
+        user=release.released_by,
+        notification_type=Notification.RELEASE_REJECTED,
+        title=title,
+        body=body,
+        link=link,
+        source_type='drawing_release',
+        source_id=release.id,
+    )
+
+
 def send_drawing_released_notifications(release, topic):
     """Send notifications when technical drawings are released."""
     job_order = release.job_order
