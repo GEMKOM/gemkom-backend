@@ -4,6 +4,7 @@ from .views import (
     CustomerViewSet, JobOrderViewSet,
     DepartmentTaskTemplateViewSet, JobOrderDepartmentTaskViewSet,
     JobOrderDiscussionTopicViewSet, JobOrderDiscussionCommentViewSet,
+    DiscussionAttachmentViewSet,
     TechnicalDrawingReleaseViewSet,
     JobOrderProcurementLineViewSet, JobOrderQCCostLineViewSet,
     JobOrderShippingCostLineViewSet,
@@ -16,6 +17,7 @@ router.register(r'task-templates', DepartmentTaskTemplateViewSet)
 router.register(r'department-tasks', JobOrderDepartmentTaskViewSet)
 router.register(r'discussion-topics', JobOrderDiscussionTopicViewSet)
 router.register(r'discussion-comments', JobOrderDiscussionCommentViewSet)
+router.register(r'discussion-attachments', DiscussionAttachmentViewSet)
 router.register(r'drawing-releases', TechnicalDrawingReleaseViewSet)
 router.register(r'procurement-lines', JobOrderProcurementLineViewSet, basename='procurement-line')
 router.register(r'qc-cost-lines', JobOrderQCCostLineViewSet, basename='qc-cost-line')

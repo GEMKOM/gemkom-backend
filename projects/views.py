@@ -1,4 +1,4 @@
-from rest_framework import viewsets, status, permissions
+from rest_framework import viewsets, status, permissions, mixins
 from rest_framework.response import Response
 from rest_framework.filters import SearchFilter, OrderingFilter
 from rest_framework.decorators import action
@@ -2747,6 +2747,22 @@ class JobOrderDiscussionCommentViewSet(viewsets.ModelViewSet):
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
+class DiscussionAttachmentViewSet(mixins.DestroyModelMixin, viewsets.GenericViewSet):
+    """Delete a discussion attachment. Only the uploader can delete."""
+    queryset = DiscussionAttachment.objects.all()
+    serializer_class = DiscussionAttachmentSerializer
+
+    def get_permissions(self):
+        return [IsOfficeUser()]
+
+    def destroy(self, request, *args, **kwargs):
+        attachment = self.get_object()
+        if attachment.uploaded_by != request.user:
+            return Response({'detail': 'Bu eki silemezsiniz.'}, status=status.HTTP_403_FORBIDDEN)
+        attachment.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
 # ============================================================================
 # Technical Drawing Release ViewSet
 # ============================================================================
@@ -3441,14 +3457,6 @@ class JobOrderProcurementLineViewSet(viewsets.ModelViewSet):
         from planning.models import PlanningRequestItem
         from procurement.models import PurchaseOrderLine
         from projects.services.costing import convert_to_eur
-        from decimal import Decimal
-
-        def ex_tax(gross, tax_rate):
-            """Return the ex-tax (net) price given a gross price and a tax rate in %."""
-            rate = tax_rate or Decimal('0')
-            if rate == 0:
-                return gross
-            return gross / (1 + rate / Decimal('100'))
 
         job_no = request.query_params.get('job_order')
         if not job_no:
@@ -3484,14 +3492,13 @@ class JobOrderProcurementLineViewSet(viewsets.ModelViewSet):
                     break
             if po_line:
                 price_source = 'po_line'
-                net = ex_tax(po_line.unit_price, po_line.po.tax_rate)
-                original_unit_price = net
+                original_unit_price = po_line.unit_price
                 original_currency = po_line.po.currency
                 ref_date = (
                     po_line.po.ordered_at.date() if po_line.po.ordered_at
                     else po_line.po.created_at.date()
                 )
-                unit_price_eur = convert_to_eur(net, original_currency, ref_date)
+                unit_price_eur = convert_to_eur(original_unit_price, original_currency, ref_date)
 
             # --- Tier 2: PurchaseOrderLine via M2M path ---
             # Covers cases where PurchaseRequestItem.planning_request_item is NULL but the
@@ -3511,14 +3518,13 @@ class JobOrderProcurementLineViewSet(viewsets.ModelViewSet):
                 )
                 if m2m_po_line:
                     price_source = 'po_line'
-                    net = ex_tax(m2m_po_line.unit_price, m2m_po_line.po.tax_rate)
-                    original_unit_price = net
+                    original_unit_price = m2m_po_line.unit_price
                     original_currency = m2m_po_line.po.currency
                     ref_date = (
                         m2m_po_line.po.ordered_at.date() if m2m_po_line.po.ordered_at
                         else m2m_po_line.po.created_at.date()
                     )
-                    unit_price_eur = convert_to_eur(net, original_currency, ref_date)
+                    unit_price_eur = convert_to_eur(original_unit_price, original_currency, ref_date)
 
             # --- Tier 3: Recommended ItemOffer (FK path) ---
             if price_source == 'none':
@@ -3531,11 +3537,10 @@ class JobOrderProcurementLineViewSet(viewsets.ModelViewSet):
                         break
                 if offer:
                     price_source = 'recommended_offer'
-                    net = ex_tax(offer.unit_price, offer.supplier_offer.tax_rate)
-                    original_unit_price = net
+                    original_unit_price = offer.unit_price
                     original_currency = offer.supplier_offer.currency
                     ref_date = offer.supplier_offer.created_at.date()
-                    unit_price_eur = convert_to_eur(net, original_currency, ref_date)
+                    unit_price_eur = convert_to_eur(original_unit_price, original_currency, ref_date)
 
             # --- Tier 4: Any ItemOffer (FK path) ---
             if price_source == 'none':
@@ -3548,11 +3553,10 @@ class JobOrderProcurementLineViewSet(viewsets.ModelViewSet):
                         break
                 if offer:
                     price_source = 'any_offer'
-                    net = ex_tax(offer.unit_price, offer.supplier_offer.tax_rate)
-                    original_unit_price = net
+                    original_unit_price = offer.unit_price
                     original_currency = offer.supplier_offer.currency
                     ref_date = offer.supplier_offer.created_at.date()
-                    unit_price_eur = convert_to_eur(net, original_currency, ref_date)
+                    unit_price_eur = convert_to_eur(original_unit_price, original_currency, ref_date)
 
             # --- Tier 5: Latest historical PO line for this item (any job) ---
             if price_source == 'none' and pri.item_id:
@@ -3567,14 +3571,13 @@ class JobOrderProcurementLineViewSet(viewsets.ModelViewSet):
                 )
                 if hist_line:
                     price_source = 'historical_po'
-                    net = ex_tax(hist_line.unit_price, hist_line.po.tax_rate)
-                    original_unit_price = net
+                    original_unit_price = hist_line.unit_price
                     original_currency = hist_line.po.currency
                     ref_date = (
                         hist_line.po.ordered_at.date() if hist_line.po.ordered_at
                         else hist_line.po.created_at.date()
                     )
-                    unit_price_eur = convert_to_eur(net, original_currency, ref_date)
+                    unit_price_eur = convert_to_eur(original_unit_price, original_currency, ref_date)
 
             results.append({
                 'planning_request_item': pri.pk,
