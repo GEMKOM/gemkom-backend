@@ -985,6 +985,7 @@ class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
     shared_files = serializers.SerializerMethodField()
     completion_files = serializers.SerializerMethodField()
     discussion_topic = serializers.SerializerMethodField()
+    sibling_consult_tasks = serializers.SerializerMethodField()
 
     class Meta:
         model = JobOrderDepartmentTask
@@ -1006,7 +1007,7 @@ class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
             'qc_required', 'has_qc_approval', 'qc_status',
             'is_consultation', 'offer_summary', 'shared_files',
             'notes', 'completion_files',
-            'discussion_topic',
+            'discussion_topic', 'sibling_consult_tasks',
             'created_at', 'created_by', 'created_by_name',
             'updated_at', 'completed_by', 'completed_by_name'
         ]
@@ -1036,6 +1037,7 @@ class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
         if not obj.sales_offer_id:
             return None
         offer = obj.sales_offer
+        owner = offer.created_by
         return {
             'id': offer.id,
             'offer_no': offer.offer_no,
@@ -1044,7 +1046,48 @@ class DepartmentTaskDetailSerializer(serializers.ModelSerializer):
             'delivery_date_requested': offer.delivery_date_requested,
             'incoterms': offer.incoterms,
             'delivery_place': offer.delivery_place,
+            'offer_owner_id': owner.id if owner else None,
+            'offer_owner_name': owner.get_full_name() if owner else None,
         }
+
+    def get_sibling_consult_tasks(self, obj):
+        if not obj.sales_offer_id or obj.task_type != 'sales_consult':
+            return []
+        sibling_qs = (
+            JobOrderDepartmentTask.objects
+            .filter(sales_offer_id=obj.sales_offer_id, task_type='sales_consult')
+            .exclude(pk=obj.pk)
+            .select_related('completed_by')
+            .prefetch_related('completion_files')
+        )
+        request = self.context.get('request')
+        result = []
+        for t in sibling_qs:
+            files = []
+            for f in t.completion_files.all():
+                file_url = request.build_absolute_uri(f.file.url) if f.file and request else None
+                files.append({
+                    'id': f.id,
+                    'file_url': file_url,
+                    'filename': f.filename,
+                    'file_size': f.file_size,
+                    'file_type': f.file_type,
+                    'file_type_display': f.get_file_type_display(),
+                    'name': f.name,
+                    'uploaded_at': f.uploaded_at,
+                })
+            result.append({
+                'id': t.id,
+                'department': t.department,
+                'department_display': t.get_department_display(),
+                'status': t.status,
+                'status_display': t.get_status_display(),
+                'notes': t.notes,
+                'completed_by_name': t.completed_by.get_full_name() if t.completed_by else None,
+                'completed_at': t.completed_at,
+                'completion_files': files,
+            })
+        return result
 
     def get_shared_files(self, obj):
         if not obj.sales_offer_id:
