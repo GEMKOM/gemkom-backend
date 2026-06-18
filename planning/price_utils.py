@@ -24,13 +24,6 @@ Returns:
 from decimal import Decimal
 
 
-def _ex_tax(gross, tax_rate):
-    rate = tax_rate or Decimal('0')
-    if rate == 0:
-        return gross
-    return gross / (1 + rate / Decimal('100'))
-
-
 def resolve_planning_item_price(pri):
     """
     Run the 5-tier price cascade for a PlanningRequestItem instance.
@@ -44,6 +37,7 @@ def resolve_planning_item_price(pri):
     """
     from projects.services.costing import convert_to_eur
 
+    # Stored procurement prices are net; PurchaseOrder computes tax separately.
     # --- Tier 1: PurchaseOrderLine via FK (prefetched) ---
     po_line = None
     for pri_item in pri.purchase_request_items.all():
@@ -56,7 +50,7 @@ def resolve_planning_item_price(pri):
         if po_line:
             break
     if po_line:
-        net = _ex_tax(po_line.unit_price, po_line.po.tax_rate)
+        net = po_line.unit_price
         ref_date = (
             po_line.po.ordered_at.date() if po_line.po.ordered_at
             else po_line.po.created_at.date()
@@ -73,9 +67,8 @@ def resolve_planning_item_price(pri):
     t2_price = getattr(pri, '_t2_price', None)
     if t2_price is not None:
         t2_currency = getattr(pri, '_t2_currency', 'TRY') or 'TRY'
-        t2_tax      = getattr(pri, '_t2_tax', None)
         t2_date_raw = getattr(pri, '_t2_date', None)
-        net = _ex_tax(Decimal(str(t2_price)), t2_tax)
+        net = Decimal(str(t2_price))
         ref_date = t2_date_raw.date() if t2_date_raw and hasattr(t2_date_raw, 'date') else t2_date_raw
         return {
             'unit_price_eur': convert_to_eur(net, t2_currency, ref_date),
@@ -97,7 +90,7 @@ def resolve_planning_item_price(pri):
         if offer:
             break
     if offer:
-        net = _ex_tax(offer.unit_price, offer.supplier_offer.tax_rate)
+        net = offer.unit_price
         ref_date = offer.supplier_offer.created_at.date()
         return {
             'unit_price_eur': convert_to_eur(net, offer.supplier_offer.currency, ref_date),
@@ -118,7 +111,7 @@ def resolve_planning_item_price(pri):
         if offer:
             break
     if offer:
-        net = _ex_tax(offer.unit_price, offer.supplier_offer.tax_rate)
+        net = offer.unit_price
         ref_date = offer.supplier_offer.created_at.date()
         return {
             'unit_price_eur': convert_to_eur(net, offer.supplier_offer.currency, ref_date),
@@ -132,9 +125,8 @@ def resolve_planning_item_price(pri):
     t5_price = getattr(pri, '_t5_price', None)
     if t5_price is not None:
         t5_currency = getattr(pri, '_t5_currency', 'TRY') or 'TRY'
-        t5_tax      = getattr(pri, '_t5_tax', None)
         t5_date_raw = getattr(pri, '_t5_date', None)
-        net = _ex_tax(Decimal(str(t5_price)), t5_tax)
+        net = Decimal(str(t5_price))
         ref_date = t5_date_raw.date() if hasattr(t5_date_raw, 'date') else t5_date_raw
         return {
             'unit_price_eur': convert_to_eur(net, t5_currency, ref_date),
@@ -161,6 +153,7 @@ def resolve_item_price(item):
     """
     from projects.services.costing import convert_to_eur
 
+    # Stored procurement prices are net; PurchaseOrder computes tax separately.
     # --- Tier 1: Latest PO line for this item ---
     po_line = None
     for pri in item.requests.all():
@@ -171,7 +164,7 @@ def resolve_item_price(item):
         if po_line:
             break
     if po_line:
-        net = _ex_tax(po_line.unit_price, po_line.po.tax_rate)
+        net = po_line.unit_price
         ref_date = (
             po_line.po.ordered_at.date() if po_line.po.ordered_at
             else po_line.po.created_at.date()
@@ -194,7 +187,7 @@ def resolve_item_price(item):
         if offer:
             break
     if offer:
-        net = _ex_tax(offer.unit_price, offer.supplier_offer.tax_rate)
+        net = offer.unit_price
         ref_date = offer.supplier_offer.created_at.date()
         return {
             'unit_price_eur': convert_to_eur(net, offer.supplier_offer.currency, ref_date),
@@ -213,7 +206,7 @@ def resolve_item_price(item):
         if offer:
             break
     if offer:
-        net = _ex_tax(offer.unit_price, offer.supplier_offer.tax_rate)
+        net = offer.unit_price
         ref_date = offer.supplier_offer.created_at.date()
         return {
             'unit_price_eur': convert_to_eur(net, offer.supplier_offer.currency, ref_date),

@@ -1,8 +1,107 @@
-from django.test import TestCase
+from datetime import datetime
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from django.test import SimpleTestCase, TestCase
 from django.contrib.auth.models import User
 from decimal import Decimal
 from planning.models import PlanningRequest, PlanningRequestItem
 from procurement.models import Item, PurchaseRequest
+
+
+class _RelatedList:
+    def __init__(self, *items):
+        self._items = list(items)
+
+    def all(self):
+        return list(self._items)
+
+
+class PriceResolutionTestCase(SimpleTestCase):
+    def _currency_passthrough(self, amount, currency, ref_date):
+        return amount
+
+    @patch('projects.services.costing.convert_to_eur')
+    def test_po_line_price_is_not_reduced_by_tax(self, convert_to_eur):
+        convert_to_eur.side_effect = self._currency_passthrough
+        from planning.price_utils import resolve_planning_item_price
+
+        created_at = datetime(2026, 6, 1, 12, 0, 0)
+        po = SimpleNamespace(
+            status='awaiting_payment',
+            tax_rate=Decimal('20.00'),
+            currency='EUR',
+            ordered_at=None,
+            created_at=created_at,
+        )
+        po_line = SimpleNamespace(unit_price=Decimal('120.00'), po=po)
+        purchase_request = SimpleNamespace(status='approved')
+        purchase_request_item = SimpleNamespace(
+            purchase_request=purchase_request,
+            po_lines=_RelatedList(po_line),
+            offers=_RelatedList(),
+        )
+        planning_item = SimpleNamespace(
+            purchase_request_items=_RelatedList(purchase_request_item),
+        )
+
+        result = resolve_planning_item_price(planning_item)
+
+        self.assertEqual(result['unit_price_eur'], Decimal('120.00'))
+        self.assertEqual(result['original_unit_price'], Decimal('120.00'))
+        convert_to_eur.assert_called_once_with(Decimal('120.00'), 'EUR', created_at.date())
+
+    @patch('projects.services.costing.convert_to_eur')
+    def test_offer_price_is_not_reduced_by_tax(self, convert_to_eur):
+        convert_to_eur.side_effect = self._currency_passthrough
+        from planning.price_utils import resolve_planning_item_price
+
+        created_at = datetime(2026, 6, 2, 12, 0, 0)
+        supplier_offer = SimpleNamespace(
+            tax_rate=Decimal('20.00'),
+            currency='EUR',
+            created_at=created_at,
+        )
+        offer = SimpleNamespace(
+            unit_price=Decimal('90.00'),
+            supplier_offer=supplier_offer,
+            is_recommended=True,
+        )
+        purchase_request = SimpleNamespace(status='approved')
+        purchase_request_item = SimpleNamespace(
+            purchase_request=purchase_request,
+            po_lines=_RelatedList(),
+            offers=_RelatedList(offer),
+        )
+        planning_item = SimpleNamespace(
+            purchase_request_items=_RelatedList(purchase_request_item),
+        )
+
+        result = resolve_planning_item_price(planning_item)
+
+        self.assertEqual(result['unit_price_eur'], Decimal('90.00'))
+        self.assertEqual(result['original_unit_price'], Decimal('90.00'))
+        convert_to_eur.assert_called_once_with(Decimal('90.00'), 'EUR', created_at.date())
+
+    @patch('projects.services.costing.convert_to_eur')
+    def test_annotated_po_line_price_is_not_reduced_by_tax(self, convert_to_eur):
+        convert_to_eur.side_effect = self._currency_passthrough
+        from planning.price_utils import resolve_planning_item_price
+
+        price_date = datetime(2026, 6, 3, 12, 0, 0)
+        planning_item = SimpleNamespace(
+            purchase_request_items=_RelatedList(),
+            _t2_price=Decimal('240.00'),
+            _t2_currency='EUR',
+            _t2_tax=Decimal('20.00'),
+            _t2_date=price_date,
+        )
+
+        result = resolve_planning_item_price(planning_item)
+
+        self.assertEqual(result['unit_price_eur'], Decimal('240.00'))
+        self.assertEqual(result['original_unit_price'], Decimal('240.00'))
+        convert_to_eur.assert_called_once_with(Decimal('240.00'), 'EUR', price_date.date())
 
 
 class PlanningRequestCompletionTestCase(TestCase):
