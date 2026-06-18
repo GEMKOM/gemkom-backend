@@ -807,6 +807,41 @@ def render_notification(
 # Routing
 # ---------------------------------------------------------------------------
 
+def _iter_user_groups(raw_user_groups):
+    """
+    Yield active UserGroup rows for both current ID values and legacy name/slug
+    values that were stored before NotificationConfig.user_groups was normalized.
+    """
+    if not raw_user_groups:
+        return []
+
+    from django.db.models import Q
+    from organization.models import UserGroup
+
+    numeric_ids = []
+    names_or_slugs = []
+    for value in raw_user_groups:
+        if isinstance(value, int):
+            numeric_ids.append(value)
+            continue
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                continue
+            if value.isdigit():
+                numeric_ids.append(int(value))
+            else:
+                names_or_slugs.append(value)
+
+    query = Q()
+    if numeric_ids:
+        query |= Q(id__in=numeric_ids)
+    if names_or_slugs:
+        query |= Q(name__in=names_or_slugs) | Q(slug__in=names_or_slugs)
+    if not query:
+        return UserGroup.objects.none()
+    return UserGroup.objects.filter(query, is_active=True).distinct()
+
 def get_route(notification_type: str) -> tuple:
     """
     Return (users_queryset, rendered_link) for a routable notification type.
@@ -840,8 +875,7 @@ def get_route(notification_type: str) -> tuple:
 
         user_group_ids = set()
         if cfg.user_groups:
-            from organization.models import UserGroup
-            for ug in UserGroup.objects.filter(id__in=cfg.user_groups, is_active=True):
+            for ug in _iter_user_groups(cfg.user_groups):
                 user_group_ids.update(ug.get_members().values_list('id', flat=True))
 
         all_ids = explicit_ids | team_ids | group_ids | user_group_ids
