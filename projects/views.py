@@ -318,6 +318,15 @@ class JobOrderViewSet(viewsets.ModelViewSet):
     def resume(self, request, job_no=None):
         """Resume the job order from hold."""
         job_order = self.get_object()
+        from .services.release_approval import job_has_blocking_release_review
+        if job_has_blocking_release_review(job_order):
+            return Response(
+                {
+                    'status': 'error',
+                    'message': 'Teknik çizim revizyon incelemesi tamamlanmadan iş emri devam ettirilemez.',
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
         try:
             job_order.resume()
             from .signals import send_job_resumed_notifications

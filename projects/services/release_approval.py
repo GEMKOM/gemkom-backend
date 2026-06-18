@@ -1,6 +1,8 @@
 """Peer-review approval workflow for technical drawing releases."""
 
 from django.contrib.auth import get_user_model
+from django.db import transaction
+from django.db.models import Q
 from django.db.models import Min
 
 from organization.models import Position
@@ -115,6 +117,18 @@ def user_can_resubmit(release, user):
     )
 
 
+def job_has_blocking_release_review(job_order):
+    """
+    Revision releases keep the job on hold until the replacement drawing is approved.
+    """
+    from projects.models import TechnicalDrawingRelease
+
+    return TechnicalDrawingRelease.objects.filter(job_order=job_order).filter(
+        Q(status='in_revision') |
+        Q(status='pending_approval', supersedes__isnull=False)
+    ).exists()
+
+
 def create_pending_release_topic(release, topic_content=''):
     """Create a discussion topic for a pending release (design-only visibility)."""
     from projects.models import JobOrderDiscussionTopic
@@ -184,60 +198,65 @@ def publish_release(release, final_approver=None):
     job_order = release.job_order
     topic = release.release_topic
 
-    release.status = 'released'
-    release.save(update_fields=['status', 'updated_at'])
+    if release.supersedes_id and job_order.status not in ('on_hold', 'active'):
+        raise ValueError('Revizyon yayını yalnızca aktif veya beklemedeki iş emirlerinde yayınlanabilir.')
 
-    if topic:
-        topic.title = (
-            f'Teknik Çizim Yayını - Rev.{release.revision_code or release.revision_number}'
-        )
-        topic.topic_type = 'drawing_release'
-        topic.save(update_fields=['title', 'topic_type', 'updated_at'])
+    with transaction.atomic():
+        release.status = 'released'
+        release.save(update_fields=['status', 'updated_at'])
 
-        stakeholder_users = get_drawing_release_stakeholders()
-        mentioned_ids = set(topic.mentioned_users.values_list('id', flat=True))
-        mentioned_ids.update(stakeholder_users.values_list('id', flat=True))
-        if release.released_by_id:
-            mentioned_ids.discard(release.released_by_id)
-        if mentioned_ids:
-            topic.mentioned_users.set(mentioned_ids)
+        if topic:
+            topic.title = (
+                f'Teknik Çizim Yayını - Rev.{release.revision_code or release.revision_number}'
+            )
+            topic.topic_type = 'drawing_release'
+            topic.save(update_fields=['title', 'topic_type', 'updated_at'])
 
-        send_drawing_released_notifications(release, topic)
+            stakeholder_users = get_drawing_release_stakeholders()
+            mentioned_ids = set(topic.mentioned_users.values_list('id', flat=True))
+            mentioned_ids.update(stakeholder_users.values_list('id', flat=True))
+            if release.released_by_id:
+                mentioned_ids.discard(release.released_by_id)
+            if mentioned_ids:
+                topic.mentioned_users.set(mentioned_ids)
 
-    old_revision_topic = None
-    if release.supersedes_id:
-        old_release = release.supersedes
-        old_release.status = 'superseded'
-        old_release.save(update_fields=['status', 'updated_at'])
+            send_drawing_released_notifications(release, topic)
 
-        old_revision_topic = old_release.revision_topics.filter(
-            revision_status='in_progress',
-            is_deleted=False,
-        ).first()
-        if old_revision_topic:
-            old_revision_topic.revision_status = 'resolved'
-            old_revision_topic.save(update_fields=['revision_status', 'updated_at'])
+        old_revision_topic = None
+        if release.supersedes_id:
+            old_release = release.supersedes
+            old_release.status = 'superseded'
+            old_release.save(update_fields=['status', 'updated_at'])
 
-        job_order.resume()
+            old_revision_topic = old_release.revision_topics.filter(
+                revision_status='in_progress',
+                is_deleted=False,
+            ).first()
+            if old_revision_topic:
+                old_revision_topic.revision_status = 'resolved'
+                old_revision_topic.save(update_fields=['revision_status', 'updated_at'])
 
-        if release.auto_complete_design_task:
+            if job_order.status == 'on_hold':
+                job_order.resume()
+
+            if release.auto_complete_design_task:
+                design_task = job_order.department_tasks.filter(
+                    department='design',
+                    parent__isnull=True,
+                ).first()
+                if design_task and design_task.status == 'in_progress':
+                    design_task.complete(user=actor)
+
+            if topic:
+                send_revision_completed_notifications(
+                    release, topic, old_revision_topic, actor
+                )
+        elif release.auto_complete_design_task:
             design_task = job_order.department_tasks.filter(
                 department='design',
                 parent__isnull=True,
             ).first()
             if design_task and design_task.status == 'in_progress':
                 design_task.complete(user=actor)
-
-        if topic:
-            send_revision_completed_notifications(
-                release, topic, old_revision_topic, actor
-            )
-    elif release.auto_complete_design_task:
-        design_task = job_order.department_tasks.filter(
-            department='design',
-            parent__isnull=True,
-        ).first()
-        if design_task and design_task.status == 'in_progress':
-            design_task.complete(user=actor)
 
     return release
