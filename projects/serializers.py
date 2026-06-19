@@ -214,6 +214,8 @@ class JobOrderListSerializer(serializers.ModelSerializer):
     weekly_avg_progress = serializers.SerializerMethodField()
     estimated_completion_by_last_week = serializers.SerializerMethodField()
     estimated_completion_by_avg = serializers.SerializerMethodField()
+    is_phase_job = serializers.BooleanField(read_only=True)
+    has_phases = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = JobOrder
@@ -227,6 +229,7 @@ class JobOrderListSerializer(serializers.ModelSerializer):
             'target_date_revisions_count',
             'general_expenses_rate',
             'source_offer',
+            'phase_number', 'source_job_order', 'is_phase_job', 'has_phases',
             'created_at',
             'last_week_progress',
             'weekly_avg_progress',
@@ -346,6 +349,8 @@ class JobOrderDetailSerializer(serializers.ModelSerializer):
     files_count = serializers.SerializerMethodField()
     topics_count = serializers.SerializerMethodField()
     target_date_revisions = serializers.SerializerMethodField()
+    is_phase_job = serializers.BooleanField(read_only=True)
+    has_phases = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = JobOrder
@@ -357,6 +362,7 @@ class JobOrderDetailSerializer(serializers.ModelSerializer):
             'total_weight_kg', 'general_expenses_rate', 'completion_percentage',
             'parent', 'parent_title', 'children', 'children_count', 'hierarchy_level',
             'source_offer', 'source_offer_no',
+            'phase_number', 'source_job_order', 'is_phase_job', 'has_phases',
             'files_count', 'topics_count',
             'created_at', 'created_by', 'created_by_name',
             'updated_at', 'completed_by', 'completed_by_name',

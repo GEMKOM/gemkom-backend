@@ -8,6 +8,31 @@ from .models import Timer, TaskFile, Part, Operation, TaskKeyCounter, DowntimeRe
 from machines.models import Machine, MachineFault
 
 
+def validate_job_no_not_phased(value):
+    """
+    Reject a job_no that belongs to an engineering job order which has been split
+    into production phases. Such jobs must not receive work directly — the work
+    belongs on one of the phase job orders (e.g. 270-01/P1) instead.
+
+    Returns the value unchanged when it is safe to use.
+    """
+    if not value:
+        return value
+    from projects.models import JobOrder
+    phase_nos = list(
+        JobOrder.objects
+        .filter(source_job_order__job_no=value)
+        .order_by('phase_number')
+        .values_list('job_no', flat=True)
+    )
+    if phase_nos:
+        raise serializers.ValidationError(
+            f"'{value}' iş emri üretim fazlarına bölünmüştür. "
+            f"Lütfen şu faz iş emirlerinden birini kullanın: {', '.join(phase_nos)}"
+        )
+    return value
+
+
 class DowntimeReasonSerializer(serializers.ModelSerializer):
     """
     Serializer for DowntimeReason model.
@@ -352,6 +377,9 @@ class PartListSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['key', 'created_by', 'created_at', 'completed_by', 'completion_date']
 
+    def validate_job_no(self, value):
+        return validate_job_no_not_phased(value)
+
 
 class PartSerializer(serializers.ModelSerializer):
     """Serializer for Part model with full operation details"""
@@ -372,6 +400,9 @@ class PartSerializer(serializers.ModelSerializer):
             'operations', 'has_incomplete_operations'
         ]
         read_only_fields = ['key', 'created_by', 'created_at', 'completed_by', 'completion_date']
+
+    def validate_job_no(self, value):
+        return validate_job_no_not_phased(value)
 
     def get_has_incomplete_operations(self, obj):
         return obj.operations.filter(completion_date__isnull=True).exists()

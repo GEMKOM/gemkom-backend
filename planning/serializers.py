@@ -16,6 +16,31 @@ from approvals.serializers import WorkflowSerializer
 from approvals.models import ApprovalWorkflow
 
 
+def validate_job_no_not_phased(value):
+    """
+    Reject a job_no that belongs to an engineering job order which has been split
+    into production phases. Such jobs must not receive work directly — the work
+    belongs on one of the phase job orders (e.g. 270-01/P1) instead.
+
+    Returns the value unchanged when it is safe to use.
+    """
+    if not value:
+        return value
+    from projects.models import JobOrder
+    phase_nos = list(
+        JobOrder.objects
+        .filter(source_job_order__job_no=value)
+        .order_by('phase_number')
+        .values_list('job_no', flat=True)
+    )
+    if phase_nos:
+        raise serializers.ValidationError(
+            f"'{value}' iş emri üretim fazlarına bölünmüştür. "
+            f"Lütfen şu faz iş emirlerinden birini kullanın: {', '.join(phase_nos)}"
+        )
+    return value
+
+
 class SafeDateField(serializers.DateField):
     """
     DateField that tolerates datetime values by converting to date().
@@ -479,6 +504,9 @@ class PlanningRequestItemSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['id', 'quantity_from_inventory', 'quantity_to_purchase',
                             'is_delivered', 'delivered_at', 'delivered_by']
+
+    def validate_job_no(self, value):
+        return validate_job_no_not_phased(value)
 
     def get_purchase_request_info(self, obj):
         """

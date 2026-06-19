@@ -143,6 +143,24 @@ class JobOrder(models.Model):
         blank=True,
         related_name='children'
     )
+    # Production phase support.
+    # Planning can split a job into production phases (e.g. 270-01/P1, 270-01/P2)
+    # that live as children of the engineering job. phase_number is the sequential
+    # phase index; source_job_order points back to the engineering job the phase
+    # was carved out of (the same node the phase is a child of).
+    phase_number = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text='Üretim faz numarası (örn. 270-01/P1 için 1). Faz işleri için doludur.'
+    )
+    source_job_order = models.ForeignKey(
+        'self',
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='phase_mirrors',
+        help_text='Bu fazın türetildiği mühendislik iş emri.'
+    )
     source_offer = models.ForeignKey(
         'sales.SalesOffer',
         on_delete=models.SET_NULL,
@@ -255,6 +273,7 @@ class JobOrder(models.Model):
             models.Index(fields=['customer', 'status']),
             models.Index(fields=['target_completion_date']),
         ]
+        unique_together = [('source_job_order', 'phase_number')]
         verbose_name = 'İş Emri'
         verbose_name_plural = 'İş Emirleri'
 
@@ -271,6 +290,16 @@ class JobOrder(models.Model):
     def get_hierarchy_level(self):
         """Calculate depth: 254-01 = 0, 254-01-01 = 1, etc."""
         return self.job_no.count('-') - 1
+
+    @property
+    def is_phase_job(self):
+        """True if this job order is a production phase mirror (e.g. 270-01/P1)."""
+        return self.source_job_order_id is not None
+
+    @property
+    def has_phases(self):
+        """True if this (engineering) job order has been split into production phases."""
+        return self.phase_mirrors.exists()
 
     def get_all_children(self):
         """Get all descendants recursively."""

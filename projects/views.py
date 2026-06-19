@@ -503,6 +503,79 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         return Response(build_tree(root))
 
     # -------------------------------------------------------------------------
+    # Production phases
+    # -------------------------------------------------------------------------
+
+    @action(detail=True, methods=['post'], url_path='create-phases', permission_classes=[IsPlanning])
+    def create_phases(self, request, job_no=None):
+        """
+        Split this engineering job order into production phases.
+
+        Request body:
+        {
+            "phases": [
+                {"phase_number": 1, "title": "Faz 1", "target_completion_date": "2026-07-01"},
+                {"phase_number": 2, "title": "Faz 2"}
+            ]
+        }
+        Each phase becomes a child job order "{job_no}/P{n}" in draft state.
+        """
+        from projects.services.phases import create_phases
+
+        source_root_job = self.get_object()
+        phases = request.data.get('phases', [])
+        if not isinstance(phases, list) or not phases:
+            return Response(
+                {'status': 'error', 'message': 'phases alanı boş olmayan bir liste olmalıdır.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        try:
+            created = create_phases(source_root_job, phases, user=request.user)
+        except ValueError as e:
+            return Response(
+                {'status': 'error', 'message': str(e)},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        return Response(
+            {
+                'status': 'success',
+                'message': f'{len(created)} üretim fazı oluşturuldu.',
+                'phases': JobOrderListSerializer(created, many=True).data,
+            },
+            status=status.HTTP_201_CREATED
+        )
+
+    @action(detail=True, methods=['post'], url_path='activate-phase', permission_classes=[IsPlanning])
+    def activate_phase(self, request, job_no=None):
+        """Activate a production phase (draft -> active), cascading to its tasks."""
+        from projects.services.phases import activate_phase
+
+        phase_root_job = self.get_object()
+        try:
+            activate_phase(phase_root_job, user=request.user)
+        except ValueError as e:
+            return Response(
+                {'status': 'error', 'message': str(e)},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        return Response({
+            'status': 'success',
+            'message': 'Üretim fazı etkinleştirildi.',
+            'job_order': JobOrderDetailSerializer(phase_root_job, context={'request': request}).data,
+        })
+
+    @action(detail=True, methods=['get'])
+    def phases(self, request, job_no=None):
+        """List the production phases (phase mirror children) of this job order."""
+        job_order = self.get_object()
+        phase_jobs = self.get_queryset().filter(
+            source_job_order=job_order
+        ).order_by('phase_number')
+        return Response(
+            JobOrderListSerializer(phase_jobs, many=True, context={'request': request}).data
+        )
+
+    # -------------------------------------------------------------------------
     # Tab-specific endpoints (lightweight data loading)
     # -------------------------------------------------------------------------
 
