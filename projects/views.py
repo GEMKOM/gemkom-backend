@@ -144,6 +144,10 @@ class JobOrderViewSet(viewsets.ModelViewSet):
     """
     queryset = JobOrder.objects.select_related('customer', 'parent', 'created_by', 'completed_by')
     lookup_field = 'job_no'
+    # Allow production phase job_nos like "270-01/P1" to be addressed via the
+    # detail/action routes. The default DRF regex ([^/.]+) excludes slashes, so
+    # without this the phase endpoints would 404.
+    lookup_value_regex = r'[^/.]+(?:/P\d+)?'
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     search_fields = ['job_no', 'title', 'description', 'customer__name', 'customer__code']
     ordering_fields = ['job_no', 'title', 'status', 'priority', 'target_completion_date', 'created_at']
