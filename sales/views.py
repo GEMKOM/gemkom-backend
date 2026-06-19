@@ -1,6 +1,6 @@
 from django.utils import timezone
 from django.db import transaction
-from django.db.models import Exists, OuterRef
+from django.db.models import Exists, OuterRef, Prefetch, Max
 from django.contrib.contenttypes.models import ContentType
 from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action
@@ -306,11 +306,26 @@ class SalesOfferViewSet(viewsets.ModelViewSet):
 
     # ------------------------------------------------------------------ items
 
+    def _offer_items_root_queryset(self, offer):
+        children_qs = (
+            SalesOfferItem.objects
+            .select_related('template_node')
+            .order_by('sequence', 'id')
+        )
+        return (
+            offer.items
+            .select_related('template_node')
+            .prefetch_related(Prefetch('children', queryset=children_qs))
+            .filter(parent__isnull=True)
+            .order_by('sequence', 'id')
+        )
+
     @action(detail=True, methods=['get'], url_path='items')
     def items(self, request, pk=None):
         offer = self.get_object()
-        qs = offer.items.select_related('template_node').prefetch_related('children').filter(parent__isnull=True)
-        return Response(SalesOfferItemSerializer(qs, many=True).data)
+        return Response(
+            SalesOfferItemSerializer(self._offer_items_root_queryset(offer), many=True).data
+        )
 
     @action(detail=True, methods=['post'], url_path='add-items')
     def add_items(self, request, pk=None):
@@ -339,6 +354,7 @@ class SalesOfferViewSet(viewsets.ModelViewSet):
         ref_map = {}   # _ref string → created SalesOfferItem
         created = []
         errors = []
+        parent_next_seq = {}
 
         for idx, raw in enumerate(raw_items):
             ref = raw.get('_ref')
@@ -356,6 +372,17 @@ class SalesOfferViewSet(viewsets.ModelViewSet):
                     })
                     continue
                 item_data['parent'] = ref_map[parent_ref].pk
+
+            parent_key = item_data.get('parent')
+            if item_data.get('sequence') in (None, ''):
+                if parent_key not in parent_next_seq:
+                    max_seq = (
+                        offer.items.filter(parent_id=parent_key)
+                        .aggregate(m=Max('sequence'))['m'] or 0
+                    )
+                    parent_next_seq[parent_key] = max_seq
+                parent_next_seq[parent_key] += 1
+                item_data['sequence'] = parent_next_seq[parent_key]
 
             serializer = SalesOfferItemCreateSerializer(
                 data=item_data,
@@ -513,7 +540,7 @@ class SalesOfferViewSet(viewsets.ModelViewSet):
         return Response({
             'offer': SalesOfferDetailSerializer(offer, context={'request': request}).data,
             'items': SalesOfferItemSerializer(
-                offer.items.select_related('template_node').prefetch_related('children').filter(parent__isnull=True),
+                self._offer_items_root_queryset(offer),
                 many=True,
             ).data,
         })
@@ -562,6 +589,32 @@ class SalesOfferViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # Reject parent assignments that would create a cycle — an item must never
+        # become the child of itself or one of its own descendants. Such loops
+        # corrupt the tree (the affected items lose a valid root) and break
+        # conversion to job orders.
+        proposed_parent = dict(offer.items.values_list('id', 'parent_id'))
+        for i in data['items']:
+            if 'parent' in i:
+                proposed_parent[i['id']] = i['parent']
+        for entry in data['items']:
+            if 'parent' not in entry:
+                continue
+            start = entry['id']
+            seen = set()
+            cur = proposed_parent.get(start)
+            while cur is not None:
+                if cur == start:
+                    return Response(
+                        {'detail': f"Geçersiz üst kalem: kalem {start} kendisinin "
+                                   "veya bir alt kaleminin altına taşınamaz (döngü)."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                if cur in seen:
+                    break  # pre-existing unrelated loop; stop walking
+                seen.add(cur)
+                cur = proposed_parent.get(cur)
+
         _UPDATABLE = ['title_override', 'quantity', 'unit_price', 'weight_kg', 'delivery_period', 'notes', 'parent_id']
 
         with transaction.atomic():
@@ -602,7 +655,7 @@ class SalesOfferViewSet(viewsets.ModelViewSet):
 
         return Response(
             SalesOfferItemSerializer(
-                offer.items.select_related('template_node').prefetch_related('children').filter(parent__isnull=True),
+                self._offer_items_root_queryset(offer),
                 many=True,
             ).data
         )
@@ -643,7 +696,7 @@ class SalesOfferViewSet(viewsets.ModelViewSet):
 
         return Response(
             SalesOfferItemSerializer(
-                offer.items.select_related('template_node').prefetch_related('children').filter(parent__isnull=True),
+                self._offer_items_root_queryset(offer),
                 many=True,
             ).data
         )

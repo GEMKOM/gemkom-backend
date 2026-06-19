@@ -309,7 +309,7 @@ class SalesOfferItem(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        ordering = ['offer', 'sequence']
+        ordering = ['offer', 'sequence', 'id']
         verbose_name = 'Teklif Kalemi'
         verbose_name_plural = 'Teklif Kalemleri'
 

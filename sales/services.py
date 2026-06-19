@@ -674,6 +674,34 @@ def convert_offer_to_job_order(offer: SalesOffer, user, file_ids: list = None) -
             "İş emri oluşturmak için teklifte en az bir kalem bulunmalıdır."
         )
 
+    # Validate the parent graph before building anything. Corrupted parent links
+    # (dangling references or cycles) would otherwise be silently "treated as
+    # orphans" and explode into dozens of stray root job orders.
+    item_ids = {i.id for i in all_items}
+    parent_by_id = {i.id: i.parent_id for i in all_items}
+
+    for i in all_items:
+        if i.parent_id is not None and i.parent_id not in item_ids:
+            raise ValueError(
+                f"Teklif kalemi #{i.id} bu teklifte bulunmayan bir üst kaleme "
+                f"(#{i.parent_id}) bağlı. İş emrine dönüştürmeden önce kalem "
+                "hiyerarşisini düzeltin."
+            )
+
+    # Cycle detection: walking up any item's parent chain must terminate at a root.
+    for start in all_items:
+        seen = set()
+        cur = start.id
+        while cur is not None:
+            if cur in seen:
+                raise ValueError(
+                    f"Teklif kalemlerinde döngüsel üst-alt ilişkisi var "
+                    f"(kalem #{start.id} kendi alt kaleminin altında görünüyor). "
+                    "İş emrine dönüştürülemez; kalem hiyerarşisini düzeltin."
+                )
+            seen.add(cur)
+            cur = parent_by_id.get(cur)
+
     file_ids = file_ids or []
 
     # Split into template-driven items and explicit-parent items

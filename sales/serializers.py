@@ -197,7 +197,10 @@ class SalesOfferItemSerializer(serializers.ModelSerializer):
         read_only_fields = ['offer', 'created_at']
 
     def get_children(self, obj):
-        return SalesOfferItemSerializer(obj.children.all(), many=True).data
+        return SalesOfferItemSerializer(
+            obj.children.select_related('template_node').order_by('sequence', 'id'),
+            many=True,
+        ).data
 
 
 class SalesOfferItemCreateSerializer(serializers.ModelSerializer):
@@ -569,7 +572,7 @@ class SalesOfferApprovalPageSerializer(serializers.ModelSerializer):
         return obj.total_weight_kg
 
     def get_items(self, obj):
-        roots = obj.items.filter(parent__isnull=True).order_by('sequence')
+        roots = obj.items.filter(parent__isnull=True).order_by('sequence', 'id')
         return SalesOfferItemSerializer(roots, many=True).data
 
     def get_price_history(self, obj):
