@@ -315,7 +315,17 @@ class SalesOfferDetailSerializer(serializers.ModelSerializer):
         return obj.total_weight_kg
 
 
+class _OptionalOfferDateField(serializers.DateField):
+    def to_internal_value(self, data):
+        if data in ('', None):
+            return None
+        return super().to_internal_value(data)
+
+
 class SalesOfferCreateSerializer(serializers.ModelSerializer):
+    delivery_date_requested = _OptionalOfferDateField(required=False, allow_null=True)
+    offer_expiry_date = _OptionalOfferDateField(required=False, allow_null=True)
+
     class Meta:
         model = SalesOffer
         fields = [
@@ -327,6 +337,9 @@ class SalesOfferCreateSerializer(serializers.ModelSerializer):
 
 
 class SalesOfferUpdateSerializer(serializers.ModelSerializer):
+    delivery_date_requested = _OptionalOfferDateField(required=False, allow_null=True)
+    offer_expiry_date = _OptionalOfferDateField(required=False, allow_null=True)
+
     class Meta:
         model = SalesOffer
         fields = [

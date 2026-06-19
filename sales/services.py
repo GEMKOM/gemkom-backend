@@ -653,6 +653,11 @@ def convert_offer_to_job_order(offer: SalesOffer, user, file_ids: list = None) -
     if offer.converted_job_order_id:
         raise ValueError("Bu teklif zaten bir iş emrine dönüştürülmüştür.")
 
+    if not offer.delivery_date_requested:
+        raise ValueError(
+            "İş emrine dönüştürmek için istenen termin tarihi girilmelidir."
+        )
+
     incoterms = offer.incoterms or ''
 
     # Load all items, pre-fetching the full parent chain for effective-parent traversal
