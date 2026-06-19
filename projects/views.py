@@ -513,28 +513,40 @@ class JobOrderViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], url_path='create-phases', permission_classes=[IsPlanning])
     def create_phases(self, request, job_no=None):
         """
-        Split this engineering job order into production phases.
+        Split this engineering job order into delivery phases with per-product
+        quantity allocations.
 
         Request body:
         {
             "phases": [
                 {"phase_number": 1, "title": "Faz 1", "target_completion_date": "2026-07-01"},
                 {"phase_number": 2, "title": "Faz 2"}
+            ],
+            "allocations": [
+                {"product_job_no": "270-01-01", "quantities": {"1": 1, "2": 1}},
+                {"product_job_no": "270-01-06", "quantities": {"1": 2, "2": 2}}
             ]
         }
-        Each phase becomes a child job order "{job_no}/P{n}" in draft state.
+        Creates a phase node "{job_no}/P{n}" per phase, and an allocation
+        "{product}/P{n}" per product/phase quantity, all in draft state.
         """
         from projects.services.phases import create_phases
 
         source_root_job = self.get_object()
         phases = request.data.get('phases', [])
+        allocations = request.data.get('allocations', [])
         if not isinstance(phases, list) or not phases:
             return Response(
                 {'status': 'error', 'message': 'phases alanı boş olmayan bir liste olmalıdır.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
+        if not isinstance(allocations, list) or not allocations:
+            return Response(
+                {'status': 'error', 'message': 'allocations alanı boş olmayan bir liste olmalıdır.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
         try:
-            created = create_phases(source_root_job, phases, user=request.user)
+            created = create_phases(source_root_job, phases, allocations, user=request.user)
         except ValueError as e:
             return Response(
                 {'status': 'error', 'message': str(e)},

@@ -301,6 +301,22 @@ class JobOrder(models.Model):
         """True if this (engineering) job order has been split into production phases."""
         return self.phase_mirrors.exists()
 
+    def _has_phase_nodes(self):
+        """True if this job has top-level production phase children (e.g. 270-01/P1)."""
+        return self.children.filter(source_job_order_id=self.job_no).exists()
+
+    def _aggregatable_children(self):
+        """
+        Children that count toward this job's completion roll-up and status cascade.
+
+        Engineering masters that have been split into production phases (children
+        with their own phase_mirrors, e.g. 270-01-01) are represented by the phase
+        allocations instead, so they are excluded here — otherwise they would
+        double-count and, sitting permanently below 100%, block the parent from
+        ever completing.
+        """
+        return self.children.exclude(phase_mirrors__isnull=False)
+
     def get_all_children(self):
         """Get all descendants recursively."""
         children = list(self.children.all())
@@ -343,11 +359,17 @@ class JobOrder(models.Model):
         from django.db.models import Sum
         _old_pct = self.completion_percentage
 
+        # Jobs split into production phases roll up from their phase children,
+        # not from their own (engineering) department tasks.
+        if self._has_phase_nodes():
+            self.update_completion_from_children()
+            return
+
         # Only count main tasks (no parent), excluding skipped and cancelled
         main_tasks = self.department_tasks.filter(parent__isnull=True).exclude(status__in=['skipped', 'cancelled'])
 
         if not main_tasks.exists():
-            if self.children.exists():
+            if self._aggregatable_children().exists():
                 self.update_completion_from_children()
                 return
             self.completion_percentage = Decimal('0.00')
@@ -437,14 +459,15 @@ class JobOrder(models.Model):
 
     def update_completion_from_children(self):
         """Update completion based on children progress (for parent jobs)."""
-        if not self.children.exists():
+        agg_children = self._aggregatable_children()
+        if not agg_children.exists():
             return
 
         _old_pct = self.completion_percentage
 
-        # Average of children completion
+        # Average of children completion (phased masters excluded)
         from django.db.models import Avg
-        child_avg = self.children.aggregate(avg=Avg('completion_percentage'))['avg'] or Decimal('0.00')
+        child_avg = agg_children.aggregate(avg=Avg('completion_percentage'))['avg'] or Decimal('0.00')
         pct = Decimal(child_avg).quantize(Decimal('0.01'))
         # Cap at 99% unless job order is actually completed
         if self.status != 'completed':
@@ -468,12 +491,13 @@ class JobOrder(models.Model):
 
     def update_status_from_children(self):
         """Cascading status: if all children completed, mark self completed."""
-        if not self.children.exists():
+        agg_children = self._aggregatable_children()
+        if not agg_children.exists():
             return
 
         all_completed = all(
             child.status == 'completed'
-            for child in self.children.all()
+            for child in agg_children
         )
         if all_completed and self.status == 'active':
             try:
@@ -515,7 +539,8 @@ class JobOrder(models.Model):
             raise ValueError("Sadece aktif veya beklemedeki işler tamamlanabilir.")
 
         has_tasks = self.department_tasks.exists()
-        has_children = self.children.exists()
+        agg_children = self._aggregatable_children()
+        has_children = agg_children.exists()
 
         # Must have either department tasks or children to be completable
         if not has_tasks and not has_children:
@@ -536,9 +561,9 @@ class JobOrder(models.Model):
                     f"İş tamamlanamaz: {incomplete_tasks} departman görevi hala bekliyor."
                 )
 
-        # Check all children are complete (if any exist)
+        # Check all children are complete (if any exist; phased masters excluded)
         if has_children:
-            incomplete_children = self.children.exclude(status='completed').count()
+            incomplete_children = agg_children.exclude(status='completed').count()
             if incomplete_children > 0:
                 raise ValueError(
                     f"İş tamamlanamaz: {incomplete_children} alt iş hala tamamlanmadı."
