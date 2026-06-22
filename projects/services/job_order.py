@@ -19,13 +19,20 @@ def rename_job_no(old_job_no: str, new_job_no: str) -> None:
     parent FK constraint is always satisfied during the cascade.
     """
     with transaction.atomic():
-        # Collect all descendants sorted by depth (shallowest first).
-        # Suffix always starts with a dash, e.g. "OLD-01", "OLD-01-02".
+        # Collect every descendant whose job_no is built on top of this one.
+        # Two suffix forms exist:
+        #   "-"  hierarchy children / allocations  -> "OLD-01", "OLD-01/P1"
+        #   "/"  production phase nodes            -> "OLD/P1"
+        # Both must be renamed so the job_no prefix keeps matching the new root.
+        from django.db.models import Q
         from projects.models import JobOrder
 
         descendants = list(
             JobOrder.objects
-            .filter(job_no__startswith=old_job_no + '-')
+            .filter(
+                Q(job_no__startswith=old_job_no + '-')
+                | Q(job_no__startswith=old_job_no + '/')
+            )
             .order_by('job_no')   # lexicographic == depth-order for this scheme
             .values_list('job_no', flat=True)
         )
