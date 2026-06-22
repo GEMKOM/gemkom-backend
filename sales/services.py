@@ -571,17 +571,46 @@ def record_approval_decision(
 # Offer → Job Order conversion
 # =============================================================================
 
-def _create_job_from_item(item: SalesOfferItem, parent_job, children_map: dict, offer: SalesOffer, user, incoterms: str, file_ids: list, job_by_item_id: dict = None) -> JobOrder:
+class _JobNoAllocator:
+    """
+    Allocates job numbers entirely in memory after a single locking DB query.
+
+    All jobs created during a single conversion are new, so child sequences
+    always start at 1 for any newly created parent.  The only sequence that
+    needs to be read from the DB is the root sequence (to avoid collisions
+    with jobs from previous conversions of other offers for the same customer).
+    """
+
+    def __init__(self, customer_code: str, initial_root_seq: int):
+        self._customer_code = customer_code
+        self._next_root = initial_root_seq
+        self._child_seqs: dict = {}
+
+    def allocate(self, parent_job_no: str | None = None) -> str:
+        if parent_job_no:
+            seq = self._child_seqs.get(parent_job_no, 1)
+            self._child_seqs[parent_job_no] = seq + 1
+            return f'{parent_job_no}-{seq:02d}'
+        seq = self._next_root
+        self._next_root += 1
+        return f'{self._customer_code}-{seq:02d}'
+
+
+def _create_job_from_item(item: SalesOfferItem, parent_job, children_map: dict, offer: SalesOffer, user, incoterms: str, file_ids: list, job_by_item_id: dict = None, allocator: _JobNoAllocator = None) -> JobOrder:
     """
     Recursively create a JobOrder for the given SalesOfferItem.
     children_map: {item.id -> [child SalesOfferItem, ...]}
     file_ids: SalesOfferFile PKs to attach (reference only) to root-level jobs.
     job_by_item_id: mutable dict populated with {item.id: job} as jobs are created.
+    allocator: in-memory job number allocator; falls back to generate_job_no if absent.
     """
     title = item.resolved_title or offer.title
 
     parent_job_no = parent_job.job_no if parent_job else None
-    job_no = generate_job_no(offer.customer.code, parent_job_no)
+    if allocator is not None:
+        job_no = allocator.allocate(parent_job_no)
+    else:
+        job_no = generate_job_no(offer.customer.code, parent_job_no)
 
     job = JobOrder.objects.create(
         job_no=job_no,
@@ -608,7 +637,7 @@ def _create_job_from_item(item: SalesOfferItem, parent_job, children_map: dict, 
 
     # Recurse into template-driven children (keyed on item.id)
     for child_item in sorted(children_map.get(item.id, []), key=lambda i: i.sequence):
-        _create_job_from_item(child_item, job, children_map, offer, user, incoterms, file_ids, job_by_item_id)
+        _create_job_from_item(child_item, job, children_map, offer, user, incoterms, file_ids, job_by_item_id, allocator)
 
     return job
 
@@ -704,6 +733,23 @@ def convert_offer_to_job_order(offer: SalesOffer, user, file_ids: list = None) -
 
     file_ids = file_ids or []
 
+    # Lock the root-job sequence for this customer once, then allocate all
+    # job numbers in memory — avoids 2 DB queries per job (exists + first).
+    last_root = (
+        JobOrder.objects
+        .select_for_update()
+        .filter(customer=offer.customer, parent__isnull=True)
+        .order_by('-created_at')
+        .first()
+    )
+    initial_root_seq = 1
+    if last_root:
+        try:
+            initial_root_seq = int(last_root.job_no.split('-')[-1]) + 1
+        except (ValueError, IndexError):
+            initial_root_seq = 1
+    allocator = _JobNoAllocator(offer.customer.code, initial_root_seq)
+
     # Split into template-driven items and explicit-parent items
     explicit_parent_items = [i for i in all_items if i.parent_id is not None]
     items = [i for i in all_items if i.parent_id is None]
@@ -752,7 +798,7 @@ def convert_offer_to_job_order(offer: SalesOffer, user, file_ids: list = None) -
     first_root_job = None
 
     if len(orphaned) > 1:
-        wrapper_job_no = generate_job_no(offer.customer.code, None)
+        wrapper_job_no = allocator.allocate()
         wrapper_job = JobOrder.objects.create(
             job_no=wrapper_job_no,
             title=offer.title,
@@ -770,16 +816,16 @@ def convert_offer_to_job_order(offer: SalesOffer, user, file_ids: list = None) -
         if file_ids:
             wrapper_job.offer_files.set(offer.files.filter(id__in=file_ids))
         for orphan_item in orphaned:
-            _create_job_from_item(orphan_item, wrapper_job, children_map, offer, user, incoterms, [], job_by_item_id)
+            _create_job_from_item(orphan_item, wrapper_job, children_map, offer, user, incoterms, [], job_by_item_id, allocator)
         first_root_job = wrapper_job
     else:
         for orphan_item in orphaned:
-            job = _create_job_from_item(orphan_item, None, children_map, offer, user, incoterms, file_ids, job_by_item_id)
+            job = _create_job_from_item(orphan_item, None, children_map, offer, user, incoterms, file_ids, job_by_item_id, allocator)
             if first_root_job is None:
                 first_root_job = job
 
     for root_item in roots:
-        job = _create_job_from_item(root_item, None, children_map, offer, user, incoterms, file_ids, job_by_item_id)
+        job = _create_job_from_item(root_item, None, children_map, offer, user, incoterms, file_ids, job_by_item_id, allocator)
         if first_root_job is None:
             first_root_job = job
 
@@ -788,11 +834,11 @@ def convert_offer_to_job_order(offer: SalesOffer, user, file_ids: list = None) -
         parent_job = job_by_item_id.get(ep_item.parent_id)
         if parent_job is None:
             # Parent item was not converted (edge case) → treat as orphan
-            job = _create_job_from_item(ep_item, None, children_map, offer, user, incoterms, file_ids, job_by_item_id)
+            job = _create_job_from_item(ep_item, None, children_map, offer, user, incoterms, file_ids, job_by_item_id, allocator)
             if first_root_job is None:
                 first_root_job = job
         else:
-            _create_job_from_item(ep_item, parent_job, children_map, offer, user, incoterms, [], job_by_item_id)
+            _create_job_from_item(ep_item, parent_job, children_map, offer, user, incoterms, [], job_by_item_id, allocator)
 
     # Update offer
     offer.status = 'converted'

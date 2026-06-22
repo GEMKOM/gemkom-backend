@@ -197,10 +197,10 @@ class SalesOfferItemSerializer(serializers.ModelSerializer):
         read_only_fields = ['offer', 'created_at']
 
     def get_children(self, obj):
-        return SalesOfferItemSerializer(
-            obj.children.select_related('template_node').order_by('sequence', 'id'),
-            many=True,
-        ).data
+        children = getattr(obj, '_children_cache', None)
+        if children is None:
+            children = obj.children.select_related('template_node').order_by('sequence', 'id')
+        return SalesOfferItemSerializer(children, many=True).data
 
 
 class SalesOfferItemCreateSerializer(serializers.ModelSerializer):

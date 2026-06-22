@@ -229,13 +229,15 @@ class SalesOffer(models.Model):
         """
         from decimal import Decimal
         total = Decimal('0.00')
+        all_items = list(self.items.all())  # uses prefetch cache when available
         if self.pricing_mode == 'flat':
-            for item in self.items.filter(parent__isnull=True):
-                if item.unit_price is not None:
+            for item in all_items:
+                if item.parent_id is None and item.unit_price is not None:
                     total += item.unit_price * item.quantity
-        else:  # leaf
-            for item in self.items.all():
-                if item.unit_price is not None and not item.children.exists():
+        else:  # leaf — items that have no children
+            parent_ids = {item.parent_id for item in all_items if item.parent_id is not None}
+            for item in all_items:
+                if item.id not in parent_ids and item.unit_price is not None:
                     total += item.unit_price * item.quantity
         total += self.shipping_price
         return total
@@ -343,8 +345,11 @@ class SalesOfferItem(models.Model):
                    (rolled up); if no children, returns unit_price × quantity.
         """
         from decimal import Decimal
-        if self.offer.pricing_mode == 'leaf':
-            children = list(self.children.all())
+        offer = getattr(self, '_offer_cache', None) or self.offer
+        if offer.pricing_mode == 'leaf':
+            children = getattr(self, '_children_cache', None)
+            if children is None:
+                children = list(self.children.all())
             if children:
                 total = Decimal('0.00')
                 for child in children:

@@ -1,6 +1,6 @@
 from django.utils import timezone
 from django.db import transaction
-from django.db.models import Exists, OuterRef, Prefetch, Max
+from django.db.models import Exists, OuterRef, Max
 from django.contrib.contenttypes.models import ContentType
 from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action
@@ -307,18 +307,26 @@ class SalesOfferViewSet(viewsets.ModelViewSet):
     # ------------------------------------------------------------------ items
 
     def _offer_items_root_queryset(self, offer):
-        children_qs = (
-            SalesOfferItem.objects
-            .select_related('template_node')
-            .order_by('sequence', 'id')
-        )
-        return (
+        """Load all items flat in one query and build the tree in Python.
+
+        Returning the root list avoids N+1: get_children and subtotal both
+        read from _children_cache / _offer_cache instead of hitting the DB.
+        """
+        flat = list(
             offer.items
             .select_related('template_node')
-            .prefetch_related(Prefetch('children', queryset=children_qs))
-            .filter(parent__isnull=True)
             .order_by('sequence', 'id')
         )
+        by_id = {item.id: item for item in flat}
+        for item in flat:
+            item._children_cache = []
+            item._offer_cache = offer
+        for item in flat:
+            if item.parent_id is not None:
+                parent = by_id.get(item.parent_id)
+                if parent is not None:
+                    parent._children_cache.append(item)
+        return [item for item in flat if item.parent_id is None]
 
     @action(detail=True, methods=['get'], url_path='items')
     def items(self, request, pk=None):
