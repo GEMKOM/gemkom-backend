@@ -117,13 +117,39 @@ class MachineFaultSerializer(serializers.ModelSerializer):
     # Readable helpers
     machine_name = serializers.CharField(source='machine.name', read_only=True)
     reported_by_username = serializers.CharField(source='reported_by.username', read_only=True)
+    reported_by_full_name = serializers.SerializerMethodField()
     resolved_by_username = serializers.CharField(source='resolved_by.username', read_only=True)
+    resolved_by_full_name = serializers.SerializerMethodField()
     assigned_to_username = serializers.CharField(source='assigned_to.username', read_only=True)
     is_resolved = serializers.SerializerMethodField()
     downtime_hours = serializers.FloatField(read_only=True)
+    resolution_duration_seconds = serializers.SerializerMethodField()
+    open_duration_seconds = serializers.SerializerMethodField()
+
+    def get_reported_by_full_name(self, obj):
+        if obj.reported_by:
+            return obj.reported_by.get_full_name() or obj.reported_by.username
+        return None
+
+    def get_resolved_by_full_name(self, obj):
+        if obj.resolved_by:
+            return obj.resolved_by.get_full_name() or obj.resolved_by.username
+        return None
 
     def get_is_resolved(self, obj):
         return bool(obj.resolved_at)
+
+    def get_resolution_duration_seconds(self, obj):
+        if obj.reported_at and obj.resolved_at:
+            return (obj.resolved_at - obj.reported_at).total_seconds()
+        return None
+
+    def get_open_duration_seconds(self, obj):
+        from django.utils import timezone
+        if obj.reported_at:
+            end = obj.resolved_at or timezone.now()
+            return (end - obj.reported_at).total_seconds()
+        return None
 
     class Meta:
         model = MachineFault
@@ -134,21 +160,28 @@ class MachineFaultSerializer(serializers.ModelSerializer):
             'asset_name', 'location',
 
             'description',
-            'reported_by', 'reported_by_username', 'reported_at',
+            'reported_by', 'reported_by_username', 'reported_by_full_name', 'reported_at',
 
             'is_breaking', 'is_maintenance',
 
             'assigned_to', 'assigned_to_username',
 
-            'resolved_at', 'resolved_by', 'resolved_by_username',
+            'resolved_at', 'resolved_by', 'resolved_by_username', 'resolved_by_full_name',
             'resolution_description',
 
             'is_resolved',
+            'resolution_duration_seconds',
+            'open_duration_seconds',
 
             # Machine downtime tracking
             'downtime_start_ms', 'downtime_end_ms', 'downtime_hours',
         ]
-        read_only_fields = ['id', 'reported_by', 'reported_at', 'is_resolved', 'downtime_start_ms', 'downtime_end_ms', 'downtime_hours']
+        read_only_fields = [
+            'id', 'reported_by', 'reported_at', 'is_resolved',
+            'downtime_start_ms', 'downtime_end_ms', 'downtime_hours',
+            'resolution_duration_seconds', 'open_duration_seconds',
+            'reported_by_full_name', 'resolved_by_full_name',
+        ]
 
     def validate(self, attrs):
         # If no machine, require at least an asset_name to avoid totally anonymous faults

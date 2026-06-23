@@ -28,6 +28,9 @@ class MachineFaultFilter(django_filters.FilterSet):
     area = django_filters.CharFilter(field_name='area', lookup_expr='iexact')
     machine_id = django_filters.NumberFilter(field_name='machine__id')  # Backwards-compat with your query param
     resolved_date = django_filters.DateFilter(field_name='resolved_at', lookup_expr='date')
+    resolved_by = django_filters.NumberFilter(field_name='resolved_by__id')
+    reported_after = django_filters.DateFilter(field_name='reported_at', lookup_expr='date__gte')
+    reported_before = django_filters.DateFilter(field_name='reported_at', lookup_expr='date__lte')
 
     def filter_unresolved(self, qs, name, value):
         if value:
@@ -43,4 +46,5 @@ class MachineFaultFilter(django_filters.FilterSet):
             'is_breaking', 'is_maintenance',
             # convenience
             'unassigned_machine', 'unresolved', 'area', 'machine_id', 'resolved_date',
+            'resolved_by', 'reported_after', 'reported_before',
         ]

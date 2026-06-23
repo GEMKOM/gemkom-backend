@@ -3,6 +3,8 @@ from django.urls import path
 
 from machines.reports.machine_faults_report import MachineFaultsSummaryReportView
 from machines.reports.user_resolution_report import UserResolutionReportView
+from machines.reports.staff_report import StaffActivityDetailView, StaffActivityReportView
+from machines.reports.monthly_metrics_report import MonthlyMetricsReportView
 from machines.views import (
     FaultTimerDetailView, FaultTimerListView, FaultTimerStartView, FaultTimerStopView,
     MachineCalendarView, MachineDetailView, MachineDropdownView,
@@ -27,4 +29,7 @@ urlpatterns = [
     path('calendar/', MachineCalendarView.as_view(), name='planning-calendar'),
     path('reports/faults/', MachineFaultsSummaryReportView.as_view(), name='machine-faults-report'),
     path('reports/user-resolution/', UserResolutionReportView.as_view(), name='user-resolution-report'),
+    path('reports/staff/', StaffActivityReportView.as_view(), name='staff-activity-report'),
+    path('reports/staff/<int:user_id>/', StaffActivityDetailView.as_view(), name='staff-activity-detail'),
+    path('reports/monthly-metrics/', MonthlyMetricsReportView.as_view(), name='monthly-metrics-report'),
 ]
