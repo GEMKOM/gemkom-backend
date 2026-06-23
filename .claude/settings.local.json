@@ -8,7 +8,9 @@
       "Bash(ls -d venv .venv env)",
       "Bash(ls Scripts/activate)",
       "Bash(ls */Scripts/python.exe)",
-      "Bash(venv/Scripts/python.exe manage.py shell -c ' *)"
+      "Bash(venv/Scripts/python.exe manage.py shell -c ' *)",
+      "Bash(venv/Scripts/python.exe -c \"import ast; ast.parse\\(open\\('machines/views.py',encoding='utf-8'\\).read\\(\\)\\); print\\('syntax OK'\\)\")",
+      "Bash(venv/Scripts/python.exe manage.py check)"
     ]
   }
 }
