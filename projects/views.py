@@ -960,6 +960,9 @@ class JobOrderViewSet(viewsets.ModelViewSet):
                     queryset=SalesOfferPriceRevision.objects.filter(is_current=True),
                     to_attr='_current_price_revisions',
                 ),
+                # Needed to pro-rate the offer's current_price across phase job
+                # orders (Option 3) without per-row queries in the serializer.
+                'source_offer__items',
             )
             .exclude(job_no='LEGACY-ARCHIVE')
             .exclude(cost_summary__cost_not_applicable=True)

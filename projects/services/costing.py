@@ -67,6 +67,62 @@ def _decimal_str(value: Decimal) -> str:
     return str(q2(value or Decimal('0.00')))
 
 
+def offer_phase_shares(offer) -> dict:
+    """
+    Map of ``offer_item_id -> Decimal`` fractional share of the offer's
+    line-item total, used to pro-rate the offer's current_price across the
+    phase job orders created from it (Option 3 pricing).
+
+    Root items' shares sum to 1.0; child items carry their own leaf share so a
+    child job order linked to a child item is pro-rated too. Returns ``{}`` when
+    the offer line total is zero or undeterminable (caller falls back to the
+    whole-offer price).
+
+    Uses ``offer.items.all()`` (one query, or the prefetch cache when available)
+    and primes each item's subtotal caches so no per-item DB hits occur.
+    """
+    items = list(offer.items.all())
+    children_by_parent: dict = {}
+    for it in items:
+        if it.parent_id is not None:
+            children_by_parent.setdefault(it.parent_id, []).append(it)
+    for it in items:
+        it._offer_cache = offer
+        it._children_cache = children_by_parent.get(it.id, [])
+
+    total = Decimal('0.00')
+    for it in items:
+        if it.parent_id is None:
+            sub = it.subtotal
+            if sub:
+                total += sub
+    if total <= 0:
+        return {}
+
+    shares: dict = {}
+    for it in items:
+        sub = it.subtotal
+        if sub is not None:
+            shares[it.id] = Decimal(sub) / total
+    return shares
+
+
+def phase_share_amount(job_order, offer_price_amount: Decimal):
+    """
+    Return job_order's pro-rated slice of ``offer_price_amount`` (in the offer's
+    currency) based on its linked phase item, or ``None`` when the job order is
+    not phase-linked or the share cannot be computed.
+    """
+    item_id = getattr(job_order, 'source_offer_item_id', None)
+    offer = getattr(job_order, 'source_offer', None)
+    if not item_id or offer is None:
+        return None
+    share = offer_phase_shares(offer).get(item_id)
+    if share is None:
+        return None
+    return offer_price_amount * share
+
+
 def _effective_selling_price(job_order, summary=None) -> dict:
     """
     Return the best known selling price converted to EUR.
@@ -80,9 +136,14 @@ def _effective_selling_price(job_order, summary=None) -> dict:
         offer_price = job_order.source_offer.current_price
 
     if offer_price:
-        original_amount = offer_price.amount
         original_currency = offer_price.currency
-        source = 'sales_offer_current_price'
+        phase_amount = phase_share_amount(job_order, offer_price.amount)
+        if phase_amount is not None:
+            original_amount = phase_amount
+            source = 'sales_offer_phase_share'
+        else:
+            original_amount = offer_price.amount
+            source = 'sales_offer_current_price'
     elif summary:
         original_amount = summary.selling_price
         original_currency = summary.selling_price_currency

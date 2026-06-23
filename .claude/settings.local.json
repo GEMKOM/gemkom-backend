@@ -4,7 +4,11 @@
       "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\ocalık\\\\OneDrive - GEMKOM\\\\Masaüstü\\\\Jira Timer\\\\gemkom-backend\" -Recurse -Filter \"*linear_cutting*\" -Directory)",
       "Bash(python -c \"import py_compile; py_compile.compile\\('linear_cutting/pdf.py', doraise=True\\); py_compile.compile\\('linear_cutting/optimizer.py', doraise=True\\); py_compile.compile\\('linear_cutting/models.py', doraise=True\\); print\\('All OK'\\)\")",
       "Bash(python manage.py makemigrations finance)",
-      "Bash(python manage.py check)"
+      "Bash(python manage.py check)",
+      "Bash(ls -d venv .venv env)",
+      "Bash(ls Scripts/activate)",
+      "Bash(ls */Scripts/python.exe)",
+      "Bash(venv/Scripts/python.exe manage.py shell -c ' *)"
     ]
   }
 }
