@@ -953,7 +953,7 @@ class JobOrderViewSet(viewsets.ModelViewSet):
 
         return (
             JobOrder.objects
-            .select_related('cost_summary', 'customer', 'source_offer')
+            .select_related('cost_summary', 'customer', 'source_offer', 'source_offer_item')
             .prefetch_related(
                 Prefetch(
                     'source_offer__price_revisions',
@@ -2600,6 +2600,13 @@ class JobOrderDepartmentTaskViewSet(viewsets.ModelViewSet):
 
     def destroy(self, request, *args, **kwargs):
         task = self.get_object()
+
+        # Only part-like subtasks are removable; main workflow tasks are core job data.
+        if task.parent_id is None or task.task_type not in ('part', None):
+            return Response(
+                {'status': 'error', 'message': 'Yalnızca "part" türündeki alt görevler silinebilir.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         # Block if there are regular subtasks
         if task.subtasks.exists():

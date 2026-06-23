@@ -107,7 +107,7 @@ def offer_phase_shares(offer) -> dict:
     return shares
 
 
-def phase_share_amount(job_order, offer_price_amount: Decimal):
+def phase_share_amount(job_order, offer_price_amount: Decimal, shares: dict | None = None):
     """
     Return job_order's pro-rated slice of ``offer_price_amount`` (in the offer's
     currency) based on its linked phase item, or ``None`` when the job order is
@@ -117,10 +117,21 @@ def phase_share_amount(job_order, offer_price_amount: Decimal):
     offer = getattr(job_order, 'source_offer', None)
     if not item_id or offer is None:
         return None
-    share = offer_phase_shares(offer).get(item_id)
+    share_map = shares if shares is not None else offer_phase_shares(offer)
+    share = share_map.get(item_id)
     if share is None:
         return None
-    return offer_price_amount * share
+
+    quantity_ratio = Decimal('1')
+    if getattr(job_order, 'source_job_order_id', None) and getattr(job_order, 'phase_number', None):
+        item = getattr(job_order, 'source_offer_item', None)
+        item_quantity = Decimal(str(getattr(item, 'quantity', 0) or 0))
+        job_quantity = Decimal(str(getattr(job_order, 'quantity', 0) or 0))
+        if item_quantity <= 0:
+            return None
+        quantity_ratio = job_quantity / item_quantity
+
+    return offer_price_amount * share * quantity_ratio
 
 
 def _effective_selling_price(job_order, summary=None) -> dict:
