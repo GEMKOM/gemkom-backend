@@ -25,6 +25,7 @@ phased masters: the root averages its phase nodes, each phase node averages its
 allocations.
 """
 from django.db import transaction
+from django.db.models import Sum
 
 from projects.models import JobOrder
 
@@ -69,6 +70,8 @@ def create_phases(source_root_job, phases, allocations, user=None):
     Returns:
         list of the created phase-node :class:`JobOrder` instances.
     """
+    source_root_job = JobOrder.objects.select_for_update().get(pk=source_root_job.pk)
+
     if source_root_job.is_phase_job:
         raise ValueError("Bir faz iş emri yeniden fazlara bölünemez.")
     if not phases:
@@ -97,16 +100,20 @@ def create_phases(source_root_job, phases, allocations, user=None):
     # --- Validate allocations against the product masters ---
     masters = {
         jo.job_no: jo
-        for jo in source_root_job.children.filter(source_job_order__isnull=True)
+        for jo in source_root_job.children.select_for_update().filter(source_job_order__isnull=True)
     }
 
     # phase_number -> {product_job_no: qty}
     plan = {pn: {} for pn in phase_numbers}
+    allocated_products = set()
     for alloc in allocations:
         product_no = alloc.get('product_job_no')
         master = masters.get(product_no)
         if master is None:
             raise ValueError(f"'{product_no}' bu iş emrinin bir ürün alt işi değil.")
+        if product_no in allocated_products:
+            raise ValueError(f"'{product_no}' için faz miktarları birden fazla kez gönderilemez.")
+        allocated_products.add(product_no)
 
         quantities = _normalize_quantities(alloc.get('quantities'), phase_number_set)
         if not quantities:
@@ -114,9 +121,11 @@ def create_phases(source_root_job, phases, allocations, user=None):
             continue
 
         total = sum(quantities.values())
-        if total != master.quantity:
+        existing_total = master.phase_mirrors.aggregate(total=Sum('quantity'))['total'] or 0
+        cumulative_total = existing_total + total
+        if cumulative_total != master.quantity:
             raise ValueError(
-                f"'{product_no}' için faz miktarları toplamı ({total}) "
+                f"'{product_no}' için faz miktarları toplamı ({cumulative_total}) "
                 f"ürün miktarına ({master.quantity}) eşit olmalıdır."
             )
         for pn, qty in quantities.items():
