@@ -2511,14 +2511,15 @@ class CostTableRowSerializer(serializers.Serializer):
 
     def get_selling_price(self, obj):
         from decimal import Decimal
+        from projects.services.costing import phase_share_amount
+
         offer_price = self._offer_price(obj)
         if offer_price is not None:
-            item_id = getattr(obj, 'source_offer_item_id', None)
             offer = getattr(obj, 'source_offer', None)
-            if item_id is not None and offer is not None:
-                share = self._phase_shares(offer).get(item_id)
-                if share is not None:
-                    return str((offer_price.amount * share).quantize(Decimal('0.01')))
+            shares = self._phase_shares(offer) if offer is not None else None
+            phase_amount = phase_share_amount(obj, offer_price.amount, shares=shares)
+            if phase_amount is not None:
+                return str(phase_amount.quantize(Decimal('0.01')))
             return str(offer_price.amount)
         s = self._summary(obj)
         return str(s.selling_price) if s else '0.00'
