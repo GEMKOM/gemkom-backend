@@ -34,6 +34,7 @@ class Notification(models.Model):
     SALES_CONSULTATION       = 'sales_consultation'
     SALES_CONVERTED          = 'sales_converted'
     SALES_ORDER_CONFIRMED    = 'sales_order_confirmed'
+    SALES_ORDER_CONFIRMED_NOTIFY = 'sales_order_confirmed_notify'
     # Subcontracting
     SUB_APPROVAL_REQUESTED   = 'sub_approval_requested'
     SUB_APPROVED             = 'sub_approved'
@@ -110,6 +111,7 @@ class Notification(models.Model):
         SALES_CONSULTATION:       CATEGORY_SALES,
         SALES_CONVERTED:          CATEGORY_SALES,
         SALES_ORDER_CONFIRMED:    CATEGORY_SALES,
+        SALES_ORDER_CONFIRMED_NOTIFY: CATEGORY_SALES,
         PLAN_APPROVAL_REQUESTED:  CATEGORY_PLANNING,
         PLAN_APPROVED:            CATEGORY_PLANNING,
         PLAN_REJECTED:            CATEGORY_PLANNING,
@@ -177,6 +179,7 @@ class Notification(models.Model):
         (SALES_CONSULTATION,       'Satış Danışma Talebi'),
         (SALES_CONVERTED,          'Teklif İş Emrine Dönüştürüldü'),
         (SALES_ORDER_CONFIRMED,    'Sipariş Onayı Bildirimi'),
+        (SALES_ORDER_CONFIRMED_NOTIFY, 'Müşteri Bilgisi'),
         (SUB_APPROVAL_REQUESTED,   'Taşeron Hakedişi Onay Bekliyor'),
         (SUB_APPROVED,             'Taşeron Hakedişi Onaylandı'),
         (SUB_REJECTED,             'Taşeron Hakedişi Reddedildi'),
@@ -282,6 +285,7 @@ class NotificationConfig(models.Model):
         Notification.SALES_CONVERTED,
         Notification.SALES_CONSULTATION,
         Notification.SALES_ORDER_CONFIRMED,
+        Notification.SALES_ORDER_CONFIRMED_NOTIFY,
         Notification.JOB_ON_HOLD,
         Notification.JOB_ON_HOLD_REVISION,
         Notification.JOB_RESUMED,

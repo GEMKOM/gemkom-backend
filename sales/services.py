@@ -209,12 +209,45 @@ def _notify_approvers_on_submission(offer: SalesOffer, wf):
         pass
 
 
+def _build_order_confirmed_context(offer: SalesOffer, root_job: JobOrder) -> dict:
+    customer = offer.customer
+    price_revision = offer.price_revisions.filter(is_current=True).first()
+    amount_str = ''
+    if price_revision:
+        amount_str = (
+            f"{price_revision.amount:,.2f} {price_revision.currency}"
+            .replace(',', 'X').replace('.', ',').replace('X', '.')
+        )
+
+    delivery_date = offer.delivery_date_requested.strftime('%d.%m.%Y') if offer.delivery_date_requested else ''
+    incoterms = offer.incoterms or ''
+    delivery_place = offer.delivery_place or ''
+    delivery_line = f"{incoterms} – {delivery_place}".strip(' –') if (incoterms or delivery_place) else ''
+    payment_terms = offer.payment_terms.name if offer.payment_terms_id else ''
+    order_no = offer.order_no or offer.customer_inquiry_ref or root_job.customer_order_no or ''
+
+    return {
+        'customer': customer.name,
+        'customer_id': customer.pk,
+        'job_no': root_job.job_no,
+        'order_no': order_no,
+        'delivery_line': delivery_line,
+        'delivery_date': delivery_date,
+        'amount': amount_str,
+        'payment_terms': payment_terms,
+        'contact_person': customer.contact_person or '',
+        'phone': customer.phone or '',
+        'address': customer.address or '',
+        'tax_id': customer.tax_id or '',
+        'tax_office': customer.tax_office or '',
+    }
+
+
 def _send_order_confirmed_notification(offer: SalesOffer, root_job: JobOrder):
     """
-    Fire SALES_ORDER_CONFIRMED notification when a job order is created from a sales offer.
-    Recipients are configured via the NotificationConfig routing (users/groups).
-    Sends in-app notifications to all routed users.
-    Sends one email (with proforma attachments) per routed user who has email enabled.
+    When a job order is created from a sales offer:
+    - SALES_ORDER_CONFIRMED: email (with proforma attachments) to routed users
+    - SALES_ORDER_CONFIRMED_NOTIFY: in-app notification with customer details + link
     """
     import logging
     import mimetypes
@@ -224,55 +257,42 @@ def _send_order_confirmed_notification(offer: SalesOffer, root_job: JobOrder):
 
     try:
         from django.contrib.auth.models import User as DjangoUser
-        route_users, link = get_route(Notification.SALES_ORDER_CONFIRMED)
-        route_ids = set(route_users.values_list('id', flat=True))
+        from notifications.service import _get_system_defaults
+        from notifications.models import NotificationPreference
 
-        # Always include the offer creator
+        ctx = _build_order_confirmed_context(offer, root_job)
+
+        # In-app notification (separate route + content)
+        notify_users, notify_link = get_route(Notification.SALES_ORDER_CONFIRMED_NOTIFY)
+        if notify_users.exists():
+            notify_title, notify_body, notify_rendered_link = render_notification(
+                Notification.SALES_ORDER_CONFIRMED_NOTIFY, ctx, notify_link,
+            )
+            bulk_notify(
+                users=notify_users,
+                notification_type=Notification.SALES_ORDER_CONFIRMED_NOTIFY,
+                title=notify_title,
+                body=notify_body,
+                link=notify_rendered_link,
+                source_type='job_order',
+                source_id=root_job.job_no,
+            )
+
+        # Email notification (separate route + formal letter content)
+        email_users, email_link = get_route(Notification.SALES_ORDER_CONFIRMED)
+        email_ids = set(email_users.values_list('id', flat=True))
         creator = offer.created_by
-        if creator and creator.is_active and creator.id not in route_ids:
-            route_ids.add(creator.id)
+        if creator and creator.is_active and creator.id not in email_ids:
+            email_ids.add(creator.id)
 
-        users = DjangoUser.objects.filter(id__in=route_ids, is_active=True)
+        users = DjangoUser.objects.filter(id__in=email_ids, is_active=True)
         if not users.exists():
             return
 
-        price_revision = offer.price_revisions.filter(is_current=True).first()
-        amount_str = ''
-        if price_revision:
-            amount_str = (
-                f"{price_revision.amount:,.2f} {price_revision.currency}"
-                .replace(',', 'X').replace('.', ',').replace('X', '.')
-            )
-
-        delivery_date = offer.delivery_date_requested.strftime('%d.%m.%Y') if offer.delivery_date_requested else ''
-        incoterms = offer.incoterms or ''
-        delivery_place = offer.delivery_place or ''
-        delivery_line = f"{incoterms} – {delivery_place}".strip(' –') if (incoterms or delivery_place) else ''
-        payment_terms = offer.payment_terms.name if offer.payment_terms_id else ''
-        order_no = offer.order_no or offer.customer_inquiry_ref or root_job.customer_order_no or ''
-
-        ctx = {
-            'customer':      offer.customer.name,
-            'job_no':        root_job.job_no,
-            'order_no':      order_no,
-            'delivery_line': delivery_line,
-            'delivery_date': delivery_date,
-            'amount':        amount_str,
-            'payment_terms': payment_terms,
-        }
-        title, body, rendered_link = render_notification(Notification.SALES_ORDER_CONFIRMED, ctx, link)
-
-        bulk_notify(
-            users=users,
-            notification_type=Notification.SALES_ORDER_CONFIRMED,
-            title=title,
-            body=body,
-            link=rendered_link,
-            source_type='job_order',
-            source_id=root_job.job_no,
+        email_title, email_body, _ = render_notification(
+            Notification.SALES_ORDER_CONFIRMED, ctx, email_link,
         )
 
-        # Build proforma attachments once, reuse for each recipient email
         attachments = []
         for offer_file in offer.files.filter(file_type='receipt'):
             try:
@@ -285,8 +305,6 @@ def _send_order_confirmed_notification(offer: SalesOffer, root_job: JobOrder):
                 logger.exception("Failed to read proforma file %s for order confirmation email", offer_file.pk)
 
         if attachments:
-            from notifications.service import _get_system_defaults
-            from notifications.models import NotificationPreference
             default_email, _ = _get_system_defaults(Notification.SALES_ORDER_CONFIRMED)
             user_list = list(users)
             pref_map = {
@@ -302,8 +320,8 @@ def _send_order_confirmed_notification(offer: SalesOffer, root_job: JobOrder):
                 send_email = pref_map.get(user.id, default_email)
                 if send_email:
                     send_email_with_attachments(
-                        subject=title,
-                        body=body,
+                        subject=email_title,
+                        body=email_body,
                         to=user.email,
                         attachments=attachments,
                     )

@@ -48,7 +48,8 @@ NOTIFICATION_DEFAULTS: dict[str, tuple[bool, bool]] = {
     Notification.SALES_REJECTED:           (True,  True),
     Notification.SALES_CONSULTATION:       (True,  True),
     Notification.SALES_CONVERTED:          (True,  True),
-    Notification.SALES_ORDER_CONFIRMED:    (True,  True),
+    Notification.SALES_ORDER_CONFIRMED:    (True,  False),
+    Notification.SALES_ORDER_CONFIRMED_NOTIFY: (False, True),
     Notification.SUB_APPROVAL_REQUESTED:   (True,  True),
     Notification.SUB_APPROVED:             (True,  True),
     Notification.SUB_REJECTED:             (True,  True),
@@ -349,6 +350,30 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
         ),
         'link': f'{_BASE_URL}/projects/project-tracking/?job_no={{job_no}}',
         'vars': ['customer', 'job_no', 'order_no', 'delivery_line', 'delivery_date', 'amount', 'payment_terms', 'link'],
+    },
+    Notification.SALES_ORDER_CONFIRMED_NOTIFY: {
+        'title': '[Müşteri Bilgisi] {customer} – {job_no}',
+        'body': (
+            '{customer} müşterisi için sipariş onaylandı.\n\n'
+            'Sipariş Numarası: {order_no}\n'
+            'İş Emri No: {job_no}\n'
+            'İletişim Kişisi: {contact_person}\n'
+            'Telefon: {phone}\n'
+            'Adres: {address}\n'
+            'Vergi Numarası: {tax_id}\n'
+            'Vergi Dairesi: {tax_office}\n'
+            'Teslim Şekli: {delivery_line}\n'
+            'Teslim Süresi: {delivery_date}\n'
+            'Sipariş Tutarı: {amount}\n'
+            'Ödeme Şekli: {payment_terms}\n\n'
+            '{link}'
+        ),
+        'link': f'{_BASE_URL}/sales/customers/?customer_id={{customer_id}}',
+        'vars': [
+            'customer', 'customer_id', 'job_no', 'order_no', 'contact_person', 'phone', 'address',
+            'tax_id', 'tax_office', 'delivery_line', 'delivery_date', 'amount',
+            'payment_terms', 'link',
+        ],
     },
     # ----- Procurement -----
     Notification.PR_APPROVAL_REQUESTED: {

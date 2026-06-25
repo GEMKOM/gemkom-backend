@@ -216,6 +216,7 @@ class SalesOfferViewSet(viewsets.ModelViewSet):
       POST   /sales/offers/{id}/decide/
       POST   /sales/offers/{id}/submit-customer/
       POST   /sales/offers/{id}/mark-won/
+      POST   /sales/offers/{id}/revert-won/
       POST   /sales/offers/{id}/mark-lost/
       POST   /sales/offers/{id}/cancel/
       POST   /sales/offers/{id}/convert/
@@ -839,6 +840,25 @@ class SalesOfferViewSet(viewsets.ModelViewSet):
             )
         offer.status = 'won'
         offer.won_at = timezone.now()
+        offer.save(update_fields=['status', 'won_at', 'updated_at'])
+        return Response(SalesOfferDetailSerializer(offer, context={'request': request}).data)
+
+    @action(detail=True, methods=['post'], url_path='revert-won')
+    def revert_won(self, request, pk=None):
+        """Undo mark-won; returns offer to submitted_customer or approved."""
+        offer = self.get_object()
+        if offer.status != 'won':
+            return Response(
+                {'detail': 'Sadece kazanıldı durumundaki teklifler geri alınabilir.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if offer.converted_job_order_id:
+            return Response(
+                {'detail': 'Bu teklif bir iş emrine dönüştürülmüştür, geri alınamaz.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        offer.won_at = None
+        offer.status = 'submitted_customer' if offer.submitted_to_customer_at else 'approved'
         offer.save(update_fields=['status', 'won_at', 'updated_at'])
         return Response(SalesOfferDetailSerializer(offer, context={'request': request}).data)
 

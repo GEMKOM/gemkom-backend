@@ -49,6 +49,17 @@ class CustomerListSerializer(serializers.ModelSerializer):
         ]
 
 
+class CustomerOfferSerializer(serializers.ModelSerializer):
+    """Customer fields embedded in sales offer responses."""
+    class Meta:
+        model = Customer
+        fields = [
+            'id', 'code', 'name', 'short_name',
+            'contact_person', 'phone', 'email', 'address',
+            'tax_id', 'tax_office',
+        ]
+
+
 class CustomerDetailSerializer(serializers.ModelSerializer):
     """Full serializer for detail views."""
     created_by_name = serializers.CharField(

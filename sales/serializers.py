@@ -1,6 +1,7 @@
 from rest_framework import serializers
 
 from projects.models import Customer
+from projects.serializers import CustomerOfferSerializer
 from procurement.models import PaymentTerms
 
 from .models import (
@@ -280,6 +281,7 @@ class SalesOfferJobOrderSummarySerializer(serializers.Serializer):
 class SalesOfferDetailSerializer(serializers.ModelSerializer):
     customer_name = serializers.CharField(source='customer.name', read_only=True)
     customer_code = serializers.CharField(source='customer.code', read_only=True)
+    customer_detail = CustomerOfferSerializer(source='customer', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     current_price = SalesOfferCurrentPriceSerializer(read_only=True)
     created_by_name = serializers.CharField(
@@ -298,7 +300,7 @@ class SalesOfferDetailSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'offer_no', 'title', 'description',
             'status', 'status_display',
-            'customer', 'customer_name', 'customer_code',
+            'customer', 'customer_name', 'customer_code', 'customer_detail',
             'customer_inquiry_ref', 'delivery_date_requested', 'offer_expiry_date',
             'incoterms', 'delivery_place', 'payment_terms', 'payment_terms_detail', 'order_no',
             'shipping_price', 'pricing_mode',
@@ -529,6 +531,7 @@ class SalesOfferApprovalPageSerializer(serializers.ModelSerializer):
     """
     customer_name = serializers.CharField(source='customer.name', read_only=True)
     customer_code = serializers.CharField(source='customer.code', read_only=True)
+    customer_detail = CustomerOfferSerializer(source='customer', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     pricing_mode_display = serializers.CharField(source='get_pricing_mode_display', read_only=True)
     payment_terms_detail = PaymentTermsMinimalSerializer(source='payment_terms', read_only=True)
@@ -549,7 +552,7 @@ class SalesOfferApprovalPageSerializer(serializers.ModelSerializer):
         fields = [
             # header
             'id', 'offer_no', 'title', 'description', 'status', 'status_display',
-            'customer', 'customer_name', 'customer_code',
+            'customer', 'customer_name', 'customer_code', 'customer_detail',
             'customer_inquiry_ref', 'delivery_date_requested', 'offer_expiry_date',
             'incoterms', 'delivery_place',
             'payment_terms', 'payment_terms_detail',
