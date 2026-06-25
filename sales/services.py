@@ -226,9 +226,17 @@ def _build_order_confirmed_context(offer: SalesOffer, root_job: JobOrder) -> dic
     payment_terms = offer.payment_terms.name if offer.payment_terms_id else ''
     order_no = offer.order_no or offer.customer_inquiry_ref or root_job.customer_order_no or ''
 
+    creator = offer.created_by
+    offer_creator = ''
+    offer_creator_email = ''
+    if creator:
+        offer_creator = creator.get_full_name() or creator.username or ''
+        offer_creator_email = getattr(creator, 'email', '') or ''
+
     return {
         'customer': customer.name,
         'customer_id': customer.pk,
+        'offer_no': offer.offer_no or '',
         'job_no': root_job.job_no,
         'order_no': order_no,
         'delivery_line': delivery_line,
@@ -240,6 +248,8 @@ def _build_order_confirmed_context(offer: SalesOffer, root_job: JobOrder) -> dic
         'address': customer.address or '',
         'tax_id': customer.tax_id or '',
         'tax_office': customer.tax_office or '',
+        'offer_creator': offer_creator,
+        'offer_creator_email': offer_creator_email,
     }
 
 

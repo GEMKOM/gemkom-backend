@@ -365,14 +365,17 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
             'Teslim Şekli: {delivery_line}\n'
             'Teslim Süresi: {delivery_date}\n'
             'Sipariş Tutarı: {amount}\n'
-            'Ödeme Şekli: {payment_terms}\n\n'
+            'Ödeme Şekli: {payment_terms}\n'
+            'Teklif No: {offer_no}\n'
+            'Teklifi Oluşturan: {offer_creator}\n'
+            'İletişim E-posta: {offer_creator_email}\n\n'
             '{link}'
         ),
         'link': f'{_BASE_URL}/sales/customers/?customer_id={{customer_id}}',
         'vars': [
-            'customer', 'customer_id', 'job_no', 'order_no', 'contact_person', 'phone', 'address',
+            'customer', 'customer_id', 'offer_no', 'job_no', 'order_no', 'contact_person', 'phone', 'address',
             'tax_id', 'tax_office', 'delivery_line', 'delivery_date', 'amount',
-            'payment_terms', 'link',
+            'payment_terms', 'offer_creator', 'offer_creator_email', 'link',
         ],
     },
     # ----- Procurement -----

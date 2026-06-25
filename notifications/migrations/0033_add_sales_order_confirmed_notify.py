@@ -78,14 +78,17 @@ def add_sales_order_confirmed_notify_config(apps, schema_editor):
                 'Teslim Şekli: {delivery_line}\n'
                 'Teslim Süresi: {delivery_date}\n'
                 'Sipariş Tutarı: {amount}\n'
-                'Ödeme Şekli: {payment_terms}\n\n'
+                'Ödeme Şekli: {payment_terms}\n'
+                'Teklif No: {offer_no}\n'
+                'Teklifi Oluşturan: {offer_creator}\n'
+                'İletişim E-posta: {offer_creator_email}\n\n'
                 '{link}'
             ),
             'link_template': 'https://ofis.gemcore.com.tr/sales/customers/?customer_id={customer_id}',
             'available_vars': [
-                'customer', 'customer_id', 'job_no', 'order_no', 'contact_person', 'phone', 'address',
+                'customer', 'customer_id', 'offer_no', 'job_no', 'order_no', 'contact_person', 'phone', 'address',
                 'tax_id', 'tax_office', 'delivery_line', 'delivery_date', 'amount',
-                'payment_terms', 'link',
+                'payment_terms', 'offer_creator', 'offer_creator_email', 'link',
             ],
             'default_send_email': False,
             'default_send_in_app': True,
