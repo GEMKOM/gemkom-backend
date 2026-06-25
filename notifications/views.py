@@ -311,20 +311,22 @@ class SendEmailTaskView(View):
             return JsonResponse({'error': 'Missing required fields'}, status=400)
 
         try:
-            send_plain_email(subject=subject, body=body, to=to)
-            if notification_id:
-                Notification.objects.filter(pk=notification_id).update(
-                    is_emailed=True,
-                    emailed_at=timezone.now(),
-                    email_error='',
-                )
+            sent = send_plain_email(subject=subject, body=body, to=to, raise_on_error=True)
         except Exception as exc:
-            logger.exception('SendEmailTaskView: failed to send email to %s', to)
+            logger.exception('SendEmailTaskView: SMTP failure for %s', to)
             if notification_id:
                 Notification.objects.filter(pk=notification_id).update(
                     email_error=str(exc),
                 )
-            # Return 5xx so Cloud Tasks retries the task
-            return JsonResponse({'error': str(exc)}, status=500)
+            # Return 200 so Cloud Tasks does NOT retry — a broken SMTP server
+            # will fail on every retry and saturate Cloud Run workers.
+            return JsonResponse({'error': str(exc)}, status=200)
+
+        if sent and notification_id:
+            Notification.objects.filter(pk=notification_id).update(
+                is_emailed=True,
+                emailed_at=timezone.now(),
+                email_error='',
+            )
 
         return HttpResponse(status=200)

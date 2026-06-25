@@ -5,7 +5,13 @@ from django.conf import settings
 
 logger = logging.getLogger(__name__)
 
-def send_plain_email(subject: str, body: str, to: list[str] | tuple[str, ...] | str):
+def send_plain_email(
+    subject: str,
+    body: str,
+    to: list[str] | tuple[str, ...] | str,
+    *,
+    raise_on_error: bool = False,
+) -> bool:
     if isinstance(to, str):
         to = [to]
     try:
@@ -16,8 +22,12 @@ def send_plain_email(subject: str, body: str, to: list[str] | tuple[str, ...] | 
             recipient_list=to,
             fail_silently=False,
         )
+        return True
     except Exception:
         logger.exception("Failed to send email to %s: %s", to, subject)
+        if raise_on_error:
+            raise
+        return False
 
 
 def send_email_with_attachments(

@@ -41,7 +41,7 @@ EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
 EMAIL_HOST = os.environ.get("EMAIL_HOST", "smtp.office365.com")
 EMAIL_PORT = int(os.environ.get("EMAIL_PORT", "587"))
 EMAIL_USE_TLS = os.environ.get("EMAIL_USE_TLS", "true").lower() == "true"
-EMAIL_TIMEOUT = 10  # seconds – prevent hanging if SMTP server is unresponsive
+EMAIL_TIMEOUT = 5   # seconds – prevent hanging if SMTP server is unresponsive
 
 # Authenticate with YOUR licensed user (who has "Gönder Olarak / Send As" on noreply@...)
 EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER")        # e.g. onat@yourcompany.com
