@@ -203,13 +203,14 @@ class SubcontractingAssignmentViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        if kaynak_task.task_type not in ('welding', 'painting'):
+        # Identify welding/paint parents by task_type OR legacy title (mirrors the CNC dual check).
+        is_welding = kaynak_task.task_type == 'welding' or kaynak_task.title == 'Kaynaklı İmalat'
+        is_paint = kaynak_task.task_type == 'painting' or kaynak_task.title == 'Boya'
+        if not (is_welding or is_paint):
             return Response(
                 {'detail': "Bu işlem yalnızca 'Kaynaklı İmalat' veya 'Boya' görevi üzerinde yapılabilir."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-
-        is_paint = kaynak_task.task_type == 'painting'
 
         if is_paint:
             if int(subcontractor_id) != PAINT_SUBCONTRACTOR_ID:

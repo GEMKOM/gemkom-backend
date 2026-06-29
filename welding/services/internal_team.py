@@ -20,10 +20,12 @@ def create_internal_team_assignment(
     Atomically create an 'internal_team' subtask under parent_task and link it to a Team.
 
     Validation:
-    - parent_task.task_type must be 'welding'
+    - parent_task must be welding (task_type == 'welding' or title == 'Kaynaklı İmalat')
     - parent_task must be a main task (parent_id is None)
     """
-    if parent_task.task_type != 'welding':
+    # Identify welding parents by task_type OR legacy title (mirrors the CNC dual check).
+    is_welding = parent_task.task_type == 'welding' or parent_task.title == 'Kaynaklı İmalat'
+    if not is_welding:
         raise ValueError("Yalnızca 'Kaynaklı İmalat' görevi altına atama yapılabilir.")
     if parent_task.parent_id is not None:
         raise ValueError("Dahili takım ataması yalnızca ana göreve yapılabilir, alt göreve değil.")

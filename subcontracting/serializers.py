@@ -190,7 +190,10 @@ class SubcontractingAssignmentSerializer(serializers.ModelSerializer):
                 "Taşeron ataması yalnızca alt görevlere yapılabilir, ana göreve yapılamaz."
             )
         parent = dept_task.parent
-        if parent.task_type not in ('welding', 'painting'):
+        # Identify welding/paint parents by task_type OR legacy title (mirrors the CNC dual check).
+        parent_is_welding = parent.task_type == 'welding' or parent.title == 'Kaynaklı İmalat'
+        parent_is_paint = parent.task_type == 'painting' or parent.title == 'Boya'
+        if not (parent_is_welding or parent_is_paint):
             raise serializers.ValidationError(
                 "Taşeron ataması yalnızca 'Kaynaklı İmalat' veya 'Boya' alt görevi altındaki görevlere yapılabilir."
             )
