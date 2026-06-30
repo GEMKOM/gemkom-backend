@@ -14,7 +14,7 @@ from .models import (
 class ApprovalStageInline(admin.TabularInline):
     model = ApprovalStage
     extra = 0
-    fields = ("order", "name", "required_approvals", "approver_users", "climb_levels", "role_department_code")
+    fields = ("order", "name", "required_approvals", "approver_users", "climb_levels", "role_user_group")
     filter_horizontal = ("approver_users",)
     ordering = ("order",)
 

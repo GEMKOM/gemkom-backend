@@ -22,7 +22,7 @@ def resolve_approvers_for_stage(stage, requester) -> list[int]:
       1. stage.approver_users (static — directors, explicit assignments)
       2. stage.role_user_group → all active members of that org group
       3. stage.climb_levels → walk requester's position chain N levels up
-      4. vacation_request stage 2 (HR) → users with manage_hr
+      4. HR stage 2 policies → users with manage_hr
 
     Returns a deduplicated list of user IDs, preserving insertion order.
     """
@@ -45,10 +45,10 @@ def resolve_approvers_for_stage(stage, requester) -> list[int]:
             chain_ids = resolve_chain_approvers(position, stage.climb_levels)
             user_ids += chain_ids
 
-    elif (
-        stage.order == 2
-        and getattr(stage.policy, "subject_type", None) == "vacation_request"
-    ):
+    elif stage.order == 2 and getattr(stage.policy, "subject_type", None) in {
+        "vacation_request",
+        "overtime_request",
+    }:
         user_ids += _manage_hr_user_ids()
 
     return list(dict.fromkeys(user_ids))
