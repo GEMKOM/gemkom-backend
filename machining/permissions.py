@@ -15,5 +15,11 @@ class IsMachiningAdmin(BasePermission):
         return user_has_role_perm(request.user, 'machining_admin')
 
 
+class CanViewMachiningPerformanceReport(BasePermission):
+    """Access to the user performance report (/machining/reports/performance/)."""
+    def has_permission(self, request, view):
+        return user_has_role_perm(request.user, 'view_machining_performance_report')
+
+
 class MachiningProtectedView(APIView):
     permission_classes = [IsAuthenticated]

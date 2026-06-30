@@ -18,6 +18,7 @@ from tasks.views import (
     GenericTimerStartView,
     GenericTimerStopView,
 )
+from machining.permissions import CanViewMachiningPerformanceReport
 from users.permissions import can_see_job_costs
 
 
@@ -689,6 +690,300 @@ class DailyEfficiencyReportView(APIView):
         return Response({
             "date": report_date.isoformat(),
             "users": users_data,
+        }, status=200)
+
+
+class UserPerformanceReportView(APIView):
+    """
+    GET /machining/reports/performance/?start_date=2024-01-01&end_date=2024-01-31[&user_ids=1,2,3]
+
+    Returns aggregate performance metrics for each machining user over the given date range.
+
+    Query params:
+      start_date — period start (YYYY-MM-DD), required
+      end_date   — period end   (YYYY-MM-DD), required
+      user_ids   — comma-separated user IDs to restrict results (optional)
+
+    Response shape:
+    {
+      "start_date": "2024-01-01",
+      "end_date": "2024-01-31",
+      "period_days": 31,
+      "summary": {
+        "total_users": 5,
+        "total_hours": 900.0,
+        "avg_efficiency": 92.0,
+        "tasks_completed": 75,
+        "total_tasks_worked": 120,
+        "on_time_rate": 78.0
+      },
+      "users": [
+        {
+          "user_id": 1,
+          "username": "john",
+          "first_name": "John",
+          "last_name": "Doe",
+          "total_hours": 180.5,
+          "avg_daily_hours": 8.2,
+          "tasks_worked": 20,
+          "tasks_completed": 15,
+          "avg_efficiency": 95.2,
+          "on_time_rate": 80.0,
+          "tasks": [
+            {
+              "task_key": "TI-001",
+              "task_name": "Task 1",
+              "job_no": "J-100",
+              "machine_name": "Doosan DBC130L II",
+              "hours_in_period": 8.5,
+              "estimated_hours": 14.0,
+              "total_hours_spent": 16.0,
+              "efficiency": 87.5,
+              "completed_in_period": true,
+              "on_time": true,
+              "deadline": "2024-01-15"
+            }
+          ]
+        }
+      ]
+    }
+    """
+    permission_classes = [IsAuthenticated, CanViewMachiningPerformanceReport]
+
+    def get(self, request):
+        from datetime import datetime, time
+        from collections import defaultdict
+        from django.contrib.auth.models import User
+        from tasks.models import Operation
+
+        # --- parse date range ---
+        start_str = request.query_params.get('start_date')
+        end_str = request.query_params.get('end_date')
+        if not start_str or not end_str:
+            return Response({"error": "start_date and end_date are required (YYYY-MM-DD)"}, status=400)
+        try:
+            start_date = datetime.strptime(start_str, '%Y-%m-%d').date()
+            end_date = datetime.strptime(end_str, '%Y-%m-%d').date()
+        except ValueError:
+            return Response({"error": "Invalid date format. Use YYYY-MM-DD"}, status=400)
+        if start_date > end_date:
+            return Response({"error": "start_date must be on or before end_date"}, status=400)
+
+        # --- optional user filter ---
+        user_ids_param = request.query_params.get('user_ids', '').strip()
+        filter_user_ids = None
+        if user_ids_param:
+            try:
+                filter_user_ids = [int(x) for x in user_ids_param.split(',') if x.strip()]
+            except ValueError:
+                return Response({"error": "Invalid user_ids format. Use comma-separated integers."}, status=400)
+
+        tz_business = _get_business_tz()
+        period_start_ms = int(datetime.combine(start_date, time(0, 0), tz_business).timestamp() * 1000)
+        period_end_ms = int(datetime.combine(end_date, time(23, 59, 59), tz_business).timestamp() * 1000)
+        period_days = (end_date - start_date).days + 1
+
+        # --- fetch finished timers in range from machining users ---
+        timers_qs = (
+            Timer.objects
+            .select_related('user', 'machine_fk')
+            .prefetch_related('issue_key')
+            .filter(
+                start_time__gte=period_start_ms,
+                start_time__lte=period_end_ms,
+                finish_time__isnull=False,
+                user__user_permissions__codename='access_machining_tasks',
+            )
+            .distinct()
+            .order_by('user_id', 'start_time')
+        )
+        if filter_user_ids:
+            timers_qs = timers_qs.filter(user_id__in=filter_user_ids)
+
+        # user_id → task_key → accumulated data
+        user_task_data = defaultdict(lambda: defaultdict(lambda: {
+            'duration_ms': 0,
+            'machine_name': None,
+        }))
+        task_keys_set = set()
+
+        for timer in timers_qs:
+            if timer.finish_time <= timer.start_time:
+                continue
+            task = timer.issue_key
+            if not task:
+                continue
+            task_key = getattr(task, 'key', None)
+            if not task_key:
+                continue
+            task_keys_set.add(task_key)
+            entry = user_task_data[timer.user_id][task_key]
+            entry['duration_ms'] += timer.finish_time - timer.start_time
+            if entry['machine_name'] is None and timer.machine_fk:
+                entry['machine_name'] = timer.machine_fk.name
+
+        # --- bulk-fetch operation metadata ---
+        task_info_map = {}
+        if task_keys_set:
+            for op in (
+                Operation.objects
+                .filter(key__in=task_keys_set)
+                .prefetch_related('timers')
+                .select_related('part')
+            ):
+                # total hours across all time (for efficiency denominator)
+                total_ms = sum(
+                    (t.finish_time - t.start_time)
+                    for t in op.timers.exclude(finish_time__isnull=True)
+                    if t.start_time and t.finish_time and t.finish_time > t.start_time
+                )
+                total_hours = round(total_ms / 3_600_000, 2)
+
+                completed_in_period = (
+                    op.completion_date is not None
+                    and period_start_ms <= op.completion_date <= period_end_ms
+                )
+
+                on_time = None
+                if completed_in_period and op.finish_time and op.completion_date:
+                    deadline_ms = int(
+                        datetime.combine(op.finish_time, time(23, 59, 59), tz_business).timestamp() * 1000
+                    )
+                    on_time = op.completion_date <= deadline_ms
+
+                task_info_map[op.key] = {
+                    'name': op.name,
+                    'job_no': op.part.job_no if op.part else None,
+                    'estimated_hours': float(op.estimated_hours) if op.estimated_hours else None,
+                    'total_hours_spent': total_hours,
+                    'completed_in_period': completed_in_period,
+                    'on_time': on_time,
+                    'deadline': op.finish_time.isoformat() if op.finish_time else None,
+                }
+
+        # --- resolve User objects ---
+        users_by_id = {
+            u.id: u
+            for u in User.objects
+            .filter(
+                id__in=list(user_task_data.keys()),
+                user_permissions__codename='access_machining_tasks',
+            )
+            .select_related('profile')
+            .distinct()
+        }
+
+        # --- build per-user result ---
+        users_data = []
+        agg_hours = 0.0
+        agg_efficiency_vals = []
+        agg_tasks_completed = 0
+        agg_tasks_worked = 0
+        agg_on_time_count = 0
+        agg_on_time_total = 0
+
+        for user_id, tasks_dict in user_task_data.items():
+            user = users_by_id.get(user_id)
+            if not user:
+                continue
+
+            tasks_list = []
+            user_ms = 0
+            user_eff_vals = []
+            user_completed = 0
+            user_on_time_count = 0
+            user_on_time_total = 0
+
+            for task_key, entry in tasks_dict.items():
+                info = task_info_map.get(task_key, {})
+                hours_in_period = round(entry['duration_ms'] / 3_600_000, 2)
+                user_ms += entry['duration_ms']
+
+                estimated = info.get('estimated_hours')
+                total_spent = info.get('total_hours_spent', 0.0)
+                completed = info.get('completed_in_period', False)
+                on_time = info.get('on_time')
+
+                efficiency = None
+                if estimated and total_spent and total_spent > 0:
+                    efficiency = round(estimated / total_spent * 100, 1)
+
+                if completed:
+                    user_completed += 1
+                    if efficiency is not None:
+                        user_eff_vals.append(efficiency)
+                    if on_time is not None:
+                        user_on_time_total += 1
+                        if on_time:
+                            user_on_time_count += 1
+
+                tasks_list.append({
+                    'task_key': task_key,
+                    'task_name': info.get('name'),
+                    'job_no': info.get('job_no'),
+                    'machine_name': entry['machine_name'],
+                    'hours_in_period': hours_in_period,
+                    'estimated_hours': estimated,
+                    'total_hours_spent': total_spent,
+                    'efficiency': efficiency,
+                    'completed_in_period': completed,
+                    'on_time': on_time,
+                    'deadline': info.get('deadline'),
+                })
+
+            tasks_list.sort(key=lambda x: x['task_key'])
+            user_total_hours = round(user_ms / 3_600_000, 2)
+            avg_daily = round(user_total_hours / period_days, 2) if period_days else 0.0
+            avg_eff = round(sum(user_eff_vals) / len(user_eff_vals), 1) if user_eff_vals else None
+            on_time_rate = (
+                round(user_on_time_count / user_on_time_total * 100, 1)
+                if user_on_time_total else None
+            )
+
+            agg_hours += user_total_hours
+            agg_efficiency_vals.extend(user_eff_vals)
+            agg_tasks_completed += user_completed
+            agg_tasks_worked += len(tasks_dict)
+            agg_on_time_count += user_on_time_count
+            agg_on_time_total += user_on_time_total
+
+            users_data.append({
+                'user_id': user.id,
+                'username': user.username,
+                'first_name': user.first_name or '',
+                'last_name': user.last_name or '',
+                'total_hours': user_total_hours,
+                'avg_daily_hours': avg_daily,
+                'tasks_worked': len(tasks_dict),
+                'tasks_completed': user_completed,
+                'avg_efficiency': avg_eff,
+                'on_time_rate': on_time_rate,
+                'tasks': tasks_list,
+            })
+
+        users_data.sort(key=lambda x: x['username'])
+
+        summary = {
+            'total_users': len(users_data),
+            'total_hours': round(agg_hours, 2),
+            'avg_efficiency': (
+                round(sum(agg_efficiency_vals) / len(agg_efficiency_vals), 1)
+                if agg_efficiency_vals else None
+            ),
+            'tasks_completed': agg_tasks_completed,
+            'total_tasks_worked': agg_tasks_worked,
+            'on_time_rate': (
+                round(agg_on_time_count / agg_on_time_total * 100, 1)
+                if agg_on_time_total else None
+            ),
+        }
+
+        return Response({
+            'start_date': start_date.isoformat(),
+            'end_date': end_date.isoformat(),
+            'period_days': period_days,
+            'summary': summary,
+            'users': users_data,
         }, status=200)
 
 

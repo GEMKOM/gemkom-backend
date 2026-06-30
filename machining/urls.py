@@ -1,6 +1,7 @@
 from django.urls import path
 from .views import (
     DailyEfficiencyReportView,
+    UserPerformanceReportView,
     UserReportView,
     UserTaskDetailView,
     JobHoursReportView,
@@ -36,4 +37,5 @@ urlpatterns = [
     path('reports/user-report/', UserReportView.as_view(), name='user-report'),
     path('reports/user-task-detail/', UserTaskDetailView.as_view(), name='user-task-detail'),
     path('reports/daily-efficiency/', DailyEfficiencyReportView.as_view(), name='daily-efficiency-report'),
+    path('reports/performance/', UserPerformanceReportView.as_view(), name='user-performance-report'),
 ]
