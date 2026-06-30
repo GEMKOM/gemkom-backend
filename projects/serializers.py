@@ -276,16 +276,16 @@ class JobOrderListSerializer(serializers.ModelSerializer):
         setattr(obj, cache_attr, result)
         return result
 
-    def _estimate_completion(self, pct_at_anchor, anchor_dt, weekly_rate):
+    def _estimate_completion(self, current_pct, weekly_rate):
         """
-        Estimate completion date anchored to the week-end snapshot so the value
-        is frozen for the week and doesn't drift day by day.
+        Estimate completion date from the current completion percentage and a weekly rate.
+        Anchors to now so the estimate reflects actual current progress.
         """
-        if weekly_rate is None or weekly_rate <= 0 or pct_at_anchor is None:
+        if weekly_rate is None or weekly_rate <= 0 or current_pct is None:
             return None
-        remaining = 100.0 - pct_at_anchor
+        remaining = 100.0 - current_pct
         weeks_remaining = remaining / weekly_rate
-        estimated_dt = anchor_dt + timedelta(weeks=weeks_remaining)
+        estimated_dt = timezone.now() + timedelta(weeks=weeks_remaining)
         return estimated_dt.date().isoformat()
 
     def get_last_week_progress(self, obj):
@@ -297,12 +297,12 @@ class JobOrderListSerializer(serializers.ModelSerializer):
         return weekly_avg
 
     def get_estimated_completion_by_last_week(self, obj):
-        last_week_delta, _, pct_at_end, week_end = self._get_progress_stats(obj)
-        return self._estimate_completion(pct_at_end, week_end, last_week_delta)
+        last_week_delta, _, _, _ = self._get_progress_stats(obj)
+        return self._estimate_completion(float(obj.completion_percentage), last_week_delta)
 
     def get_estimated_completion_by_avg(self, obj):
-        _, weekly_avg, pct_at_end, week_end = self._get_progress_stats(obj)
-        return self._estimate_completion(pct_at_end, week_end, weekly_avg)
+        _, weekly_avg, _, _ = self._get_progress_stats(obj)
+        return self._estimate_completion(float(obj.completion_percentage), weekly_avg)
 
 
 class JobOrderDepartmentTaskNestedSerializer(serializers.ModelSerializer):
