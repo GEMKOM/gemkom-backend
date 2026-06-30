@@ -24,7 +24,7 @@ class ApprovalStageSerializer(serializers.ModelSerializer):
         fields = [
             "id", "order", "name", "required_approvals",
             "approver_users", "approver_users_detail",
-            "climb_levels", "role_department_code",
+            "climb_levels", "role_user_group",
         ]
 
     def get_approver_users_detail(self, obj):
@@ -39,16 +39,15 @@ class ApprovalStageWriteSerializer(serializers.ModelSerializer):
         model = ApprovalStage
         fields = [
             "id", "order", "name", "required_approvals",
-            "approver_users", "climb_levels", "role_department_code",
+            "approver_users", "climb_levels", "role_user_group",
         ]
 
     def validate(self, attrs):
         climb = attrs.get("climb_levels", getattr(self.instance, "climb_levels", None))
-        dept = attrs.get("role_department_code", getattr(self.instance, "role_department_code", None))
-        if climb and dept:
+        group = attrs.get("role_user_group", getattr(self.instance, "role_user_group", None))
+        if climb and group:
             raise serializers.ValidationError(
-                "climb_levels and role_department_code are mutually exclusive; "
-                "role_department_code takes priority when both are set."
+                "climb_levels and role_user_group are mutually exclusive."
             )
         return attrs
 

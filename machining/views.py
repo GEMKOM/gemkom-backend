@@ -792,6 +792,7 @@ class UserPerformanceReportView(APIView):
                 start_time__gte=period_start_ms,
                 start_time__lte=period_end_ms,
                 finish_time__isnull=False,
+                user__is_active=True,
                 user__user_permissions__codename='access_machining_tasks',
             )
             .distinct()
@@ -845,11 +846,16 @@ class UserPerformanceReportView(APIView):
                 )
 
                 on_time = None
-                if completed_in_period and op.finish_time and op.completion_date:
-                    deadline_ms = int(
-                        datetime.combine(op.finish_time, time(23, 59, 59), tz_business).timestamp() * 1000
-                    )
-                    on_time = op.completion_date <= deadline_ms
+                if completed_in_period and op.completion_date:
+                    deadline_ms = None
+                    if op.finish_time:
+                        deadline_ms = int(
+                            datetime.combine(op.finish_time, time(23, 59, 59), tz_business).timestamp() * 1000
+                        )
+                    elif op.planned_end_ms:
+                        deadline_ms = op.planned_end_ms
+                    if deadline_ms:
+                        on_time = op.completion_date <= deadline_ms
 
                 task_info_map[op.key] = {
                     'name': op.name,
@@ -867,6 +873,7 @@ class UserPerformanceReportView(APIView):
             for u in User.objects
             .filter(
                 id__in=list(user_task_data.keys()),
+                is_active=True,
                 user_permissions__codename='access_machining_tasks',
             )
             .select_related('profile')
