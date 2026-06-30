@@ -883,7 +883,8 @@ class UserPerformanceReportView(APIView):
         # --- build per-user result ---
         users_data = []
         agg_hours = 0.0
-        agg_efficiency_vals = []
+        agg_estimated_sum = 0.0
+        agg_spent_sum = 0.0
         agg_tasks_completed = 0
         agg_tasks_worked = 0
         agg_on_time_count = 0
@@ -896,7 +897,8 @@ class UserPerformanceReportView(APIView):
 
             tasks_list = []
             user_ms = 0
-            user_eff_vals = []
+            user_estimated_sum = 0.0
+            user_spent_sum = 0.0
             user_completed = 0
             user_on_time_count = 0
             user_on_time_total = 0
@@ -917,8 +919,9 @@ class UserPerformanceReportView(APIView):
 
                 if completed:
                     user_completed += 1
-                    if efficiency is not None:
-                        user_eff_vals.append(efficiency)
+                    if estimated and total_spent and total_spent > 0:
+                        user_estimated_sum += estimated
+                        user_spent_sum += total_spent
                     if on_time is not None:
                         user_on_time_total += 1
                         if on_time:
@@ -941,14 +944,18 @@ class UserPerformanceReportView(APIView):
             tasks_list.sort(key=lambda x: x['task_key'])
             user_total_hours = round(user_ms / 3_600_000, 2)
             avg_daily = round(user_total_hours / period_days, 2) if period_days else 0.0
-            avg_eff = round(sum(user_eff_vals) / len(user_eff_vals), 1) if user_eff_vals else None
+            avg_eff = (
+                round(user_estimated_sum / user_spent_sum * 100, 1)
+                if user_spent_sum > 0 else None
+            )
             on_time_rate = (
                 round(user_on_time_count / user_on_time_total * 100, 1)
                 if user_on_time_total else None
             )
 
             agg_hours += user_total_hours
-            agg_efficiency_vals.extend(user_eff_vals)
+            agg_estimated_sum += user_estimated_sum
+            agg_spent_sum += user_spent_sum
             agg_tasks_completed += user_completed
             agg_tasks_worked += len(tasks_dict)
             agg_on_time_count += user_on_time_count
@@ -974,8 +981,8 @@ class UserPerformanceReportView(APIView):
             'total_users': len(users_data),
             'total_hours': round(agg_hours, 2),
             'avg_efficiency': (
-                round(sum(agg_efficiency_vals) / len(agg_efficiency_vals), 1)
-                if agg_efficiency_vals else None
+                round(agg_estimated_sum / agg_spent_sum * 100, 1)
+                if agg_spent_sum > 0 else None
             ),
             'tasks_completed': agg_tasks_completed,
             'total_tasks_worked': agg_tasks_worked,
