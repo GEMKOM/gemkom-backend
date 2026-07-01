@@ -450,7 +450,7 @@ def build_job_cost_payload(job_order) -> dict:
             price_tier__isnull=False,
             is_retired=False,
         )
-        .exclude(department_task__task_type='painting')
+        .exclude(price_tier__tier_type='paint')
         .select_related('price_tier')
     )
     subcontractor_estimate = q2(sum(
@@ -478,8 +478,7 @@ def build_job_cost_payload(job_order) -> dict:
         paint_assignments = list(
             SubcontractingAssignment.objects.filter(
                 department_task__job_order_id=job_order.job_no,
-                department_task__task_type='painting',
-                price_tier__isnull=False,
+                price_tier__tier_type='paint',
                 allocated_weight_kg__gt=0,
                 is_retired=False,
             ).select_related('price_tier')
@@ -1002,7 +1001,7 @@ def recompute_job_cost_summary(job_no: str) -> None:
             allocated_weight_kg__gt=0,
             is_retired=False,
         )
-        .exclude(department_task__task_type='painting')
+        .exclude(price_tier__tier_type='paint')
         .select_related('price_tier', 'department_task')
     )
     subcontractor = q2(sum(
@@ -1032,7 +1031,7 @@ def recompute_job_cost_summary(job_no: str) -> None:
         SubcontractorStatementLine.objects
         .filter(
             assignment__department_task__job_order_id=job_no,
-            assignment__department_task__task_type='painting',
+            assignment__price_tier__tier_type='paint',
             statement__status='approved',
         )
         .select_related('statement', 'assignment')
@@ -1051,8 +1050,7 @@ def recompute_job_cost_summary(job_no: str) -> None:
         SubcontractingAssignment.objects
         .filter(
             department_task__job_order_id=job_no,
-            department_task__task_type='painting',
-            price_tier__isnull=False,
+            price_tier__tier_type='paint',
             allocated_weight_kg__gt=0,
             is_retired=False,
         )

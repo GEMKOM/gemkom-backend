@@ -209,6 +209,10 @@ def _notify_approvers_on_submission(offer: SalesOffer, wf):
         pass
 
 
+def _offer_customer_order_no(offer: SalesOffer) -> str:
+    return (offer.order_no or offer.customer_inquiry_ref or '').strip()
+
+
 def _build_order_confirmed_context(offer: SalesOffer, root_job: JobOrder) -> dict:
     customer = offer.customer
     price_revision = offer.price_revisions.filter(is_current=True).first()
@@ -224,7 +228,7 @@ def _build_order_confirmed_context(offer: SalesOffer, root_job: JobOrder) -> dic
     delivery_place = offer.delivery_place or ''
     delivery_line = f"{incoterms} – {delivery_place}".strip(' –') if (incoterms or delivery_place) else ''
     payment_terms = offer.payment_terms.name if offer.payment_terms_id else ''
-    order_no = offer.order_no or offer.customer_inquiry_ref or root_job.customer_order_no or ''
+    order_no = _offer_customer_order_no(offer) or root_job.customer_order_no or ''
 
     creator = offer.created_by
     offer_creator = ''
@@ -649,7 +653,7 @@ def _create_job_from_item(item: SalesOfferItem, parent_job, children_map: dict, 
         source_offer=offer,
         source_offer_item=item,
         description=offer.description if not parent_job else '',
-        customer_order_no=offer.customer_inquiry_ref or '',
+        customer_order_no=_offer_customer_order_no(offer),
         target_completion_date=offer.delivery_date_requested,
         incoterms=incoterms or '',
         status='draft',
@@ -835,7 +839,7 @@ def convert_offer_to_job_order(offer: SalesOffer, user, file_ids: list = None) -
             parent=None,
             source_offer=offer,
             description=offer.description,
-            customer_order_no=offer.customer_inquiry_ref or '',
+            customer_order_no=_offer_customer_order_no(offer),
             target_completion_date=offer.delivery_date_requested,
             incoterms=incoterms or '',
             status='draft',

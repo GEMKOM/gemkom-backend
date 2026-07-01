@@ -287,6 +287,23 @@ class JobOrder(models.Model):
             return self.source_offer_item.template_node
         return self.template_node
 
+    def get_effective_customer_order_no(self):
+        """Customer order number, falling back to the linked sales offer when empty."""
+        if self.customer_order_no:
+            return self.customer_order_no
+        offer = self.source_offer
+        if offer:
+            return (offer.order_no or offer.customer_inquiry_ref or '').strip()
+        parent = self.parent
+        while parent:
+            if parent.customer_order_no:
+                return parent.customer_order_no
+            if parent.source_offer_id:
+                offer = parent.source_offer
+                return (offer.order_no or offer.customer_inquiry_ref or '').strip()
+            parent = parent.parent
+        return ''
+
     def get_hierarchy_level(self):
         """Calculate depth: 254-01 = 0, 254-01-01 = 1, etc."""
         return self.job_no.count('-') - 1

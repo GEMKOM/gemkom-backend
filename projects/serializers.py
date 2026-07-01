@@ -340,6 +340,7 @@ class JobOrderDetailSerializer(serializers.ModelSerializer):
     customer_name = serializers.CharField(source='customer.name', read_only=True)
     customer_short_name = serializers.CharField(source='customer.short_name', read_only=True)
     customer_code = serializers.CharField(source='customer.code', read_only=True)
+    customer_order_no = serializers.SerializerMethodField()
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     priority_display = serializers.CharField(source='get_priority_display', read_only=True)
     created_by_name = serializers.CharField(
@@ -383,6 +384,9 @@ class JobOrderDetailSerializer(serializers.ModelSerializer):
             'started_at', 'completed_at', 'completion_percentage',
             'created_at', 'created_by', 'updated_at', 'completed_by'
         ]
+
+    def get_customer_order_no(self, obj):
+        return obj.get_effective_customer_order_no()
 
     def get_children(self, obj):
         from django.db.models import Count, Prefetch, Q
@@ -2137,7 +2141,7 @@ class JobOrderCostSummarySerializer(serializers.ModelSerializer):
                 allocated_weight_kg__gt=0,
                 is_retired=False,
             )
-            .exclude(department_task__task_type='painting')
+            .exclude(price_tier__tier_type='paint')
             .select_related('price_tier')
         )
         total = sum(
@@ -2156,8 +2160,7 @@ class JobOrderCostSummarySerializer(serializers.ModelSerializer):
             SubcontractingAssignment.objects
             .filter(
                 department_task__job_order_id=obj.job_order_id,
-                department_task__task_type='painting',
-                price_tier__isnull=False,
+                price_tier__tier_type='paint',
                 allocated_weight_kg__gt=0,
                 is_retired=False,
             )

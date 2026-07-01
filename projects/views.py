@@ -609,7 +609,7 @@ class JobOrderViewSet(viewsets.ModelViewSet):
             'customer': job_order.customer_id,
             'customer_name': job_order.customer.name if job_order.customer else None,
             'customer_code': job_order.customer.code if job_order.customer else None,
-            'customer_order_no': job_order.customer_order_no,
+            'customer_order_no': job_order.get_effective_customer_order_no(),
             'status': job_order.status,
             'status_display': job_order.get_status_display(),
             'priority': job_order.priority,
@@ -1268,7 +1268,7 @@ class JobOrderViewSet(viewsets.ModelViewSet):
                 Q(job_no=job_order.job_no) | Q(job_no__startswith=prefix),
                 statement__status__in=approved_statuses,
             )
-            .exclude(assignment__department_task__task_type='painting')
+            .exclude(assignment__price_tier__tier_type='paint')
             .select_related('statement', 'assignment__department_task')
             .order_by('statement__year', 'statement__month', 'job_no', 'id')
         )
