@@ -318,9 +318,8 @@ class SendEmailTaskView(View):
                 Notification.objects.filter(pk=notification_id).update(
                     email_error=str(exc),
                 )
-            # Return 200 so Cloud Tasks does NOT retry — a broken SMTP server
-            # will fail on every retry and saturate Cloud Run workers.
-            return JsonResponse({'error': str(exc)}, status=200)
+            # Return 5xx so Cloud Tasks retries transient SMTP failures.
+            return JsonResponse({'error': str(exc)}, status=503)
 
         if sent and notification_id:
             Notification.objects.filter(pk=notification_id).update(
