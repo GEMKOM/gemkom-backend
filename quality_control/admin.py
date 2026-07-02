@@ -2,7 +2,7 @@ from django.contrib import admin
 from django.utils.html import format_html
 from django.urls import reverse
 
-from .models import QCReview, NCR
+from .models import QCReview, NCR, QualityDocument
 
 
 # =============================================================================
@@ -172,3 +172,22 @@ class NCRAdmin(admin.ModelAdmin):
     def delete_queryset(self, request, queryset):
         for obj in queryset:
             obj.delete()
+
+
+# =============================================================================
+# QualityDocument admin
+# =============================================================================
+
+@admin.register(QualityDocument)
+class QualityDocumentAdmin(admin.ModelAdmin):
+    list_display = (
+        'title', 'document_type', 'document_number', 'revision',
+        'job_order', 'valid_until', 'is_active',
+        'uploaded_by', 'created_at',
+    )
+    list_filter = ('document_type', 'is_active')
+    search_fields = ('title', 'document_number', 'description', 'job_order__job_no')
+    date_hierarchy = 'created_at'
+    ordering = ('-created_at',)
+    readonly_fields = ('created_at', 'updated_at')
+    raw_id_fields = ('job_order', 'uploaded_by')

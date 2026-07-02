@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 
-from .models import QCReview, NCR, NCRFile
+from .models import QCReview, NCR, NCRFile, QualityDocument
 
 User = get_user_model()
 
@@ -353,6 +353,37 @@ class NCRFileSerializer(serializers.ModelSerializer):
             'uploaded_by', 'uploaded_by_name', 'uploaded_at',
         ]
         read_only_fields = ['ncr', 'uploaded_by', 'uploaded_at', 'url']
+
+    def get_url(self, obj):
+        try:
+            return obj.file.url
+        except Exception:
+            return None
+
+
+# =============================================================================
+# QualityDocument — quality paperwork repository ("Kalite Evrakları")
+# =============================================================================
+
+class QualityDocumentSerializer(serializers.ModelSerializer):
+    document_type_display = serializers.CharField(source='get_document_type_display', read_only=True)
+    uploaded_by_name = serializers.CharField(source='uploaded_by.get_full_name', read_only=True, default=None)
+    job_order_no = serializers.CharField(source='job_order.job_no', read_only=True, default=None)
+    url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = QualityDocument
+        fields = [
+            'id', 'title',
+            'document_type', 'document_type_display',
+            'document_number', 'revision', 'description',
+            'job_order', 'job_order_no',
+            'file', 'url',
+            'valid_until', 'is_active',
+            'uploaded_by', 'uploaded_by_name',
+            'created_at', 'updated_at',
+        ]
+        read_only_fields = ['uploaded_by', 'created_at', 'updated_at', 'url']
 
     def get_url(self, obj):
         try:

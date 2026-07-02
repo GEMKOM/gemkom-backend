@@ -4,13 +4,14 @@ from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter, OrderingFilter
 
-from .models import QCReview, NCR, NCRFile
+from .models import QCReview, NCR, NCRFile, QualityDocument
 from .serializers import (
     QCReviewListSerializer, QCReviewDetailSerializer,
     QCReviewSubmitSerializer, QCReviewBulkSubmitSerializer, QCDecisionSerializer,
     NCRListSerializer, NCRDetailSerializer,
     NCRCreateSerializer, NCRUpdateSerializer, NCRSubmitSerializer, NCRDecisionSerializer,
     NCRFileSerializer,
+    QualityDocumentSerializer,
 )
 from .approval_service import (
     submit_for_qc_review, bulk_submit_for_qc_review, decide_qc_review,
@@ -325,3 +326,38 @@ class NCRViewSet(viewsets.ModelViewSet):
         ncr_file.file.delete(save=False)
         ncr_file.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# =============================================================================
+# QualityDocument — "Kalite Evrakları"
+# =============================================================================
+
+class QualityDocumentViewSet(viewsets.ModelViewSet):
+    """
+    Quality document repository CRUD.
+
+    GET    /documents/            — list quality documents
+    POST   /documents/            — upload a document (multipart: file + metadata)
+    GET    /documents/{id}/       — document detail
+    PATCH  /documents/{id}/       — update metadata (or replace file)
+    DELETE /documents/{id}/       — delete document (also removes the stored file)
+    """
+    queryset = QualityDocument.objects.select_related(
+        'job_order', 'uploaded_by',
+    ).order_by('-created_at')
+    serializer_class = QualityDocumentSerializer
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    filterset_fields = {
+        'document_type': ['exact', 'in'],
+        'job_order': ['exact', 'isnull'],
+        'is_active': ['exact'],
+    }
+    search_fields = ['title', 'document_number', 'description', 'job_order__job_no']
+    ordering_fields = ['created_at', 'title', 'valid_until', 'document_type']
+
+    def perform_create(self, serializer):
+        serializer.save(uploaded_by=self.request.user)
+
+    def perform_destroy(self, instance):
+        instance.file.delete(save=False)
+        instance.delete()

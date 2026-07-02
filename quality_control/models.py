@@ -11,6 +11,11 @@ def ncr_file_upload_path(instance, filename):
     return f'ncr_files/{instance.ncr_id}/{sanitize_filename(filename)}'
 
 
+def quality_document_upload_path(instance, filename):
+    scope = instance.job_order_id or 'general'
+    return f'quality_documents/{scope}/{sanitize_filename(filename)}'
+
+
 # =============================================================================
 # QCReview — task-level quality control review
 # =============================================================================
@@ -332,3 +337,73 @@ class NCRFile(models.Model):
             import os
             self.name = os.path.basename(self.file.name)
         super().save(*args, **kwargs)
+
+
+# =============================================================================
+# QualityDocument — quality paperwork repository ("Kalite Evrakları")
+# =============================================================================
+
+class QualityDocument(models.Model):
+    DOCUMENT_TYPE_CHOICES = [
+        ('procedure',         'Prosedür'),
+        ('instruction',       'Talimat'),
+        ('form',              'Form'),
+        ('certificate',       'Sertifika'),
+        ('material_cert',     'Malzeme Sertifikası'),
+        ('inspection_plan',   'Kontrol Planı'),
+        ('inspection_report', 'Muayene Raporu'),
+        ('test_report',       'Test Raporu'),
+        ('wps',               'Kaynak Prosedürü (WPS)'),
+        ('drawing',           'Çizim'),
+        ('other',             'Diğer'),
+    ]
+
+    title = models.CharField(max_length=255)
+    document_type = models.CharField(
+        max_length=30,
+        choices=DOCUMENT_TYPE_CHOICES,
+        default='other',
+        db_index=True,
+    )
+    document_number = models.CharField(max_length=100, blank=True, db_index=True)
+    revision = models.CharField(max_length=50, blank=True)
+    description = models.TextField(blank=True)
+
+    # Optional link to a job order for traceability
+    job_order = models.ForeignKey(
+        JobOrder,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='quality_documents',
+    )
+
+    file = models.FileField(
+        upload_to=quality_document_upload_path,
+        storage=PrivateMediaStorage(),
+    )
+
+    valid_until = models.DateField(null=True, blank=True)
+    is_active = models.BooleanField(default=True, db_index=True)
+
+    uploaded_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='quality_documents_uploaded',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['document_type', 'is_active']),
+            models.Index(fields=['job_order', 'is_active']),
+        ]
+        verbose_name = 'Kalite Evrağı'
+        verbose_name_plural = 'Kalite Evrakları'
+
+    def __str__(self):
+        return f"{self.title} ({self.get_document_type_display()})"
