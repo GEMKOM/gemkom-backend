@@ -1,5 +1,6 @@
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
+from rest_framework.permissions import BasePermission, IsAuthenticated
 from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter, OrderingFilter
@@ -19,6 +20,15 @@ from .approval_service import (
     email_ncr_assigned_members,
     email_ncr_assigned_team,
 )
+from users.permissions import user_has_role_perm
+
+
+class CanAccessQualityDocuments(BasePermission):
+    def has_permission(self, request, view):
+        return user_has_role_perm(request.user, 'access_quality_control_documents')
+
+    def has_object_permission(self, request, view, obj):
+        return self.has_permission(request, view)
 
 
 def _user_in_group(user, group_name: str) -> bool:
@@ -346,6 +356,7 @@ class QualityDocumentViewSet(viewsets.ModelViewSet):
         'job_order', 'uploaded_by',
     ).order_by('-created_at')
     serializer_class = QualityDocumentSerializer
+    permission_classes = [IsAuthenticated, CanAccessQualityDocuments]
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     filterset_fields = {
         'document_type': ['exact', 'in'],
