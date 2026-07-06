@@ -210,7 +210,8 @@ def _notify_approvers_on_submission(offer: SalesOffer, wf):
 
 
 def _offer_customer_order_no(offer: SalesOffer) -> str:
-    return (offer.order_no or offer.customer_inquiry_ref or '').strip()
+    """Map sales offer order_no to job order customer_order_no."""
+    return (offer.order_no or '').strip()
 
 
 def _build_order_confirmed_context(offer: SalesOffer, root_job: JobOrder) -> dict:

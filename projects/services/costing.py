@@ -123,7 +123,7 @@ def phase_share_amount(job_order, offer_price_amount: Decimal):
     return offer_price_amount * share
 
 
-def _effective_selling_price(job_order, summary=None) -> dict:
+def _effective_selling_price(job_order, summary=None, ctx=None) -> dict:
     """
     Return the best known selling price converted to EUR.
 
@@ -133,7 +133,10 @@ def _effective_selling_price(job_order, summary=None) -> dict:
     today = date.today()
     offer_price = None
     if getattr(job_order, 'source_offer_id', None):
-        offer_price = job_order.source_offer.current_price
+        if ctx is not None:
+            offer_price = ctx['current_price_map'].get(job_order.source_offer_id)
+        else:
+            offer_price = job_order.source_offer.current_price
 
     if offer_price:
         original_currency = offer_price.currency
@@ -163,7 +166,7 @@ def _effective_selling_price(job_order, summary=None) -> dict:
     }
 
 
-def _planning_items_with_price_annotations(job_no: str):
+def _planning_items_with_price_annotations(job_nos: list[str]):
     from django.db.models import OuterRef, Prefetch, Subquery
     from planning.models import PlanningRequestItem
     from procurement.models import PurchaseOrderLine, PurchaseRequestItem, ItemOffer
@@ -185,7 +188,7 @@ def _planning_items_with_price_annotations(job_no: str):
 
     return (
         PlanningRequestItem.objects
-        .filter(job_no=job_no)
+        .filter(job_no__in=list(job_nos))
         .exclude(planning_request__status='cancelled')
         .select_related('item')
         .prefetch_related(
@@ -263,24 +266,33 @@ def _resolved_price_to_material_dict(pri, price, quantity, unit_price, amount) -
     return row
 
 
-def _estimate_material_cost(job_no: str) -> tuple[Decimal, list[dict]]:
+def _estimate_material_cost(job_no: str, *, procurement_lines=None, planning_items=None) -> tuple[Decimal, list[dict]]:
     """
     Estimate full material cost from planning items.
 
     Saved procurement lines take precedence over price-resolution for the same
     planning item. Orphan procurement lines (no planning link) are included too.
+
+    ``procurement_lines`` / ``planning_items`` can be supplied pre-fetched (see
+    ``_build_payload_context``) to avoid per-job queries; when omitted they are
+    queried for this job only.
     """
     from planning.price_utils import resolve_planning_item_price
     from projects.models import JobOrderProcurementLine
 
+    if procurement_lines is None:
+        procurement_lines = (
+            JobOrderProcurementLine.objects
+            .filter(job_order_id=job_no)
+            .select_related('item')
+            .order_by('order', 'id')
+        )
+    if planning_items is None:
+        planning_items = _planning_items_with_price_annotations([job_no])
+
     procurement_by_pri: dict[int, list] = {}
     orphan_procurement_lines = []
-    for pl in (
-        JobOrderProcurementLine.objects
-        .filter(job_order_id=job_no)
-        .select_related('item')
-        .order_by('order', 'id')
-    ):
+    for pl in procurement_lines:
         if pl.planning_request_item_id:
             procurement_by_pri.setdefault(pl.planning_request_item_id, []).append(pl)
         else:
@@ -289,7 +301,7 @@ def _estimate_material_cost(job_no: str) -> tuple[Decimal, list[dict]]:
     total = Decimal('0.00')
     lines = []
     covered_pri_ids: set[int] = set()
-    for pri in _planning_items_with_price_annotations(job_no):
+    for pri in planning_items:
         covered_pri_ids.add(pri.pk)
         saved_lines = procurement_by_pri.get(pri.pk)
         if saved_lines:
@@ -368,8 +380,19 @@ def build_estimated_material_breakdown(job_order) -> dict:
     }
 
 
-def _historical_paint_rate_eur_per_kg(exclude_job_no: str) -> Decimal:
+def _historical_paint_rate_eur_per_kg(exclude_job_no: str, ctx=None) -> Decimal:
     from projects.models import JobOrderCostSummary
+
+    if ctx is not None:
+        total_cost, total_weight = ctx['paint_hist_total']
+        own_cost, own_weight = ctx['paint_hist_by_job'].get(
+            exclude_job_no, (Decimal('0'), Decimal('0'))
+        )
+        total_cost -= own_cost
+        total_weight -= own_weight
+        if total_weight <= 0:
+            return Decimal('0.00')
+        return total_cost / total_weight
 
     rows = (
         JobOrderCostSummary.objects
@@ -391,21 +414,140 @@ def _historical_paint_rate_eur_per_kg(exclude_job_no: str) -> Decimal:
     return total_cost / total_weight
 
 
-def _child_cost_summary_map(direct_children) -> dict:
-    """JobOrderCostSummary keyed by job_no for direct children."""
+def _get_summary(ctx, job_no, job_order=None):
+    """Cost summary from the context map, creating the row if missing."""
     from projects.models import JobOrderCostSummary
 
-    if not direct_children:
-        return {}
-    child_nos = [c.job_no for c in direct_children]
-    result = {
+    summary = ctx['summaries'].get(job_no)
+    if summary is None:
+        if job_order is not None:
+            summary, _ = JobOrderCostSummary.objects.get_or_create(job_order=job_order)
+        else:
+            summary, _ = JobOrderCostSummary.objects.get_or_create(job_order_id=job_no)
+        ctx['summaries'][job_no] = summary
+    return summary
+
+
+def _build_payload_context(root_job_order) -> dict:
+    """
+    Batch-fetch everything build_job_cost_payload needs for a whole job order
+    tree in a fixed number of queries, so the per-child recursion does no
+    additional DB work (matters when the DB is remote: each query costs a
+    network round-trip).
+    """
+    from subcontracting.models import SubcontractingAssignment
+    from sales.models import SalesOfferPriceRevision
+    from projects.models import (
+        JobOrder, JobOrderCostSummary, JobOrderDepartmentTask, JobOrderProcurementLine,
+    )
+
+    # Subtree walk, one query per depth level
+    children_map: dict[str, list] = {}
+    nodes = [root_job_order]
+    frontier = [root_job_order.job_no]
+    all_nos = [root_job_order.job_no]
+    while frontier:
+        level = list(
+            JobOrder.objects
+            .filter(parent_id__in=frontier)
+            .select_related('source_offer')
+            .prefetch_related('source_offer__items')
+            .order_by('job_no')
+        )
+        if not level:
+            break
+        for child in level:
+            children_map.setdefault(child.parent_id, []).append(child)
+        frontier = [c.job_no for c in level]
+        all_nos.extend(frontier)
+        nodes.extend(level)
+
+    summaries = {
         s.job_order_id: s
-        for s in JobOrderCostSummary.objects.filter(job_order_id__in=child_nos)
+        for s in JobOrderCostSummary.objects.filter(job_order_id__in=all_nos)
     }
-    for child in direct_children:
-        if child.job_no not in result:
-            result[child.job_no], _ = JobOrderCostSummary.objects.get_or_create(job_order=child)
-    return result
+    for job_no in all_nos:
+        if job_no not in summaries:
+            summaries[job_no], _ = JobOrderCostSummary.objects.get_or_create(job_order_id=job_no)
+
+    non_paint_assignments: dict[str, list] = {}
+    paint_assignments: dict[str, list] = {}
+    assignments = (
+        SubcontractingAssignment.objects
+        .filter(
+            department_task__job_order_id__in=all_nos,
+            price_tier__isnull=False,
+            is_retired=False,
+        )
+        .select_related('price_tier', 'department_task')
+    )
+    for a in assignments:
+        job_no = a.department_task.job_order_id
+        if a.price_tier.tier_type == 'paint':
+            if a.allocated_weight_kg and a.allocated_weight_kg > 0:
+                paint_assignments.setdefault(job_no, []).append(a)
+        else:
+            non_paint_assignments.setdefault(job_no, []).append(a)
+
+    painting_jobs = set(
+        JobOrderDepartmentTask.objects
+        .filter(job_order_id__in=all_nos, task_type='painting')
+        .exclude(status='skipped')
+        .values_list('job_order_id', flat=True)
+    )
+
+    # Historical paint rate inputs: totals plus per-job contributions so each
+    # job can exclude itself (mirrors the per-call .exclude in the fallback).
+    hist_total_cost = Decimal('0.00')
+    hist_total_weight = Decimal('0.00')
+    hist_by_job: dict[str, tuple] = {}
+    hist_rows = (
+        JobOrderCostSummary.objects
+        .filter(
+            job_order__status='completed',
+            paint_cost__gt=0,
+            job_order__total_weight_kg__gt=0,
+        )
+        .values_list('job_order_id', 'paint_cost', 'job_order__total_weight_kg')
+    )
+    for job_no, paint_cost, weight in hist_rows:
+        cost = Decimal(str(paint_cost or 0))
+        wt = Decimal(str(weight or 0))
+        hist_total_cost += cost
+        hist_total_weight += wt
+        hist_by_job[job_no] = (cost, wt)
+
+    procurement_lines: dict[str, list] = {}
+    for pl in (
+        JobOrderProcurementLine.objects
+        .filter(job_order_id__in=all_nos)
+        .select_related('item')
+        .order_by('order', 'id')
+    ):
+        procurement_lines.setdefault(pl.job_order_id, []).append(pl)
+
+    planning_items: dict[str, list] = {}
+    for pri in _planning_items_with_price_annotations(all_nos):
+        planning_items.setdefault(pri.job_no, []).append(pri)
+
+    offer_ids = {n.source_offer_id for n in nodes if getattr(n, 'source_offer_id', None)}
+    current_price_map: dict[int, object] = {}
+    if offer_ids:
+        for rev in SalesOfferPriceRevision.objects.filter(offer_id__in=offer_ids, is_current=True):
+            current_price_map[rev.offer_id] = rev
+
+    return {
+        'children_map': children_map,
+        'summaries': summaries,
+        'non_paint_assignments': non_paint_assignments,
+        'paint_assignments': paint_assignments,
+        'painting_jobs': painting_jobs,
+        'paint_hist_total': (hist_total_cost, hist_total_weight),
+        'paint_hist_by_job': hist_by_job,
+        'procurement_lines': procurement_lines,
+        'planning_items': planning_items,
+        'current_price_map': current_price_map,
+    }
 
 
 def _own_rolled_up_component(parent_summary, field: str, child_summaries: list) -> Decimal:
@@ -419,40 +561,32 @@ def _own_rolled_up_component(parent_summary, field: str, child_summaries: list) 
     return q2(own)
 
 
-def build_job_cost_payload(job_order) -> dict:
+def build_job_cost_payload(job_order, _ctx=None) -> dict:
     """
     Build the endpoint payload for current actual cost and estimated full cost.
 
     Actual values come from JobOrderCostSummary. Estimate is calculated from the
     current system state and projected to 100% progress where appropriate.
-    """
-    from subcontracting.models import SubcontractingAssignment
-    from projects.models import JobOrder, JobOrderCostSummary, JobOrderDepartmentTask
 
-    summary, _ = JobOrderCostSummary.objects.get_or_create(job_order=job_order)
+    ``_ctx`` is the batched subtree context (internal); it is built once at the
+    root and threaded through the child recursion so children add no queries.
+    """
+    if _ctx is None:
+        _ctx = _build_payload_context(job_order)
+
+    job_no = job_order.job_no
+    summary = _get_summary(_ctx, job_no, job_order)
     summary.job_order = job_order
 
-    direct_children = list(
-        JobOrder.objects.filter(parent_id=job_order.job_no).select_related('source_offer')
-    )
-    child_summary_map = _child_cost_summary_map(direct_children)
-    child_summaries = [child_summary_map[c.job_no] for c in direct_children]
+    direct_children = _ctx['children_map'].get(job_no, [])
+    child_summaries = [_get_summary(_ctx, c.job_no, c) for c in direct_children]
 
     total_weight = Decimal(str(job_order.total_weight_kg or 0))
     completion = Decimal(str(job_order.completion_percentage or 0))
     progress_ratio = completion / Decimal('100') if completion > 0 else Decimal('0')
 
     today = date.today()
-    non_paint_assignments = list(
-        SubcontractingAssignment.objects
-        .filter(
-            department_task__job_order_id=job_order.job_no,
-            price_tier__isnull=False,
-            is_retired=False,
-        )
-        .exclude(price_tier__tier_type='paint')
-        .select_related('price_tier')
-    )
+    non_paint_assignments = _ctx['non_paint_assignments'].get(job_no, [])
     subcontractor_estimate = q2(sum(
         convert_to_eur(a.allocated_weight_kg * a.price_tier.price_per_kg, a.price_tier.currency, today)
         for a in non_paint_assignments
@@ -465,24 +599,14 @@ def build_job_cost_payload(job_order) -> dict:
         else own_labor
     )
 
-    has_painting = JobOrderDepartmentTask.objects.filter(
-        job_order_id=job_order.job_no,
-        task_type='painting',
-    ).exclude(status='skipped').exists()
-    historical_paint_rate = _historical_paint_rate_eur_per_kg(job_order.job_no)
+    has_painting = job_no in _ctx['painting_jobs']
+    historical_paint_rate = _historical_paint_rate_eur_per_kg(job_no, _ctx)
     paint_assignments = []
     if has_painting and total_weight > 0 and historical_paint_rate > 0:
         paint_estimate = q2(historical_paint_rate * total_weight)
         paint_source = 'completed_job_orders_avg_eur_per_kg'
     else:
-        paint_assignments = list(
-            SubcontractingAssignment.objects.filter(
-                department_task__job_order_id=job_order.job_no,
-                price_tier__tier_type='paint',
-                allocated_weight_kg__gt=0,
-                is_retired=False,
-            ).select_related('price_tier')
-        )
+        paint_assignments = _ctx['paint_assignments'].get(job_no, [])
         paint_estimate = q2(sum(
             convert_to_eur(a.allocated_weight_kg * a.price_tier.price_per_kg, a.price_tier.currency, today)
             for a in paint_assignments
@@ -505,7 +629,11 @@ def build_job_cost_payload(job_order) -> dict:
         general_expenses_rate * total_weight
         if (general_expenses_rate > 0 and total_weight > 0) else Decimal('0.00')
     )
-    material_estimate, material_lines = _estimate_material_cost(job_order.job_no)
+    material_estimate, material_lines = _estimate_material_cost(
+        job_no,
+        procurement_lines=_ctx['procurement_lines'].get(job_no, []),
+        planning_items=_ctx['planning_items'].get(job_no, []),
+    )
 
     estimated_components = {
         'subcontractor_cost': subcontractor_estimate,
@@ -524,7 +652,7 @@ def build_job_cost_payload(job_order) -> dict:
 
     child_payloads = []
     for child in direct_children:
-        child_payload = build_job_cost_payload(child)
+        child_payload = build_job_cost_payload(child, _ctx)
         child_payloads.append({
             'job_order': child.job_no,
             'estimated_total_cost': child_payload['estimated']['total_cost'],
@@ -554,7 +682,7 @@ def build_job_cost_payload(job_order) -> dict:
         'other_cost': summary.other_cost,
     }
 
-    selling_price = _effective_selling_price(job_order, summary)
+    selling_price = _effective_selling_price(job_order, summary, _ctx)
     return {
         'job_order': job_order.job_no,
         'total_weight_kg': str(total_weight) if job_order.total_weight_kg is not None else None,

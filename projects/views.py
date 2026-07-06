@@ -3708,15 +3708,19 @@ class JobOrderProcurementLineViewSet(viewsets.ModelViewSet):
                     item_description=line.get('item_description', ''),
                     quantity=line['quantity'],
                     unit_price=line['unit_price'],
-                    amount_eur=Decimal(str(line['quantity'])) * Decimal(str(line['unit_price'])),
+                    amount_eur=(Decimal(str(line['quantity'])) * Decimal(str(line['unit_price']))).quantize(Decimal('0.01')),
                     planning_request_item=line.get('planning_request_item'),
                     order=line.get('order', 0),
                 )
                 for line in lines_data
             ]
             created = JobOrderProcurementLine.objects.bulk_create(new_lines)
-            from projects.services.costing import recompute_job_cost_summary
-            recompute_job_cost_summary(job_order.job_no)
+
+        # Outside the atomic block: the lines commit (and release their locks)
+        # immediately, so a slow recompute can't stack concurrent submits behind
+        # row locks. recompute has its own per-level transactions.
+        from projects.services.costing import recompute_job_cost_summary
+        recompute_job_cost_summary(job_order.job_no)
 
         result_serializer = JobOrderProcurementLineSerializer(created, many=True)
         return Response(result_serializer.data, status=status.HTTP_201_CREATED)

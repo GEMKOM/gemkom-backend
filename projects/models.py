@@ -287,22 +287,44 @@ class JobOrder(models.Model):
             return self.source_offer_item.template_node
         return self.template_node
 
-    def get_effective_customer_order_no(self):
-        """Customer order number, falling back to the linked sales offer when empty."""
-        if self.customer_order_no:
-            return self.customer_order_no
+    def _resolve_offer_order_no(self):
         offer = self.source_offer
-        if offer:
-            return (offer.order_no or offer.customer_inquiry_ref or '').strip()
+        if offer and (offer.order_no or '').strip():
+            return (offer.order_no or '').strip()
         parent = self.parent
         while parent:
-            if parent.customer_order_no:
-                return parent.customer_order_no
             if parent.source_offer_id:
                 offer = parent.source_offer
-                return (offer.order_no or offer.customer_inquiry_ref or '').strip()
+                if offer and (offer.order_no or '').strip():
+                    return (offer.order_no or '').strip()
             parent = parent.parent
         return ''
+
+    def _resolve_source_offer(self):
+        if self.source_offer_id:
+            return self.source_offer
+        parent = self.parent
+        while parent:
+            if parent.source_offer_id:
+                return parent.source_offer
+            parent = parent.parent
+        return None
+
+    def get_effective_customer_order_no(self):
+        """Customer order number from the linked sales offer's order_no."""
+        offer_order_no = self._resolve_offer_order_no()
+        stored = (self.customer_order_no or '').strip()
+        if not stored:
+            return offer_order_no
+
+        # Legacy conversions stored customer_inquiry_ref instead of order_no.
+        offer = self._resolve_source_offer()
+        if offer:
+            inquiry_ref = (offer.customer_inquiry_ref or '').strip()
+            if inquiry_ref and stored == inquiry_ref and offer_order_no and stored != offer_order_no:
+                return offer_order_no
+
+        return stored
 
     def get_hierarchy_level(self):
         """Calculate depth: 254-01 = 0, 254-01-01 = 1, etc."""
@@ -2212,8 +2234,8 @@ class JobOrderProcurementLine(models.Model):
     item_description = models.CharField(max_length=500, blank=True)
     quantity = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('1.00'))
     unit_price = models.DecimalField(
-        max_digits=16, decimal_places=2, default=Decimal('0.00'),
-        help_text='Unit price in EUR'
+        max_digits=16, decimal_places=6, default=Decimal('0.00'),
+        help_text='Unit price in EUR (6 decimal places so line totals can match external sheets exactly)'
     )
     amount_eur = models.DecimalField(
         max_digits=16, decimal_places=2, default=Decimal('0.00'),

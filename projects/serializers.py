@@ -2262,7 +2262,7 @@ class ProcurementLineInputSerializer(serializers.Serializer):
     )
     item_description = serializers.CharField(max_length=500, default='', allow_blank=True)
     quantity = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=Decimal('0.01'))
-    unit_price = serializers.DecimalField(max_digits=16, decimal_places=2, min_value=Decimal('0'))
+    unit_price = serializers.DecimalField(max_digits=16, decimal_places=6, min_value=Decimal('0'))
     planning_request_item = serializers.PrimaryKeyRelatedField(
         queryset=PlanningRequestItem.objects.all(),
         required=False, allow_null=True
@@ -2300,7 +2300,7 @@ class ProcurementPreviewLineSerializer(serializers.Serializer):
     item_unit = serializers.CharField(allow_null=True)
     item_description = serializers.CharField(allow_blank=True)
     quantity = serializers.DecimalField(max_digits=12, decimal_places=2)
-    unit_price_eur = serializers.DecimalField(max_digits=16, decimal_places=2, allow_null=True)
+    unit_price_eur = serializers.DecimalField(max_digits=16, decimal_places=6, allow_null=True)
     original_unit_price = serializers.DecimalField(max_digits=16, decimal_places=2, allow_null=True)
     original_currency = serializers.CharField(allow_null=True)
     price_source = serializers.ChoiceField(
