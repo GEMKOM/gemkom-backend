@@ -19,7 +19,7 @@ from tasks.views import (
     GenericTimerStopView,
 )
 from rest_framework.permissions import IsAuthenticated
-from users.permissions import user_has_role_perm
+from users.permissions import IsAdmin, user_has_role_perm
 from django.db.models import Q
 
 from config.pagination import CustomPageNumberPagination
@@ -42,7 +42,8 @@ class MachineListCreateView(generics.ListCreateAPIView):
     ordering = ['id']
 
     def get_permissions(self):
-        # Any authenticated user may list and create machines.
+        if self.request.method == 'POST':
+            return [permissions.IsAuthenticated(), IsAdmin()]
         return [permissions.IsAuthenticated()]
 
     def get_serializer_class(self):
@@ -88,7 +89,8 @@ class MachineListCreateView(generics.ListCreateAPIView):
     
 class MachineDetailView(APIView):
     def get_permissions(self):
-        # Any authenticated user may view, update and delete machines.
+        if self.request.method in ['PUT', 'PATCH', 'DELETE']:
+            return [IsAuthenticated(), IsAdmin()]
         return [IsAuthenticated()]
 
     def get_object(self, pk):
