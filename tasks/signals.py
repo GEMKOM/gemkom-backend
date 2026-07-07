@@ -8,10 +8,13 @@ from tasks.models import TaskFile, Timer, Operation, Part, PartCostRecalcQueue
 @receiver(post_delete, sender=TaskFile)
 def delete_file_on_taskfile_delete(sender, instance, **kwargs):
     """
-    Deletes the actual file from storage when a TaskFile object is deleted.
+    Deletes the actual file from storage when a TaskFile object is deleted,
+    unless another TaskFile or FileAsset still references the same key.
     """
+    from core.file_refs import safe_delete_storage_file
+
     if instance.file:
-        instance.file.delete(save=False)
+        safe_delete_storage_file(instance.file, exclude_taskfile_id=instance.pk)
 
 
 @receiver([post_save, post_delete], sender=Timer)

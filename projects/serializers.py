@@ -2,6 +2,7 @@ from rest_framework import serializers
 from django.utils import timezone
 from decimal import Decimal
 from datetime import timedelta
+from zoneinfo import ZoneInfo
 from django.contrib.auth import get_user_model
 from .models import (
     Customer, JobOrder, JobOrderFile,
@@ -129,82 +130,92 @@ class JobOrderTargetDateRevisionSerializer(serializers.ModelSerializer):
         fields = ['id', 'previous_date', 'new_date', 'reason', 'changed_by', 'changed_by_name', 'changed_at']
 
 
-MEETING_CUTOFF_HOUR = 12  # Tuesday noon — after this, changes belong to the next week
+MEETING_CUTOFF_HOUR = 20  # 20:00 Turkey time — the daily snapshot boundary
+MEETING_TZ = ZoneInfo('Europe/Istanbul')  # boundaries are anchored to Turkey local time
+ROLLING_WINDOW_DAYS = 7  # "Son Hafta" = progress over the last completed 7 daily boundaries
 
 
-def _weekly_meeting_boundaries():
+def _meeting_now():
+    """Current time expressed in the meeting timezone (Turkey)."""
+    return timezone.now().astimezone(MEETING_TZ)
+
+
+def _meeting_cutoff(d):
     """
-    Return (week_start_dt, week_end_dt) for the last completed reporting week.
-
-    Weeks run Tuesday 12:00 → Tuesday 12:00. The reported delta is frozen
-    until the next Tuesday noon, at which point the window shifts forward by one week.
-
-    Example on Wed May 6:  window = Tue Apr 29 12:00 → Tue May 6 12:00  (frozen)
-    Example on Tue May 12 before noon: still Apr 29 → May 6 (not yet flipped)
-    Example on Tue May 12 after noon:  window = Tue May 6 12:00 → Tue May 13 12:00
+    Build the daily-cutoff datetime (20:00 Turkey time) for the given date `d`,
+    as a timezone-aware datetime in the meeting timezone.
     """
-    now = timezone.localtime(timezone.now())
-    today = now.date()
-    days_since_tue = (today.weekday() - 1) % 7  # weekday(): Mon=0, Tue=1
-    this_tuesday = today - timedelta(days=days_since_tue)
-    this_tuesday_noon = timezone.make_aware(
-        timezone.datetime(this_tuesday.year, this_tuesday.month, this_tuesday.day, MEETING_CUTOFF_HOUR, 0, 0)
-    )
-
-    # Always report the last *completed* week.
-    # Completed = the week whose end boundary (Tuesday noon) has already passed.
-    # On Tuesday after noon the window advances; Wed–Mon it stays on that same week.
-    if now >= this_tuesday_noon:
-        # This Tuesday noon has passed — that week is now closed
-        week_end = this_tuesday_noon
-    else:
-        # Haven't reached this Tuesday noon yet — last closed week ended one week ago
-        week_end = this_tuesday_noon - timedelta(weeks=1)
-
-    week_start = week_end - timedelta(weeks=1)
-    return week_start, week_end
+    return timezone.datetime(d.year, d.month, d.day, MEETING_CUTOFF_HOUR, 0, 0, tzinfo=MEETING_TZ)
 
 
-def _compute_weekly_deltas(logs):
+def _last_closed_cutoff(now=None):
     """
-    Given a list of JobOrderProgressLog ordered by logged_at (ascending),
-    return a list of deltas (floats) for every closed Tuesday-noon week
-    that had log activity.
+    Return the most recent daily 20:00-Turkey boundary that has already passed
+    (i.e. the end of the last completed day). Advances every day at 20:00.
+    """
+    now = now or _meeting_now()
+    today_cutoff = _meeting_cutoff(now.date())
+    if now >= today_cutoff:
+        return today_cutoff
+    return today_cutoff - timedelta(days=1)
+
+
+def _pct_before(logs, boundary):
+    """Latest logged completion % strictly before `boundary` (None if no such log)."""
+    return next((float(l.new_pct) for l in reversed(logs) if l.logged_at < boundary), None)
+
+
+def _last_week_boundaries():
+    """
+    Rolling last-7-days window aligned to the daily 20:00 boundary.
+
+    Returns (window_start_dt, window_end_dt) where window_end is the last closed
+    20:00 boundary and window_start is 7 days earlier. Because window_end tracks
+    `now`, the window rolls forward one day every day at 20:00.
+    """
+    window_end = _last_closed_cutoff()
+    window_start = window_end - timedelta(days=ROLLING_WINDOW_DAYS)
+    return window_start, window_end
+
+
+def _daily_series(logs):
+    """
+    Given JobOrderProgressLog rows ordered by logged_at (ascending), return one
+    entry per closed day (20:00→20:00 Turkey) since the first log, oldest first:
+        {'date': the day whose 20:00 snapshot closes the window, 'completion_pct': pct at that snapshot, 'delta': day's gain}
+    A window running Jul 5 20:00 → Jul 6 20:00 is labelled Jul 6 (the snapshot day).
+    Idle days (no change) appear with delta 0.0, since the last known pct carries forward.
     """
     if not logs:
         return []
 
-    first_log_date = logs[0].logged_at.date()
-    days_since_tue = (first_log_date.weekday() - 1) % 7
-    week_start_date = first_log_date - timedelta(days=days_since_tue)
+    day = logs[0].logged_at.astimezone(MEETING_TZ).date()
+    last_closed_cutoff = _last_closed_cutoff()
 
-    now = timezone.localtime(timezone.now())
-    today = now.date()
-    days_since_tue_now = (today.weekday() - 1) % 7
-    this_tuesday = today - timedelta(days=days_since_tue_now)
-    this_tuesday_noon = timezone.make_aware(
-        timezone.datetime(this_tuesday.year, this_tuesday.month, this_tuesday.day, MEETING_CUTOFF_HOUR, 0, 0)
-    )
-    last_closed_noon = this_tuesday_noon if now >= this_tuesday_noon else this_tuesday_noon - timedelta(weeks=1)
-
-    deltas = []
+    series = []
     while True:
-        week_start = timezone.make_aware(
-            timezone.datetime(week_start_date.year, week_start_date.month, week_start_date.day, MEETING_CUTOFF_HOUR, 0, 0)
-        )
-        week_end = week_start + timedelta(weeks=1)
-        if week_end > last_closed_noon:
+        day_start = _meeting_cutoff(day)
+        day_end = day_start + timedelta(days=1)
+        if day_end > last_closed_cutoff:
             break
 
-        pct_at_start = next((float(l.new_pct) for l in reversed(logs) if l.logged_at < week_start), None)
-        pct_at_end = next((float(l.new_pct) for l in reversed(logs) if l.logged_at < week_end), None)
-
+        pct_at_end = _pct_before(logs, day_end)
         if pct_at_end is not None:
-            deltas.append(round(pct_at_end - (pct_at_start or 0.0), 2))
+            pct_at_start = _pct_before(logs, day_start)
+            series.append({
+                'date': (day + timedelta(days=1)).isoformat(),
+                'completion_pct': pct_at_end,
+                'delta': round(pct_at_end - (pct_at_start or 0.0), 2),
+            })
 
-        week_start_date += timedelta(weeks=1)
+        day += timedelta(days=1)
 
-    return deltas
+    return series
+
+
+def _compute_daily_deltas(logs):
+    """Per-day deltas (floats) for every closed day since the first log."""
+    return [d['delta'] for d in _daily_series(logs)]
 
 
 class JobOrderListSerializer(serializers.ModelSerializer):
@@ -222,7 +233,7 @@ class JobOrderListSerializer(serializers.ModelSerializer):
     previous_target_date_revision = serializers.DateField(read_only=True, default=None)
     target_date_revisions_count = serializers.IntegerField(read_only=True)
     last_week_progress = serializers.SerializerMethodField()
-    weekly_avg_progress = serializers.SerializerMethodField()
+    daily_avg_progress = serializers.SerializerMethodField()
     estimated_completion_by_last_week = serializers.SerializerMethodField()
     estimated_completion_by_avg = serializers.SerializerMethodField()
     is_phase_job = serializers.BooleanField(read_only=True)
@@ -243,7 +254,7 @@ class JobOrderListSerializer(serializers.ModelSerializer):
             'phase_number', 'source_job_order', 'is_phase_job', 'has_phases',
             'created_at',
             'last_week_progress',
-            'weekly_avg_progress',
+            'daily_avg_progress',
             'estimated_completion_by_last_week',
             'estimated_completion_by_avg',
         ]
@@ -253,32 +264,34 @@ class JobOrderListSerializer(serializers.ModelSerializer):
 
     def _get_progress_stats(self, obj):
         """
-        Compute all weekly progress stats in one pass and cache on the instance
-        so the four SerializerMethodFields below don't repeat the work.
-        Returns (last_week_delta, weekly_avg, pct_at_week_end, week_end_dt).
+        Compute progress stats in one pass and cache on the instance so the four
+        SerializerMethodFields below don't repeat the work.
+        Returns (last_week_delta, daily_avg) where:
+          - last_week_delta: progress over the rolling last 7 days (20:00 boundary)
+          - daily_avg: average per-day progress since the first log
         """
         cache_attr = '_progress_stats_cache'
         if hasattr(obj, cache_attr):
             return getattr(obj, cache_attr)
 
         logs = list(getattr(obj, '_prefetched_progress_logs', None) or [])
-        week_start, week_end = _weekly_meeting_boundaries()
+        window_start, window_end = _last_week_boundaries()
 
-        pct_at_start = next((float(l.new_pct) for l in reversed(logs) if l.logged_at < week_start), None)
-        pct_at_end = next((float(l.new_pct) for l in reversed(logs) if l.logged_at < week_end), None)
+        pct_at_start = _pct_before(logs, window_start)
+        pct_at_end = _pct_before(logs, window_end)
 
         last_week_delta = round(pct_at_end - (pct_at_start or 0.0), 2) if pct_at_end is not None else None
 
-        deltas = _compute_weekly_deltas(logs)
-        weekly_avg = round(sum(deltas) / len(deltas), 2) if deltas else None
+        deltas = _compute_daily_deltas(logs)
+        daily_avg = round(sum(deltas) / len(deltas), 2) if deltas else None
 
-        result = (last_week_delta, weekly_avg, pct_at_end, week_end)
+        result = (last_week_delta, daily_avg)
         setattr(obj, cache_attr, result)
         return result
 
     def _estimate_completion(self, current_pct, weekly_rate):
         """
-        Estimate completion date from the current completion percentage and a weekly rate.
+        Estimate completion date from the current completion % and a per-7-days rate.
         Anchors to now so the estimate reflects actual current progress.
         """
         if weekly_rate is None or weekly_rate <= 0 or current_pct is None:
@@ -288,21 +301,32 @@ class JobOrderListSerializer(serializers.ModelSerializer):
         estimated_dt = timezone.now() + timedelta(weeks=weeks_remaining)
         return estimated_dt.date().isoformat()
 
+    def _estimate_completion_daily(self, current_pct, daily_rate):
+        """
+        Estimate completion date from the current completion % and a per-day rate.
+        """
+        if daily_rate is None or daily_rate <= 0 or current_pct is None:
+            return None
+        remaining = 100.0 - current_pct
+        days_remaining = remaining / daily_rate
+        estimated_dt = timezone.now() + timedelta(days=days_remaining)
+        return estimated_dt.date().isoformat()
+
     def get_last_week_progress(self, obj):
-        last_week_delta, _, _, _ = self._get_progress_stats(obj)
+        last_week_delta, _ = self._get_progress_stats(obj)
         return last_week_delta
 
-    def get_weekly_avg_progress(self, obj):
-        _, weekly_avg, _, _ = self._get_progress_stats(obj)
-        return weekly_avg
+    def get_daily_avg_progress(self, obj):
+        _, daily_avg = self._get_progress_stats(obj)
+        return daily_avg
 
     def get_estimated_completion_by_last_week(self, obj):
-        last_week_delta, _, _, _ = self._get_progress_stats(obj)
+        last_week_delta, _ = self._get_progress_stats(obj)
         return self._estimate_completion(float(obj.completion_percentage), last_week_delta)
 
     def get_estimated_completion_by_avg(self, obj):
-        _, weekly_avg, _, _ = self._get_progress_stats(obj)
-        return self._estimate_completion(float(obj.completion_percentage), weekly_avg)
+        _, daily_avg = self._get_progress_stats(obj)
+        return self._estimate_completion_daily(float(obj.completion_percentage), daily_avg)
 
 
 class JobOrderDepartmentTaskNestedSerializer(serializers.ModelSerializer):

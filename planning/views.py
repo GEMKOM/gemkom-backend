@@ -1309,9 +1309,9 @@ class FileAttachmentViewSet(viewsets.GenericViewSet):
 
         # Check if asset has any remaining attachments
         if asset and not asset.attachments.exists():
-            # Delete the actual file from storage
+            from core.file_refs import safe_delete_storage_file
             if asset.file:
-                asset.file.delete(save=False)
+                safe_delete_storage_file(asset.file, exclude_fileasset_id=asset.pk)
             # Delete the asset record
             asset.delete()
 

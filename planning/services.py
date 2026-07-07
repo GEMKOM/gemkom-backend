@@ -18,6 +18,130 @@ from approvals.resolvers import resolve_approvers_for_stage
 from notifications.service import notify, bulk_notify, render_notification
 from notifications.models import Notification
 from organization.services import get_dept_members
+from users.helpers import get_dept_code_for_user
+
+
+def create_file_asset_from_storage_key(user, storage_key, description=''):
+    """Create a FileAsset row that references an existing storage key (no byte copy)."""
+    from .models import FileAsset
+
+    asset = FileAsset(uploaded_by=user, description=description)
+    asset.file.name = storage_key
+    asset.save()
+    return asset
+
+
+def create_dr_file_assets_from_uploads(dr, user, uploaded_files):
+    """
+    Create FileAsset + FileAttachment rows for multipart uploads on a department request.
+    Returns {file_index: asset_id}.
+    """
+    from django.contrib.contenttypes.models import ContentType
+    from .models import FileAsset, FileAttachment
+
+    file_asset_map = {}
+    if not uploaded_files:
+        return file_asset_map
+
+    ct = ContentType.objects.get_for_model(dr)
+    for file_idx, file in enumerate(uploaded_files):
+        asset = FileAsset.objects.create(file=file, uploaded_by=user, description='')
+        file_asset_map[file_idx] = asset.id
+        FileAttachment.objects.create(
+            asset=asset,
+            uploaded_by=user,
+            description='',
+            content_type=ct,
+            object_id=dr.id,
+        )
+    return file_asset_map
+
+
+def apply_file_item_mapping_to_items(items, file_item_mapping, file_asset_map):
+    """Embed file_asset_ids on each item dict based on the upload mapping."""
+    if not file_item_mapping or not file_asset_map:
+        return list(items)
+
+    updated_items = []
+    for item_idx, item in enumerate(items):
+        item = dict(item)
+        item_file_asset_ids = []
+        for file_idx_str, item_indices in file_item_mapping.items():
+            file_idx = int(file_idx_str)
+            if item_idx in item_indices and file_idx in file_asset_map:
+                item_file_asset_ids.append(file_asset_map[file_idx])
+        if item_file_asset_ids:
+            item['file_asset_ids'] = item_file_asset_ids
+        updated_items.append(item)
+    return updated_items
+
+
+@transaction.atomic
+def create_department_request_with_files(
+    user,
+    *,
+    title,
+    priority,
+    needed_date,
+    description='',
+    items,
+    item_source_files,
+):
+    """
+    Create and submit a department request, attaching files by storage-key reference.
+
+    item_source_files[i] is a list of FieldFile objects whose .name is the existing key.
+    """
+    from django.contrib.contenttypes.models import ContentType
+    from .models import FileAttachment
+
+    department = ''
+    try:
+        team = get_dept_code_for_user(user)
+        if team:
+            department = team
+    except Exception:
+        pass
+
+    if not needed_date:
+        needed_date = timezone.localdate()
+
+    dr = DepartmentRequest.objects.create(
+        title=title,
+        description=description or '',
+        department=department,
+        needed_date=needed_date,
+        items=items,
+        requestor=user,
+        priority=priority,
+        status='draft',
+    )
+
+    ct = ContentType.objects.get_for_model(dr)
+    updated_items = []
+    for item_idx, item in enumerate(items):
+        item = dict(item)
+        item_file_asset_ids = []
+        source_files = item_source_files[item_idx] if item_idx < len(item_source_files) else []
+        for src in source_files:
+            asset = create_file_asset_from_storage_key(user, src.name)
+            item_file_asset_ids.append(asset.id)
+            FileAttachment.objects.create(
+                asset=asset,
+                uploaded_by=user,
+                description='',
+                content_type=ct,
+                object_id=dr.id,
+            )
+        if item_file_asset_ids:
+            item['file_asset_ids'] = item_file_asset_ids
+        updated_items.append(item)
+
+    dr.items = updated_items
+    dr.save(update_fields=['items'])
+
+    submit_department_request(dr, user)
+    return dr
 
 
 @transaction.atomic

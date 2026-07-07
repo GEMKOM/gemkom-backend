@@ -221,7 +221,11 @@ class DepartmentRequestSerializer(serializers.ModelSerializer):
         Create a new department request and automatically submit it for approval.
         """
         from django.db import transaction
-        from planning.services import submit_department_request
+        from planning.services import (
+            submit_department_request,
+            create_dr_file_assets_from_uploads,
+            apply_file_item_mapping_to_items,
+        )
 
         # Ensure requestor is set to current user
         request = self.context.get('request')
@@ -270,52 +274,11 @@ class DepartmentRequestSerializer(serializers.ModelSerializer):
             dr = DepartmentRequest.objects.create(**validated_data)
 
             # Create file assets and build a mapping of file index -> asset ID
-            file_asset_map = {}  # {file_index: asset_id}
-            if uploaded_files:
-                ct = ContentType.objects.get_for_model(dr)
-                for file_idx, file in enumerate(uploaded_files):
-                    try:
-                        asset = FileAsset.objects.create(
-                            file=file,
-                            uploaded_by=request.user,
-                            description=''
-                        )
-                        file_asset_map[file_idx] = asset.id
-
-                        # Also create FileAttachment for the department request
-                        FileAttachment.objects.create(
-                            asset=asset,
-                            uploaded_by=request.user,
-                            description='',
-                            content_type=ct,
-                            object_id=dr.id,
-                        )
-                    except Exception as e:
-                        # Log the error but continue - don't fail the entire request
-                        import logging
-                        logger = logging.getLogger(__name__)
-                        logger.error(f"Failed to create FileAsset for file {file.name}: {str(e)}")
-                        # Re-raise to maintain current behavior
-                        raise
+            file_asset_map = create_dr_file_assets_from_uploads(dr, request.user, uploaded_files)
 
             # Update items with file_asset_ids based on mapping
             if file_item_mapping and file_asset_map:
-                updated_items = []
-                for item_idx, item in enumerate(items):
-                    # Find which files are attached to this item
-                    item_file_asset_ids = []
-                    for file_idx_str, item_indices in file_item_mapping.items():
-                        file_idx = int(file_idx_str)
-                        if item_idx in item_indices and file_idx in file_asset_map:
-                            item_file_asset_ids.append(file_asset_map[file_idx])
-
-                    # Add file_asset_ids to item if any files are attached
-                    if item_file_asset_ids:
-                        item['file_asset_ids'] = item_file_asset_ids
-                    updated_items.append(item)
-
-                # Update the department request with the modified items
-                dr.items = updated_items
+                dr.items = apply_file_item_mapping_to_items(items, file_item_mapping, file_asset_map)
                 dr.save(update_fields=['items'])
 
             # Automatically submit for approval

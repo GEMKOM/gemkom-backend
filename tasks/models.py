@@ -238,6 +238,15 @@ class Part(models.Model):
         object_id_field='object_id'
     )
 
+    # Set when converted to a department request — presence locks the part from further work
+    department_request = models.ForeignKey(
+        'planning.DepartmentRequest',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='converted_parts',
+    )
+
     class Meta:
         ordering = ['-created_at']
         indexes = [
@@ -248,6 +257,9 @@ class Part(models.Model):
     def __str__(self):
         return f"{self.key} - {self.name}"
 
+    @property
+    def is_locked(self):
+        return self.department_request_id is not None
 
 
 class Operation(BaseTask):

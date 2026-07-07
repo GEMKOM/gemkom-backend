@@ -390,70 +390,51 @@ class JobOrderViewSet(viewsets.ModelViewSet):
     def progress_history(self, request, job_no=None):
         """
         GET /job-orders/{job_no}/progress-history/
-        Returns weekly progress deltas (Tuesday noon → Tuesday noon), oldest first.
-        Each entry: week_start, week_end, completion_pct at end of week, delta for that week.
-        Also includes weekly_avg across all weeks.
+        Returns daily progress deltas (20:00 → 20:00 Turkey time), oldest first.
+        Each entry: date, completion_pct at end of day, delta for that day.
+        Also includes daily_avg across all days and the rolling last-7-days progress.
         """
-        from projects.serializers import MEETING_CUTOFF_HOUR
+        from projects.serializers import (
+            _daily_series, _last_week_boundaries, _pct_before, _meeting_now,
+        )
 
         job_order = self.get_object()
         logs = list(job_order.progress_logs.order_by('logged_at').only('new_pct', 'logged_at'))
         if not logs:
-            return Response({'weeks': [], 'weekly_avg': None})
+            return Response({
+                'days': [],
+                'daily_avg': None,
+                'last_week_progress': None,
+                'estimated_completion_by_last_week': None,
+                'estimated_completion_by_avg': None,
+            })
 
-        first_log_date = logs[0].logged_at.date()
-        days_since_tue = (first_log_date.weekday() - 1) % 7
-        week_start_date = first_log_date - timedelta(days=days_since_tue)
+        days = _daily_series(logs)
+        daily_avg = round(sum(d['delta'] for d in days) / len(days), 2) if days else None
 
-        now = timezone.localtime(timezone.now())
-        today = now.date()
-        days_since_tue_now = (today.weekday() - 1) % 7
-        this_tuesday = today - timedelta(days=days_since_tue_now)
-        this_tuesday_noon = timezone.make_aware(
-            timezone.datetime(this_tuesday.year, this_tuesday.month, this_tuesday.day, MEETING_CUTOFF_HOUR, 0, 0)
-        )
-        last_closed_noon = this_tuesday_noon if now >= this_tuesday_noon else this_tuesday_noon - timedelta(weeks=1)
-
-        weeks = []
-        while True:
-            week_start = timezone.make_aware(
-                timezone.datetime(week_start_date.year, week_start_date.month, week_start_date.day, MEETING_CUTOFF_HOUR, 0, 0)
-            )
-            week_end = week_start + timedelta(weeks=1)
-            if week_end > last_closed_noon:
-                break
-
-            pct_at_start = next((float(l.new_pct) for l in reversed(logs) if l.logged_at < week_start), None)
-            pct_at_end = next((float(l.new_pct) for l in reversed(logs) if l.logged_at < week_end), None)
-
-            if pct_at_end is not None:
-                delta = round(pct_at_end - (pct_at_start or 0.0), 2)
-                weeks.append({
-                    'week_start': week_start.date().isoformat(),
-                    'week_end': (week_end.date() - timedelta(days=1)).isoformat(),
-                    'completion_pct': pct_at_end,
-                    'delta': delta,
-                })
-
-            week_start_date += timedelta(weeks=1)
-
-        weekly_avg = round(sum(w['delta'] for w in weeks) / len(weeks), 2) if weeks else None
+        # Rolling last-7-days progress (aligned to the daily 20:00 boundary)
+        window_start, window_end = _last_week_boundaries()
+        pct_at_start = _pct_before(logs, window_start)
+        pct_at_end = _pct_before(logs, window_end)
+        last_week_progress = round(pct_at_end - (pct_at_start or 0.0), 2) if pct_at_end is not None else None
 
         current_pct = float(job_order.completion_percentage)
         remaining = 100.0 - current_pct
+        today = _meeting_now().date()
 
-        def estimate_completion(weekly_rate):
-            if not weekly_rate or weekly_rate <= 0:
+        def estimate(rate, period_days):
+            """rate is progress per `period_days` days; returns projected completion date."""
+            if not rate or rate <= 0:
                 return None
-            weeks_remaining = remaining / weekly_rate
-            return (today + timedelta(weeks=weeks_remaining)).isoformat()
+            periods_remaining = remaining / rate
+            return (today + timedelta(days=periods_remaining * period_days)).isoformat()
 
-        last_week_rate = weeks[-1]['delta'] if weeks else None
         return Response({
-            'weeks': weeks,
-            'weekly_avg': weekly_avg,
-            'estimated_completion_by_last_week': estimate_completion(last_week_rate),
-            'estimated_completion_by_avg': estimate_completion(weekly_avg),
+            'days': days,
+            'daily_avg': daily_avg,
+            'last_week_progress': last_week_progress,
+            'estimated_completion_by_last_week': estimate(last_week_progress, 7),
+            'estimated_completion_by_avg': estimate(daily_avg, 1),
         })
 
     @action(detail=True, methods=['get'])
@@ -1383,23 +1364,41 @@ class JobOrderViewSet(viewsets.ModelViewSet):
             qs = qs.exclude(source_offer_id=exclude_offer_id)
         return Response(JobOrderNodeHistorySerializer(qs, many=True).data)
 
-    @action(detail=False, methods=['get'], url_path='procurement_pending')
-    def procurement_pending(self, request):
-        """
-        Returns job orders that have no saved procurement cost lines yet.
-        Excludes only cancelled jobs. Supports the same filters as the list view.
-        """
-        from django.db.models import Count
+    # JobOrderDepartmentTask.department slugs required for each cost-pending list.
+    _COST_PENDING_DEPARTMENTS = {
+        'procurement': 'procurement',
+        'qc': 'manufacturing',
+        'shipping': 'logistics',
+    }
 
-        qs = (
+    @classmethod
+    def _cost_pending_queryset(cls, *, line_relation, cost_type):
+        """
+        Leaf job orders with no cost lines yet, scoped to jobs that have an
+        active main department task for the department tied to the cost type.
+        """
+        from django.db.models import Count, Exists, OuterRef
+
+        department = cls._COST_PENDING_DEPARTMENTS[cost_type]
+        active_department_tasks = JobOrderDepartmentTask.objects.filter(
+            job_order=OuterRef('pk'),
+            department=department,
+            parent__isnull=True,
+        ).exclude(status__in=['skipped', 'cancelled'])
+        line_count_field = f'{line_relation}_count'
+
+        return (
             JobOrder.objects
             .select_related('customer')
-            .annotate(procurement_line_count=Count('procurement_lines'))
-            .filter(procurement_line_count=0, children__isnull=True)
+            .annotate(**{line_count_field: Count(line_relation)})
+            .filter(**{line_count_field: 0}, children__isnull=True)
+            .filter(Exists(active_department_tasks))
             .exclude(job_no='LEGACY-ARCHIVE')
             .exclude(status='cancelled')
             .exclude(cost_summary__cost_not_applicable=True)
         )
+
+    def _paginate_cost_pending(self, qs):
         qs = self.filter_queryset(qs)
         page = self.paginate_queryset(qs)
         if page is not None:
@@ -1407,6 +1406,16 @@ class JobOrderViewSet(viewsets.ModelViewSet):
             return self.get_paginated_response(serializer.data)
         serializer = JobOrderListSerializer(qs, many=True)
         return Response(serializer.data)
+
+    @action(detail=False, methods=['get'], url_path='procurement_pending')
+    def procurement_pending(self, request):
+        """
+        Returns job orders that have no saved procurement cost lines yet.
+        Excludes only cancelled jobs. Supports the same filters as the list view.
+        """
+        return self._paginate_cost_pending(
+            self._cost_pending_queryset(line_relation='procurement_lines', cost_type='procurement')
+        )
 
     @action(detail=False, methods=['get'], url_path='qc_pending')
     def qc_pending(self, request):
@@ -1414,24 +1423,9 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         Returns job orders that have no QC cost lines yet.
         Excludes only cancelled jobs. Supports the same filters as the list view.
         """
-        from django.db.models import Count
-
-        qs = (
-            JobOrder.objects
-            .select_related('customer')
-            .annotate(qc_line_count=Count('qc_cost_lines'))
-            .filter(qc_line_count=0, children__isnull=True)
-            .exclude(job_no='LEGACY-ARCHIVE')
-            .exclude(status='cancelled')
-            .exclude(cost_summary__cost_not_applicable=True)
+        return self._paginate_cost_pending(
+            self._cost_pending_queryset(line_relation='qc_cost_lines', cost_type='qc')
         )
-        qs = self.filter_queryset(qs)
-        page = self.paginate_queryset(qs)
-        if page is not None:
-            serializer = JobOrderListSerializer(page, many=True)
-            return self.get_paginated_response(serializer.data)
-        serializer = JobOrderListSerializer(qs, many=True)
-        return Response(serializer.data)
 
     @action(detail=False, methods=['get'], url_path='shipping_pending')
     def shipping_pending(self, request):
@@ -1439,24 +1433,9 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         Returns job orders that have no shipping cost lines yet.
         Excludes only cancelled jobs. Supports the same filters as the list view.
         """
-        from django.db.models import Count
-
-        qs = (
-            JobOrder.objects
-            .select_related('customer')
-            .annotate(shipping_line_count=Count('shipping_cost_lines'))
-            .filter(shipping_line_count=0, children__isnull=True)
-            .exclude(job_no='LEGACY-ARCHIVE')
-            .exclude(status='cancelled')
-            .exclude(cost_summary__cost_not_applicable=True)
+        return self._paginate_cost_pending(
+            self._cost_pending_queryset(line_relation='shipping_cost_lines', cost_type='shipping')
         )
-        qs = self.filter_queryset(qs)
-        page = self.paginate_queryset(qs)
-        if page is not None:
-            serializer = JobOrderListSerializer(page, many=True)
-            return self.get_paginated_response(serializer.data)
-        serializer = JobOrderListSerializer(qs, many=True)
-        return Response(serializer.data)
 
     @action(detail=False, methods=['get'], url_path='has_procurement')
     def has_procurement(self, request):
@@ -1718,6 +1697,7 @@ class DepartmentTaskFilter(django_filters.FilterSet):
     assigned_to__isnull = django_filters.BooleanFilter(field_name='assigned_to', lookup_expr='isnull')
     parent = django_filters.NumberFilter(field_name='parent')
     parent__isnull = django_filters.BooleanFilter(field_name='parent', lookup_expr='isnull')
+    customer = django_filters.NumberFilter(method='filter_customer')
 
     target_start_date__gte = django_filters.DateFilter(field_name='target_start_date', lookup_expr='gte')
     target_start_date__lte = django_filters.DateFilter(field_name='target_start_date', lookup_expr='lte')
@@ -1729,6 +1709,12 @@ class DepartmentTaskFilter(django_filters.FilterSet):
     # OR filter: tasks where start_date >= X OR completion_date <= Y
     date_range_start = django_filters.DateFilter(method='filter_date_range_start')
     date_range_end = django_filters.DateFilter(method='filter_date_range_end')
+
+    def filter_customer(self, queryset, name, value):
+        from django.db.models import Q
+        return queryset.filter(
+            Q(job_order__customer_id=value) | Q(sales_offer__customer_id=value)
+        )
 
     def filter_date_range_start(self, queryset, name, value):
         # Stored for use in filter_date_range_end; apply OR when both are present

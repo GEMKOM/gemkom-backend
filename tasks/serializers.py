@@ -363,6 +363,11 @@ class PartListSerializer(serializers.ModelSerializer):
     completed_by_username = serializers.CharField(source='completed_by.username', read_only=True, allow_null=True)
     operation_count = serializers.IntegerField(read_only=True)
     incomplete_operation_count = serializers.IntegerField(read_only=True)
+    files = TaskFileSerializer(many=True, read_only=True)
+    department_request_number = serializers.CharField(
+        source='department_request.request_number', read_only=True, allow_null=True,
+    )
+    is_locked = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = Part
@@ -373,7 +378,8 @@ class PartListSerializer(serializers.ModelSerializer):
             'finish_time',
             'created_by', 'created_by_username', 'created_at',
             'completed_by', 'completed_by_username', 'completion_date',
-            'operation_count', 'incomplete_operation_count'
+            'operation_count', 'incomplete_operation_count',
+            'files', 'department_request', 'department_request_number', 'is_locked',
         ]
         read_only_fields = ['key', 'created_by', 'created_at', 'completed_by', 'completion_date']
 
@@ -387,6 +393,11 @@ class PartSerializer(serializers.ModelSerializer):
     created_by_username = serializers.CharField(source='created_by.username', read_only=True, allow_null=True)
     completed_by_username = serializers.CharField(source='completed_by.username', read_only=True, allow_null=True)
     has_incomplete_operations = serializers.SerializerMethodField()
+    files = TaskFileSerializer(many=True, read_only=True)
+    department_request_number = serializers.CharField(
+        source='department_request.request_number', read_only=True, allow_null=True,
+    )
+    is_locked = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = Part
@@ -397,7 +408,8 @@ class PartSerializer(serializers.ModelSerializer):
             'finish_time',
             'created_by', 'created_by_username', 'created_at',
             'completed_by', 'completed_by_username', 'completion_date',
-            'operations', 'has_incomplete_operations'
+            'operations', 'has_incomplete_operations',
+            'files', 'department_request', 'department_request_number', 'is_locked',
         ]
         read_only_fields = ['key', 'created_by', 'created_at', 'completed_by', 'completion_date']
 

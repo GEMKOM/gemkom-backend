@@ -3,7 +3,9 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated, IsAdminUser
 from rest_framework.generics import RetrieveUpdateDestroyAPIView
-from rest_framework.viewsets import ModelViewSet
+from rest_framework.viewsets import ModelViewSet, GenericViewSet
+from rest_framework import mixins
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.decorators import action
 from rest_framework.filters import OrderingFilter
 from django_filters.rest_framework import DjangoFilterBackend
@@ -15,12 +17,13 @@ from django.db import transaction
 import time
 
 # Create your views here.
-from .models import Timer, Part, Operation
+from .models import Timer, Part, Operation, TaskFile
 from .serializers import (
     BaseTimerSerializer, PartSerializer, PartListSerializer, PartWithOperationsSerializer,
     OperationSerializer, OperationDetailSerializer, OperationOperatorSerializer,
-    OperationPlanUpdateItemSerializer
+    OperationPlanUpdateItemSerializer, TaskFileSerializer,
 )
+from .view_mixins import TaskFileMixin
 from .filters import OperationFilter, PartFilter
 from config.pagination import CustomPageNumberPagination
 from users.permissions import user_has_role_perm
@@ -720,11 +723,19 @@ class GenericPlanningBulkSaveView(APIView):
 # ==================== Part-Operation System Views ====================
 
 
-class PartViewSet(ModelViewSet):
+def _part_locked_error():
+    return Response(
+        {'error': 'Bu parça departman talebine dönüştürüldü, çalışılamaz.'},
+        status=status.HTTP_400_BAD_REQUEST,
+    )
+
+
+class PartViewSet(TaskFileMixin, ModelViewSet):
     """ViewSet for Part model"""
     queryset = Part.objects.all()
     serializer_class = PartSerializer
     permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
     filter_backends = [DjangoFilterBackend, OrderingFilter]
     filterset_class = PartFilter
     ordering_fields = ['created_at', 'finish_time', 'key', 'job_no', 'name']
@@ -733,15 +744,26 @@ class PartViewSet(ModelViewSet):
     def get_queryset(self):
         from django.db.models import Count, Q
 
+        base_qs = Part.objects.select_related('created_by', 'completed_by', 'department_request')
+
         # For list view, use lightweight query with counts
         if self.action == 'list':
-            return Part.objects.select_related('created_by', 'completed_by').annotate(
+            return base_qs.prefetch_related('files').annotate(
                 operation_count=Count('operations'),
                 incomplete_operation_count=Count('operations', filter=Q(operations__completion_date__isnull=True))
             )
 
-        # For detail/retrieve, load full operations
-        return Part.objects.select_related('created_by', 'completed_by').prefetch_related('operations')
+        # For detail/retrieve, load full operations and files
+        return base_qs.prefetch_related('operations', 'files')
+
+    def filter_queryset(self, queryset):
+        from django.db.models import F
+
+        queryset = super().filter_queryset(queryset)
+        ordering = self.request.query_params.get('ordering', '-created_at')
+        if ordering == '-created_at':
+            queryset = queryset.order_by(F('created_at').desc(nulls_last=True), '-key')
+        return queryset
 
     def get_serializer_class(self):
         if self.action == 'create' or self.action == 'bulk_create':
@@ -749,6 +771,93 @@ class PartViewSet(ModelViewSet):
         elif self.action == 'list':
             return PartListSerializer
         return PartSerializer
+
+    def add_file(self, request, pk=None):
+        part = self.get_object()
+        if part.department_request_id:
+            return Response(
+                {'error': 'Bu parça departman talebine dönüştürüldü, dosya eklenemez.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return super().add_file(request, pk)
+
+    @action(detail=False, methods=['post'], url_path='convert-to-department-request')
+    def convert_to_department_request(self, request):
+        """
+        Convert selected parts into a department request (one item per part).
+        Payload: { part_keys, title, priority, needed_date, description? }
+        """
+        from planning.services import create_department_request_with_files
+
+        part_keys = request.data.get('part_keys') or []
+        if not isinstance(part_keys, list) or not part_keys:
+            return Response({'error': 'part_keys is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        title = (request.data.get('title') or '').strip()
+        if not title:
+            return Response({'error': 'title is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        priority = request.data.get('priority') or 'normal'
+        needed_date = request.data.get('needed_date')
+        description = request.data.get('description') or ''
+
+        parts_by_key = {
+            p.key: p
+            for p in Part.objects.filter(key__in=part_keys).prefetch_related('files')
+        }
+        missing = [k for k in part_keys if k not in parts_by_key]
+        if missing:
+            return Response(
+                {'error': 'Some parts were not found', 'part_keys': missing},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        parts = [parts_by_key[k] for k in part_keys]
+        already_converted = [p.key for p in parts if p.department_request_id]
+        if already_converted:
+            return Response(
+                {
+                    'error': 'Some parts are already converted to a department request',
+                    'part_keys': already_converted,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        items = []
+        item_source_files = []
+        for part in parts:
+            desc_parts = [p for p in (part.image_no, part.position_no) if p]
+            item_description = ' / '.join(desc_parts)
+            items.append({
+                'item_name': part.name,
+                'job_no': part.job_no,
+                'quantity': part.quantity,
+                'item_unit': 'adet',
+                'item_description': item_description,
+                'source_part_key': part.key,
+            })
+            item_source_files.append([tf.file for tf in part.files.all()])
+
+        with transaction.atomic():
+            dr = create_department_request_with_files(
+                request.user,
+                title=title,
+                priority=priority,
+                needed_date=needed_date,
+                description=description,
+                items=items,
+                item_source_files=item_source_files,
+            )
+            Part.objects.filter(key__in=part_keys).update(department_request=dr)
+            Operation.objects.filter(part__in=parts, in_plan=True).update(
+                in_plan=False,
+                plan_order=None,
+                planned_start_ms=None,
+                planned_end_ms=None,
+                plan_locked=False,
+            )
+
+        return Response({'id': dr.id, 'request_number': dr.request_number}, status=status.HTTP_201_CREATED)
 
     @action(detail=False, methods=['post'], url_path='bulk-create')
     def bulk_create(self, request):
@@ -880,6 +989,11 @@ class PartViewSet(ModelViewSet):
         from .serializers import OperationCreateSerializer
 
         part = self.get_object()
+        if part.department_request_id:
+            return Response(
+                {'error': 'Bu parça departman talebine dönüştürüldü, düzenlenemez.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         operations_data = request.data.get('operations', [])
         delete_keys = request.data.get('delete_operations', [])
 
@@ -1068,6 +1182,7 @@ class OperationViewSet(ModelViewSet):
         # For operator view in list mode: exclude operations with active timers
         view_type = self.request.query_params.get('view', 'detail')
         if view_type == 'operator' and self.action == 'list':
+            queryset = queryset.filter(part__department_request__isnull=True)
             # Exclude operations that have active timers (finish_time = NULL)
             # Use Count to check if there are active timers
             queryset = queryset.annotate(
@@ -1092,6 +1207,9 @@ class OperationViewSet(ModelViewSet):
     def mark_completed(self, request, pk=None):
         """Mark operation as completed"""
         operation = self.get_object()
+
+        if operation.part.department_request_id:
+            return _part_locked_error()
 
         if operation.completion_date:
             return Response({'error': 'Already completed'}, status=400)
@@ -1147,6 +1265,9 @@ class OperationViewSet(ModelViewSet):
     def start_timer(self, request, pk=None):
         """Start a timer on this operation"""
         operation = self.get_object()
+
+        if operation.part.department_request_id:
+            return _part_locked_error()
 
         # Check if already completed
         if operation.completion_date:
@@ -1506,6 +1627,8 @@ class LogReasonView(APIView):
                     model_class = current_timer.content_type.model_class()
                     if model_class == Operation:
                         operation = Operation.objects.get(key=current_timer.object_id)
+                        if operation.part.department_request_id:
+                            return _part_locked_error()
                         # Mark operation as complete
                         operation.completion_date = now_ms
                         operation.completed_by = request.user
@@ -1586,3 +1709,26 @@ class LogReasonView(APIView):
             requests.post(url, data=payload, timeout=5)
         except requests.RequestException as e:
             print("Telegram bildirim hatası:", e)
+
+
+class TaskFileViewSet(mixins.DestroyModelMixin, GenericViewSet):
+    """ViewSet for deleting TaskFile rows."""
+
+    queryset = TaskFile.objects.all()
+    serializer_class = TaskFileSerializer
+    permission_classes = [IsAuthenticated]
+
+    def destroy(self, request, *args, **kwargs):
+        task_file = self.get_object()
+        part_ct = ContentType.objects.get_for_model(Part)
+        if task_file.content_type_id == part_ct.id:
+            try:
+                part = Part.objects.get(key=task_file.object_id)
+                if part.department_request_id:
+                    return Response(
+                        {'error': 'Bu parça departman talebine dönüştürüldü, dosya silinemez.'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+            except Part.DoesNotExist:
+                pass
+        return super().destroy(request, *args, **kwargs)
