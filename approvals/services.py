@@ -31,7 +31,7 @@ def get_workflow(subject) -> ApprovalWorkflow:
     ct = ContentType.objects.get_for_model(type(subject))
     qs = ApprovalWorkflow.objects.filter(content_type=ct, object_id=subject.id)
     # Prefer the active (unfinished) workflow
-    active = qs.filter(is_complete=False, is_rejected=False).order_by('-created_at').first()
+    active = qs.filter(is_complete=False, is_rejected=False, is_cancelled=False).order_by('-created_at').first()
     if active:
         return active
     # All finished — return the most recent one (caller will raise "already finished")
@@ -93,7 +93,7 @@ def record_decision(subject, user, approve: bool, comment: str = "") -> tuple[Ap
       outcome ∈ {"rejected", "moved", "completed", "pending"}
     """
     wf = get_workflow(subject)
-    if wf.is_complete or wf.is_rejected:
+    if wf.is_complete or wf.is_rejected or wf.is_cancelled:
         raise ValueError("Workflow already finished.")
 
     stage = ApprovalStageInstance.objects.select_for_update(nowait=True).get(
@@ -104,6 +104,11 @@ def record_decision(subject, user, approve: bool, comment: str = "") -> tuple[Ap
         if next_stage:
             return wf, next_stage, "moved"
         return wf, stage, "completed" if wf.is_complete else "pending"
+
+    approver_ids = {str(uid) for uid in (stage.approver_user_ids or [])}
+    is_admin = getattr(user, "is_superuser", False) or getattr(user, "is_staff", False)
+    if not is_admin and str(getattr(user, "id", "")) not in approver_ids:
+        raise ValueError("You are not an approver for this stage.")
 
     # idempotency
     if ApprovalDecision.objects.filter(stage_instance=stage, approver=user).exists():
