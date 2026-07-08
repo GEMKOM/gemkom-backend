@@ -208,7 +208,7 @@ class OperationSerializer(serializers.ModelSerializer):
             'created_by', 'created_by_username', 'created_at',
             'completed_by', 'completed_by_username', 'completion_date',
         ]
-        read_only_fields = ['key', 'created_by', 'created_at', 'completed_by', 'completion_date', 'department_request']
+        read_only_fields = ['key', 'created_by', 'created_at', 'completed_by', 'completion_date']
 
     def validate(self, attrs):
         # Order validation for completion
@@ -266,7 +266,7 @@ class OperationDetailSerializer(serializers.ModelSerializer):
             'completed_by', 'completed_by_username', 'completion_date',
             'has_active_timer'
         ]
-        read_only_fields = ['key', 'created_by', 'created_at', 'completed_by', 'completion_date', 'department_request']
+        read_only_fields = ['key', 'created_by', 'created_at', 'completed_by', 'completion_date']
 
     def get_has_active_timer(self, obj):
         """Check if operation has any active timers"""
@@ -381,7 +381,7 @@ class PartListSerializer(serializers.ModelSerializer):
             'operation_count', 'incomplete_operation_count',
             'files', 'department_request', 'department_request_number', 'is_locked',
         ]
-        read_only_fields = ['key', 'created_by', 'created_at', 'completed_by', 'completion_date']
+        read_only_fields = ['key', 'created_by', 'created_at', 'completed_by', 'completion_date', 'department_request']
 
     def validate_job_no(self, value):
         return validate_job_no_not_phased(value)
@@ -411,7 +411,7 @@ class PartSerializer(serializers.ModelSerializer):
             'operations', 'has_incomplete_operations',
             'files', 'department_request', 'department_request_number', 'is_locked',
         ]
-        read_only_fields = ['key', 'created_by', 'created_at', 'completed_by', 'completion_date']
+        read_only_fields = ['key', 'created_by', 'created_at', 'completed_by', 'completion_date', 'department_request']
 
     def validate_job_no(self, value):
         return validate_job_no_not_phased(value)
