@@ -279,13 +279,15 @@ def cancel_purchase_request(pr, by_user, reason:str=''):
 @transaction.atomic
 def revise_purchase_request(pr, by_user, reason=''):
     """
-    Cancel an approved PR (and its POs) and create a PurchaseRequestDraft
-    pre-filled with the same items, so the user can edit and resubmit.
+    Cancel a purchase request (and its POs, if any) and create a
+    PurchaseRequestDraft pre-filled with the same data, so the user can edit
+    and resubmit. Works for requests that are awaiting approval ('submitted'),
+    already approved, or rejected — anything not already cancelled.
     """
     from .models import PurchaseRequestDraft
 
-    if pr.status != 'approved':
-        raise ValidationError("Only approved purchase requests can be revised.")
+    if pr.status not in ('submitted', 'approved', 'rejected'):
+        raise ValidationError("Only submitted, approved, or rejected purchase requests can be revised.")
 
     is_admin = getattr(by_user, 'is_staff', False) or by_user.is_superuser
     is_owner = (pr.requestor_id == by_user.id)
@@ -295,9 +297,13 @@ def revise_purchase_request(pr, by_user, reason=''):
     if not _all_pos_cancellable(pr):
         raise ValidationError("Cannot revise: PO has payments recorded or is in a non-cancellable state.")
 
-    # Build items data from old PR's request items
+    # Build items data from old PR's request items.
+    # Track each request item's position so offers/recommendations can be keyed
+    # by the same item index the create page uses.
     items_data = []
+    item_index_by_pri_id = {}
     for pri in pr.request_items.prefetch_related('allocations').select_related('item', 'planning_request_item').all():
+        item_index_by_pri_id[pri.id] = len(items_data)
         item_entry = {
             "code": pri.item.code if pri.item else "",
             "name": pri.item.name if pri.item else pri.item_description,
@@ -314,6 +320,54 @@ def revise_purchase_request(pr, by_user, reason=''):
         }
         items_data.append(item_entry)
 
+    # Rebuild the suppliers, their item offers, and the recommended-supplier
+    # selections in the same shape the create page saves a draft in:
+    #   suppliers:       [{ id, name, currency, payment_terms_id, tax_rate, ... }]
+    #   offers:          { "<supplier_id>": { "<item_index>": {unitPrice, totalPrice, deliveryDays, notes} } }
+    #   recommendations: { "<item_index>": "<supplier_id>" }
+    suppliers_data = []
+    offers_data = {}
+    recommendations_data = {}
+    supplier_offers = (
+        pr.offers
+        .select_related('supplier', 'payment_terms')
+        .prefetch_related('item_offers')
+        .all()
+    )
+    for so in supplier_offers:
+        supplier_id = str(so.supplier_id)
+        suppliers_data.append({
+            "id": supplier_id,
+            "name": so.supplier.name,
+            "contact_person": so.supplier.contact_person or "",
+            "phone": so.supplier.phone or "",
+            "email": so.supplier.email or "",
+            "currency": so.currency,
+            "payment_terms_id": so.payment_terms_id,
+            "tax_rate": float(so.tax_rate),
+            "notes": so.notes or "",
+        })
+
+        supplier_offer_map = {}
+        for io in so.item_offers.all():
+            item_index = item_index_by_pri_id.get(io.purchase_request_item_id)
+            if item_index is None:
+                continue
+            item_index_str = str(item_index)
+            # The create page stores prices as JS numbers (it renders them with
+            # .toFixed()), so emit floats — not strings — to match that shape.
+            supplier_offer_map[item_index_str] = {
+                "unitPrice": float(io.unit_price),
+                "totalPrice": float(io.total_price),
+                "deliveryDays": io.delivery_days,
+                "notes": io.notes or "",
+            }
+            if io.is_recommended:
+                recommendations_data[item_index_str] = supplier_id
+
+        if supplier_offer_map:
+            offers_data[supplier_id] = supplier_offer_map
+
     planning_item_ids = list(pr.planning_request_items.values_list('id', flat=True))
 
     draft_data = {
@@ -323,6 +377,9 @@ def revise_purchase_request(pr, by_user, reason=''):
         "needed_date": str(pr.needed_date) if pr.needed_date else None,
         "is_rolling_mill": pr.is_rolling_mill,
         "items": items_data,
+        "suppliers": suppliers_data,
+        "offers": offers_data,
+        "recommendations": recommendations_data,
         "planning_request_item_ids": planning_item_ids,
         "original_pr_id": pr.id,
     }
