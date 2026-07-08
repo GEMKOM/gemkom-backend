@@ -143,6 +143,7 @@ class JobOrderViewSet(viewsets.ModelViewSet):
     - GET /job-orders/{job_no}/hierarchy/ - Get full hierarchy tree
     """
     queryset = JobOrder.objects.select_related('customer', 'parent', 'created_by', 'completed_by')
+    permission_classes = [permissions.IsAuthenticated]
     lookup_field = 'job_no'
     # Allow production phase job_nos like "270-01/P1" to be addressed via the
     # detail/action routes. The default DRF regex ([^/.]+) excludes slashes, so
