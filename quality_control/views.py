@@ -1,8 +1,11 @@
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
+from rest_framework.permissions import BasePermission, IsAuthenticated
 from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter, OrderingFilter
+
+from users.permissions import user_has_role_perm
 
 from .models import QCReview, NCR, NCRFile, QualityDocument
 from .serializers import (
@@ -34,6 +37,11 @@ def _is_qc_member(user):
     return user.is_superuser or _user_in_group(user, 'Kalite Kontrol')
 
 
+class CanAccessQualityDocuments(BasePermission):
+    def has_permission(self, request, view):
+        return user_has_role_perm(request.user, 'access_quality_control_documents')
+
+
 def _can_submit_ncr(user, ncr):
     if user.is_superuser:
         return True
@@ -61,6 +69,7 @@ class QCReviewViewSet(viewsets.ReadOnlyModelViewSet):
     POST /qc-reviews/submit/        — submit a task for QC review
     POST /qc-reviews/{id}/decide/   — QC team approve/reject
     """
+    permission_classes = [IsAuthenticated]
     queryset = QCReview.objects.select_related(
         'task', 'task__job_order', 'submitted_by', 'reviewed_by', 'ncr',
         'discussion_topic', 'discussion_topic__created_by',
@@ -179,6 +188,7 @@ class NCRViewSet(viewsets.ModelViewSet):
     POST /ncrs/{id}/decide/     — QC team approve/reject
     POST /ncrs/{id}/close/      — close an approved NCR
     """
+    permission_classes = [IsAuthenticated]
     queryset = NCR.objects.select_related(
         'job_order', 'department_task', 'qc_review',
         'created_by', 'detected_by', 'assigned_team',
@@ -342,6 +352,7 @@ class QualityDocumentViewSet(viewsets.ModelViewSet):
     PATCH  /documents/{id}/       — update metadata (or replace file)
     DELETE /documents/{id}/       — delete document (also removes the stored file)
     """
+    permission_classes = [IsAuthenticated, CanAccessQualityDocuments]
     queryset = QualityDocument.objects.select_related(
         'job_order', 'uploaded_by',
     ).order_by('-created_at')
