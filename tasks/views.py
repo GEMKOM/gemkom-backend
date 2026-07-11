@@ -730,6 +730,13 @@ def _part_locked_error():
     )
 
 
+def _operation_locked_error(operation_keys=None):
+    data = {'error': 'Bu parça departman talebine dönüştürüldü, çalışılamaz.'}
+    if operation_keys:
+        data['operation_keys'] = operation_keys
+    return Response(data, status=status.HTTP_400_BAD_REQUEST)
+
+
 class PartViewSet(TaskFileMixin, ModelViewSet):
     """ViewSet for Part model"""
     queryset = Part.objects.all()
@@ -781,6 +788,18 @@ class PartViewSet(TaskFileMixin, ModelViewSet):
             )
         return super().add_file(request, pk)
 
+    def update(self, request, *args, **kwargs):
+        part = self.get_object()
+        if part.department_request_id:
+            return _part_locked_error()
+        return super().update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        part = self.get_object()
+        if part.department_request_id:
+            return _part_locked_error()
+        return super().destroy(request, *args, **kwargs)
+
     @action(detail=False, methods=['post'], url_path='convert-to-department-request')
     def convert_to_department_request(self, request):
         """
@@ -801,61 +820,66 @@ class PartViewSet(TaskFileMixin, ModelViewSet):
         needed_date = request.data.get('needed_date')
         description = request.data.get('description') or ''
 
-        parts_by_key = {
-            p.key: p
-            for p in Part.objects.filter(key__in=part_keys).prefetch_related('files')
-        }
-        missing = [k for k in part_keys if k not in parts_by_key]
-        if missing:
-            return Response(
-                {'error': 'Some parts were not found', 'part_keys': missing},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        try:
+            with transaction.atomic():
+                parts_by_key = {
+                    p.key: p
+                    for p in Part.objects.select_for_update()
+                    .filter(key__in=part_keys)
+                    .prefetch_related('files')
+                }
+                missing = [k for k in part_keys if k not in parts_by_key]
+                if missing:
+                    return Response(
+                        {'error': 'Some parts were not found', 'part_keys': missing},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
 
-        parts = [parts_by_key[k] for k in part_keys]
-        already_converted = [p.key for p in parts if p.department_request_id]
-        if already_converted:
-            return Response(
-                {
-                    'error': 'Some parts are already converted to a department request',
-                    'part_keys': already_converted,
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+                parts = [parts_by_key[k] for k in part_keys]
+                already_converted = [p.key for p in parts if p.department_request_id]
+                if already_converted:
+                    return Response(
+                        {
+                            'error': 'Some parts are already converted to a department request',
+                            'part_keys': already_converted,
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
 
-        items = []
-        item_source_files = []
-        for part in parts:
-            desc_parts = [p for p in (part.image_no, part.position_no) if p]
-            item_description = ' / '.join(desc_parts)
-            items.append({
-                'item_name': part.name,
-                'job_no': part.job_no,
-                'quantity': part.quantity,
-                'item_unit': 'adet',
-                'item_description': item_description,
-                'source_part_key': part.key,
-            })
-            item_source_files.append([tf.file for tf in part.files.all()])
+                items = []
+                item_source_files = []
+                for part in parts:
+                    desc_parts = [p for p in (part.image_no, part.position_no) if p]
+                    item_description = ' / '.join(desc_parts)
+                    items.append({
+                        'item_name': part.name,
+                        'job_no': part.job_no,
+                        'quantity': part.quantity,
+                        'item_unit': 'adet',
+                        'item_description': item_description,
+                        'source_part_key': part.key,
+                    })
+                    item_source_files.append([tf.file for tf in part.files.all()])
 
-        with transaction.atomic():
-            dr = create_department_request_with_files(
-                request.user,
-                title=title,
-                priority=priority,
-                needed_date=needed_date,
-                description=description,
-                items=items,
-                item_source_files=item_source_files,
-            )
-            Part.objects.filter(key__in=part_keys).update(department_request=dr)
-            Operation.objects.filter(part__in=parts, in_plan=True).update(
-                in_plan=False,
-                plan_order=None,
-                planned_start_ms=None,
-                planned_end_ms=None,
-                plan_locked=False,
-            )
+                dr = create_department_request_with_files(
+                    request.user,
+                    title=title,
+                    priority=priority,
+                    needed_date=needed_date,
+                    description=description,
+                    items=items,
+                    item_source_files=item_source_files,
+                )
+                Part.objects.filter(key__in=part_keys).update(department_request=dr)
+                Operation.objects.filter(part__in=parts, in_plan=True).update(
+                    in_plan=False,
+                    plan_order=None,
+                    planned_start_ms=None,
+                    planned_end_ms=None,
+                    plan_locked=False,
+                )
+        except ValueError as exc:
+            return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         return Response({'id': dr.id, 'request_number': dr.request_number}, status=status.HTTP_201_CREATED)
 
@@ -1203,6 +1227,18 @@ class OperationViewSet(ModelViewSet):
 
         return queryset
 
+    def update(self, request, *args, **kwargs):
+        operation = self.get_object()
+        if operation.part.department_request_id:
+            return _operation_locked_error()
+        return super().update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        operation = self.get_object()
+        if operation.part.department_request_id:
+            return _operation_locked_error()
+        return super().destroy(request, *args, **kwargs)
+
     @action(detail=True, methods=['post'])
     def mark_completed(self, request, pk=None):
         """Mark operation as completed"""
@@ -1247,6 +1283,9 @@ class OperationViewSet(ModelViewSet):
     def unmark_completed(self, request, pk=None):
         """Unmark operation completion and uncomplete parent part if needed"""
         operation = self.get_object()
+
+        if operation.part.department_request_id:
+            return _operation_locked_error()
 
         # Clear operation completion
         operation.completion_date = None
@@ -1368,7 +1407,7 @@ class OperationViewSet(ModelViewSet):
             )
 
         # Fetch all operations by key
-        operations = list(Operation.objects.filter(key__in=keys))
+        operations = list(Operation.objects.select_related('part').filter(key__in=keys))
         found_keys = {op.key for op in operations}
         missing_keys = set(keys) - found_keys
 
@@ -1377,6 +1416,10 @@ class OperationViewSet(ModelViewSet):
                 {"error": f"Operations not found: {', '.join(missing_keys)}"},
                 status=status.HTTP_404_NOT_FOUND
             )
+
+        locked_keys = [op.key for op in operations if op.part.department_request_id]
+        if locked_keys:
+            return _operation_locked_error(locked_keys)
 
         # Build existing machine map for validation
         existing_machine_map = {op.key: op.machine_fk_id for op in operations}

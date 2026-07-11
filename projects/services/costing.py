@@ -626,7 +626,7 @@ def build_job_cost_payload(job_order, _ctx=None) -> dict:
     employee_overhead_estimate = q2(labor_estimate * employee_overhead_rate)
     general_expenses_rate = Decimal(str(job_order.general_expenses_rate or 0))
     general_expenses_estimate = q2(
-        general_expenses_rate * total_weight
+        convert_to_eur(general_expenses_rate * total_weight, 'TRY', today)
         if (general_expenses_rate > 0 and total_weight > 0) else Decimal('0.00')
     )
     material_estimate, material_lines = _estimate_material_cost(
@@ -1236,10 +1236,10 @@ def recompute_job_cost_summary(job_no: str) -> None:
     )
 
     # ------------------------------------------------------------------
-    # 7. General expenses = general_expenses_rate (EUR/kg) × total_weight_kg
+    # 7. General expenses = general_expenses_rate (TRY/kg) × total_weight_kg → EUR
     # ------------------------------------------------------------------
     general_expenses = q2(
-        general_expenses_rate * total_weight_kg
+        convert_to_eur(general_expenses_rate * total_weight_kg, 'TRY', today)
         if (general_expenses_rate > 0 and total_weight_kg > 0) else Decimal('0')
     )
 
