@@ -2110,6 +2110,17 @@ from procurement.models import Item as ProcurementItem
 from planning.models import PlanningRequestItem
 
 
+def _validate_procurement_line_job(job_order, planning_request_item):
+    if (
+        job_order
+        and planning_request_item
+        and planning_request_item.job_no != job_order.job_no
+    ):
+        raise serializers.ValidationError(
+            "planning_request_item must belong to the submitted job_order."
+        )
+
+
 class JobOrderCostSummarySerializer(serializers.ModelSerializer):
     """Read/write serializer for JobOrderCostSummary. Cost fields are read-only."""
     general_expenses_rate = serializers.DecimalField(
@@ -2277,6 +2288,15 @@ class JobOrderProcurementLineSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['id', 'amount_eur', 'created_at', 'item_code', 'item_name', 'item_unit']
 
+    def validate(self, attrs):
+        job_order = attrs.get('job_order') or getattr(self.instance, 'job_order', None)
+        planning_request_item = (
+            attrs.get('planning_request_item')
+            or getattr(self.instance, 'planning_request_item', None)
+        )
+        _validate_procurement_line_job(job_order, planning_request_item)
+        return attrs
+
 
 class ProcurementLineInputSerializer(serializers.Serializer):
     """Single line input within a procurement submit request."""
@@ -2313,6 +2333,23 @@ class ProcurementLinesSubmitSerializer(serializers.Serializer):
         if value is None:
             return []
         return value
+
+    def validate(self, attrs):
+        job_order = attrs.get('job_order')
+        errors = {}
+        for index, line in enumerate(attrs.get('lines') or []):
+            planning_request_item = line.get('planning_request_item')
+            if (
+                job_order
+                and planning_request_item
+                and planning_request_item.job_no != job_order.job_no
+            ):
+                errors[index] = "planning_request_item must belong to the submitted job_order."
+
+        if errors:
+            raise serializers.ValidationError({'lines': errors})
+
+        return attrs
 
 
 class ProcurementPreviewLineSerializer(serializers.Serializer):
