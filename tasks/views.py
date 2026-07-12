@@ -772,6 +772,30 @@ class PartViewSet(TaskFileMixin, ModelViewSet):
             return PartListSerializer
         return PartSerializer
 
+    def _reject_if_locked(self):
+        part = self.get_object()
+        if part.department_request_id:
+            return part, _part_locked_error()
+        return part, None
+
+    def update(self, request, *args, **kwargs):
+        _, error = self._reject_if_locked()
+        if error:
+            return error
+        return super().update(request, *args, **kwargs)
+
+    def partial_update(self, request, *args, **kwargs):
+        _, error = self._reject_if_locked()
+        if error:
+            return error
+        return super().partial_update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        _, error = self._reject_if_locked()
+        if error:
+            return error
+        return super().destroy(request, *args, **kwargs)
+
     def add_file(self, request, pk=None):
         part = self.get_object()
         if part.department_request_id:
@@ -801,44 +825,44 @@ class PartViewSet(TaskFileMixin, ModelViewSet):
         needed_date = request.data.get('needed_date')
         description = request.data.get('description') or ''
 
-        parts_by_key = {
-            p.key: p
-            for p in Part.objects.filter(key__in=part_keys).prefetch_related('files')
-        }
-        missing = [k for k in part_keys if k not in parts_by_key]
-        if missing:
-            return Response(
-                {'error': 'Some parts were not found', 'part_keys': missing},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        parts = [parts_by_key[k] for k in part_keys]
-        already_converted = [p.key for p in parts if p.department_request_id]
-        if already_converted:
-            return Response(
-                {
-                    'error': 'Some parts are already converted to a department request',
-                    'part_keys': already_converted,
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        items = []
-        item_source_files = []
-        for part in parts:
-            desc_parts = [p for p in (part.image_no, part.position_no) if p]
-            item_description = ' / '.join(desc_parts)
-            items.append({
-                'item_name': part.name,
-                'job_no': part.job_no,
-                'quantity': part.quantity,
-                'item_unit': 'adet',
-                'item_description': item_description,
-                'source_part_key': part.key,
-            })
-            item_source_files.append([tf.file for tf in part.files.all()])
-
         with transaction.atomic():
+            parts_by_key = {
+                p.key: p
+                for p in Part.objects.select_for_update().filter(key__in=part_keys).prefetch_related('files')
+            }
+            missing = [k for k in part_keys if k not in parts_by_key]
+            if missing:
+                return Response(
+                    {'error': 'Some parts were not found', 'part_keys': missing},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            parts = [parts_by_key[k] for k in part_keys]
+            already_converted = [p.key for p in parts if p.department_request_id]
+            if already_converted:
+                return Response(
+                    {
+                        'error': 'Some parts are already converted to a department request',
+                        'part_keys': already_converted,
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            items = []
+            item_source_files = []
+            for part in parts:
+                desc_parts = [p for p in (part.image_no, part.position_no) if p]
+                item_description = ' / '.join(desc_parts)
+                items.append({
+                    'item_name': part.name,
+                    'job_no': part.job_no,
+                    'quantity': part.quantity,
+                    'item_unit': 'adet',
+                    'item_description': item_description,
+                    'source_part_key': part.key,
+                })
+                item_source_files.append([tf.file for tf in part.files.all()])
+
             dr = create_department_request_with_files(
                 request.user,
                 title=title,

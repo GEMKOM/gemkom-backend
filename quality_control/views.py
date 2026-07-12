@@ -1,8 +1,10 @@
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
+from rest_framework.permissions import BasePermission, IsAuthenticated
 from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter, OrderingFilter
+from users.permissions import user_has_role_perm
 
 from .models import QCReview, NCR, NCRFile, QualityDocument
 from .serializers import (
@@ -32,6 +34,11 @@ def _user_in_group(user, group_name: str) -> bool:
 
 def _is_qc_member(user):
     return user.is_superuser or _user_in_group(user, 'Kalite Kontrol')
+
+
+class CanAccessQualityDocuments(BasePermission):
+    def has_permission(self, request, view):
+        return user_has_role_perm(request.user, 'access_quality_control_documents')
 
 
 def _can_submit_ncr(user, ncr):
@@ -81,6 +88,7 @@ class QCReviewViewSet(viewsets.ReadOnlyModelViewSet):
     }
     search_fields = ['task__title', 'task__job_order__job_no']
     ordering_fields = ['submitted_at', 'status']
+    permission_classes = [IsAuthenticated]
 
     def get_serializer_class(self):
         if self.action == 'list':
@@ -195,6 +203,7 @@ class NCRViewSet(viewsets.ModelViewSet):
     }
     search_fields = ['ncr_number', 'title', 'description', 'job_order__job_no']
     ordering_fields = ['created_at', 'severity', 'status']
+    permission_classes = [IsAuthenticated]
 
     def get_serializer_class(self):
         if self.action == 'list':
@@ -276,6 +285,11 @@ class NCRViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def close(self, request, pk=None):
         """Close an approved NCR and unblock the linked task if still blocked."""
+        if not _is_qc_member(request.user):
+            return Response(
+                {'status': 'error', 'message': 'Sadece Kalite Kontrol ekibi NCR kapatabilir.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         ncr = self.get_object()
         if ncr.status != 'approved':
             return Response(
@@ -346,6 +360,7 @@ class QualityDocumentViewSet(viewsets.ModelViewSet):
         'job_order', 'uploaded_by',
     ).order_by('-created_at')
     serializer_class = QualityDocumentSerializer
+    permission_classes = [IsAuthenticated, CanAccessQualityDocuments]
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     filterset_fields = {
         'document_type': ['exact', 'in'],
