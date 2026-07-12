@@ -3,15 +3,17 @@ from __future__ import annotations
 from django.contrib.auth.models import User
 from django.db import transaction
 
-from approvals.models import ApprovalPolicy, ApprovalWorkflow
+from approvals.models import ApprovalPolicy, ApprovalStageInstance, ApprovalWorkflow
 from approvals.resolvers import resolve_approvers_for_stage
 from approvals.services import (
     auto_bypass_self_approver,
     create_workflow,
+    get_workflow,
     record_decision,
 )
 from notifications.models import Notification
 from notifications.service import bulk_notify, notify, render_notification
+from users.permissions import user_has_role_perm
 
 from .models import LEAVE_TYPE_CHOICES, VacationRequest
 
@@ -286,9 +288,34 @@ def submit_vacation_request(vr: VacationRequest, by_user):
 # ---------------------------------------------------------------------------
 # Decide (approve / reject)
 # ---------------------------------------------------------------------------
+def _hr_final_stage_override_id(vr: VacationRequest, user) -> int | None:
+    if not user_has_role_perm(user, "manage_hr"):
+        return None
+    try:
+        wf = get_workflow(vr)
+    except ApprovalWorkflow.DoesNotExist:
+        return None
+    stage = (
+        ApprovalStageInstance.objects
+        .filter(workflow=wf, order=wf.current_stage_order, is_complete=False, is_rejected=False)
+        .first()
+    )
+    if not stage:
+        return None
+    if ApprovalStageInstance.objects.filter(workflow=wf, order__gt=stage.order).exists():
+        return None
+    return stage.id
+
+
 @transaction.atomic
 def decide(vr: VacationRequest, user, approve: bool, comment: str = ""):
-    wf, stage, outcome = record_decision(vr, user, approve, comment)
+    wf, stage, outcome = record_decision(
+        vr,
+        user,
+        approve,
+        comment,
+        allow_non_approver_stage_id=_hr_final_stage_override_id(vr, user),
+    )
 
     if outcome == "rejected":
         vr.status = "rejected"

@@ -381,7 +381,10 @@ class PartListSerializer(serializers.ModelSerializer):
             'operation_count', 'incomplete_operation_count',
             'files', 'department_request', 'department_request_number', 'is_locked',
         ]
-        read_only_fields = ['key', 'created_by', 'created_at', 'completed_by', 'completion_date']
+        read_only_fields = [
+            'key', 'created_by', 'created_at', 'completed_by', 'completion_date',
+            'department_request',
+        ]
 
     def validate_job_no(self, value):
         return validate_job_no_not_phased(value)
@@ -411,7 +414,10 @@ class PartSerializer(serializers.ModelSerializer):
             'operations', 'has_incomplete_operations',
             'files', 'department_request', 'department_request_number', 'is_locked',
         ]
-        read_only_fields = ['key', 'created_by', 'created_at', 'completed_by', 'completion_date']
+        read_only_fields = [
+            'key', 'created_by', 'created_at', 'completed_by', 'completion_date',
+            'department_request',
+        ]
 
     def validate_job_no(self, value):
         return validate_job_no_not_phased(value)

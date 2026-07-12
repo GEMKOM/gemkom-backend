@@ -86,14 +86,22 @@ def create_workflow(
 
 # --------- Decision & progression ---------
 @transaction.atomic
-def record_decision(subject, user, approve: bool, comment: str = "") -> tuple[ApprovalWorkflow, ApprovalStageInstance, str]:
+def record_decision(
+    subject,
+    user,
+    approve: bool,
+    comment: str = "",
+    *,
+    allow_non_approver: bool = False,
+    allow_non_approver_stage_id: int | None = None,
+) -> tuple[ApprovalWorkflow, ApprovalStageInstance, str]:
     """
     Approve/Reject on the subject's CURRENT stage.
     Returns: (workflow, current_or_next_stage, outcome)
       outcome ∈ {"rejected", "moved", "completed", "pending"}
     """
     wf = get_workflow(subject)
-    if wf.is_complete or wf.is_rejected:
+    if wf.is_complete or wf.is_rejected or wf.is_cancelled:
         raise ValueError("Workflow already finished.")
 
     stage = ApprovalStageInstance.objects.select_for_update(nowait=True).get(
@@ -104,6 +112,15 @@ def record_decision(subject, user, approve: bool, comment: str = "") -> tuple[Ap
         if next_stage:
             return wf, next_stage, "moved"
         return wf, stage, "completed" if wf.is_complete else "pending"
+
+    if not (
+        allow_non_approver
+        or allow_non_approver_stage_id == stage.id
+        or getattr(user, "is_superuser", False)
+        or getattr(user, "is_staff", False)
+        or getattr(user, "id", None) in (stage.approver_user_ids or [])
+    ):
+        raise PermissionError("You are not an approver for the current stage.")
 
     # idempotency
     if ApprovalDecision.objects.filter(stage_instance=stage, approver=user).exists():
