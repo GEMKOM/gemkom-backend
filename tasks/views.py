@@ -772,6 +772,24 @@ class PartViewSet(TaskFileMixin, ModelViewSet):
             return PartListSerializer
         return PartSerializer
 
+    def update(self, request, *args, **kwargs):
+        part = self.get_object()
+        if part.department_request_id:
+            return _part_locked_error()
+        return super().update(request, *args, **kwargs)
+
+    def partial_update(self, request, *args, **kwargs):
+        part = self.get_object()
+        if part.department_request_id:
+            return _part_locked_error()
+        return super().partial_update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        part = self.get_object()
+        if part.department_request_id:
+            return _part_locked_error()
+        return super().destroy(request, *args, **kwargs)
+
     def add_file(self, request, pk=None):
         part = self.get_object()
         if part.department_request_id:
@@ -1203,6 +1221,24 @@ class OperationViewSet(ModelViewSet):
 
         return queryset
 
+    def update(self, request, *args, **kwargs):
+        operation = self.get_object()
+        if operation.part.department_request_id:
+            return _part_locked_error()
+        return super().update(request, *args, **kwargs)
+
+    def partial_update(self, request, *args, **kwargs):
+        operation = self.get_object()
+        if operation.part.department_request_id:
+            return _part_locked_error()
+        return super().partial_update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        operation = self.get_object()
+        if operation.part.department_request_id:
+            return _part_locked_error()
+        return super().destroy(request, *args, **kwargs)
+
     @action(detail=True, methods=['post'])
     def mark_completed(self, request, pk=None):
         """Mark operation as completed"""
@@ -1247,6 +1283,8 @@ class OperationViewSet(ModelViewSet):
     def unmark_completed(self, request, pk=None):
         """Unmark operation completion and uncomplete parent part if needed"""
         operation = self.get_object()
+        if operation.part.department_request_id:
+            return _part_locked_error()
 
         # Clear operation completion
         operation.completion_date = None
@@ -1368,7 +1406,7 @@ class OperationViewSet(ModelViewSet):
             )
 
         # Fetch all operations by key
-        operations = list(Operation.objects.filter(key__in=keys))
+        operations = list(Operation.objects.select_related('part').filter(key__in=keys))
         found_keys = {op.key for op in operations}
         missing_keys = set(keys) - found_keys
 
@@ -1376,6 +1414,16 @@ class OperationViewSet(ModelViewSet):
             return Response(
                 {"error": f"Operations not found: {', '.join(missing_keys)}"},
                 status=status.HTTP_404_NOT_FOUND
+            )
+
+        locked_keys = [op.key for op in operations if op.part.department_request_id]
+        if locked_keys:
+            return Response(
+                {
+                    'error': 'Some operations belong to converted department-request parts.',
+                    'operation_keys': locked_keys,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         # Build existing machine map for validation

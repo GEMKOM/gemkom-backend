@@ -1,8 +1,11 @@
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter, OrderingFilter
+
+from users.permissions import CanAccessQualityDocuments
 
 from .models import QCReview, NCR, NCRFile, QualityDocument
 from .serializers import (
@@ -346,6 +349,7 @@ class QualityDocumentViewSet(viewsets.ModelViewSet):
         'job_order', 'uploaded_by',
     ).order_by('-created_at')
     serializer_class = QualityDocumentSerializer
+    permission_classes = [IsAuthenticated, CanAccessQualityDocuments]
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     filterset_fields = {
         'document_type': ['exact', 'in'],

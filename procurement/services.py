@@ -255,8 +255,11 @@ def cancel_purchase_request(pr, by_user, reason:str=''):
             wf.cancelled_at = timezone.now()
         wf.save(update_fields=[f for f in ['is_cancelled','cancelled_at'] if hasattr(wf, f)])
 
-    # 2) Reverse DBS usage for any DBS-supplier items on this PR
-    _reverse_dbs_usage(pr)
+    # 2) Reverse DBS usage only for approved PRs. Submitted/rejected requests
+    # have recommendations, but DBS usage is booked only when approval creates
+    # POs (or increments DBS commitments for DBS suppliers).
+    if pr.status == 'approved':
+        _reverse_dbs_usage(pr)
 
     # 3) Cancel POs if any (and if your rule allows)
     for po in pr.purchase_orders.all():

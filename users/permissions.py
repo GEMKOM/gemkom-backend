@@ -53,6 +53,11 @@ class IsOfficeUserOrAdmin(BasePermission):
         return user_has_role_perm(request.user, 'office_access')
 
 
+class CanAccessQualityDocuments(BasePermission):
+    def has_permission(self, request, view):
+        return user_has_role_perm(request.user, 'access_quality_control_documents')
+
+
 # ---------------------------------------------------------------------------
 # HR / wage rate permissions
 # ---------------------------------------------------------------------------
