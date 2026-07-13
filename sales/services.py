@@ -304,7 +304,7 @@ def _send_order_confirmed_notification(offer: SalesOffer, root_job: JobOrder):
         if not users.exists():
             return
 
-        email_title, email_body, _ = render_notification(
+        email_title, email_body, email_rendered_link = render_notification(
             Notification.SALES_ORDER_CONFIRMED, ctx, email_link,
         )
 
@@ -340,6 +340,16 @@ def _send_order_confirmed_notification(offer: SalesOffer, root_job: JobOrder):
                         to=user.email,
                         attachments=attachments,
                     )
+        else:
+            bulk_notify(
+                users=users,
+                notification_type=Notification.SALES_ORDER_CONFIRMED,
+                title=email_title,
+                body=email_body,
+                link=email_rendered_link,
+                source_type='job_order',
+                source_id=root_job.job_no,
+            )
     except Exception:
         logger.exception("Failed to send SALES_ORDER_CONFIRMED notification for offer %s", offer.pk)
 
