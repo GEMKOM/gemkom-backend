@@ -72,6 +72,7 @@ class PurchaseRequestRevisionAttachmentTests(TestCase):
             object_id=original_item.id,
         )
 
+        original_pr.refresh_from_db()
         draft = revise_purchase_request(original_pr, user)
 
         self.assertCountEqual(
