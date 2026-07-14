@@ -302,7 +302,12 @@ def revise_purchase_request(pr, by_user, reason=''):
     # by the same item index the create page uses.
     items_data = []
     item_index_by_pri_id = {}
-    for pri in pr.request_items.prefetch_related('allocations').select_related('item', 'planning_request_item').all():
+    for pri in (
+        pr.request_items
+        .prefetch_related('allocations', 'files')
+        .select_related('item', 'planning_request_item')
+        .all()
+    ):
         item_index_by_pri_id[pri.id] = len(items_data)
         item_entry = {
             "code": pri.item.code if pri.item else "",
@@ -315,7 +320,9 @@ def revise_purchase_request(pr, by_user, reason=''):
                 {"job_no": a.job_no, "quantity": str(a.quantity)}
                 for a in pri.allocations.all()
             ],
-            "file_asset_ids": [],
+            # Reuse the shared assets when this draft is resubmitted. The old
+            # PR remains as an audit record, so no file bytes need to be copied.
+            "file_asset_ids": [attachment.asset_id for attachment in pri.files.all()],
             "planning_request_item_id": pri.planning_request_item_id,
         }
         items_data.append(item_entry)

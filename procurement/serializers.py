@@ -505,6 +505,7 @@ class PurchaseRequestCreateSerializer(serializers.ModelSerializer):
             # Create file attachments for this purchase request item
             user = self.context['request'].user
             ct_item = ContentType.objects.get_for_model(PurchaseRequestItem)
+            attached_asset_ids = set()
 
             # First, copy files from PlanningRequestItem if available
             if planning_request_item:
@@ -517,11 +518,14 @@ class PurchaseRequestCreateSerializer(serializers.ModelSerializer):
                         object_id=pri.id,
                         source_attachment=source_attachment,
                     )
+                    attached_asset_ids.add(source_attachment.asset_id)
 
             # Then, add any additional file assets explicitly provided
             file_asset_ids = item_data.get('file_asset_ids', [])
             if file_asset_ids:
-                file_assets = FileAsset.objects.filter(id__in=file_asset_ids)
+                file_assets = FileAsset.objects.filter(id__in=file_asset_ids).exclude(
+                    id__in=attached_asset_ids,
+                )
                 for asset in file_assets:
                     FileAttachment.objects.create(
                         asset=asset,
