@@ -1,3 +1,4 @@
+from decimal import Decimal
 from types import SimpleNamespace
 
 from django.contrib.auth import get_user_model
@@ -23,8 +24,8 @@ class PurchaseRequestRevisionAttachmentTests(TestCase):
             planning_request=planning_request,
             item=item,
             job_no='JOB-1',
-            quantity='1.00',
-            quantity_to_purchase='1.00',
+            quantity=Decimal('1.00'),
+            quantity_to_purchase=Decimal('1.00'),
         )
 
         source_asset = FileAsset.objects.create(
@@ -49,7 +50,7 @@ class PurchaseRequestRevisionAttachmentTests(TestCase):
         original_item = PurchaseRequestItem.objects.create(
             purchase_request=original_pr,
             item=item,
-            quantity='1.00',
+            quantity=Decimal('1.00'),
             planning_request_item=planning_item,
         )
         original_item_ct = ContentType.objects.get_for_model(PurchaseRequestItem)
