@@ -222,6 +222,11 @@ def _po_has_payments(po):
 
 @transaction.atomic
 def cancel_purchase_request(pr, by_user, reason:str=''):
+    # Serialize cancellation/revision against approval decisions and submission.
+    # Callers often pass an instance fetched before entering this transaction,
+    # so always re-read the current state while holding the row lock.
+    pr = type(pr).objects.select_for_update().get(pk=pr.pk)
+
     if pr.status == 'cancelled':
         return pr  # idempotent
 
@@ -246,14 +251,14 @@ def cancel_purchase_request(pr, by_user, reason:str=''):
         # unknown status safety
         raise ValidationError(f"Cannot cancel PR in status '{pr.status}'.")
 
-    # 1) If in approval, mark workflow as cancelled/closed
-    wf = getattr(pr, 'approval_workflow', None)
-    if wf and not getattr(wf, 'is_complete', False):
-        # you may want flags on workflow model
-        wf.is_cancelled = True
-        if hasattr(wf, 'cancelled_at'):
-            wf.cancelled_at = timezone.now()
-        wf.save(update_fields=[f for f in ['is_cancelled','cancelled_at'] if hasattr(wf, f)])
+    # 1) If in approval, mark every live generic workflow as cancelled/closed.
+    # PurchaseRequest uses the ``approvals`` GenericRelation; the old
+    # ``approval_workflow`` OneToOne relation no longer exists.
+    pr.approvals.filter(
+        is_complete=False,
+        is_rejected=False,
+        is_cancelled=False,
+    ).update(is_cancelled=True)
 
     # 2) Reverse DBS usage for any DBS-supplier items on this PR
     _reverse_dbs_usage(pr)
@@ -285,6 +290,10 @@ def revise_purchase_request(pr, by_user, reason=''):
     already approved, or rejected — anything not already cancelled.
     """
     from .models import PurchaseRequestDraft
+
+    # The request may have been approved/rejected/cancelled since the view
+    # fetched it. Lock and re-read before validating or copying draft data.
+    pr = type(pr).objects.select_for_update().get(pk=pr.pk)
 
     if pr.status not in ('submitted', 'approved', 'rejected'):
         raise ValidationError("Only submitted, approved, or rejected purchase requests can be revised.")
