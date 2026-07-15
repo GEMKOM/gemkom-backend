@@ -16,6 +16,7 @@ from approvals.models import ApprovalStageInstance, ApprovalWorkflow, ApprovalDe
 from .models import PurchaseRequest
 from procurement.services import create_pos_from_recommended
 from django.db.models import Max, Q
+from django.core.exceptions import ValidationError
 
 from notifications.service import notify, bulk_notify, render_notification
 from notifications.models import Notification
@@ -150,6 +151,12 @@ def _notify_finance_pos_created(pr: PurchaseRequest, pos_list):
 # --------- Submit PR (uses core engine) ---------
 def submit_purchase_request(pr: PurchaseRequest, by_user):
     with transaction.atomic():
+        # Serialize submission against cancellation/revision and reject stale
+        # instances passed in by the view.
+        pr = PurchaseRequest.objects.select_for_update().get(pk=pr.pk)
+        if pr.status != "submitted":
+            raise ValidationError("Only submitted purchase requests can enter approval.")
+
         policy = pick_policy_for_purchase_request(pr)
         if not policy or not policy.stages.exists():
             raise ValueError("No applicable approval policy/stages configured.")
@@ -211,6 +218,13 @@ def decide(pr: PurchaseRequest, user, approve: bool, comment: str = ""):
     # DB writes in a transaction; notifications run after commit.
     created_pos = []
     with transaction.atomic():
+        # Use the same subject-row lock as cancellation/revision. Without this
+        # re-check, a decision that started with a stale instance can resurrect
+        # a request after it has been cancelled.
+        pr = PurchaseRequest.objects.select_for_update().get(pk=pr.pk)
+        if pr.status != "submitted":
+            raise ValidationError("Only submitted purchase requests can be approved or rejected.")
+
         wf, stage, outcome = record_decision(pr, user, approve, comment)
 
         if outcome == "rejected":
