@@ -130,14 +130,35 @@ class Supplier(models.Model):
     dbs_expiry_date = models.DateField(null=True, blank=True)        # (opsiyonel) limit bitiş tarihi
     dbs_details = models.TextField(blank=True)
     
+    # --- Rating / Status Section ---
+    STATUS_APPROVED = 'approved'
+    STATUS_WATCH = 'watch'
+    STATUS_BLACKLISTED = 'blacklisted'
+    STATUS_CHOICES = [
+        (STATUS_APPROVED, 'Onaylı'),
+        (STATUS_WATCH, 'İzlemede'),
+        (STATUS_BLACKLISTED, 'Kara Liste'),
+    ]
+    # Lifecycle status. Orthogonal to is_active — blacklisting must NEVER deactivate.
+    status = models.CharField(
+        max_length=20, choices=STATUS_CHOICES,
+        default=STATUS_APPROVED, db_index=True
+    )
+    # Denormalized rating cache. Only ever written by rating_service via .update()
+    # (a plain .save() here would risk the app's known post_save signal loops).
+    rating_score = models.DecimalField(max_digits=3, decimal_places=2, null=True, blank=True)   # 0.00–5.00
+    rating_count = models.PositiveIntegerField(default=0)
+    on_time_delivery_pct = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)  # 0–100
+    last_evaluated_at = models.DateTimeField(null=True, blank=True)
+
     # Metadata
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-    
+
     class Meta:
         ordering = ['name']
-    
+
     def __str__(self):
         return self.name
 
@@ -568,3 +589,53 @@ class PurchaseOrderLineAllocation(models.Model):
 
     def __str__(self):
         return f"{self.po_line_id} · {self.job_no} · {self.quantity}"
+
+
+class SupplierEvaluation(models.Model):
+    """
+    A performance evaluation of a supplier for one completed PurchaseOrder.
+    One evaluation per PO (re-scoring is an update). The composite_score is the
+    weighted blend of the four human criteria, cached so the supplier rollup is a
+    plain AVG. Recompute of the Supplier cache is triggered explicitly via
+    rating_service.recompute_supplier_rating — never a post_save signal.
+    """
+    supplier = models.ForeignKey(Supplier, on_delete=models.PROTECT, related_name='evaluations')
+    purchase_order = models.OneToOneField(
+        'PurchaseOrder', on_delete=models.CASCADE, related_name='evaluation'
+    )
+    quality_score = models.PositiveSmallIntegerField(validators=[MinValueValidator(1), MaxValueValidator(5)])
+    delivery_score = models.PositiveSmallIntegerField(validators=[MinValueValidator(1), MaxValueValidator(5)])
+    price_score = models.PositiveSmallIntegerField(validators=[MinValueValidator(1), MaxValueValidator(5)])
+    service_score = models.PositiveSmallIntegerField(validators=[MinValueValidator(1), MaxValueValidator(5)])
+    composite_score = models.DecimalField(max_digits=3, decimal_places=2)  # cached weighted blend, 0–5
+    comment = models.TextField(blank=True)
+    evaluated_by = models.ForeignKey(
+        User, null=True, blank=True, on_delete=models.SET_NULL, related_name='supplier_evaluations'
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [models.Index(fields=['supplier', 'created_at'])]
+
+    def __str__(self):
+        return f"Eval PO-{self.purchase_order_id} · {self.supplier.name} · {self.composite_score}"
+
+
+class SupplierStatusHistory(models.Model):
+    """Append-only audit log of supplier lifecycle status changes (approved/watch/blacklisted)."""
+    supplier = models.ForeignKey(Supplier, on_delete=models.CASCADE, related_name='status_history')
+    previous_status = models.CharField(max_length=20, blank=True)
+    new_status = models.CharField(max_length=20)
+    reason = models.TextField(blank=True)
+    changed_by = models.ForeignKey(
+        User, null=True, blank=True, on_delete=models.SET_NULL, related_name='supplier_status_changes'
+    )
+    changed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-changed_at']
+
+    def __str__(self):
+        return f"{self.supplier_id}: {self.previous_status} → {self.new_status}"

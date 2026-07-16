@@ -30,6 +30,7 @@ from .serializers import (
     SubcontractorStatementListSerializer,
     SubcontractorStatementSerializer,
 )
+from .services.assignments import create_subcontracting_assignment_with_subtask
 from .services.painting import PAINT_SUBCONTRACTOR_ID
 from .services.statements import generate_or_refresh_statement
 
@@ -230,38 +231,30 @@ class SubcontractingAssignmentViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-        if not subtask_title:
+        try:
             if is_paint:
-                subtask_title = 'Boya'
-            else:
-                try:
-                    subtask_title = Subcontractor.objects.get(pk=subcontractor_id).name
-                except Subcontractor.DoesNotExist:
-                    return Response(
-                        {'detail': 'Taşeron bulunamadı.'},
-                        status=status.HTTP_404_NOT_FOUND,
+                # Paint keeps its dedicated inline flow: it auto-creates a price tier
+                # (welding uses an existing tier and is single-sourced via the service).
+                if not subtask_title:
+                    subtask_title = 'Boya'
+                subtask_weight = max(1, round(Decimal(str(allocated_weight_kg))))
+                next_sequence = (
+                    kaynak_task.subtasks.aggregate(m=models.Max('sequence'))['m'] or 0
+                ) + 1
+
+                with db_transaction.atomic():
+                    subtask = JobOrderDepartmentTask.objects.create(
+                        job_order=kaynak_task.job_order,
+                        department=kaynak_task.department,
+                        parent=kaynak_task,
+                        title=subtask_title,
+                        task_type='subcontracting',
+                        status='in_progress',
+                        weight=subtask_weight,
+                        sequence=next_sequence,
+                        created_by=request.user,
                     )
 
-        subtask_weight = max(1, round(Decimal(str(allocated_weight_kg))))
-        next_sequence = (
-            kaynak_task.subtasks.aggregate(m=models.Max('sequence'))['m'] or 0
-        ) + 1
-
-        try:
-            with db_transaction.atomic():
-                subtask = JobOrderDepartmentTask.objects.create(
-                    job_order=kaynak_task.job_order,
-                    department=kaynak_task.department,
-                    parent=kaynak_task,
-                    title=subtask_title,
-                    task_type='subcontracting',
-                    status='in_progress',
-                    weight=subtask_weight,
-                    sequence=next_sequence,
-                    created_by=request.user,
-                )
-
-                if is_paint:
                     # Auto-create a dedicated price tier for this paint assignment.
                     # Tier name includes the subtask sequence so each is unique per job order.
                     tier_name = f'Boya {next_sequence}'
@@ -273,21 +266,28 @@ class SubcontractingAssignmentViewSet(viewsets.ModelViewSet):
                         allocated_weight_kg=Decimal(str(allocated_weight_kg)),
                         created_by=request.user,
                     )
-                    price_tier_id = paint_tier.pk
 
-                serializer = SubcontractingAssignmentSerializer(
-                    data={
-                        'department_task': subtask.pk,
-                        'subcontractor': subcontractor_id,
-                        'price_tier': price_tier_id,
-                        'allocated_weight_kg': allocated_weight_kg,
-                    },
+                    serializer = SubcontractingAssignmentSerializer(
+                        data={
+                            'department_task': subtask.pk,
+                            'subcontractor': subcontractor_id,
+                            'price_tier': paint_tier.pk,
+                            'allocated_weight_kg': allocated_weight_kg,
+                        },
+                        context={'request': request},
+                    )
+                    serializer.is_valid(raise_exception=True)
+                    assignment = serializer.save(created_by=request.user)
+            else:
+                assignment = create_subcontracting_assignment_with_subtask(
+                    kaynak_task=kaynak_task,
+                    subcontractor_id=subcontractor_id,
+                    price_tier_id=price_tier_id,
+                    allocated_weight_kg=allocated_weight_kg,
+                    title=subtask_title,
+                    created_by=request.user,
                     context={'request': request},
                 )
-                if not serializer.is_valid():
-                    raise drf_serializers.ValidationError(serializer.errors)
-
-                assignment = serializer.save(created_by=request.user)
 
         except drf_serializers.ValidationError as e:
             return Response(e.detail, status=status.HTTP_400_BAD_REQUEST)

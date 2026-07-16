@@ -11,14 +11,17 @@ from rest_framework.response import Response
 from rest_framework import status, permissions
 
 from rest_framework.permissions import IsAuthenticated
+from .permissions import IsProcurementWrite
 from .models import (
     DBSPayment, PaymentSchedule, PaymentTerms, PurchaseOrder, PurchaseOrderLine, PurchaseRequestDraft,
-    Supplier, Item, PurchaseRequest, PurchaseRequestItem, SupplierOffer, ItemOffer
+    Supplier, Item, PurchaseRequest, PurchaseRequestItem, SupplierOffer, ItemOffer,
+    SupplierEvaluation, SupplierStatusHistory
 )
 from .serializers import (
     DBSPaymentSerializer, PaymentTermsSerializer, PurchaseRequestDraftDetailSerializer, PurchaseRequestDraftListSerializer,
     SupplierSerializer, ItemSerializer, PurchaseRequestSerializer, PurchaseRequestListSerializer,
-    PurchaseRequestCreateSerializer, PurchaseRequestItemSerializer, SupplierOfferSerializer, ItemOfferSerializer
+    PurchaseRequestCreateSerializer, PurchaseRequestItemSerializer, SupplierOfferSerializer, ItemOfferSerializer,
+    SupplierEvaluationSerializer, SupplierStatusHistorySerializer
 )
 from django.db.models import Exists, OuterRef, F, Q
 from rest_framework.decorators import action
@@ -121,17 +124,79 @@ class SupplierViewSet(viewsets.ModelViewSet):
     filter_backends = [SearchFilter, OrderingFilter]
     permission_classes = [IsAuthenticated]
     search_fields = ["name", "contact_person", "email", "default_payment_terms"]
-    ordering_fields = ["id", "name", "updated_at", "has_dbs", "dbs_used", "dbs_limit"]
+    ordering_fields = [
+        "id", "name", "updated_at", "has_dbs", "dbs_used", "dbs_limit",
+        "status", "rating_score", "on_time_delivery_pct",
+    ]
+
+    def get_permissions(self):
+        # Reads stay open to any authenticated user; writes require the
+        # procurement-write codename. set_status is a write action.
+        if self.action in ("create", "update", "partial_update", "destroy", "set_status"):
+            return [IsProcurementWrite()]
+        return [IsAuthenticated()]
 
     def get_queryset(self):
+        # Keep the is_active filter: blacklist is warn-only, so blacklisted
+        # suppliers stay is_active=True and must remain visible/selectable.
         queryset = Supplier.objects.filter(is_active=True)
         name = self.request.query_params.get("name")
         has_dbs = self.request.query_params.get("has_dbs")
+        # NOTE: use `supplier_status`, not `status` — `?status=` is claimed by the
+        # supplier report for PO status.
+        supplier_status = self.request.query_params.get("supplier_status")
         if name:
             queryset = queryset.filter(name__icontains=name)
         if has_dbs is not None:
             queryset = queryset.filter(has_dbs=has_dbs.lower() in ("true", "1", "yes"))
+        if supplier_status:
+            queryset = queryset.filter(status=supplier_status)
         return queryset
+
+    @action(detail=True, methods=["post"], url_path="set-status")
+    def set_status(self, request, pk=None):
+        """Change supplier lifecycle status (approved/watch/blacklisted) and log it.
+        Never touches is_active (blacklist is warn-only)."""
+        from django.db import transaction
+
+        supplier = self.get_object()
+        new_status = request.data.get("status")
+        reason = (request.data.get("reason") or "").strip()
+        valid = dict(Supplier.STATUS_CHOICES)
+        if new_status not in valid:
+            return Response({"detail": "Geçersiz durum."}, status=400)
+        if new_status == supplier.status:
+            return Response(SupplierSerializer(supplier).data)
+
+        previous = supplier.status
+        with transaction.atomic():
+            # .update() so no post_save fires
+            Supplier.objects.filter(pk=supplier.pk).update(status=new_status)
+            SupplierStatusHistory.objects.create(
+                supplier=supplier,
+                previous_status=previous,
+                new_status=new_status,
+                reason=reason,
+                changed_by=request.user,
+            )
+        supplier.refresh_from_db(fields=["status"])
+        return Response(SupplierSerializer(supplier).data)
+
+    @action(detail=True, methods=["get"], url_path="evaluations")
+    def evaluations(self, request, pk=None):
+        qs = (
+            SupplierEvaluation.objects
+            .filter(supplier_id=pk)
+            .select_related("supplier", "purchase_order", "evaluated_by")
+        )
+        return Response(
+            SupplierEvaluationSerializer(qs, many=True, context=self.get_serializer_context()).data
+        )
+
+    @action(detail=True, methods=["get"], url_path="status-history")
+    def status_history(self, request, pk=None):
+        qs = SupplierStatusHistory.objects.filter(supplier_id=pk).select_related("changed_by")
+        return Response(SupplierStatusHistorySerializer(qs, many=True).data)
 
     @action(detail=True, methods=["get"], url_path="dbs-usage")
     def dbs_usage(self, request, pk=None):
@@ -200,6 +265,34 @@ class SupplierViewSet(viewsets.ModelViewSet):
             result.append(row)
 
         return Response(result)
+
+
+class SupplierEvaluationViewSet(viewsets.ModelViewSet):
+    serializer_class = SupplierEvaluationSerializer
+    http_method_names = ["get", "post", "put", "patch", "delete", "head", "options"]
+
+    def get_permissions(self):
+        if self.action in ("list", "retrieve"):
+            return [IsAuthenticated()]
+        return [IsProcurementWrite()]
+
+    def get_queryset(self):
+        qs = SupplierEvaluation.objects.select_related("supplier", "purchase_order", "evaluated_by")
+        supplier = self.request.query_params.get("supplier")
+        po = self.request.query_params.get("purchase_order")
+        if supplier:
+            qs = qs.filter(supplier_id=supplier)
+        if po:
+            qs = qs.filter(purchase_order_id=po)
+        return qs
+
+    def perform_destroy(self, instance):
+        from django.db import transaction
+        from .rating_service import recompute_supplier_rating
+
+        supplier_id = instance.supplier_id
+        instance.delete()
+        transaction.on_commit(lambda: recompute_supplier_rating(supplier_id))
 
 
 class ItemViewSet(viewsets.ModelViewSet):
@@ -362,7 +455,8 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
                     "files__asset",
                     "offers__supplier",
                     "offers__item_offers",
-                    "purchase_orders",
+                    "purchase_orders__supplier",
+                    "purchase_orders__evaluation",
                     'planning_request_items__planning_request',
                     Prefetch("approvals", queryset=wf_qs),
                 )
@@ -857,6 +951,25 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
             )
 
         qs = self._with_payment_annos(qs)
+
+        # Optional filter: POs ready to be rated (not cancelled, no evaluation yet,
+        # complete = paid OR every line's linked planning item delivered).
+        pending_eval = self.request.query_params.get("pending_evaluation")
+        if pending_eval is not None and pending_eval.lower() in ("true", "1", "yes"):
+            qs = (
+                qs
+                .exclude(status='cancelled')
+                .filter(evaluation__isnull=True)
+                .annotate(
+                    n_lines=Count('lines', distinct=True),
+                    n_delivered=Count(
+                        'lines', distinct=True,
+                        filter=Q(lines__purchase_request_item__planning_request_item__is_delivered=True),
+                    ),
+                )
+                .filter(n_lines__gt=0)
+                .filter(Q(status='paid') | Q(n_lines=F('n_delivered')))
+            )
 
         # Push fully-paid POs to the bottom while preserving ordering.
         # has_unpaid=True -> 0 ; False -> 1 ; ascending puts unpaid first.

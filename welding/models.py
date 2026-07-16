@@ -227,3 +227,100 @@ class WeldingJobCostRecalcQueue(models.Model):
 
     def __str__(self):
         return f"Recalc queue: {self.job_no}"
+
+
+class WeldingPlanAllocation(models.Model):
+    """
+    Planning-only split of a MAIN welding task's weight (kg) across a subcontractor
+    or an internal team. No cost, no price tier, no subtask, no approval — this is a
+    capacity-planning scratch layer the manufacturing team can freely play with.
+
+    Freely editable until it is *promoted* into a real SubcontractingAssignment (money
+    path) or InternalTeamAssignment. Once promoted the row becomes read-only and stays
+    on the board as the committed reality.
+    """
+    department_task = models.ForeignKey(
+        'projects.JobOrderDepartmentTask',
+        on_delete=models.CASCADE,
+        related_name='welding_plan_allocations',
+    )  # the MAIN welding task (task_type='welding', parent IS NULL)
+    subcontractor = models.ForeignKey(
+        'subcontracting.Subcontractor',
+        on_delete=models.PROTECT,
+        null=True, blank=True,
+        related_name='welding_plan_allocations',
+    )
+    team = models.ForeignKey(
+        'teams.Team',
+        on_delete=models.PROTECT,
+        null=True, blank=True,
+        related_name='welding_plan_allocations',
+    )
+    allocated_weight_kg = models.DecimalField(
+        max_digits=12, decimal_places=2,
+        validators=[MinValueValidator(Decimal('0.01'))],
+    )
+    planned_start_date = models.DateField(null=True, blank=True)
+    planned_end_date = models.DateField(null=True, blank=True)
+    notes = models.TextField(blank=True, null=True)
+
+    # Promotion linkage — set once the allocation is turned into a real assignment.
+    promoted_subcontracting_assignment = models.OneToOneField(
+        'subcontracting.SubcontractingAssignment',
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='source_plan_allocation',
+    )
+    promoted_internal_team_assignment = models.OneToOneField(
+        'welding.InternalTeamAssignment',
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='source_plan_allocation',
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='+',
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='+',
+    )
+
+    class Meta:
+        db_table = 'welding_plan_allocation'
+        verbose_name = 'Kaynak Plan Tahsisi'
+        verbose_name_plural = 'Kaynak Plan Tahsisleri'
+        indexes = [
+            models.Index(fields=['department_task']),
+            models.Index(fields=['subcontractor']),
+            models.Index(fields=['team']),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                name='welding_plan_alloc_exactly_one_resource',
+                check=(
+                    models.Q(subcontractor__isnull=False, team__isnull=True)
+                    | models.Q(subcontractor__isnull=True, team__isnull=False)
+                ),
+            ),
+        ]
+
+    def __str__(self):
+        resource = self.subcontractor.name if self.subcontractor_id else (
+            self.team.name if self.team_id else '?'
+        )
+        return f"{self.department_task.job_order_id} – {resource} – {self.allocated_weight_kg} kg"
+
+    @property
+    def is_promoted(self) -> bool:
+        return bool(
+            self.promoted_subcontracting_assignment_id
+            or self.promoted_internal_team_assignment_id
+        )
+
+    @property
+    def current_progress(self) -> Decimal:
+        return self.department_task.get_completion_percentage(skip_expensive_calculations=True)

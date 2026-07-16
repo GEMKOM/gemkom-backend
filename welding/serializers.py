@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import WeldingTimeEntry, InternalTeamAssignment
+from .models import WeldingTimeEntry, InternalTeamAssignment, WeldingPlanAllocation
 from django.contrib.auth import get_user_model
 
 User = get_user_model()
@@ -134,6 +134,112 @@ class InternalTeamAssignmentSerializer(serializers.ModelSerializer):
         if obj.updated_by_id:
             return obj.updated_by.get_full_name() or obj.updated_by.username
         return None
+
+
+class WeldingPlanAllocationSerializer(serializers.ModelSerializer):
+    """Full serializer for the welding capacity planning board (list/detail/create/update)."""
+    job_no = serializers.CharField(source='department_task.job_order_id', read_only=True)
+    job_order_title = serializers.SerializerMethodField()
+    subcontractor_name = serializers.CharField(source='subcontractor.name', read_only=True, allow_null=True)
+    team_name = serializers.CharField(source='team.name', read_only=True, allow_null=True)
+    resource_type = serializers.SerializerMethodField()
+    resource_id = serializers.SerializerMethodField()
+    progress = serializers.SerializerMethodField()
+    is_promoted = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = WeldingPlanAllocation
+        fields = [
+            'id', 'department_task', 'job_no', 'job_order_title',
+            'subcontractor', 'subcontractor_name',
+            'team', 'team_name',
+            'resource_type', 'resource_id',
+            'allocated_weight_kg', 'planned_start_date', 'planned_end_date', 'notes',
+            'progress', 'is_promoted',
+            'created_at', 'created_by', 'updated_at', 'updated_by',
+        ]
+        read_only_fields = ['created_at', 'created_by', 'updated_at', 'updated_by']
+
+    def get_job_order_title(self, obj):
+        jo = obj.department_task.job_order if obj.department_task_id else None
+        return jo.title if jo else None
+
+    def get_resource_type(self, obj):
+        if obj.subcontractor_id:
+            return 'subcontractor'
+        if obj.team_id:
+            return 'team'
+        return None
+
+    def get_resource_id(self, obj):
+        return obj.subcontractor_id or obj.team_id
+
+    def get_progress(self, obj):
+        return float(obj.current_progress)
+
+    def validate(self, attrs):
+        # Resolve effective values (instance ∪ attrs) so partial updates validate correctly.
+        instance = self.instance
+
+        if instance and instance.is_promoted:
+            raise serializers.ValidationError(
+                'Gerçek atamaya dönüştürülmüş tahsis düzenlenemez.'
+            )
+
+        department_task = attrs.get('department_task') or (instance.department_task if instance else None)
+        subcontractor = attrs.get('subcontractor') if 'subcontractor' in attrs else (
+            instance.subcontractor if instance else None
+        )
+        team = attrs.get('team') if 'team' in attrs else (instance.team if instance else None)
+
+        # Parent must be a MAIN welding task (mirror welding/services/internal_team.py).
+        if department_task is not None:
+            is_welding = (
+                department_task.task_type == 'welding'
+                or department_task.title == 'Kaynaklı İmalat'
+            )
+            if not is_welding:
+                raise serializers.ValidationError({
+                    'department_task': "Yalnızca 'Kaynaklı İmalat' görevine tahsis yapılabilir."
+                })
+            if department_task.parent_id is not None:
+                raise serializers.ValidationError({
+                    'department_task': 'Tahsis yalnızca ana göreve yapılabilir, alt göreve değil.'
+                })
+
+        # Exactly one of subcontractor / team.
+        if bool(subcontractor) == bool(team):
+            raise serializers.ValidationError(
+                'Taşeron veya ekipten yalnızca biri seçilmelidir.'
+            )
+
+        return attrs
+
+    def create(self, validated_data):
+        request = self.context.get('request')
+        if request and hasattr(request, 'user'):
+            validated_data['created_by'] = request.user
+            validated_data['updated_by'] = request.user
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        request = self.context.get('request')
+        if request and hasattr(request, 'user'):
+            validated_data['updated_by'] = request.user
+        return super().update(instance, validated_data)
+
+
+class WeldingPlanAllocationBulkItemSerializer(serializers.Serializer):
+    """Shape validation for a single item in the bulk-save payload."""
+    id = serializers.IntegerField(required=False)
+    deleted = serializers.BooleanField(required=False, default=False)
+    department_task = serializers.IntegerField(required=False)
+    subcontractor = serializers.IntegerField(required=False, allow_null=True)
+    team = serializers.IntegerField(required=False, allow_null=True)
+    allocated_weight_kg = serializers.DecimalField(max_digits=12, decimal_places=2, required=False)
+    planned_start_date = serializers.DateField(required=False, allow_null=True)
+    planned_end_date = serializers.DateField(required=False, allow_null=True)
+    notes = serializers.CharField(required=False, allow_blank=True, allow_null=True)
 
 
 class WeldingTimeEntryBulkCreateSerializer(serializers.Serializer):

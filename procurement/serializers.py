@@ -6,7 +6,7 @@ from approvals.serializers import WorkflowSerializer
 from .models import (
     DBSPayment, PaymentSchedule, PaymentTerms, PurchaseOrder, PurchaseOrderLine, PurchaseOrderLineAllocation,
     PurchaseRequestDraft, PurchaseRequestItemAllocation, Supplier, Item, PurchaseRequest,
-    PurchaseRequestItem, SupplierOffer, ItemOffer
+    PurchaseRequestItem, SupplierOffer, ItemOffer, SupplierEvaluation, SupplierStatusHistory
 )
 from decimal import Decimal
 from django.db import models
@@ -62,12 +62,107 @@ class PaymentScheduleSerializer(serializers.ModelSerializer):
 
 
 class SupplierSerializer(serializers.ModelSerializer):
+    status_label = serializers.CharField(source='get_status_display', read_only=True)
+
     class Meta:
         model = Supplier
         fields = [
             'id', 'name', 'contact_person', 'phone', 'address', 'email', 'default_currency', 'default_payment_terms',
-            'is_active', 'created_at', 'updated_at', 'default_tax_rate', 'has_dbs', 'dbs_limit', 'dbs_used', 'dbs_currency'
+            'is_active', 'created_at', 'updated_at', 'default_tax_rate', 'has_dbs', 'dbs_limit', 'dbs_used', 'dbs_currency',
+            # Rating / status (all read-only; status changes go through the audited set-status action)
+            'status', 'status_label', 'rating_score', 'rating_count', 'on_time_delivery_pct', 'last_evaluated_at',
         ]
+        read_only_fields = [
+            'status', 'rating_score', 'rating_count', 'on_time_delivery_pct', 'last_evaluated_at',
+        ]
+
+
+class SupplierStatusHistorySerializer(serializers.ModelSerializer):
+    changed_by_username = serializers.CharField(source='changed_by.username', read_only=True)
+
+    class Meta:
+        model = SupplierStatusHistory
+        fields = [
+            'id', 'supplier', 'previous_status', 'new_status', 'reason',
+            'changed_by', 'changed_by_username', 'changed_at',
+        ]
+        read_only_fields = fields
+
+
+class SupplierEvaluationSerializer(serializers.ModelSerializer):
+    supplier = SupplierSerializer(read_only=True)
+    evaluated_by_username = serializers.CharField(source='evaluated_by.username', read_only=True)
+    po_number = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SupplierEvaluation
+        fields = [
+            'id', 'supplier', 'purchase_order', 'po_number',
+            'quality_score', 'delivery_score', 'price_score', 'service_score',
+            'composite_score', 'comment',
+            'evaluated_by', 'evaluated_by_username', 'created_at', 'updated_at',
+        ]
+        read_only_fields = ['composite_score', 'evaluated_by', 'supplier']
+
+    def get_po_number(self, obj):
+        return f"PO-{obj.purchase_order_id}"
+
+    def _is_po_evaluable(self, po):
+        """A PO is evaluable when it is complete: status 'paid', or every line's
+        linked planning item is delivered."""
+        if po.status == 'paid':
+            return True
+        lines = list(po.lines.select_related('purchase_request_item__planning_request_item').all())
+        if not lines:
+            return False
+        for line in lines:
+            pri = line.purchase_request_item
+            planning_item = getattr(pri, 'planning_request_item', None) if pri else None
+            if not planning_item or not planning_item.is_delivered:
+                return False
+        return True
+
+    def validate_purchase_order(self, po):
+        # On update, purchase_order is read-only-ish (OneToOne); allow same PO.
+        if self.instance and po == self.instance.purchase_order:
+            return po
+        if po.status == 'cancelled':
+            raise serializers.ValidationError("İptal edilmiş sipariş değerlendirilemez.")
+        if hasattr(po, 'evaluation'):
+            raise serializers.ValidationError("Bu sipariş zaten değerlendirilmiş.")
+        if not self._is_po_evaluable(po):
+            raise serializers.ValidationError("Sipariş henüz teslim alınmadan değerlendirilemez.")
+        return po
+
+    def create(self, validated_data):
+        from django.db import transaction
+        from .rating_service import compute_composite, recompute_supplier_rating
+
+        po = validated_data['purchase_order']
+        validated_data['supplier'] = po.supplier
+        validated_data['evaluated_by'] = self.context['request'].user
+        validated_data['composite_score'] = compute_composite(
+            validated_data['quality_score'], validated_data['delivery_score'],
+            validated_data['price_score'], validated_data['service_score'],
+        )
+        obj = super().create(validated_data)
+        transaction.on_commit(lambda: recompute_supplier_rating(obj.supplier_id))
+        return obj
+
+    def update(self, instance, validated_data):
+        from django.db import transaction
+        from .rating_service import compute_composite, recompute_supplier_rating
+
+        for field in ('quality_score', 'delivery_score', 'price_score', 'service_score', 'comment'):
+            if field in validated_data:
+                setattr(instance, field, validated_data[field])
+        instance.composite_score = compute_composite(
+            instance.quality_score, instance.delivery_score,
+            instance.price_score, instance.service_score,
+        )
+        instance.save()
+        transaction.on_commit(lambda: recompute_supplier_rating(instance.supplier_id))
+        return instance
 
 
 class DBSPaymentSerializer(serializers.ModelSerializer):
@@ -249,6 +344,25 @@ class PurchaseRequestListSerializer(serializers.ModelSerializer):
         return sorted(list(planning_requests.values()))
 
 
+class PurchaseOrderForEvaluationSerializer(serializers.ModelSerializer):
+    """Lightweight PO view embedded in the PR detail so procurement can rate the
+    supplier of each resulting purchase order from the PR registry."""
+    supplier_name = serializers.CharField(source='supplier.name', read_only=True)
+    supplier_status = serializers.CharField(source='supplier.status', read_only=True)
+    status_label = serializers.CharField(source='get_status_display', read_only=True)
+    is_evaluated = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PurchaseOrder
+        fields = [
+            'id', 'supplier', 'supplier_name', 'supplier_status',
+            'status', 'status_label', 'is_evaluated',
+        ]
+
+    def get_is_evaluated(self, obj):
+        return hasattr(obj, 'evaluation')
+
+
 class PurchaseRequestSerializer(serializers.ModelSerializer):
     """Full serializer for detail views - includes nested items, offers, approval workflow"""
     request_items = PurchaseRequestItemSerializer(many=True, read_only=True)
@@ -256,7 +370,7 @@ class PurchaseRequestSerializer(serializers.ModelSerializer):
     requestor_username = serializers.ReadOnlyField(source='requestor.username')
     status_label = serializers.SerializerMethodField()
     approval = serializers.SerializerMethodField()
-    purchase_orders = serializers.PrimaryKeyRelatedField(many=True, read_only=True)
+    purchase_orders = PurchaseOrderForEvaluationSerializer(many=True, read_only=True)
     planning_request_info = serializers.SerializerMethodField()
     files = FileAttachmentSerializer(many=True, read_only=True)
 

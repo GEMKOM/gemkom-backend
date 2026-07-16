@@ -1022,6 +1022,25 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
                 task.check_auto_complete(user=user)
             task.job_order.update_completion_percentage()
 
+    def _recompute_supplier_ratings_for_planning_items(self, planning_item_ids):
+        """Recompute the rating cache (on-time %) of every supplier whose PO lines
+        are linked to the given planning items. Deferred to on_commit; writes via
+        .update() inside rating_service so no post_save fires."""
+        if not planning_item_ids:
+            return
+        from django.db import transaction
+        from procurement.models import PurchaseOrderLine
+        from procurement.rating_service import recompute_supplier_rating
+
+        supplier_ids = set(
+            PurchaseOrderLine.objects
+            .filter(purchase_request_item__planning_request_item_id__in=list(planning_item_ids))
+            .values_list('po__supplier_id', flat=True)
+        )
+        supplier_ids.discard(None)
+        for sid in supplier_ids:
+            transaction.on_commit(lambda sid=sid: recompute_supplier_rating(sid))
+
     @action(detail=True, methods=['POST'], permission_classes=[IsAuthenticated], url_path='mark_delivered')
     def mark_delivered(self, request, pk=None):
         """Mark a single PlanningRequestItem as delivered."""
@@ -1037,6 +1056,7 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
         item.save(update_fields=['is_delivered', 'delivered_at', 'delivered_by'])
 
         self._refresh_job_order_progress({item.job_no}, user=request.user)
+        self._recompute_supplier_ratings_for_planning_items([item.id])
 
         serializer = PlanningRequestItemDeliverySerializer(item)
         return Response(serializer.data)
@@ -1060,9 +1080,11 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
         now = timezone.now()
         affected_items = PlanningRequestItem.objects.filter(id__in=ids, is_delivered=False)
         job_nos = set(affected_items.values_list('job_no', flat=True))
+        affected_ids = list(affected_items.values_list('id', flat=True))
         affected_items.update(is_delivered=True, delivered_at=now, delivered_by=request.user)
 
         self._refresh_job_order_progress(job_nos, user=request.user)
+        self._recompute_supplier_ratings_for_planning_items(affected_ids)
 
         items = PlanningRequestItem.objects.filter(id__in=ids).select_related('planning_request', 'item', 'delivered_by')
         serializer = PlanningRequestItemDeliverySerializer(items, many=True)

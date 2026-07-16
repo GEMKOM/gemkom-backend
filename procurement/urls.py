@@ -4,7 +4,7 @@ from .views import (
     BasisChoicesView, DBSPaymentViewSet, PaymentTermsViewSet, ProcurementReportViewSet, PurchaseOrderViewSet,
     PurchaseRequestDraftViewSet, StatusChoicesView, SupplierViewSet, ItemViewSet,
     PurchaseRequestViewSet, PurchaseRequestItemViewSet,
-    SupplierOfferViewSet, ItemOfferViewSet,
+    SupplierOfferViewSet, ItemOfferViewSet, SupplierEvaluationViewSet,
 )
 
 # Create router and register viewsets
@@ -19,6 +19,7 @@ router.register(r'supplier-offers', SupplierOfferViewSet)
 router.register(r'item-offers', ItemOfferViewSet)
 router.register(r'purchase-orders', PurchaseOrderViewSet)
 router.register(r'payment-terms', PaymentTermsViewSet, basename='payment-terms')
+router.register(r'supplier-evaluations', SupplierEvaluationViewSet, basename='supplier-evaluation')
 router.register(r'reports', ProcurementReportViewSet, basename='procurement-reports')
 
 # URL patterns

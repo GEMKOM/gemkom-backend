@@ -71,6 +71,16 @@ def _notify_approvers_for_current_stage(wf: ApprovalWorkflow, reason: str = "pen
     approvers = _users_from_ids(stage.approver_user_ids or [])
     if not approvers.exists():
         return
+    # Warn approvers if any offered supplier is blacklisted (warn-only: never blocks).
+    blacklisted = [
+        so.supplier.name
+        for so in pr.offers.select_related('supplier').all()
+        if getattr(so.supplier, 'status', None) == 'blacklisted'
+    ]
+    blacklist_warning = (
+        "⚠ Kara listedeki tedarikçi(ler): " + ", ".join(blacklisted)
+    ) if blacklisted else ""
+
     ctx = {
         'pr_id':               pr.id,
         'pr_title':            _pr_title(pr),
@@ -79,6 +89,7 @@ def _notify_approvers_for_current_stage(wf: ApprovalWorkflow, reason: str = "pen
         'priority':            getattr(pr, 'priority', '—'),
         'requestor':           getattr(pr.requestor, 'get_full_name', lambda: pr.requestor.username)() if getattr(pr, 'requestor', None) else '—',
         'reason':              reason,
+        'blacklist_warning':   blacklist_warning,
     }
     title, body, link = render_notification(Notification.PR_APPROVAL_REQUESTED, ctx)
     bulk_notify(

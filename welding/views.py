@@ -9,12 +9,15 @@ from django.db.models import Sum
 from django.db import transaction
 from django.contrib.auth import get_user_model
 from collections import defaultdict
+from decimal import Decimal
 
-from .models import WeldingTimeEntry, InternalTeamAssignment
+from .models import WeldingTimeEntry, InternalTeamAssignment, WeldingPlanAllocation
 from .serializers import (
     WeldingTimeEntrySerializer,
     WeldingTimeEntryBulkCreateSerializer,
     InternalTeamAssignmentSerializer,
+    WeldingPlanAllocationSerializer,
+    WeldingPlanAllocationBulkItemSerializer,
 )
 from .filters import WeldingTimeEntryFilter
 from users.helpers import get_dept_code_for_user
@@ -394,6 +397,226 @@ class InternalTeamAssignmentViewSet(viewsets.ModelViewSet):
             job_order.update_completion_percentage()
 
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class WeldingPlanAllocationViewSet(viewsets.ModelViewSet):
+    """
+    Welding capacity-planning allocations: split a MAIN welding task's weight (kg)
+    across subcontractors and internal teams, freely and instantly (no money).
+
+    Endpoints:
+      GET  /welding/plan-allocations/board/           — grouped snapshot for the Gantt
+      POST /welding/plan-allocations/bulk-save/       — create/update/delete in one atomic call
+      POST /welding/plan-allocations/{id}/promote/    — convert into a real assignment
+      + standard CRUD for one-off edits.
+    """
+    serializer_class = WeldingPlanAllocationSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        qs = WeldingPlanAllocation.objects.select_related(
+            'department_task__job_order',
+            'subcontractor',
+            'team',
+            'promoted_subcontracting_assignment',
+            'promoted_internal_team_assignment',
+            'created_by',
+            'updated_by',
+        )
+        job_no = self.request.query_params.get('job_no')
+        if job_no:
+            qs = qs.filter(department_task__job_order_id=job_no)
+        return qs
+
+    # -- board ---------------------------------------------------------------
+    def _build_board(self, request):
+        from subcontracting.models import Subcontractor
+        from teams.models import Team
+        from projects.models import JobOrderDepartmentTask
+        from .services.plan_allocation import build_overallocation_warnings
+
+        allocations = list(
+            WeldingPlanAllocation.objects.select_related(
+                'department_task__job_order', 'subcontractor', 'team',
+                'promoted_subcontracting_assignment', 'promoted_internal_team_assignment',
+            )
+        )
+        ser = WeldingPlanAllocationSerializer(
+            allocations, many=True, context={'request': request}
+        ).data
+        ser_by_id = {row['id']: row for row in ser}
+
+        # Group serialized allocations by resource key.
+        alloc_by_resource = defaultdict(list)
+        alloc_total_by_task = defaultdict(Decimal)
+        for alloc in allocations:
+            key = ('subcontractor', alloc.subcontractor_id) if alloc.subcontractor_id \
+                else ('team', alloc.team_id)
+            alloc_by_resource[key].append(ser_by_id[alloc.id])
+            alloc_total_by_task[alloc.department_task_id] += alloc.allocated_weight_kg
+
+        resources = []
+        for sub in Subcontractor.objects.filter(is_active=True):
+            rows = alloc_by_resource.get(('subcontractor', sub.id), [])
+            resources.append({
+                'resource_type': 'subcontractor',
+                'id': sub.id,
+                'name': sub.name,
+                'total_kg': sum((Decimal(str(r['allocated_weight_kg'])) for r in rows), Decimal('0')),
+                'allocations': rows,
+            })
+        for team in Team.objects.filter(is_active=True):
+            rows = alloc_by_resource.get(('team', team.id), [])
+            resources.append({
+                'resource_type': 'team',
+                'id': team.id,
+                'name': team.name,
+                'total_kg': sum((Decimal(str(r['allocated_weight_kg'])) for r in rows), Decimal('0')),
+                'allocations': rows,
+            })
+
+        welding_tasks = []
+        main_tasks = (
+            JobOrderDepartmentTask.objects
+            .filter(task_type='welding', parent__isnull=True)
+            .select_related('job_order', 'job_order__customer')
+        )
+        for task in main_tasks:
+            job_order = task.job_order if task.job_order_id else None
+            total_weight_kg = getattr(job_order, 'total_weight_kg', None) if job_order else None
+            allocated_total = alloc_total_by_task.get(task.pk, Decimal('0'))
+            customer = getattr(job_order, 'customer', None) if job_order else None
+            welding_tasks.append({
+                'department_task_id': task.pk,
+                'job_no': task.job_order_id,
+                'job_order_title': job_order.title if job_order else None,
+                'customer_name': customer.name if customer else None,
+                'target_completion_date': job_order.target_completion_date if job_order else None,
+                'total_weight_kg': total_weight_kg,
+                'allocated_total': allocated_total,
+                'over_allocated': bool(total_weight_kg is not None and allocated_total > total_weight_kg),
+            })
+
+        warnings = build_overallocation_warnings(list(alloc_total_by_task.keys()))
+        return {'resources': resources, 'welding_tasks': welding_tasks, 'warnings': warnings}
+
+    @action(detail=False, methods=['get'], url_path='board')
+    def board(self, request):
+        return Response(self._build_board(request))
+
+    # -- bulk save -----------------------------------------------------------
+    @action(detail=False, methods=['post'], url_path='bulk-save')
+    def bulk_save(self, request):
+        from rest_framework.exceptions import ValidationError
+
+        items = request.data.get('items', [])
+        item_ser = WeldingPlanAllocationBulkItemSerializer(data=items, many=True)
+        item_ser.is_valid(raise_exception=True)
+
+        # A ValidationError raised anywhere in here propagates out of the atomic block
+        # (rolling the whole save back) and DRF renders it as a 400.
+        with transaction.atomic():
+            for item in item_ser.validated_data:
+                alloc_id = item.get('id')
+                deleted = item.get('deleted', False)
+                data = {k: v for k, v in item.items() if k not in ('id', 'deleted')}
+
+                if not alloc_id:
+                    if deleted:
+                        continue
+                    ser = WeldingPlanAllocationSerializer(
+                        data=data, context={'request': request}
+                    )
+                    ser.is_valid(raise_exception=True)
+                    ser.save()
+                    continue
+
+                try:
+                    inst = (
+                        WeldingPlanAllocation.objects
+                        .select_for_update()
+                        .get(pk=alloc_id)
+                    )
+                except WeldingPlanAllocation.DoesNotExist:
+                    raise ValidationError(f'Tahsis bulunamadı: {alloc_id}')
+
+                if inst.is_promoted:
+                    raise ValidationError(
+                        'Gerçek atamaya dönüştürülmüş tahsis düzenlenemez/silinemez.'
+                    )
+
+                if deleted:
+                    inst.delete()
+                    continue
+
+                ser = WeldingPlanAllocationSerializer(
+                    inst, data=data, partial=True, context={'request': request}
+                )
+                ser.is_valid(raise_exception=True)
+                ser.save()
+
+        board = self._build_board(request)
+        return Response({'saved': True, 'warnings': board['warnings'], 'board': board})
+
+    # -- promote -------------------------------------------------------------
+    @action(detail=True, methods=['post'], url_path='promote')
+    def promote(self, request, pk=None):
+        from decimal import Decimal
+
+        alloc = self.get_object()
+        if alloc.is_promoted:
+            return Response(
+                {'detail': 'Bu tahsis zaten gerçek atamaya dönüştürülmüş.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        main_task = alloc.department_task
+
+        try:
+            with transaction.atomic():
+                if alloc.team_id:
+                    from .services.internal_team import create_internal_team_assignment
+                    _, assignment = create_internal_team_assignment(
+                        parent_task=main_task,
+                        team=alloc.team,
+                        allocated_weight_kg=alloc.allocated_weight_kg,
+                        notes=alloc.notes or '',
+                        created_by=request.user,
+                    )
+                    alloc.promoted_internal_team_assignment = assignment
+                else:
+                    price_tier_id = request.data.get('price_tier')
+                    if not price_tier_id:
+                        return Response(
+                            {'detail': 'Taşeron ataması için price_tier gereklidir.'},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+                    from subcontracting.services.assignments import (
+                        create_subcontracting_assignment_with_subtask,
+                    )
+                    assignment = create_subcontracting_assignment_with_subtask(
+                        kaynak_task=main_task,
+                        subcontractor_id=alloc.subcontractor_id,
+                        price_tier_id=price_tier_id,
+                        allocated_weight_kg=alloc.allocated_weight_kg,
+                        created_by=request.user,
+                        context={'request': request},
+                    )
+                    alloc.promoted_subcontracting_assignment = assignment
+
+                alloc.updated_by = request.user
+                alloc.save(update_fields=[
+                    'promoted_subcontracting_assignment',
+                    'promoted_internal_team_assignment',
+                    'updated_by', 'updated_at',
+                ])
+        except ValueError as e:
+            return Response({'detail': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(
+            WeldingPlanAllocationSerializer(alloc, context={'request': request}).data,
+            status=status.HTTP_200_OK,
+        )
 
 
 class WeldingTimeEntryBulkCreateView(APIView):
