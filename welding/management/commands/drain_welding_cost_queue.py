@@ -17,14 +17,16 @@ class Command(BaseCommand):
         processed = 0
         failed = 0
         failed_jobs = set()
+        skipped_jobs = set()
 
         # Drain the whole queue in batches. Rows that fail recompute are recorded
-        # in `failed_jobs` and excluded from subsequent fetches, so a poison row
-        # can never keep the batch non-empty and spin this loop forever.
+        # and rows locked by another worker are skipped for this invocation.
+        # Excluding both prevents either kind of row from keeping the batch
+        # non-empty and spinning this loop forever.
         while True:
             job_nos = list(
                 WeldingJobCostRecalcQueue.objects
-                .exclude(job_no__in=failed_jobs)
+                .exclude(job_no__in=failed_jobs | skipped_jobs)
                 .order_by("enqueued_at")
                 .values_list("job_no", flat=True)[:batch]
             )
@@ -41,6 +43,7 @@ class Command(BaseCommand):
                             .first()
                         )
                         if locked is None:
+                            skipped_jobs.add(job_no)
                             continue
                         recompute_welding_job_cost(job_no)
                         WeldingJobCostRecalcQueue.objects.filter(pk=job_no).delete()
