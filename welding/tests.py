@@ -1,6 +1,6 @@
 from unittest.mock import patch
 
-from django.test import TestCase
+from django.test import SimpleTestCase
 
 from welding.management.commands.drain_welding_cost_queue import Command
 
@@ -36,7 +36,7 @@ class _LockedQueueManager:
         return None
 
 
-class DrainWeldingCostQueueTests(TestCase):
+class DrainWeldingCostQueueTests(SimpleTestCase):
     def test_locked_row_is_not_selected_repeatedly(self):
         manager = _LockedQueueManager()
 
