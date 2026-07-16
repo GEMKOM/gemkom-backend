@@ -11,7 +11,7 @@ from rest_framework.response import Response
 from rest_framework import status, permissions
 
 from rest_framework.permissions import IsAuthenticated
-from .permissions import IsProcurementWrite
+from .permissions import IsProcurementWrite, IsSupplierWrite
 from .models import (
     DBSPayment, PaymentSchedule, PaymentTerms, PurchaseOrder, PurchaseOrderLine, PurchaseRequestDraft,
     Supplier, Item, PurchaseRequest, PurchaseRequestItem, SupplierOffer, ItemOffer,
@@ -130,10 +130,10 @@ class SupplierViewSet(viewsets.ModelViewSet):
     ]
 
     def get_permissions(self):
-        # Reads stay open to any authenticated user; writes require the
-        # procurement-write codename. set_status is a write action.
+        # Reads stay open to any authenticated user; supplier management
+        # (CRUD + blacklist/status) requires the supplier-management gate.
         if self.action in ("create", "update", "partial_update", "destroy", "set_status"):
-            return [IsProcurementWrite()]
+            return [IsSupplierWrite()]
         return [IsAuthenticated()]
 
     def get_queryset(self):

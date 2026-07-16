@@ -16,7 +16,7 @@ from users.models import UserProfile, WageRate
 from users.permissions import IsAdmin, IsAdminOrHR, IsHRorAuthorized, user_has_role_perm
 from .serializers import (
     AdminUserUpdateSerializer, CurrentUserUpdateSerializer, PasswordResetSerializer,
-    PublicUserSerializer, UserCreateSerializer, UserListSerializer,
+    PublicUserSerializer, UserCreateSerializer, UserDropdownSerializer, UserListSerializer,
     UserPasswordResetSerializer, UserWageOverviewSerializer,
     WageRateSerializer, WageRateSlimSerializer,
 )
@@ -62,6 +62,8 @@ class UserViewSet(ModelViewSet):
     def get_permissions(self):
         if self.action == 'list':
             return []
+        if self.action == 'dropdown':
+            return [IsAuthenticated()]
         if self.action in ('create', 'update', 'partial_update'):
             return [IsAdminOrHR()]
         return [IsAdmin()]
@@ -94,6 +96,33 @@ class UserViewSet(ModelViewSet):
             user_permissions__codename='workshop_access',
         ).distinct().count()
         return Response({'total': total, 'office': office_count, 'workshop': workshop_count})
+
+    @action(detail=False, methods=['get'], url_path='dropdown')
+    def dropdown(self, request):
+        """Un-paginated, ultra-light user list for dropdowns / pickers / @mentions.
+
+        Returns only id/username/name fields so payloads stay small even with
+        thousands of users. Visibility matches the list endpoint (office/admin
+        see everyone, workshop sees active users only). Optional `is_active`
+        query param further narrows the result.
+        """
+        user = request.user
+        qs = User.objects.all()
+
+        if user.is_staff or user.is_superuser or user_has_role_perm(user, 'office_access'):
+            pass  # sees everyone
+        elif user_has_role_perm(user, 'workshop_access'):
+            qs = qs.filter(is_active=True)
+        else:
+            qs = qs.none()
+
+        is_active = request.query_params.get('is_active')
+        if is_active not in (None, ''):
+            qs = qs.filter(is_active=is_active.lower() in ('true', '1', 'yes'))
+
+        qs = qs.only('id', 'username', 'first_name', 'last_name', 'is_active') \
+               .order_by('first_name', 'last_name', 'username')
+        return Response(UserDropdownSerializer(qs, many=True).data)
 
 
 class CurrentUserView(APIView):

@@ -14,6 +14,21 @@ class SimpleUserSerializer(serializers.ModelSerializer):
         fields = ['id', 'username', 'first_name', 'last_name']
 
 
+class UserDropdownSerializer(serializers.ModelSerializer):
+    """Ultra-light serializer for dropdowns / pickers / @mentions.
+
+    Only cheap User-table columns — no profile joins, no UserGroup lookups.
+    """
+    full_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = ['id', 'username', 'first_name', 'last_name', 'full_name', 'is_active']
+
+    def get_full_name(self, obj):
+        return obj.get_full_name() or obj.username
+
+
 class PublicUserSerializer(serializers.ModelSerializer):
     department_code = serializers.SerializerMethodField()
 
