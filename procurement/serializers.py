@@ -107,31 +107,15 @@ class SupplierEvaluationSerializer(serializers.ModelSerializer):
     def get_po_number(self, obj):
         return f"PO-{obj.purchase_order_id}"
 
-    def _is_po_evaluable(self, po):
-        """A PO is evaluable when it is complete: status 'paid', or every line's
-        linked planning item is delivered."""
-        if po.status == 'paid':
-            return True
-        lines = list(po.lines.select_related('purchase_request_item__planning_request_item').all())
-        if not lines:
-            return False
-        for line in lines:
-            pri = line.purchase_request_item
-            planning_item = getattr(pri, 'planning_request_item', None) if pri else None
-            if not planning_item or not planning_item.is_delivered:
-                return False
-        return True
-
     def validate_purchase_order(self, po):
         # On update, purchase_order is read-only-ish (OneToOne); allow same PO.
         if self.instance and po == self.instance.purchase_order:
             return po
+        # Any non-cancelled, not-yet-evaluated PO can be rated.
         if po.status == 'cancelled':
             raise serializers.ValidationError("İptal edilmiş sipariş değerlendirilemez.")
         if hasattr(po, 'evaluation'):
             raise serializers.ValidationError("Bu sipariş zaten değerlendirilmiş.")
-        if not self._is_po_evaluable(po):
-            raise serializers.ValidationError("Sipariş henüz teslim alınmadan değerlendirilemez.")
         return po
 
     def create(self, validated_data):
@@ -298,6 +282,10 @@ class PurchaseRequestListSerializer(serializers.ModelSerializer):
     items_count = serializers.IntegerField(read_only=True)
     planning_request_keys = serializers.SerializerMethodField()
     purchase_orders = serializers.PrimaryKeyRelatedField(many=True, read_only=True)
+    # Non-cancelled PO count and how many are already evaluated (annotated on the
+    # list queryset). Drives the per-PR rate/rated button in the registry.
+    po_count = serializers.IntegerField(read_only=True)
+    evaluated_po_count = serializers.IntegerField(read_only=True)
     item_type = serializers.SerializerMethodField()
     item_type_label = serializers.SerializerMethodField()
 
@@ -309,7 +297,8 @@ class PurchaseRequestListSerializer(serializers.ModelSerializer):
             'total_amount_eur', 'currency_rates_snapshot',
             'created_at', 'updated_at', 'submitted_at',
             'items_count', 'cancelled_at', 'cancelled_by', 'cancellation_reason', 'needed_date',
-            'planning_request_keys', 'purchase_orders', 'item_type', 'item_type_label'
+            'planning_request_keys', 'purchase_orders', 'po_count', 'evaluated_po_count',
+            'item_type', 'item_type_label'
         ]
         read_only_fields = ['request_number', 'created_at', 'updated_at', 'submitted_at', 'cancelled_at', 'cancelled_by']
 
@@ -711,6 +700,7 @@ class PurchaseRequestDraftDetailSerializer(serializers.ModelSerializer):
 
 class PurchaseOrderListSerializer(serializers.ModelSerializer):
     supplier_name = serializers.CharField(source='supplier.name', read_only=True)
+    supplier_status = serializers.CharField(source='supplier.status', read_only=True)
     line_count = serializers.IntegerField(read_only=True)
     status_label = serializers.SerializerMethodField()
     purchase_request_number = serializers.CharField(source='pr.request_number', read_only=True)
@@ -725,7 +715,7 @@ class PurchaseOrderListSerializer(serializers.ModelSerializer):
     class Meta:
         model = PurchaseOrder
         fields = [
-            'id', 'pr', 'purchase_request_number', 'supplier', 'supplier_offer', 'supplier_name',
+            'id', 'pr', 'purchase_request_number', 'supplier', 'supplier_offer', 'supplier_name', 'supplier_status',
             'currency',
             'total_amount', 'tax_rate', 'total_tax_amount',  # <— persisted fields
             'status', 'priority', 'created_at',

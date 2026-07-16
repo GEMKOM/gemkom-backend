@@ -5,7 +5,7 @@ from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import OrderingFilter
-from django.db.models import Sum
+from django.db.models import Sum, Q
 from django.db import transaction
 from django.contrib.auth import get_user_model
 from collections import defaultdict
@@ -418,8 +418,8 @@ class WeldingPlanAllocationViewSet(viewsets.ModelViewSet):
             'department_task__job_order',
             'subcontractor',
             'team',
-            'promoted_subcontracting_assignment',
-            'promoted_internal_team_assignment',
+            'promoted_subcontracting_assignment__department_task',
+            'promoted_internal_team_assignment__department_task',
             'created_by',
             'updated_by',
         )
@@ -429,16 +429,99 @@ class WeldingPlanAllocationViewSet(viewsets.ModelViewSet):
         return qs
 
     # -- board ---------------------------------------------------------------
+    def _append_committed_rows(self, alloc_by_resource, alloc_total_by_task, visible_task_ids=None):
+        """Add read-only rows for real assignments made outside the planning flow.
+
+        Their planned dates live on the real subtask's target_start_date/target_completion_date
+        (editable via the set-subtask-dates action). visible_task_ids, when given, restricts to
+        those welding tasks (used to hide completed jobs).
+        """
+        from subcontracting.models import SubcontractingAssignment
+
+        welding_parent = (
+            Q(department_task__parent__task_type='welding')
+            | Q(department_task__parent__title='Kaynaklı İmalat')
+        )
+
+        def committed_row(source, source_id, welding_task, resource_type, resource_id, weight, subtask):
+            return {
+                'id': None,
+                'kind': 'committed',
+                'source': source,
+                'source_id': source_id,
+                'subtask_id': subtask.pk,
+                'department_task_id': welding_task.pk,
+                'job_no': welding_task.job_order_id,
+                'job_order_title': welding_task.job_order.title if welding_task.job_order_id else None,
+                'resource_type': resource_type,
+                'resource_id': resource_id,
+                'subcontractor': resource_id if resource_type == 'subcontractor' else None,
+                'team': resource_id if resource_type == 'team' else None,
+                'allocated_weight_kg': weight,
+                'planned_start_date': subtask.target_start_date,
+                'planned_end_date': subtask.target_completion_date,
+                'notes': '',
+                'progress': float(subtask.get_completion_percentage(skip_expensive_calculations=True)),
+                'is_promoted': True,  # committed → real work, weight/resource read-only in the UI
+            }
+
+        committed_sub = (
+            SubcontractingAssignment.objects
+            .filter(welding_parent, source_plan_allocation__isnull=True)
+            .select_related('subcontractor', 'department_task__parent__job_order')
+        )
+        for a in committed_sub:
+            wt = a.department_task.parent
+            if not wt or (visible_task_ids is not None and wt.pk not in visible_task_ids):
+                continue
+            key = ('subcontractor', a.subcontractor_id)
+            alloc_by_resource[key].append(committed_row(
+                'subcontracting_assignment', a.id, wt, 'subcontractor',
+                a.subcontractor_id, a.allocated_weight_kg, a.department_task,
+            ))
+            alloc_total_by_task[wt.pk] += a.allocated_weight_kg
+
+        committed_team = (
+            InternalTeamAssignment.objects
+            .filter(welding_parent, source_plan_allocation__isnull=True)
+            .select_related('team', 'department_task__parent__job_order')
+        )
+        for a in committed_team:
+            wt = a.department_task.parent
+            if not wt or (visible_task_ids is not None and wt.pk not in visible_task_ids):
+                continue
+            key = ('team', a.team_id)
+            alloc_by_resource[key].append(committed_row(
+                'internal_team_assignment', a.id, wt, 'team',
+                a.team_id, a.allocated_weight_kg, a.department_task,
+            ))
+            alloc_total_by_task[wt.pk] += a.allocated_weight_kg
+
     def _build_board(self, request):
         from subcontracting.models import Subcontractor
         from teams.models import Team
         from projects.models import JobOrderDepartmentTask
         from .services.plan_allocation import build_overallocation_warnings
 
+        include_completed = str(request.query_params.get('include_completed', '')).lower() == 'true'
+        HIDDEN_STATUSES = ('completed', 'skipped', 'cancelled')
+
+        # Welding tasks (the draggable jobs). Completed/skipped/cancelled are hidden by default.
+        main_qs = (
+            JobOrderDepartmentTask.objects
+            .filter(Q(task_type='welding') | Q(title='Kaynaklı İmalat'))
+            .select_related('job_order', 'job_order__customer')
+        )
+        if not include_completed:
+            main_qs = main_qs.exclude(status__in=HIDDEN_STATUSES)
+        main_tasks = list(main_qs)
+        visible_task_ids = None if include_completed else {t.pk for t in main_tasks}
+
         allocations = list(
             WeldingPlanAllocation.objects.select_related(
                 'department_task__job_order', 'subcontractor', 'team',
-                'promoted_subcontracting_assignment', 'promoted_internal_team_assignment',
+                'promoted_subcontracting_assignment__department_task',
+                'promoted_internal_team_assignment__department_task',
             )
         )
         ser = WeldingPlanAllocationSerializer(
@@ -450,10 +533,18 @@ class WeldingPlanAllocationViewSet(viewsets.ModelViewSet):
         alloc_by_resource = defaultdict(list)
         alloc_total_by_task = defaultdict(Decimal)
         for alloc in allocations:
+            if visible_task_ids is not None and alloc.department_task_id not in visible_task_ids:
+                continue
             key = ('subcontractor', alloc.subcontractor_id) if alloc.subcontractor_id \
                 else ('team', alloc.team_id)
             alloc_by_resource[key].append(ser_by_id[alloc.id])
             alloc_total_by_task[alloc.department_task_id] += alloc.allocated_weight_kg
+
+        # Existing committed assignments (subcontractor/team) that were NOT created via this
+        # planning flow (no source_plan_allocation) already represent real work — surface them
+        # as read-only board rows so their weight counts and they're visible. Their planned
+        # dates come from the real subtask's target dates.
+        self._append_committed_rows(alloc_by_resource, alloc_total_by_task, visible_task_ids)
 
         resources = []
         for sub in Subcontractor.objects.filter(is_active=True):
@@ -476,11 +567,6 @@ class WeldingPlanAllocationViewSet(viewsets.ModelViewSet):
             })
 
         welding_tasks = []
-        main_tasks = (
-            JobOrderDepartmentTask.objects
-            .filter(task_type='welding', parent__isnull=True)
-            .select_related('job_order', 'job_order__customer')
-        )
         for task in main_tasks:
             job_order = task.job_order if task.job_order_id else None
             total_weight_kg = getattr(job_order, 'total_weight_kg', None) if job_order else None
@@ -502,6 +588,45 @@ class WeldingPlanAllocationViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'], url_path='board')
     def board(self, request):
+        return Response(self._build_board(request))
+
+    # -- schedule a real subtask (committed / promoted) ----------------------
+    @action(detail=False, methods=['post'], url_path='set-subtask-dates')
+    def set_subtask_dates(self, request):
+        """
+        Set planned dates on a REAL welding subtask (a subcontracting/internal_team subtask
+        under a welding task). Stores them on the subtask's target_start_date/
+        target_completion_date — the same fields the department-tasks Gantt uses.
+
+        POST body: { subtask_id, planned_start_date, planned_end_date }  (dates may be null)
+        """
+        from rest_framework.exceptions import ValidationError
+        from projects.models import JobOrderDepartmentTask
+
+        subtask_id = request.data.get('subtask_id')
+        start = request.data.get('planned_start_date') or None
+        end = request.data.get('planned_end_date') or None
+
+        if not subtask_id:
+            raise ValidationError({'subtask_id': 'subtask_id gereklidir.'})
+
+        try:
+            subtask = JobOrderDepartmentTask.objects.select_related('parent').get(pk=subtask_id)
+        except JobOrderDepartmentTask.DoesNotExist:
+            raise ValidationError({'subtask_id': 'Alt görev bulunamadı.'})
+
+        # Only real welding sub-subtasks may be scheduled here.
+        parent = subtask.parent
+        is_welding_parent = bool(parent) and (
+            parent.task_type == 'welding' or parent.title == 'Kaynaklı İmalat'
+        )
+        if subtask.task_type not in ('subcontracting', 'internal_team') or not is_welding_parent:
+            raise ValidationError({'subtask_id': 'Bu görev planlanabilir bir kaynak alt görevi değil.'})
+
+        subtask.target_start_date = start
+        subtask.target_completion_date = end
+        subtask.save(update_fields=['target_start_date', 'target_completion_date'])
+
         return Response(self._build_board(request))
 
     # -- bulk save -----------------------------------------------------------
@@ -603,6 +728,13 @@ class WeldingPlanAllocationViewSet(viewsets.ModelViewSet):
                         context={'request': request},
                     )
                     alloc.promoted_subcontracting_assignment = assignment
+
+                # Carry the plan dates onto the real subtask so scheduling stays continuous.
+                if alloc.planned_start_date or alloc.planned_end_date:
+                    subtask = assignment.department_task
+                    subtask.target_start_date = alloc.planned_start_date
+                    subtask.target_completion_date = alloc.planned_end_date
+                    subtask.save(update_fields=['target_start_date', 'target_completion_date'])
 
                 alloc.updated_by = request.user
                 alloc.save(update_fields=[

@@ -432,7 +432,21 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
                     'purchase_orders',
                     Prefetch("approvals", queryset=wf_qs)
                 )
-                .annotate(items_count=Count('request_items'))
+                .annotate(
+                    items_count=Count('request_items', distinct=True),
+                    # Non-cancelled POs and how many of them have been evaluated,
+                    # so the registry can show a per-PR rate/rated button.
+                    po_count=Count(
+                        'purchase_orders',
+                        filter=~Q(purchase_orders__status='cancelled'),
+                        distinct=True,
+                    ),
+                    evaluated_po_count=Count(
+                        'purchase_orders__evaluation',
+                        filter=~Q(purchase_orders__status='cancelled'),
+                        distinct=True,
+                    ),
+                )
             )
         else:
             # For detail views, prefetch all related data
@@ -952,24 +966,11 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
 
         qs = self._with_payment_annos(qs)
 
-        # Optional filter: POs ready to be rated (not cancelled, no evaluation yet,
-        # complete = paid OR every line's linked planning item delivered).
+        # Optional filter: POs ready to be rated (any non-cancelled PO that
+        # hasn't been evaluated yet).
         pending_eval = self.request.query_params.get("pending_evaluation")
         if pending_eval is not None and pending_eval.lower() in ("true", "1", "yes"):
-            qs = (
-                qs
-                .exclude(status='cancelled')
-                .filter(evaluation__isnull=True)
-                .annotate(
-                    n_lines=Count('lines', distinct=True),
-                    n_delivered=Count(
-                        'lines', distinct=True,
-                        filter=Q(lines__purchase_request_item__planning_request_item__is_delivered=True),
-                    ),
-                )
-                .filter(n_lines__gt=0)
-                .filter(Q(status='paid') | Q(n_lines=F('n_delivered')))
-            )
+            qs = qs.exclude(status='cancelled').filter(evaluation__isnull=True)
 
         # Push fully-paid POs to the bottom while preserving ordering.
         # has_unpaid=True -> 0 ; False -> 1 ; ascending puts unpaid first.

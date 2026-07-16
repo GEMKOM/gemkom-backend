@@ -21,14 +21,15 @@ def create_internal_team_assignment(
 
     Validation:
     - parent_task must be welding (task_type == 'welding' or title == 'Kaynaklı İmalat')
-    - parent_task must be a main task (parent_id is None)
+
+    Note: welding tasks are themselves subtasks of a manufacturing main task, so we do
+    NOT require parent_task.parent_id to be null — the is_welding check is the real guard
+    (it prevents attaching to a non-welding sub-subtask).
     """
     # Identify welding parents by task_type OR legacy title (mirrors the CNC dual check).
     is_welding = parent_task.task_type == 'welding' or parent_task.title == 'Kaynaklı İmalat'
     if not is_welding:
         raise ValueError("Yalnızca 'Kaynaklı İmalat' görevi altına atama yapılabilir.")
-    if parent_task.parent_id is not None:
-        raise ValueError("Dahili takım ataması yalnızca ana göreve yapılabilir, alt göreve değil.")
 
     next_seq = (
         parent_task.subtasks.aggregate(m=Max('sequence'))['m'] or 0

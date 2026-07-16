@@ -174,8 +174,32 @@ class WeldingPlanAllocationSerializer(serializers.ModelSerializer):
     def get_resource_id(self, obj):
         return obj.subcontractor_id or obj.team_id
 
+    def _real_subtask(self, obj):
+        """The real subtask backing a promoted allocation (None for a pure plan row)."""
+        if obj.promoted_subcontracting_assignment_id:
+            return obj.promoted_subcontracting_assignment.department_task
+        if obj.promoted_internal_team_assignment_id:
+            return obj.promoted_internal_team_assignment.department_task
+        return None
+
     def get_progress(self, obj):
-        return float(obj.current_progress)
+        # A promoted allocation is now a real subtask — show that subtask's own completion.
+        # A pure planning allocation shows the welding task's overall completion.
+        target = self._real_subtask(obj) or obj.department_task
+        return float(target.get_completion_percentage(skip_expensive_calculations=True))
+
+    def to_representation(self, obj):
+        data = super().to_representation(obj)
+        # Promoted rows are real subtasks: expose the subtask id and let its target dates
+        # drive the Gantt bar (so scheduling a promoted row edits the subtask, like committed).
+        subtask = self._real_subtask(obj)
+        if subtask is not None:
+            data['subtask_id'] = subtask.pk
+            data['planned_start_date'] = subtask.target_start_date
+            data['planned_end_date'] = subtask.target_completion_date
+        else:
+            data['subtask_id'] = None
+        return data
 
     def validate(self, attrs):
         # Resolve effective values (instance ∪ attrs) so partial updates validate correctly.
@@ -192,7 +216,9 @@ class WeldingPlanAllocationSerializer(serializers.ModelSerializer):
         )
         team = attrs.get('team') if 'team' in attrs else (instance.team if instance else None)
 
-        # Parent must be a MAIN welding task (mirror welding/services/internal_team.py).
+        # Target must be a welding task (identified by task_type OR legacy title). Welding
+        # tasks are themselves subtasks of a manufacturing main task, so we do NOT require
+        # parent_id to be null here.
         if department_task is not None:
             is_welding = (
                 department_task.task_type == 'welding'
@@ -202,9 +228,11 @@ class WeldingPlanAllocationSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({
                     'department_task': "Yalnızca 'Kaynaklı İmalat' görevine tahsis yapılabilir."
                 })
-            if department_task.parent_id is not None:
+            # A job with no total weight can't be capacity-planned by weight.
+            job_order = department_task.job_order if department_task.job_order_id else None
+            if job_order is not None and job_order.total_weight_kg is None:
                 raise serializers.ValidationError({
-                    'department_task': 'Tahsis yalnızca ana göreve yapılabilir, alt göreve değil.'
+                    'department_task': 'Bu işin toplam ağırlığı tanımlı olmadığı için tahsis yapılamaz.'
                 })
 
         # Exactly one of subcontractor / team.
