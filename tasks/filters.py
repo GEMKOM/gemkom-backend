@@ -124,6 +124,7 @@ class OperationFilter(django_filters.FilterSet):
     - part__key: part key
     """
     completion_date__isnull = django_filters.BooleanFilter(field_name='completion_date', lookup_expr='isnull')
+    job_no = django_filters.CharFilter(field_name='part__job_no', lookup_expr='exact')
 
     class Meta:
         model = Operation
@@ -132,6 +133,7 @@ class OperationFilter(django_filters.FilterSet):
             'completion_date__isnull',
             'machine_fk',
             'part__key',
+            'job_no',
             'interchangeable',
             'plan_locked',
         ]

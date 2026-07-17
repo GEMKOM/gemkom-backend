@@ -36,6 +36,9 @@ class OvertimeRequest(models.Model):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="submitted")
     duration_hours = models.DecimalField(max_digits=7, decimal_places=2, default=0)
 
+    # How many times a rejected/cancelled request has been edited & re-submitted.
+    resubmit_count = models.PositiveIntegerField(default=0)
+
     # Link to approvals
     approvals = GenericRelation(ApprovalWorkflow, related_query_name="overtime_request")
 
@@ -130,11 +133,30 @@ class OvertimeRequest(models.Model):
 
 
 class OvertimeEntry(models.Model):
+    ENTRY_STATUS_CHOICES = [
+        ("pending", "Bekliyor"),
+        ("approved", "Onaylandı"),
+        ("rejected", "Reddedildi"),
+    ]
+
     request = models.ForeignKey(OvertimeRequest, on_delete=models.CASCADE, related_name="entries")
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="overtime_entries")
     job_no = models.CharField(max_length=100)
     description = models.TextField(blank=True)
     approved_hours = models.DecimalField(max_digits=7, decimal_places=2, null=True, blank=True)
+
+    # Per-entry decision — enables partial (per-operator) approval of a request.
+    status = models.CharField(max_length=20, choices=ENTRY_STATUS_CHOICES, default="pending")
+    decided_by = models.ForeignKey(
+        User, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
+    decided_at = models.DateTimeField(null=True, blank=True)
+
+    # Machining operations this operator is expected to work on during the overtime.
+    operations = models.ManyToManyField(
+        "tasks.Operation", blank=True, related_name="overtime_entries"
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -142,6 +164,7 @@ class OvertimeEntry(models.Model):
         indexes = [
             models.Index(fields=["user"]),
             models.Index(fields=["request", "user"]),
+            models.Index(fields=["status"]),
         ]
 
     def __str__(self):

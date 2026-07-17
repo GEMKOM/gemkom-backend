@@ -8,29 +8,73 @@ from django.contrib.auth import get_user_model
 
 from users.helpers import get_dept_code_for_user, GROUP_TO_TEAM, TEAM_LABELS
 
+from tasks.models import Operation
+
 from .models import OvertimeRequest, OvertimeEntry
 
 User = get_user_model()
+
+
+def _create_entries_with_operations(ot, entries_data):
+    """
+    Create OvertimeEntry rows for a request and attach their machining operations.
+    Operations whose part.job_no does not match the entry's job_no are dropped
+    (defensive — the UI already scopes the picker to the entry's job).
+    """
+    for row in entries_data:
+        operations = row.get("operations") or []
+        entry = OvertimeEntry.objects.create(
+            request=ot,
+            user=row["user"],
+            job_no=row["job_no"],
+            description=row.get("description", ""),
+        )
+        if operations:
+            job_no = (row["job_no"] or "").strip()
+            valid_ops = [op for op in operations if (op.part.job_no or "").strip() == job_no] if job_no else list(operations)
+            if valid_ops:
+                entry.operations.set(valid_ops)
+
+
+class OvertimeEntryOperationSerializer(serializers.ModelSerializer):
+    part_name = serializers.CharField(source="part.name", read_only=True)
+    job_no = serializers.CharField(source="part.job_no", read_only=True)
+
+    class Meta:
+        model = Operation
+        fields = ["key", "name", "order", "part_id", "part_name", "job_no"]
+
 
 class OvertimeEntryReadSerializer(serializers.ModelSerializer):
     user_id = serializers.IntegerField(source="user.id", read_only=True)
     user_username = serializers.CharField(source="user.username", read_only=True)
     user_full_name = serializers.SerializerMethodField()
+    status_label = serializers.SerializerMethodField()
+    operations = OvertimeEntryOperationSerializer(many=True, read_only=True)
 
     class Meta:
         model = OvertimeEntry
-        fields = ["id", "user_id", "user_username", "user_full_name", "job_no", "description", "approved_hours", "created_at"]
+        fields = [
+            "id", "user_id", "user_username", "user_full_name", "job_no", "description",
+            "approved_hours", "status", "status_label", "operations", "created_at",
+        ]
 
     def get_user_full_name(self, obj):
         return getattr(obj.user, "get_full_name", lambda: "")() or obj.user.username
 
+    def get_status_label(self, obj):
+        return obj.get_status_display()
+
 
 class OvertimeEntryWriteSerializer(serializers.ModelSerializer):
     user = serializers.PrimaryKeyRelatedField(queryset=User.objects.all())
+    operations = serializers.PrimaryKeyRelatedField(
+        many=True, queryset=Operation.objects.all(), required=False
+    )
 
     class Meta:
         model = OvertimeEntry
-        fields = ["user", "job_no", "description"]
+        fields = ["user", "job_no", "description", "operations"]
 
 
 class OvertimeRequestListSerializer(serializers.ModelSerializer):
@@ -165,12 +209,9 @@ class OvertimeRequestCreateSerializer(serializers.ModelSerializer):
         self._validate_overlaps(requester=requester, start_at=start_at, end_at=end_at, entries_users=users)
 
         ot = OvertimeRequest.objects.create(requester=requester, team=team, **validated_data)
-        OvertimeEntry.objects.bulk_create([
-            OvertimeEntry(request=ot, user=row["user"], job_no=row["job_no"], description=row.get("description", ""))
-            for row in entries_data
-        ])
+        _create_entries_with_operations(ot, entries_data)
 
-        # Fire approval hook (no-op for now)
+        # Fire approval hook
         ot.send_for_approval()
 
         return ot
@@ -178,19 +219,83 @@ class OvertimeRequestCreateSerializer(serializers.ModelSerializer):
 
 class OvertimeRequestUpdateSerializer(serializers.ModelSerializer):
     """
-    Allow requester to update reason while 'submitted'.
-    (Editing time range or entries is typically disallowed after submission;
-     if you want edits, you can expand here with extra checks.)
+    - While 'submitted': requester may only edit the reason.
+    - While 'rejected' or 'cancelled': requester may edit the full request
+      (times, reason, entries) and it is re-submitted for approval on the same
+      record (a fresh approval workflow is created).
     """
+    entries = OvertimeEntryWriteSerializer(many=True, required=False)
+
     class Meta:
         model = OvertimeRequest
-        fields = ["reason"]
+        fields = ["reason", "start_at", "end_at", "entries"]
 
     def validate(self, attrs):
         obj: OvertimeRequest = self.instance
-        if obj.status != "submitted":
-            raise serializers.ValidationError("Only 'submitted' requests can be edited.")
+        request = self.context.get("request")
+        if request is not None:
+            u = request.user
+            if obj.requester_id != u.id and not (u.is_staff or u.is_superuser):
+                raise serializers.ValidationError("Yalnızca talebi oluşturan kişi düzenleyebilir.")
+        if obj.status == "submitted":
+            # Reason-only edit; ignore any other supplied fields.
+            return {"reason": attrs.get("reason", obj.reason)}
+
+        if obj.status not in ("rejected", "cancelled"):
+            raise serializers.ValidationError(
+                "Yalnızca 'Onay Bekliyor', 'Reddedildi' veya 'İptal Edildi' talepler düzenlenebilir."
+            )
+
+        start_at = attrs.get("start_at", obj.start_at)
+        end_at = attrs.get("end_at", obj.end_at)
+        if end_at <= start_at:
+            raise serializers.ValidationError("Bitiş zamanı başlangıçtan sonra olmalı.")
+        attrs["start_at"] = start_at
+        attrs["end_at"] = end_at
         return attrs
+
+    def _validate_overlaps(self, *, start_at, end_at, entries_users, instance):
+        qs = OvertimeRequest.objects.filter(
+            status__in=["submitted", "approved"],
+            entries__user__in=entries_users,
+        ).exclude(pk=instance.pk).distinct()
+        qs = qs.filter(Q(start_at__lt=end_at) & Q(end_at__gt=start_at))
+        if qs.exists():
+            raise serializers.ValidationError(
+                "Bir veya daha fazla kullanıcı bu tarihler arasında mesaiye kalmaktadır."
+            )
+
+    def update(self, instance, validated_data):
+        # Simple reason-only path for still-open requests.
+        if instance.status == "submitted":
+            instance.reason = validated_data.get("reason", instance.reason)
+            instance.save(update_fields=["reason", "updated_at"])
+            return instance
+
+        # Resubmit path (rejected/cancelled) — reopen the same record.
+        entries_data = validated_data.pop("entries", None)
+        instance.start_at = validated_data.get("start_at", instance.start_at)
+        instance.end_at = validated_data.get("end_at", instance.end_at)
+        instance.reason = validated_data.get("reason", instance.reason)
+
+        if entries_data is not None:
+            users = [row["user"] for row in entries_data]
+            self._validate_overlaps(
+                start_at=instance.start_at, end_at=instance.end_at,
+                entries_users=users, instance=instance,
+            )
+            instance.entries.all().delete()
+
+        instance.status = "submitted"
+        instance.resubmit_count = (instance.resubmit_count or 0) + 1
+        instance.save(update_fields=["start_at", "end_at", "reason", "status", "resubmit_count", "updated_at"])
+
+        if entries_data is not None:
+            _create_entries_with_operations(instance, entries_data)
+
+        # Start a fresh approval workflow on the reopened request.
+        instance.send_for_approval()
+        return instance
 
 
 class OvertimeEntryShortSerializer(serializers.ModelSerializer):

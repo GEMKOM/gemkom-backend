@@ -123,11 +123,19 @@ def _notify_hr_on_approved(ot: OvertimeRequest):
         f"Bitiş: {ot.end_at.strftime('%Y-%m-%d %H:%M')}",
         f"Süre: {ot.duration_hours} saat",
         "",
-        "Kişi/Dönem Kalemleri:",
+        "Onaylanan Kişi/Dönem Kalemleri:",
     ]
-    for e in ot.entries.all():
+    approved_entries = ot.entries.filter(status="approved")
+    for e in approved_entries:
         uname = getattr(e.user, "get_full_name", lambda: getattr(e.user, "username", str(e.user_id)))()
         lines.append(f" - {uname} | İş No: {e.job_no or '—'} | Açıklama: {e.description or '—'}")
+    rejected_entries = ot.entries.filter(status="rejected")
+    if rejected_entries.exists():
+        lines.append("")
+        lines.append("Reddedilen Kalemler:")
+        for e in rejected_entries:
+            uname = getattr(e.user, "get_full_name", lambda: getattr(e.user, "username", str(e.user_id)))()
+            lines.append(f" - {uname} | İş No: {e.job_no or '—'}")
     ctx = {
         'ot_id':           ot.id,
         'ot_title':        _ot_title(ot),
@@ -242,6 +250,8 @@ def decide(ot: OvertimeRequest, user, approve: bool, comment: str = ""):
     if outcome == "rejected":
         ot.status = "rejected"
         ot.save(update_fields=["status"])
+        # Whole request rejected -> every still-open entry is rejected too.
+        ot.entries.filter(status="pending").update(status="rejected")
         _notify_requester(ot, "Reddedildi", comment or "")
         return wf
 
@@ -250,6 +260,19 @@ def decide(ot: OvertimeRequest, user, approve: bool, comment: str = ""):
         return wf
 
     if outcome == "completed":
+        # Finalize per-entry decisions: any entry not explicitly rejected during
+        # the flow is approved. If ALL entries ended rejected, the request is a
+        # full rejection rather than an approval.
+        ot.entries.filter(status="pending").update(status="approved")
+        total = ot.entries.count()
+        rejected = ot.entries.filter(status="rejected").count()
+
+        if total > 0 and rejected == total:
+            ot.status = "rejected"
+            ot.save(update_fields=["status"])
+            _notify_requester(ot, "Reddedildi", comment or "(Tüm kalemler reddedildi)")
+            return wf
+
         ot.status = "approved"
         ot.save(update_fields=["status"])
         _notify_requester(ot, "Onaylandı", "")

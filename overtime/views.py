@@ -48,9 +48,13 @@ from .filters import OvertimeRequestFilter
 from .approval_service import decide as ot_decide  # approve/reject helper
 from approvals.services import get_workflow
 
-from django.db.models import Exists, OuterRef, Subquery, F
+from django.db.models import Exists, OuterRef, Subquery, F, Q
 from django.contrib.contenttypes.models import ContentType
 from rest_framework import permissions
+
+from users.permissions import user_has_role_perm
+from .services.cost import compute_request_cost_impact
+from .services.report import build_machining_overtime_report
 
 
 
@@ -164,8 +168,42 @@ class OvertimeRequestViewSet(viewsets.ModelViewSet):
             return Response({"detail": "You are not an approver for the current stage."}, status=403)
 
         comment = (request.data or {}).get("comment", "")
+
+        # ---- Partial approval: reject a subset of operator entries ----
+        rejected_entry_ids = (request.data or {}).get("rejected_entry_ids", []) or []
+        if rejected_entry_ids:
+            valid_ids = set(
+                ot.entries.filter(id__in=rejected_entry_ids).values_list("id", flat=True)
+            )
+            invalid = set(rejected_entry_ids) - valid_ids
+            if invalid:
+                return Response(
+                    {"detail": f"Bu talebe ait olmayan kalem(ler): {sorted(invalid)}"},
+                    status=400,
+                )
+            # Only entries that are still open (pending) may be rejected here.
+            ot.entries.filter(id__in=valid_ids, status="pending").update(
+                status="rejected",
+                decided_by=request.user,
+                decided_at=timezone.now(),
+            )
+
         wf = ot_decide(ot, request.user, approve=True, comment=comment)
+        ot.refresh_from_db()
         return Response({"detail": "Approved.", "status": ot.status})
+
+    @action(detail=True, methods=["get"], url_path="cost_impact")
+    def cost_impact(self, request, pk=None):
+        """
+        Per-job current vs projected profit and total overtime cost.
+        Restricted to users with cost visibility (`view_job_costs`).
+        """
+        if not user_has_role_perm(request.user, "view_job_costs"):
+            return Response(
+                {"detail": "Maliyet görüntüleme yetkiniz yok."}, status=403
+            )
+        ot: OvertimeRequest = self.get_object()
+        return Response(compute_request_cost_impact(ot))
 
     @action(detail=True, methods=["post"])
     def reject(self, request, pk=None):
@@ -251,6 +289,45 @@ class OvertimeRequestViewSet(viewsets.ModelViewSet):
         page = self.paginate_queryset(queryset)
         ser = self.get_serializer(page if page is not None else queryset, many=True, context=self.get_serializer_context())
         return self.get_paginated_response(ser.data) if page is not None else Response(ser.data)
+
+    @action(detail=False, methods=["get"], permission_classes=[permissions.IsAuthenticated], url_path="machining_operators")
+    def machining_operators(self, request):
+        """
+        Active users who work machining operations — i.e. hold the
+        `access_machining_tasks` permission (resolved through Django
+        groups/positions). Used by the create form to decide which overtime
+        entries should offer the machining-operation multi-select, and by the
+        machining report's operator filter.
+        """
+        qs = (User.objects
+              .with_perm("users.access_machining_tasks")
+              .filter(is_active=True)
+              .order_by("first_name", "last_name", "username"))
+        data = [
+            {
+                "id": u.id,
+                "username": u.username,
+                "full_name": u.get_full_name() or u.username,
+            }
+            for u in qs
+        ]
+        return Response(data)
+
+    @action(detail=False, methods=["get"], permission_classes=[permissions.IsAuthenticated], url_path="machining_report")
+    def machining_report(self, request):
+        """
+        Report of approved overtime requests that carry machining operations,
+        showing whether each operation was worked that day and for how long.
+        Query params: start_date, end_date (YYYY-MM-DD), user, job_no.
+        """
+        params = request.query_params
+        rows = build_machining_overtime_report(
+            start_date=params.get("start_date") or None,
+            end_date=params.get("end_date") or None,
+            user_id=params.get("user") or None,
+            job_no=params.get("job_no") or None,
+        )
+        return Response(rows)
 
 
 class OvertimeUsersForDateView(APIView):
