@@ -113,7 +113,15 @@ class OptimizeView(APIView):
         except LinearCuttingSession.DoesNotExist:
             return Response({'error': 'Session not found.'}, status=status.HTTP_404_NOT_FOUND)
 
-        kerf_mm = float(request.data.get('kerf_mm', session.kerf_mm))
+        raw_kerf = request.data.get('kerf_mm', None)
+        try:
+            kerf_mm = float(raw_kerf) if raw_kerf not in (None, '') else float(session.kerf_mm)
+        except (TypeError, ValueError):
+            return Response({'error': 'Geçersiz testere payı (kerf) değeri.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        if kerf_mm < 0:
+            return Response({'error': 'Testere payı negatif olamaz.'},
+                            status=status.HTTP_400_BAD_REQUEST)
 
         parts_qs = list(session.parts.select_related('item').all())
         if not parts_qs:
@@ -140,6 +148,9 @@ class OptimizeView(APIView):
 
         groups = []
         global_bar_index = 0
+        # The same physical stock bars serve every group of an item; track
+        # what earlier groups consumed so a remnant is never handed out twice.
+        remnants_consumed: dict[int, int] = defaultdict(int)
 
         for (item_id, stock_len), group_parts in groups_map.items():
             item_obj = group_parts[0].item
@@ -153,6 +164,8 @@ class OptimizeView(APIView):
                     'angle_left_deg': float(p.angle_left_deg),
                     'angle_right_deg': float(p.angle_right_deg),
                     'profile_height_mm': p.profile_height_mm,
+                    'allow_rotation': p.allow_rotation,
+                    'requires_bending': p.requires_bending,
                     'image_no': p.image_no,
                 }
                 for p in group_parts
@@ -163,10 +176,14 @@ class OptimizeView(APIView):
                 session=session,
                 item_id=item_id,
             ).values('id', 'length_mm', 'quantity')
-            stock_pieces = [
-                {'id': r['id'], 'length_mm': r['length_mm'], 'quantity': r['quantity']}
-                for r in stock_bars_qs
-            ] or None
+            stock_pieces = []
+            for r in stock_bars_qs:
+                remaining = r['quantity'] - remnants_consumed[r['id']]
+                if remaining > 0:
+                    stock_pieces.append(
+                        {'id': r['id'], 'length_mm': r['length_mm'], 'quantity': remaining}
+                    )
+            stock_pieces = stock_pieces or None
 
             try:
                 result = optimize(parts_data, stock_len, kerf_mm, stock_pieces=stock_pieces)
@@ -177,6 +194,8 @@ class OptimizeView(APIView):
             for bar in result['bars']:
                 global_bar_index += 1
                 bar['global_bar_index'] = global_bar_index
+                if bar.get('is_remnant') and bar.get('stock_bar_id'):
+                    remnants_consumed[bar['stock_bar_id']] += 1
 
             groups.append({
                 'item_id': item_id,
@@ -188,6 +207,10 @@ class OptimizeView(APIView):
                 'remnant_bars_used': result.get('remnant_bars_used', 0),
                 'total_waste_mm': result['total_waste_mm'],
                 'efficiency_pct': result['efficiency_pct'],
+                'total_pass_count': result.get('total_pass_count', 0),
+                'saw_setup_changes': result.get('saw_setup_changes', 0),
+                'nest_pairs_formed': result.get('nest_pairs_formed', 0),
+                'material_saved_by_nesting_mm': result.get('material_saved_by_nesting_mm', 0.0),
                 'bars': result['bars'],
             })
 
@@ -378,6 +401,8 @@ class ConfirmView(APIView):
                             stock_length_mm=bar['stock_length_mm'],
                             material=item_name,
                             layout_json=bar['cuts'],
+                            passes_json=bar.get('passes'),
+                            is_remnant_bar=bool(bar.get('is_remnant')),
                             waste_mm=bar['waste_mm'],
                             name=f"{session.title} – {item_name} Bar {bar_idx}",
                             quantity=1,
@@ -394,8 +419,15 @@ class ConfirmView(APIView):
                         if bar.get('is_remnant') and bar.get('stock_bar_id'):
                             usage_tally[bar['stock_bar_id']] += 1
 
-                # Clear previous usage records for this session (in case of re-re-confirm)
-                LinearCuttingStockBarUsage.objects.filter(session=session).delete()
+                # Reverse the previous confirm's consumption before clearing
+                # its usage records — otherwise a re-confirm decrements the
+                # same stock bars twice.
+                prior_usages = LinearCuttingStockBarUsage.objects.filter(session=session)
+                for usage in prior_usages:
+                    LinearCuttingStockBar.objects.filter(pk=usage.stock_bar_id).update(
+                        quantity=models.F('quantity') + usage.quantity_used
+                    )
+                prior_usages.delete()
 
                 for stock_bar_id, qty_used in usage_tally.items():
                     LinearCuttingStockBarUsage.objects.create(
@@ -659,6 +691,9 @@ class LinearCuttingStockBarViewSet(ModelViewSet):
                     try:
                         bar = LinearCuttingStockBar.objects.get(pk=bar_id, session=session)
                     except LinearCuttingStockBar.DoesNotExist:
+                        # Undo this atomic block's deletions before erroring —
+                        # returning (not raising) would otherwise commit them.
+                        transaction.set_rollback(True)
                         return Response(
                             {'error': f'Stock bar id={bar_id} not found in session {session_key}.'},
                             status=status.HTTP_400_BAD_REQUEST,

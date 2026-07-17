@@ -79,8 +79,14 @@ class OvertimeEntryWriteSerializer(serializers.ModelSerializer):
 
 class OvertimeRequestListSerializer(serializers.ModelSerializer):
     requester_username = serializers.CharField(source="requester.username", read_only=True)
-    total_users = serializers.IntegerField(source="entries.count", read_only=True)
+    total_users = serializers.SerializerMethodField()
     status_label = serializers.SerializerMethodField()
+
+    def get_total_users(self, obj):
+        # Count participants excluding entries rejected during partial approval.
+        # Uses the prefetched `entries` (no extra query). Pending (historical)
+        # and approved both count; only rejected are dropped.
+        return sum(1 for e in obj.entries.all() if e.status != "rejected")
     team_label = serializers.SerializerMethodField()
     approval = serializers.SerializerMethodField()
 
@@ -334,7 +340,7 @@ class UserOvertimeListSerializer(serializers.ModelSerializer):
                 request__status="approved",
                 request__start_at__lt=end_exclusive,
                 request__end_at__gte=start_of_day,
-            )
+            ).exclude(status="rejected")
         return OvertimeEntryShortSerializer(entries, many=True).data
 
     class Meta:

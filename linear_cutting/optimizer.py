@@ -1,286 +1,310 @@
 """
-Linear Cutting Optimizer — 1D Bin Packing (First Fit Decreasing)
+Linear Cutting Optimizer — 1-D packing with miter-cut awareness.
 
-Given a list of parts (each with a nominal length, quantity, and optional
-miter angles) and a stock bar length, this module computes the minimum number
-of bars needed and produces a layout (offset positions) for every cut.
+Model (full derivation in ``geometry.py``):
 
-Angle offset formula
---------------------
-A miter cut on a profile of height H at angle α (degrees) consumes an
-additional H × |tan(α)| mm compared to a square cut.  We add this offset
-for both ends of the part so that the "effective" length accounts for the
-extra bar material consumed by the angled faces.
+* ``nominal_length_mm`` is a piece's LONG-POINT (bounding) length along the
+  bar — what a tape measure reads across the finished piece at its longest.
+* End angles are signed degrees from square; the sign says which corner is
+  cut back (positive = far edge recessed, negative = near edge recessed).
+* Consecutive pieces whose touching faces lie in one plane
+  (``angle_left(B) == -angle_right(A)``) are separated by a SINGLE saw pass
+  consuming ``kerf / cos(angle)`` — this is how two parallelogram pieces
+  interlock along one diagonal.  Faces that are not coplanar each get their
+  own pass and the wedge between them becomes scrap; the required gap comes
+  from ``geometry.boundary_gap_mm``.
+* Pieces may be turned 180° in the miter plane (``allow_rotation``), which
+  maps ``(aL, aR) → (-aR, -aL)`` — the optimizer uses this to create shared
+  cuts (e.g. trapezoid pieces nested tip-to-tail alternately flipped).
 
-Kerf
-----
-Every saw cut removes `kerf_mm` of material.  Between consecutive cuts on the
-same bar there is one kerf.  The first cut (at the bar end / entry) is free
-because we assume the bar has already been squared off.  So for N parts placed
-on a bar there are (N-1) kerfs between them, plus one final trim-cut kerf at
-the tail end is NOT counted (it only affects waste, not required capacity).
-
-Actually, industry convention counts one kerf per cut — including the separating
-cut after the last piece.  We include a kerf after each placed piece to be
-conservative (slightly over-estimates kerf consumption, safer).
+Packing: pieces are packed by several deterministic strategies
+(order × placement policy); the best complete solution wins
+(fewest new bars, then fewest remnants, least waste, fewest saw passes).
 """
 
-import math
-from dataclasses import dataclass, field
-from typing import List
+from dataclasses import dataclass, replace
+from typing import List, Optional
+
+from .geometry import (
+    ANGLE_TOL_DEG,
+    boundary_gap_mm,
+    kerf_axial_mm,
+    passes_for_bar,
+    recess_mm,
+    rotated_angles,
+    validate_piece,
+)
+
+_EPS = 1e-6
 
 
-@dataclass
-class PartInstance:
-    """A single piece to be cut."""
+@dataclass(frozen=True)
+class Piece:
+    """A single physical piece to cut, in a fixed orientation."""
     label: str
-    nominal_mm: int          # requested length
-    effective_mm: float      # nominal + angle offsets
-    job_no: str = ''
-    part_id: int = 0         # LinearCuttingPart.pk
-    angle_left_deg: float = 0.0
-    angle_right_deg: float = 0.0
-    profile_height_mm: int = 0
-    image_no: str = ''
+    part_id: int
+    job_no: str
+    image_no: str
+    length: float
+    ang_l: float
+    ang_r: float
+    height: float
+    allow_rotation: bool = True
+    requires_bending: bool = False
+    seq: int = 0            # stable identity for deterministic sorts
+    flipped: bool = False
+
+    def rotated(self) -> 'Piece':
+        al, ar = rotated_angles(self.ang_l, self.ang_r)
+        return replace(self, ang_l=al, ang_r=ar, flipped=not self.flipped)
+
+    def orientations(self):
+        yield self
+        if self.allow_rotation:
+            r = self.rotated()
+            if (abs(r.ang_l - self.ang_l) > ANGLE_TOL_DEG
+                    or abs(r.ang_r - self.ang_r) > ANGLE_TOL_DEG):
+                yield r
 
 
-@dataclass
-class PlacedCut:
-    """One part placed on a bar at a given offset."""
-    label: str
-    nominal_mm: int
-    effective_mm: float
-    offset_mm: float         # distance from bar start to cut start
-    job_no: str = ''
-    part_id: int = 0
-    angle_left_deg: float = 0.0
-    angle_right_deg: float = 0.0
-    profile_height_mm: int = 0
-    image_no: str = ''
-    # Nesting fields — populated only when two complementary-angled parts share one cut
-    is_nest_pair: bool = False
-    nest_role: str = ''                  # 'A' (left part) | 'B' (right part) | '' for standalone
-    nested_with_index: int = None        # index within bar.cuts of the pair partner
-    shared_angle_offset_mm: float = 0.0 # the triangle offset that was cancelled
+class _BarState:
+    __slots__ = ('stock_length', 'is_remnant', 'stock_bar_id',
+                 'placements', 'cursor_end', 'shared_count', 'saved_mm')
 
-
-@dataclass
-class NestPair:
-    """
-    Two PartInstances whose shared diagonal cut collapses one angle offset pair.
-
-    The right angle of part_a and the left angle of part_b are equal in magnitude
-    and can be produced with a single saw pass.  The pair occupies:
-        nominal_A + left_offset_A + nominal_B + right_offset_B  (+1 kerf)
-    instead of two separate placements each carrying their own angle offset.
-    """
-    part_a: PartInstance       # left part on bar; its right angle is absorbed
-    part_b: PartInstance       # right part on bar; its left angle is absorbed
-    effective_mm: float        # nominal_A + left_offset_A + nominal_B + right_offset_B
-    shared_offset_mm: float    # the cancelled offset (right_offset_A == left_offset_B)
-
-
-@dataclass
-class Bar:
-    """One stock bar with its placed cuts."""
-    bar_index: int
-    stock_length_mm: int
-    cuts: List[PlacedCut] = field(default_factory=list)
-    is_remnant: bool = False
-    stock_bar_id: int = 0
-    _used_mm: float = field(default=0.0, init=False)
-
-    def remaining(self, kerf_mm: float) -> float:
-        """Remaining usable length on this bar (already accounts for kerf after each cut)."""
-        return self.stock_length_mm - self._used_mm
-
-    def can_fit(self, effective_mm: float, kerf_mm: float) -> bool:
-        used_after = self._used_mm + effective_mm + kerf_mm
-        return used_after <= self.stock_length_mm
-
-    def place(self, part: PartInstance, kerf_mm: float) -> PlacedCut:
-        offset = self._used_mm
-        cut = PlacedCut(
-            label=part.label,
-            nominal_mm=part.nominal_mm,
-            effective_mm=part.effective_mm,
-            offset_mm=round(offset, 2),
-            job_no=part.job_no,
-            part_id=part.part_id,
-            angle_left_deg=part.angle_left_deg,
-            angle_right_deg=part.angle_right_deg,
-            profile_height_mm=part.profile_height_mm,
-            image_no=part.image_no,
-        )
-        self._used_mm += part.effective_mm + kerf_mm
-        self.cuts.append(cut)
-        return cut
-
-    def can_fit_pair(self, pair, kerf_mm: float) -> bool:
-        return self._used_mm + pair.effective_mm + kerf_mm <= self.stock_length_mm
-
-    def place_pair(self, pair, kerf_mm: float):
-        """
-        Place a NestPair onto this bar as two consecutive PlacedCut entries.
-
-        A's right angle offset and B's left angle offset are absorbed into the
-        shared diagonal cut — neither is charged separately.  Only one kerf is
-        charged for the whole pair (the separating cut after B).
-        """
-        left_offset_a = _angle_offset(pair.part_a.angle_left_deg, pair.part_a.profile_height_mm)
-        a_span = pair.part_a.nominal_mm + left_offset_a   # A's bar footprint (right offset absorbed)
-
-        right_offset_b = _angle_offset(pair.part_b.angle_right_deg, pair.part_b.profile_height_mm)
-        b_span = pair.part_b.nominal_mm + right_offset_b  # B's bar footprint (left offset absorbed)
-
-        offset_a = self._used_mm
-        offset_b = offset_a + a_span  # B starts immediately after A — no kerf gap between them
-
-        cut_a = PlacedCut(
-            label=pair.part_a.label,
-            nominal_mm=pair.part_a.nominal_mm,
-            effective_mm=round(a_span, 2),
-            offset_mm=round(offset_a, 2),
-            job_no=pair.part_a.job_no,
-            part_id=pair.part_a.part_id,
-            angle_left_deg=pair.part_a.angle_left_deg,
-            angle_right_deg=pair.part_a.angle_right_deg,
-            profile_height_mm=pair.part_a.profile_height_mm,
-            image_no=pair.part_a.image_no,
-            is_nest_pair=True,
-            nest_role='A',
-            shared_angle_offset_mm=round(pair.shared_offset_mm, 2),
-        )
-        cut_b = PlacedCut(
-            label=pair.part_b.label,
-            nominal_mm=pair.part_b.nominal_mm,
-            effective_mm=round(b_span, 2),
-            offset_mm=round(offset_b, 2),
-            job_no=pair.part_b.job_no,
-            part_id=pair.part_b.part_id,
-            angle_left_deg=pair.part_b.angle_left_deg,
-            angle_right_deg=pair.part_b.angle_right_deg,
-            profile_height_mm=pair.part_b.profile_height_mm,
-            image_no=pair.part_b.image_no,
-            is_nest_pair=True,
-            nest_role='B',
-            shared_angle_offset_mm=round(pair.shared_offset_mm, 2),
-        )
-
-        self._used_mm += pair.effective_mm + kerf_mm
-        self.cuts.append(cut_a)
-        self.cuts.append(cut_b)
-
-        # Back-fill cross-references now that both cuts have stable indices
-        idx_a = len(self.cuts) - 2
-        idx_b = len(self.cuts) - 1
-        self.cuts[idx_a].nested_with_index = idx_b
-        self.cuts[idx_b].nested_with_index = idx_a
+    def __init__(self, stock_length: float, is_remnant: bool = False,
+                 stock_bar_id: int = 0):
+        self.stock_length = float(stock_length)
+        self.is_remnant = is_remnant
+        self.stock_bar_id = stock_bar_id
+        self.placements = []        # list of (piece, offset, shared_with_prev)
+        self.cursor_end = 0.0       # bounding-box end of the last piece
+        self.shared_count = 0       # shared (single-pass) boundaries
+        self.saved_mm = 0.0         # interlock overlap reclaimed by sharing
 
     @property
-    def waste_mm(self) -> int:
-        return max(0, int(self.stock_length_mm - self._used_mm))
+    def leftover(self) -> float:
+        return self.stock_length - self.cursor_end
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+@dataclass(frozen=True)
+class _Candidate:
+    end: float
+    gap: float
+    shared: bool
+    orient: Piece
+    offset: float
 
-def _angle_offset(angle_deg: float, profile_height_mm: int) -> float:
-    """Extra mm consumed at one end due to a miter cut."""
-    if angle_deg == 0 or profile_height_mm == 0:
-        return 0.0
-    return profile_height_mm * abs(math.tan(math.radians(angle_deg)))
+
+def _candidate_for(bar: _BarState, piece: Piece, kerf: float) -> Optional[_Candidate]:
+    """Best feasible way to append ``piece`` to ``bar`` (or None)."""
+    best = None
+    for orient in piece.orientations():
+        if not bar.placements:
+            # Fresh factory end is trusted on new bars; remnant ends are not,
+            # so the first pass on a remnant gets a full blade of clearance.
+            lead = kerf_axial_mm(kerf, orient.ang_l) if bar.is_remnant else 0.0
+            offset, gap, shared = lead, lead, False
+        else:
+            last = bar.placements[-1][0]
+            gap, shared = boundary_gap_mm(
+                last.ang_r, orient.ang_l, last.height, orient.height, kerf)
+            offset = bar.cursor_end + gap
+        end = offset + orient.length
+        if end > bar.stock_length + _EPS:
+            continue
+        cand = _Candidate(end=end, gap=gap, shared=shared,
+                          orient=orient, offset=offset)
+        if best is None or (cand.end, not cand.shared, cand.orient.flipped) < \
+                           (best.end, not best.shared, best.orient.flipped):
+            best = cand
+    return best
 
 
-def _build_instances(parts_data: list) -> List[PartInstance]:
-    """
-    Expand each part definition into individual PartInstance objects.
+def _place(bar: _BarState, cand: _Candidate, kerf: float):
+    bar.placements.append((cand.orient, cand.offset, cand.shared))
+    bar.cursor_end = cand.end
+    if cand.shared and bar.placements[-2:]:
+        bar.shared_count += 1
+        clearance = kerf_axial_mm(kerf, cand.orient.ang_l)
+        bar.saved_mm += max(0.0, clearance - cand.gap)
 
-    parts_data items must have:
-        label, nominal_length_mm, quantity,
-        angle_left_deg, angle_right_deg, profile_height_mm,
-        job_no (optional), id (optional)
-    """
-    instances: List[PartInstance] = []
+
+def _pack(pieces: List[Piece], stock_length: float, kerf: float,
+          stock_seed: list, policy: str) -> Optional[List[_BarState]]:
+    bars = [
+        _BarState(s['length_mm'], is_remnant=True, stock_bar_id=s['id'])
+        for s in stock_seed
+    ]
+    for piece in pieces:
+        chosen = None       # (sort_key, bar, candidate)
+        for idx, bar in enumerate(bars):
+            cand = _candidate_for(bar, piece, kerf)
+            if cand is None:
+                continue
+            if policy == 'first':
+                chosen = (idx, bar, cand)
+                break
+            elif policy == 'best_end':
+                key = (bar.stock_length - cand.end, idx)
+            else:  # 'best_gap'
+                key = (cand.gap, bar.stock_length - cand.end, idx)
+            if chosen is None or key < chosen[0]:
+                chosen = (key, bar, cand)
+        if chosen is None:
+            new_bar = _BarState(stock_length, is_remnant=False)
+            cand = _candidate_for(new_bar, piece, kerf)
+            if cand is None:
+                return None     # cannot place even on a fresh bar
+            bars.append(new_bar)
+            chosen = (None, new_bar, cand)
+        _place(chosen[1], chosen[2], kerf)
+    return [b for b in bars if b.placements or not b.is_remnant]
+
+
+def _build_pieces(parts_data: list) -> List[Piece]:
+    pieces: List[Piece] = []
+    problems: List[str] = []
+    seq = 0
     for p in parts_data:
-        left_offset = _angle_offset(float(p.get('angle_left_deg', 0)), int(p.get('profile_height_mm', 0)))
-        right_offset = _angle_offset(float(p.get('angle_right_deg', 0)), int(p.get('profile_height_mm', 0)))
-        effective = p['nominal_length_mm'] + left_offset + right_offset
-        angle_left = float(p.get('angle_left_deg', 0))
-        angle_right = float(p.get('angle_right_deg', 0))
-        profile_h = int(p.get('profile_height_mm', 0))
-        for _ in range(int(p['quantity'])):
-            instances.append(PartInstance(
-                label=p.get('label', ''),
-                nominal_mm=p['nominal_length_mm'],
-                effective_mm=effective,
-                job_no=p.get('job_no', ''),
-                part_id=p.get('id', 0),
-                angle_left_deg=angle_left,
-                angle_right_deg=angle_right,
-                profile_height_mm=profile_h,
-                image_no=p.get('image_no', ''),
+        label = p.get('label', '') or ''
+        length = float(p.get('nominal_length_mm') or 0)
+        ang_l = float(p.get('angle_left_deg') or 0)
+        ang_r = float(p.get('angle_right_deg') or 0)
+        height = float(p.get('profile_height_mm') or 0)
+        problems.extend(validate_piece(label, length, ang_l, ang_r, height))
+        qty = int(p.get('quantity') or 0)
+        for _ in range(max(0, qty)):
+            seq += 1
+            pieces.append(Piece(
+                label=label,
+                part_id=int(p.get('id') or 0),
+                job_no=p.get('job_no', '') or '',
+                image_no=p.get('image_no', '') or '',
+                length=length,
+                ang_l=ang_l,
+                ang_r=ang_r,
+                height=height,
+                allow_rotation=bool(p.get('allow_rotation', True)),
+                requires_bending=bool(p.get('requires_bending', False)),
+                seq=seq,
             ))
-    return instances
+    if problems:
+        raise ValueError(' '.join(problems))
+    return pieces
 
 
-def _find_pairs(instances: List[PartInstance], kerf_mm: float):
+def _orders(pieces: List[Piece], stock_length: float):
+    """Deterministic piece orders to try.  Oversize pieces (longer than a
+    fresh bar — they can only live on long remnants) always go first."""
+    def ovs(p):
+        return 0 if p.length > stock_length else 1
+
+    by_len = sorted(pieces, key=lambda p: (ovs(p), -p.length, p.seq))
+    by_angle = sorted(pieces, key=lambda p: (
+        ovs(p),
+        -max(abs(p.ang_l), abs(p.ang_r)),
+        -min(abs(p.ang_l), abs(p.ang_r)),
+        -p.length, p.seq))
+    by_job = sorted(pieces, key=lambda p: (ovs(p), p.job_no, -p.length, p.seq))
+    return [('len_desc', by_len), ('angle_family', by_angle), ('job', by_job)]
+
+
+def _saw_setup_changes(passes: list) -> int:
+    """How many times the operator must change the saw setting on this bar.
+
+    A 'setting' is the blade's magnitude + physical lean direction (the side
+    the cut plane leans toward at the far edge) — two passes at |45°| with
+    the same lean are one setting even if the pieces' signed angles differ.
     """
-    Greedy opportunistic pairing pass.
+    changes = 0
+    prev = None
+    for p in passes:
+        ang = abs(float(p.get('angle_deg') or 0))
+        if ang < ANGLE_TOL_DEG:
+            setting = (0.0, 0)
+        else:
+            lean = 1 if float(p['x_far_mm']) > float(p['x_near_mm']) else -1
+            setting = (round(ang, 1), lean)
+        if prev is not None and setting != prev:
+            changes += 1
+        prev = setting
+    return changes
 
-    For each unpaired instance A whose right end is angled, find the first
-    subsequent unpaired instance B whose left end has an equal-magnitude angle
-    and the same profile height.  The pair shares one diagonal cut instead of
-    two, saving right_offset_A + left_offset_B mm of bar stock and one saw pass.
 
-    Returns a list of PartInstance | NestPair objects sorted by effective_mm
-    descending (FFD order maintained).
-    """
-    paired: set = set()
-    result = []
+def _solution_dict(bars: List[_BarState], stock_length: float, kerf: float) -> dict:
+    bars_out = []
+    total_piece_mm = 0.0
+    for i, bar in enumerate(bars, start=1):
+        cuts = []
+        for j, (orient, offset, shared) in enumerate(bar.placements):
+            # True material content of the piece (area / profile height):
+            # long-point length minus half of each end recess.  Using the
+            # bounding length here would double-count interlocked diagonals
+            # and push efficiency above 100 %.
+            total_piece_mm += orient.length - (
+                recess_mm(orient.ang_l, orient.height)
+                + recess_mm(orient.ang_r, orient.height)
+            ) / 2.0
+            # Full-precision values first — passes are derived from these;
+            # rounding happens only on the way out.
+            cut = {
+                'label': orient.label,
+                'nominal_mm': orient.length,
+                'effective_mm': orient.length,   # back-compat
+                'offset_mm': offset,
+                'end_mm': offset + orient.length,
+                'job_no': orient.job_no,
+                'part_id': orient.part_id,
+                'image_no': orient.image_no,
+                'angle_left_deg': round(orient.ang_l, 2),
+                'angle_right_deg': round(orient.ang_r, 2),
+                'profile_height_mm': round(orient.height, 1),
+                'flipped': orient.flipped,
+                'requires_bending': orient.requires_bending,
+                'shared_left': shared,
+                'shared_right': False,
+            }
+            if shared and cuts:
+                cuts[-1]['shared_right'] = True
+            cuts.append(cut)
+        bar_dict = {
+            'bar_index': i,
+            'stock_length_mm': int(round(bar.stock_length)),
+            'used_mm': round(bar.cursor_end, 1),
+            'waste_mm': int(round(max(0.0, bar.leftover))),
+            'is_remnant': bar.is_remnant,
+            'stock_bar_id': bar.stock_bar_id,
+            'shared_cut_count': bar.shared_count,
+            'cuts': cuts,
+        }
+        bar_dict['passes'] = passes_for_bar(bar_dict, kerf)
+        bar_dict['saw_setup_changes'] = _saw_setup_changes(bar_dict['passes'])
+        for c in cuts:
+            c['nominal_mm'] = round(c['nominal_mm'], 1)
+            c['effective_mm'] = round(c['effective_mm'], 1)
+            c['offset_mm'] = round(c['offset_mm'], 1)
+            c['end_mm'] = round(c['end_mm'], 1)
+        bars_out.append(bar_dict)
 
-    for i, a in enumerate(instances):
-        if id(a) in paired:
-            continue
-        # A must have a non-zero right angle on a profiled section to be nestable
-        if a.angle_right_deg == 0 or a.profile_height_mm == 0:
-            result.append(a)
-            continue
-
-        right_offset_a = _angle_offset(a.angle_right_deg, a.profile_height_mm)
-        matched = False
-        for j in range(i + 1, len(instances)):
-            b = instances[j]
-            if id(b) in paired:
-                continue
-            if b.profile_height_mm != a.profile_height_mm:
-                continue
-            if b.angle_left_deg == 0:
-                continue
-            if abs(a.angle_right_deg) != abs(b.angle_left_deg):
-                continue
-
-            left_offset_a = _angle_offset(a.angle_left_deg, a.profile_height_mm)
-            right_offset_b = _angle_offset(b.angle_right_deg, b.profile_height_mm)
-            pair_eff = a.nominal_mm + left_offset_a + b.nominal_mm + right_offset_b
-
-            paired.add(id(a))
-            paired.add(id(b))
-            result.append(NestPair(
-                part_a=a,
-                part_b=b,
-                effective_mm=pair_eff,
-                shared_offset_mm=right_offset_a,
-            ))
-            matched = True
-            break
-
-        if not matched and id(a) not in paired:
-            result.append(a)
-
-    # Any instances skipped entirely (were paired as B) are now absent — that's correct.
-    # Re-sort by effective_mm descending to restore FFD order across pairs and singles.
-    result.sort(key=lambda x: x.effective_mm, reverse=True)
-    return result
+    new_bars = [b for b in bars_out if not b['is_remnant']]
+    total_stock = sum(b['stock_length_mm'] for b in bars_out)
+    total_waste = sum(b['waste_mm'] for b in bars_out)
+    efficiency = round(total_piece_mm / total_stock * 100, 2) if total_stock else 100.0
+    shared_angled = sum(
+        1 for b in bars_out for c in b['cuts']
+        if c['shared_left'] and abs(c['angle_left_deg']) > ANGLE_TOL_DEG
+    )
+    return {
+        'bars_needed': len(new_bars),
+        'remnant_bars_used': len(bars_out) - len(new_bars),
+        'total_waste_mm': total_waste,
+        'efficiency_pct': efficiency,
+        'total_pass_count': sum(len(b['passes']) for b in bars_out),
+        'saw_setup_changes': sum(b['saw_setup_changes'] for b in bars_out),
+        'nest_pairs_formed': shared_angled,
+        'material_saved_by_nesting_mm': round(sum(b.saved_mm for b in bars), 2),
+        'bars': bars_out,
+    }
 
 
 def optimize(
@@ -290,161 +314,98 @@ def optimize(
     stock_pieces: list = None,
 ) -> dict:
     """
-    Run First Fit Decreasing (FFD) bin-packing on the given parts.
+    Compute an optimized cutting layout.
 
     Parameters
     ----------
-    parts_data : list of dicts
-        Each dict: {label, nominal_length_mm, quantity, angle_left_deg,
-                    angle_right_deg, profile_height_mm, job_no?, id?}
-    stock_length_mm : int
-        Length of a single full stock bar in mm.
-    kerf_mm : float
-        Blade kerf in mm (material removed per cut).
-    stock_pieces : list of dicts, optional
-        Pre-existing remnant pieces to use before opening new full bars.
-        Each dict: {length_mm: int, quantity: int}
-        Pieces that receive no cuts are dropped from the result.
+    parts_data : list of dicts with keys
+        label, nominal_length_mm (long-point length), quantity,
+        angle_left_deg, angle_right_deg (signed, 0 = square),
+        profile_height_mm, job_no?, id?, image_no?,
+        allow_rotation? (default True), requires_bending? (default False)
+    stock_length_mm : length of a fresh stock bar
+    kerf_mm : blade thickness (perpendicular to the blade)
+    stock_pieces : optional remnant/warehouse pieces to use before opening
+        fresh bars — dicts of {id, length_mm, quantity}
 
-    Returns
-    -------
-    dict with keys:
-        bars_needed (new full bars only), remnant_bars_used,
-        total_waste_mm, efficiency_pct, bars (list).
-        Each bar has is_remnant: bool.
+    Returns a dict: bars_needed, remnant_bars_used, total_waste_mm,
+    efficiency_pct, total_pass_count, nest_pairs_formed,
+    material_saved_by_nesting_mm, bars: [...].  Each bar carries its
+    ``cuts`` (placed pieces) and ``passes`` (ordered saw passes with
+    operator stop distances).
 
-    Raises
-    ------
-    ValueError
-        If any single part's effective length exceeds the stock bar length.
+    Raises ``ValueError`` for invalid parts or pieces that fit nowhere.
     """
-    instances = _build_instances(parts_data)
+    stock_length = float(stock_length_mm)
+    kerf = float(kerf_mm)
+    pieces = _build_pieces(parts_data)
 
-    # Validate: no part can exceed the full bar
-    for inst in instances:
-        if inst.effective_mm > stock_length_mm:
-            raise ValueError(
-                f"Part '{inst.label}' has effective length {inst.effective_mm:.1f} mm "
-                f"which exceeds the stock bar length of {stock_length_mm} mm."
-            )
-
-    if not instances:
+    if not pieces:
         return {
             'bars_needed': 0,
             'remnant_bars_used': 0,
             'total_waste_mm': 0,
             'efficiency_pct': 100.0,
+            'total_pass_count': 0,
             'nest_pairs_formed': 0,
             'material_saved_by_nesting_mm': 0.0,
             'bars': [],
         }
 
-    # Sort descending by effective length (FFD heuristic)
-    instances.sort(key=lambda p: p.effective_mm, reverse=True)
+    # Expand remnant stock into individual seed bars, longest first.
+    stock_seed = []
+    for piece in sorted(stock_pieces or [], key=lambda s: -float(s['length_mm'])):
+        for _ in range(int(piece.get('quantity') or 0)):
+            stock_seed.append({
+                'length_mm': float(piece['length_mm']),
+                'id': int(piece.get('id') or 0),
+            })
 
-    # Opportunistic pairing: form NestPairs where complementary angles allow a shared cut
-    packing_items = _find_pairs(instances, kerf_mm)
-
-    # Validate pairs too (a pair's effective_mm is always ≤ sum of its two parts,
-    # but could still exceed stock length if both parts are very long)
-    for item in packing_items:
-        if isinstance(item, NestPair) and item.effective_mm > stock_length_mm:
+    # Feasibility: every piece must fit a fresh bar or at least one remnant
+    # (in either orientation — remnant lead trim depends on the lead angle).
+    max_remnant = max((s['length_mm'] for s in stock_seed), default=0.0)
+    for p in pieces:
+        fits_new = p.length <= stock_length + _EPS
+        lead = min(kerf_axial_mm(kerf, o.ang_l) for o in p.orientations())
+        fits_remnant = p.length + lead <= max_remnant + _EPS
+        if not fits_new and not fits_remnant:
             raise ValueError(
-                f"NestPair ({item.part_a.label} + {item.part_b.label}) has effective "
-                f"length {item.effective_mm:.1f} mm exceeding stock bar {stock_length_mm} mm."
+                f"'{p.label}' parçası ({p.length:g} mm) {stock_length_mm:g} mm "
+                f"stok boyuna sığmıyor."
             )
 
-    # Pre-seed bars from stock pieces (longest first)
-    # Each piece is expanded into `quantity` individual Bar instances,
-    # all sharing the same stock_bar_id so confirm can tally usage per ID.
-    bars: List[Bar] = []
-    if stock_pieces:
-        for piece in sorted(stock_pieces, key=lambda p: p['length_mm'], reverse=True):
-            for _ in range(int(piece['quantity'])):
-                bars.append(Bar(
-                    bar_index=len(bars) + 1,
-                    stock_length_mm=int(piece['length_mm']),
-                    is_remnant=True,
-                    stock_bar_id=int(piece.get('id', 0)),
-                ))
+    best = None
+    for _, ordered in _orders(pieces, stock_length):
+        for policy in ('first', 'best_end', 'best_gap'):
+            bars = _pack(ordered, stock_length, kerf, stock_seed, policy)
+            if bars is None:
+                continue
+            solution = _solution_dict(bars, stock_length, kerf)
+            # Material first (user priority #1), then cutting easiness
+            # (priority #2).  Waste is compared in 1 cm buckets so that
+            # sub-centimeter rounding noise never outvotes an extra
+            # saw-angle setting change; the precise value is a later
+            # tie-break to stay deterministic.
+            precise_waste = round(sum(
+                b['stock_length_mm'] - b['used_mm'] for b in solution['bars']
+            ), 1)
+            score = (
+                solution['bars_needed'],
+                solution['remnant_bars_used'],
+                round(precise_waste / 10.0),
+                solution['saw_setup_changes'],
+                solution['total_pass_count'],
+                precise_waste,
+                -max((b['waste_mm'] for b in solution['bars']), default=0),
+            )
+            if best is None or score < best[0]:
+                best = (score, solution)
 
-    for item in packing_items:
-        placed = False
-        if isinstance(item, NestPair):
-            for bar in bars:
-                if bar.can_fit_pair(item, kerf_mm):
-                    bar.place_pair(item, kerf_mm)
-                    placed = True
-                    break
-            if not placed:
-                new_bar = Bar(bar_index=len(bars) + 1, stock_length_mm=stock_length_mm, is_remnant=False)
-                new_bar.place_pair(item, kerf_mm)
-                bars.append(new_bar)
-        else:
-            for bar in bars:
-                if bar.can_fit(item.effective_mm, kerf_mm):
-                    bar.place(item, kerf_mm)
-                    placed = True
-                    break
-            if not placed:
-                new_bar = Bar(bar_index=len(bars) + 1, stock_length_mm=stock_length_mm, is_remnant=False)
-                new_bar.place(item, kerf_mm)
-                bars.append(new_bar)
-
-    # Drop remnant bars that received no cuts (too short for any part)
-    bars = [b for b in bars if b.cuts or not b.is_remnant]
-
-    # Re-index after possible drops
-    for i, b in enumerate(bars):
-        b.bar_index = i + 1
-
-    total_waste = sum(b.waste_mm for b in bars)
-    total_stock_mm = sum(b.stock_length_mm for b in bars)
-    efficiency = round((1 - total_waste / total_stock_mm) * 100, 2) if total_stock_mm else 0.0
-
-    new_bars = [b for b in bars if not b.is_remnant]
-
-    nest_pairs_formed = sum(
-        1 for b in bars for c in b.cuts if c.nest_role == 'A'
-    )
-    material_saved = round(sum(
-        c.shared_angle_offset_mm for b in bars for c in b.cuts if c.nest_role == 'A'
-    ), 2)
-
-    return {
-        'bars_needed': len(new_bars),
-        'remnant_bars_used': len(bars) - len(new_bars),
-        'total_waste_mm': total_waste,
-        'efficiency_pct': efficiency,
-        'nest_pairs_formed': nest_pairs_formed,
-        'material_saved_by_nesting_mm': material_saved,
-        'bars': [
-            {
-                'bar_index': b.bar_index,
-                'stock_length_mm': b.stock_length_mm,
-                'waste_mm': b.waste_mm,
-                'is_remnant': b.is_remnant,
-                'stock_bar_id': b.stock_bar_id,
-                'cuts': [
-                    {
-                        'label': c.label,
-                        'nominal_mm': c.nominal_mm,
-                        'effective_mm': round(c.effective_mm, 2),
-                        'offset_mm': c.offset_mm,
-                        'job_no': c.job_no,
-                        'part_id': c.part_id,
-                        'angle_left_deg': c.angle_left_deg,
-                        'angle_right_deg': c.angle_right_deg,
-                        'profile_height_mm': c.profile_height_mm,
-                        'image_no': c.image_no,
-                        'is_nest_pair': c.is_nest_pair,
-                        'nest_role': c.nest_role,
-                        'nested_with_index': c.nested_with_index,
-                        'shared_angle_offset_mm': c.shared_angle_offset_mm,
-                    }
-                    for c in b.cuts
-                ],
-            }
-            for b in bars
-        ],
-    }
+    if best is None:
+        # Only possible when an oversize piece lost its remnant to greedy
+        # packing in every strategy.
+        raise ValueError(
+            'Parçalar mevcut stok barlara yerleştirilemedi. '
+            'Stok boyundan uzun parçalar için yeterli uzunlukta stok bar girin.'
+        )
+    return best[1]

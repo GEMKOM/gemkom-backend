@@ -104,19 +104,32 @@ class LinearCuttingPart(models.Model):
         max_length=255, blank=True,
         help_text="Optional job order number this part belongs to"
     )
-    nominal_length_mm = models.IntegerField(help_text="Required cut length in mm")
+    nominal_length_mm = models.IntegerField(
+        help_text="Long-point (bounding) length in mm — the piece measured at its longest"
+    )
     quantity = models.IntegerField(help_text="Number of pieces needed")
     angle_left_deg = models.DecimalField(
         max_digits=5, decimal_places=2, default=0,
-        help_text="Miter angle on the left end in degrees (0 = square cut)"
+        help_text="Signed miter angle on the left end (0 = square; + = far corner "
+                  "cut back, - = near corner cut back). See linear_cutting/geometry.py"
     )
     angle_right_deg = models.DecimalField(
         max_digits=5, decimal_places=2, default=0,
-        help_text="Miter angle on the right end in degrees (0 = square cut)"
+        help_text="Signed miter angle on the right end (0 = square cut)"
     )
     profile_height_mm = models.IntegerField(
         default=0,
-        help_text="Profile height in mm, used to calculate extra material consumed by angle cuts"
+        help_text="Profile dimension (mm) in the miter plane; required for angled cuts"
+    )
+    allow_rotation = models.BooleanField(
+        default=True,
+        help_text="Optimizer may turn the piece 180° in the miter plane to share "
+                  "cuts. Disable for asymmetric profiles whose orientation matters."
+    )
+    requires_bending = models.BooleanField(
+        default=False,
+        help_text="Piece is bent after cutting; nominal_length_mm must then be "
+                  "the developed (flat/açınım) length."
     )
     image_no = models.CharField(
         max_length=100, blank=True,
@@ -206,7 +219,17 @@ class LinearCuttingTask(BaseTask):
     stock_length_mm = models.IntegerField()
     material = models.CharField(max_length=100, help_text="Denormalized item name for display")
     layout_json = models.JSONField(
-        help_text="Array of cuts on this bar: [{label, nominal_mm, effective_mm, offset_mm}]"
+        help_text="Array of cuts on this bar: [{label, nominal_mm, offset_mm, "
+                  "angle_left_deg, angle_right_deg, flipped, shared_left, ...}]"
+    )
+    passes_json = models.JSONField(
+        null=True, blank=True,
+        help_text="Ordered saw passes with operator stop distances "
+                  "(snapshot of geometry.passes_for_bar at confirm time)"
+    )
+    is_remnant_bar = models.BooleanField(
+        default=False,
+        help_text="Bar was taken from remnant/warehouse stock (gets a lead trim cut)"
     )
     waste_mm = models.IntegerField(default=0)
 

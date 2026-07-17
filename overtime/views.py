@@ -46,6 +46,7 @@ from .serializers import (
 from .filters import OvertimeRequestFilter
 
 from .approval_service import decide as ot_decide  # approve/reject helper
+from .approval_service import reject_entries as ot_reject_entries  # post-approval retraction
 from approvals.services import get_workflow
 
 from django.db.models import Exists, OuterRef, Subquery, F, Q
@@ -205,6 +206,54 @@ class OvertimeRequestViewSet(viewsets.ModelViewSet):
         ot: OvertimeRequest = self.get_object()
         return Response(compute_request_cost_impact(ot))
 
+    def _is_workflow_approver(self, ot: OvertimeRequest, user) -> bool:
+        """True if `user` is (or was) an approver on any stage of this request."""
+        if user.is_superuser or user.is_staff:
+            return True
+        ct = ContentType.objects.get_for_model(OvertimeRequest)
+        approver_lists = (ApprovalStageInstance.objects
+                          .filter(workflow__content_type=ct, workflow__object_id=ot.id)
+                          .values_list("approver_user_ids", flat=True))
+        return any(user.id in (ids or []) for ids in approver_lists)
+
+    @action(detail=True, methods=["post"], url_path="reject_entries")
+    def reject_entries(self, request, pk=None):
+        """
+        Reject individual participant entries — including on an already-approved
+        request (an approver retracting people). Body: {entry_ids: [int], comment}.
+        Only workflow approvers (any stage) or staff may do this.
+        """
+        ot: OvertimeRequest = self.get_object()
+        if ot.status not in ("approved", "submitted"):
+            return Response(
+                {"detail": "Sadece onaylı veya bekleyen taleplerde kişi reddedilebilir."},
+                status=400,
+            )
+        if not self._is_workflow_approver(ot, request.user):
+            return Response({"detail": "Bu talep için onaylayıcı değilsiniz."}, status=403)
+
+        data = request.data or {}
+        entry_ids = data.get("entry_ids") or data.get("rejected_entry_ids") or []
+        if not entry_ids:
+            return Response({"detail": "Reddedilecek kişi seçilmedi."}, status=400)
+
+        valid_ids = set(ot.entries.filter(id__in=entry_ids).values_list("id", flat=True))
+        invalid = set(entry_ids) - valid_ids
+        if invalid:
+            return Response(
+                {"detail": f"Bu talebe ait olmayan kalem(ler): {sorted(invalid)}"},
+                status=400,
+            )
+
+        comment = data.get("comment", "")
+        ot, updated = ot_reject_entries(ot, request.user, list(valid_ids), comment=comment)
+        ot.refresh_from_db()
+        return Response({
+            "detail": "Seçili kişiler reddedildi.",
+            "status": ot.status,
+            "rejected_count": updated,
+        })
+
     @action(detail=True, methods=["post"])
     def reject(self, request, pk=None):
         ot: OvertimeRequest = self.get_object()
@@ -363,6 +412,9 @@ class OvertimeUsersForDateView(APIView):
         start_of_day = timezone.make_aware(datetime.combine(day, time.min), tz)
         end_of_day = timezone.make_aware(datetime.combine(day + timedelta(days=1), time.min), tz)
 
+        # Exclude entries rejected during partial approval. Use exclude(rejected)
+        # rather than filter(approved): pre-existing entries carry the default
+        # status='pending' and must still be shown.
         user_ids = (
             OvertimeEntry.objects
             .filter(
@@ -370,6 +422,7 @@ class OvertimeUsersForDateView(APIView):
                 request__start_at__lte=end_of_day,
                 request__end_at__gte=start_of_day,
             )
+            .exclude(status="rejected")
             .values_list("user_id", flat=True)
             .distinct()
         )
@@ -381,6 +434,7 @@ class OvertimeUsersForDateView(APIView):
                 request__start_at__lt=end_of_day,
                 request__end_at__gte=start_of_day,
             )
+            .exclude(status="rejected")
             .only("id", "job_no", "description", "approved_hours", "user_id", "request_id", "request__start_at","request__end_at")
             .select_related(None)  # ensure we don't drag extra relations
         )

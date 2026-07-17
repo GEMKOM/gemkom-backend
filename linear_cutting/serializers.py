@@ -3,7 +3,34 @@ from django.db import transaction
 import time
 
 from .models import LinearCuttingSession, LinearCuttingPart, LinearCuttingTask, LinearCuttingStockBar
+from .geometry import ANGLE_TOL_DEG, MAX_ANGLE_DEG
 from tasks.serializers import BaseTimerSerializer
+
+
+def _validate_part_geometry(attrs, instance=None):
+    """Shared angle/height validation for part serializers (PATCH-aware)."""
+    def current(field, default=0):
+        if field in attrs:
+            return attrs[field]
+        if instance is not None:
+            return getattr(instance, field)
+        return default
+
+    angle_l = float(current('angle_left_deg') or 0)
+    angle_r = float(current('angle_right_deg') or 0)
+    height = float(current('profile_height_mm') or 0)
+
+    for side, ang in (('Sol', angle_l), ('Sağ', angle_r)):
+        if abs(ang) > MAX_ANGLE_DEG:
+            raise serializers.ValidationError(
+                f"{side} açı en fazla ±{MAX_ANGLE_DEG:g}° olabilir."
+            )
+    has_angle = abs(angle_l) > ANGLE_TOL_DEG or abs(angle_r) > ANGLE_TOL_DEG
+    if has_angle and height <= 0:
+        raise serializers.ValidationError(
+            "Açılı kesim için profil ölçüsü (açı düzlemindeki kesit boyu, mm) girilmelidir."
+        )
+    return attrs
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -45,9 +72,13 @@ class LinearCuttingPartSerializer(serializers.ModelSerializer):
             'label', 'job_no', 'image_no',
             'nominal_length_mm', 'quantity',
             'angle_left_deg', 'angle_right_deg', 'profile_height_mm',
+            'allow_rotation', 'requires_bending',
             'order',
         ]
         read_only_fields = ['id']
+
+    def validate(self, attrs):
+        return _validate_part_geometry(attrs, self.instance)
 
 
 class LinearCuttingPartWriteSerializer(serializers.ModelSerializer):
@@ -59,8 +90,12 @@ class LinearCuttingPartWriteSerializer(serializers.ModelSerializer):
             'label', 'job_no', 'image_no',
             'nominal_length_mm', 'quantity',
             'angle_left_deg', 'angle_right_deg', 'profile_height_mm',
+            'allow_rotation', 'requires_bending',
             'order',
         ]
+
+    def validate(self, attrs):
+        return _validate_part_geometry(attrs, self.instance)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -189,17 +224,23 @@ class LinearCuttingTaskDetailSerializer(serializers.ModelSerializer):
     item_code = serializers.CharField(source='item.code', read_only=True, allow_null=True)
     item_name = serializers.CharField(source='item.name', read_only=True, allow_null=True)
 
+    kerf_mm = serializers.DecimalField(
+        source='session.kerf_mm', max_digits=5, decimal_places=2, read_only=True)
+    session_title = serializers.CharField(source='session.title', read_only=True)
+
     class Meta:
         model = LinearCuttingTask
         fields = [
-            'key', 'session', 'bar_index', 'name', 'description',
+            'key', 'session', 'session_title', 'bar_index', 'name', 'description',
             'stock_length_mm', 'material', 'layout_json', 'waste_mm',
+            'passes_json', 'is_remnant_bar', 'kerf_mm',
             'item', 'item_code', 'item_name',
             'machine_fk', 'machine_name',
             'completion_date', 'completed_by', 'estimated_hours',
             'in_plan', 'plan_order', 'planned_start_ms', 'planned_end_ms',
         ]
-        read_only_fields = ['key', 'session', 'bar_index', 'layout_json']
+        read_only_fields = ['key', 'session', 'bar_index', 'layout_json',
+                            'passes_json', 'is_remnant_bar']
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -4,8 +4,13 @@ PDF generator for linear cutting lists using ReportLab.
 Uses Bitstream Vera Sans (bundled with ReportLab) for full Unicode support —
 covers all Turkish characters (Ğ ğ İ ı Ş ş Ö ö Ü ü Ç ç) and the degree symbol (°).
 
-optimization_result is now {"groups": [...]} where each group is one catalog
-item. Each group is rendered as its own section with a page break between them.
+Rendering follows CUTTING_MODEL.md:
+* pieces are drawn as their true quadrilaterals (near edge "alt" at the
+  bottom of the diagram, far edge "üst" at the top),
+* saw passes are drawn as dark blade bands; everything not covered by a
+  piece is hatched scrap,
+* every bar gets a "Kesim Sırası" pass table with the stop distances the
+  operator dials (measured from the fresh edge of the remaining bar).
 """
 
 import io
@@ -23,6 +28,8 @@ from reportlab.platypus import (
 )
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
+
+from .geometry import ANGLE_TOL_DEG, piece_faces, passes_for_bar
 
 
 # ─── Register Unicode-capable fonts once at module load ──────────────────────
@@ -42,9 +49,10 @@ pdfmetrics.registerFontFamily(
 DARK_BLUE   = colors.HexColor('#1E3A5F')
 LIGHT_GREY  = colors.HexColor('#F5F5F5')
 BAR_ACCENT  = colors.HexColor('#E8F4FD')
-WASTE_COLOR = colors.HexColor('#D0D0D0')
+SCRAP_BG    = colors.HexColor('#E4E7EA')
+BLADE_COLOR = colors.HexColor('#14181C')
+REMNANT_ACC = colors.HexColor('#B98900')
 
-# Distinct segment colors for cut pieces (cycles if more than 8 cuts)
 _CUT_COLORS = [
     colors.HexColor('#2E86C1'),
     colors.HexColor('#1ABC9C'),
@@ -56,200 +64,184 @@ _CUT_COLORS = [
     colors.HexColor('#16A085'),
 ]
 
+PASS_KIND_TR = {
+    'lead': 'Baş kesim',
+    'shared': 'Ortak kesim',
+    'end': 'Parça ayırma',
+}
+
 
 def _fmt_angle(val) -> str:
-    """Format an angle value: always show degree symbol. '0°' for square cuts."""
+    """'0°' for square; otherwise magnitude + which edge holds the long point."""
     try:
         f = float(val)
     except (TypeError, ValueError):
-        return '\u2014'
-    return f"{f:g}\u00b0"   # \u00b0 = °
+        return '—'
+    if abs(f) < ANGLE_TOL_DEG:
+        return '0°'
+    side = 'alt' if f > 0 else 'üst'
+    return f"{abs(f):g}° ({side})"
 
 
+def _fmt_num(val, nd=1):
+    try:
+        f = float(val)
+    except (TypeError, ValueError):
+        return '—'
+    return f"{round(f, nd):g}"
 
-def _cut_polygon_points(
-    x_left,
-    effective_mm,
-    angle_left_deg,
-    angle_right_deg,
-    profile_height_mm,
-    scale,
-    y_bar,
-    bar_h,
-    is_nest_a=False,
-    is_nest_b=False,
-    shared_offset_mm=0.0,
-    shared_angle_deg=0.0,
-):
-    """
-    Compute the four corners of a cut segment as a quadrilateral.
 
-    Sign convention (matches physical miter cuts on a horizontal bar):
-      Left end:  positive angle → top-left shifts RIGHT  (the face leans inward)
-                 negative angle → top-left shifts LEFT   (the face leans outward)
-      Right end: positive angle → top-right shifts LEFT  (the face leans inward)
-                 negative angle → top-right shifts RIGHT (the face leans outward)
-
-    For a nested pair the shared boundary uses the actual angle of the shared cut
-    (stored as shared_angle_deg) so the direction is preserved correctly.
-    """
-    import math
-
-    def _signed_slant(deg, h):
-        """Signed slant in canvas units. Sign encodes lean direction."""
-        if deg == 0 or h == 0:
-            return 0.0
-        return math.copysign(h * abs(math.tan(math.radians(float(deg)))) * scale, deg)
-
-    w = effective_mm * scale
-
-    if is_nest_a:
-        # Left end: A's own left angle
-        # Right end: the shared diagonal — same formula as right end of standalone
-        left_slant_signed  = _signed_slant(angle_left_deg, profile_height_mm)
-        right_slant_signed = _signed_slant(shared_angle_deg, profile_height_mm)
-    elif is_nest_b:
-        # Left end: the shared diagonal — must produce the same top-x as A's right top-x.
-        # A's right top = A_bottom_right - right_slant_signed(shared)
-        #               = (A_offset + A_eff) - signed_slant(shared_angle)
-        # B's left top must equal that x, i.e. B_offset + left_slant_signed = A right top.
-        # Since B_offset == A_offset + A_eff, we need left_slant_signed = -right_slant_signed.
-        # So for the left end of B we negate the right-end convention:
-        left_slant_signed  = -_signed_slant(shared_angle_deg, profile_height_mm)
-        right_slant_signed = _signed_slant(angle_right_deg, profile_height_mm)
-    else:
-        left_slant_signed  = _signed_slant(angle_left_deg, profile_height_mm)
-        right_slant_signed = _signed_slant(angle_right_deg, profile_height_mm)
-
-    # Left end:  top-left  = bottom-left + left_slant_signed  (positive = rightward)
-    # Right end: top-right = bottom-right - right_slant_signed (positive = leftward/inward)
-    x0 = x_left                              # bottom-left
-    x1 = x_left + left_slant_signed          # top-left
-    x2 = x_left + w - right_slant_signed     # top-right
-    x3 = x_left + w                          # bottom-right
-
-    return [x0, y_bar, x1, y_bar + bar_h, x2, y_bar + bar_h, x3, y_bar]
+def _fmt_pass_angle(pss: dict) -> str:
+    """Pass angle with the physical lean of the cut plane: the direction the
+    plane leans toward the far ("üst") edge — that is what the operator sets
+    on the saw."""
+    try:
+        a = float(pss.get('angle_deg') or 0)
+    except (TypeError, ValueError):
+        return '—'
+    if abs(a) < ANGLE_TOL_DEG:
+        return '0°'
+    near = float(pss.get('x_near_mm') or 0)
+    far = float(pss.get('x_far_mm') or 0)
+    side = 'sağa' if far > near else 'sola'
+    return f"{abs(a):g}° {side}"
 
 
 # ─── Custom Flowable: bar diagram ─────────────────────────────────────────────
 
 class BarDiagram(Flowable):
     """
-    Draws a horizontal bar diagram for one stock bar.
+    Horizontal diagram of one stock bar.
 
-    The bar is drawn as a rectangle split into colored segments (cuts) and a
-    grey waste segment at the end.  Each segment is labelled with its index
-    number.  A ruler with mm ticks is drawn below the bar.
+    Pieces are drawn as their true quadrilaterals (angled faces), the blade
+    bands of every saw pass are shown in dark, and any bar area not covered
+    by a piece is hatched scrap.  A mm ruler runs below the bar.
     """
 
-    BAR_H    = 14 * mm   # bar rectangle height
-    RULER_H  =  5 * mm   # ruler height below bar
-    LABEL_H  =  5 * mm   # space for offset labels below ruler
-    TOTAL_H  = BAR_H + RULER_H + LABEL_H + 2 * mm
+    BAR_H    = 16 * mm
+    RULER_H  =  5 * mm
+    LABEL_H  =  5 * mm
+    TOTAL_H  = BAR_H + RULER_H + LABEL_H + 4 * mm
 
-    def __init__(self, bar: dict, cut_colors: list, width: float):
+    def __init__(self, bar: dict, cut_colors: list, width: float, kerf_mm: float = 0.0):
         super().__init__()
         self.bar        = bar
         self.cut_colors = cut_colors
         self.width      = width
+        self.kerf_mm    = kerf_mm
         self.height     = self.TOTAL_H
 
     def draw(self):
-        c           = self.canv
-        bar         = self.bar
-        stock_mm    = bar['stock_length_mm']
-        cuts        = bar['cuts']
-        waste_mm    = bar['waste_mm']
-        scale       = self.width / stock_mm   # px per mm
+        c        = self.canv
+        bar      = self.bar
+        stock_mm = float(bar.get('stock_length_mm') or 1)
+        cuts     = bar.get('cuts') or []
+        passes   = bar.get('passes') or []
+        scale    = self.width / stock_mm
 
-        y_bar  = self.RULER_H + self.LABEL_H + 2 * mm
-        y_top  = y_bar + self.BAR_H
+        y_bar = self.RULER_H + self.LABEL_H + 2 * mm    # near edge ("alt")
+        y_top = y_bar + self.BAR_H                       # far edge ("üst")
 
-        # ── Draw cut segments ──────────────────────────────────────────────
+        # ── Scrap background with hatching ─────────────────────────────────
+        c.saveState()
+        c.setFillColor(SCRAP_BG)
+        c.rect(0, y_bar, self.width, self.BAR_H, fill=1, stroke=0)
+        p = c.beginPath()
+        p.rect(0, y_bar, self.width, self.BAR_H)
+        c.clipPath(p, stroke=0, fill=0)
+        c.setStrokeColor(colors.HexColor('#C9CDD2'))
+        c.setLineWidth(0.4)
+        step = 2.2 * mm
+        x = -self.BAR_H
+        while x < self.width + self.BAR_H:
+            c.line(x, y_bar, x + self.BAR_H, y_top)
+            x += step
+        c.restoreState()
+
+        # ── Pieces as quadrilaterals ───────────────────────────────────────
         for i, cut in enumerate(cuts):
-            x = cut['offset_mm'] * scale
-            w = cut['effective_mm'] * scale
-            seg_color = self.cut_colors[i % len(self.cut_colors)]
-
-            nest_role = cut.get('nest_role') or ''
-            # For nested pairs the shared boundary uses the actual angle of the cut:
-            # role A's right end = the shared diagonal; role B's left end = same diagonal
-            shared_angle = (
-                cut.get('angle_right_deg', 0) or 0 if nest_role == 'A'
-                else cut.get('angle_left_deg',  0) or 0 if nest_role == 'B'
-                else 0
+            faces = piece_faces(
+                float(cut.get('offset_mm') or 0),
+                float(cut.get('nominal_mm') or cut.get('effective_mm') or 0),
+                float(cut.get('angle_left_deg') or 0),
+                float(cut.get('angle_right_deg') or 0),
+                float(cut.get('profile_height_mm') or 0),
             )
-            pts = _cut_polygon_points(
-                x_left=x,
-                effective_mm=cut['effective_mm'],
-                angle_left_deg=cut.get('angle_left_deg', 0) or 0,
-                angle_right_deg=cut.get('angle_right_deg', 0) or 0,
-                profile_height_mm=cut.get('profile_height_mm', 0) or 0,
-                scale=scale,
-                y_bar=y_bar,
-                bar_h=self.BAR_H,
-                is_nest_a=(nest_role == 'A'),
-                is_nest_b=(nest_role == 'B'),
-                shared_offset_mm=cut.get('shared_angle_offset_mm', 0.0) or 0.0,
-                shared_angle_deg=shared_angle,
-            )
+            xln, xlf = (v * scale for v in faces['left'])
+            xrn, xrf = (v * scale for v in faces['right'])
 
-            c.setFillColor(seg_color)
+            c.setFillColor(self.cut_colors[i % len(self.cut_colors)])
             c.setStrokeColor(colors.white)
             c.setLineWidth(0.5)
             p = c.beginPath()
-            p.moveTo(pts[0], pts[1])
-            p.lineTo(pts[2], pts[3])
-            p.lineTo(pts[4], pts[5])
-            p.lineTo(pts[6], pts[7])
+            p.moveTo(xln, y_bar)
+            p.lineTo(xlf, y_top)
+            p.lineTo(xrf, y_top)
+            p.lineTo(xrn, y_bar)
             p.close()
             c.drawPath(p, fill=1, stroke=1)
 
-            # Segment index label (white, centered, only if wide enough)
-            # Use the centroid x of the polygon for label placement
-            x_center = (pts[0] + pts[2] + pts[4] + pts[6]) / 4
-            if w > 6 * mm:
+            # Index label (+d for flipped, +b for bending)
+            x_center = (xln + xlf + xrf + xrn) / 4
+            w_box = (float(cut.get('nominal_mm') or 0)) * scale
+            if w_box > 7 * mm:
+                marks = ''
+                if cut.get('flipped'):
+                    marks += 'd'
+                if cut.get('requires_bending'):
+                    marks += 'b'
+                label = f"{i + 1}{marks}"
                 c.setFillColor(colors.white)
                 c.setFont('VeraBd', 7)
-                c.drawCentredString(x_center, y_bar + self.BAR_H / 2 - 2.5, str(i + 1))
+                c.drawCentredString(x_center, y_bar + self.BAR_H / 2 - 2.5, label)
 
-        # ── Draw shared nest-pair boundary accent lines ────────────────────
-        import math as _m
-        for cut in cuts:
-            if cut.get('nest_role') == 'A':
-                angle = cut.get('angle_right_deg') or 0.0
-                ph    = cut.get('profile_height_mm') or 0
-                if ph and angle:
-                    signed_shift = _m.copysign(
-                        ph * abs(_m.tan(_m.radians(float(angle)))) * scale,
-                        angle
-                    )
-                else:
-                    signed_shift = 0.0
-                x_bot = (cut['offset_mm'] + cut['effective_mm']) * scale
-                x_top = x_bot - signed_shift  # right end: positive angle → top shifts left
-                c.setStrokeColor(colors.white)
-                c.setLineWidth(1.5)
-                c.line(x_bot, y_bar, x_top, y_bar + self.BAR_H)
+        # ── Blade bands for saw passes ─────────────────────────────────────
+        if passes:
+            c.saveState()
+            try:
+                c.setFillAlpha(0.55)
+            except Exception:
+                pass
+            c.setFillColor(BLADE_COLOR)
+            for pss in passes:
+                blade = float(pss.get('blade_axial_mm') or 0) * scale
+                if blade <= 0:
+                    continue
+                sign = -1 if pss.get('kind') == 'lead' else 1
+                xn = float(pss.get('x_near_mm') or 0) * scale
+                xf = float(pss.get('x_far_mm') or 0) * scale
+                p = c.beginPath()
+                p.moveTo(xn, y_bar)
+                p.lineTo(xf, y_top)
+                p.lineTo(xf + sign * blade, y_top)
+                p.lineTo(xn + sign * blade, y_bar)
+                p.close()
+                c.drawPath(p, fill=1, stroke=0)
+            c.restoreState()
 
-        # ── Draw waste segment ─────────────────────────────────────────────
-        if waste_mm > 0:
-            x_waste = (cuts[-1]['offset_mm'] + cuts[-1]['effective_mm']) * scale if cuts else 0
-            w_waste = waste_mm * scale
+            # Angle labels above the bar (only when there is room)
+            if len(passes) and self.width / len(passes) > 9 * mm:
+                c.setFillColor(colors.HexColor('#495057'))
+                c.setFont('Vera', 5.5)
+                for pss in passes:
+                    ang = float(pss.get('angle_deg') or 0)
+                    if abs(ang) < ANGLE_TOL_DEG:
+                        continue
+                    xm = (float(pss.get('x_near_mm') or 0)
+                          + float(pss.get('x_far_mm') or 0)) / 2 * scale
+                    c.drawCentredString(xm, y_top + 1.2 * mm, f"{abs(ang):g}°")
 
-            c.setFillColor(WASTE_COLOR)
-            c.setStrokeColor(colors.white)
-            c.setLineWidth(0.5)
-            c.rect(x_waste, y_bar, w_waste, self.BAR_H, fill=1, stroke=1)
-
-            if w_waste > 8 * mm:
-                c.setFillColor(colors.HexColor('#666666'))
-                c.setFont('VeraIt', 6)
-                label = f"Fire {waste_mm} mm"
-                c.drawCentredString(x_waste + w_waste / 2, y_bar + self.BAR_H / 2 - 2.5, label)
+        # ── Waste label ────────────────────────────────────────────────────
+        waste_mm = float(bar.get('waste_mm') or 0)
+        if waste_mm * scale > 14 * mm:
+            c.setFillColor(colors.HexColor('#666666'))
+            c.setFont('VeraIt', 6)
+            c.drawCentredString(self.width - waste_mm * scale / 2,
+                                y_bar + self.BAR_H / 2 - 2.5,
+                                f"Fire {waste_mm:g} mm")
 
         # ── Outer border ───────────────────────────────────────────────────
-        c.setStrokeColor(DARK_BLUE)
+        c.setStrokeColor(REMNANT_ACC if bar.get('is_remnant') else DARK_BLUE)
         c.setLineWidth(1)
         c.rect(0, y_bar, self.width, self.BAR_H, fill=0, stroke=1)
 
@@ -277,10 +269,20 @@ class BarDiagram(Flowable):
             tick += tick_interval // 2
 
         c.line(self.width, y_bar, self.width, y_bar - 2.5 * mm)
-        c.drawCentredString(self.width, y_bar - 2.5 * mm - 3.5, str(stock_mm))
+        c.drawCentredString(self.width, y_bar - 2.5 * mm - 3.5, f"{stock_mm:g}")
+
+        # Edge naming (matches the angle convention wording)
+        c.setFont('VeraIt', 5)
+        c.setFillColor(colors.grey)
+        c.drawString(-0.5 * mm, y_bar - 6.5 * mm, '')
+        c.saveState()
+        c.setFont('Vera', 5)
+        c.drawRightString(-1 * mm, y_top - 2, 'üst')
+        c.drawRightString(-1 * mm, y_bar + 0.5, 'alt')
+        c.restoreState()
 
 
-# ─── Style factory (avoids duplicate registration on repeated calls) ──────────
+# ─── Style factory ────────────────────────────────────────────────────────────
 
 def _make_styles():
     return {
@@ -304,6 +306,11 @@ def _make_styles():
             fontName='VeraBd', fontSize=10, textColor=DARK_BLUE,
             spaceBefore=5 * mm, spaceAfter=2 * mm,
         ),
+        'section': ParagraphStyle(
+            'lc_section',
+            fontName='VeraBd', fontSize=8.5, textColor=DARK_BLUE,
+            spaceBefore=2 * mm, spaceAfter=1 * mm,
+        ),
         'small': ParagraphStyle(
             'lc_small',
             fontName='Vera', fontSize=8, textColor=colors.grey,
@@ -316,40 +323,141 @@ def _make_styles():
     }
 
 
-def _render_group(group: dict, part_lookup: dict, styles: dict, usable_width: float) -> list:
-    """
-    Build the story elements for one item group.
-    Returns a list of flowables.
-    """
-    story = []
-    # Columns: #, Ofset, Resim No, Parça adı, Nominal, Efektif, Profil, Sol açı, Sağ açı, İş No
-    col_w = [8*mm, 14*mm, 18*mm, 38*mm, 18*mm, 18*mm, 14*mm, 15*mm, 15*mm, 17*mm]
+_CONVENTION_NOTE = (
+    "Boylar <b>uzun kenardan</b> (en uzun nokta) ölçülür. "
+    "Açı: <b>(alt)</b> = uzun kenar alt kenarda, <b>(üst)</b> = uzun kenar üst kenarda. "
+    "Diyagramda parça numarası yanındaki <b>d</b> = parça 180° döndürülerek yerleştirilir, "
+    "<b>b</b> = büküm var (boy açınım boyudur). Koyu bantlar testere kesimini, taralı alanlar fireyi gösterir."
+)
 
-    item_name    = group.get('item_name', '—')
-    item_code    = group.get('item_code', '')
-    stock_len    = group.get('stock_length_mm', 0)
-    kerf_mm      = group.get('kerf_mm', 0)
-    bars_needed  = group.get('bars_needed', 0)
-    total_waste  = group.get('total_waste_mm', 0)
-    efficiency   = group.get('efficiency_pct', 0)
-    bars         = group.get('bars', [])
+_STOP_NOTE = (
+    "Ayar mesafeleri kalan barın <b>taze kesilmiş kenarından</b> ölçülür ve boy dayamasına "
+    "doğrudan girilebilir. Alt/Üst: barın alt (yakın) ve üst (uzak) kenarı boyunca ölçü. "
+    "Kesim sırası tablosundaki açı yönü (<b>sola/sağa</b>): kesim çizgisinin üst kenara doğru yattığı yön."
+)
 
-    # ── Group header ──────────────────────────────────────────────────────
-    header_text = f"{item_name}"
-    if item_code:
-        header_text += f"  <font size='9' color='grey'>({item_code})</font>"
-    story.append(Paragraph(header_text, styles['group_header']))
 
-    # ── Group summary table ───────────────────────────────────────────────
-    summary_data = [
-        ['Stok boyu', f"{stock_len} mm",
-         'Testere payı', f"{kerf_mm} mm"],
-        ['Gereken çubuk', str(bars_needed),
-         'Toplam fire', f"{total_waste} mm"],
-        ['Verimlilik', f"{efficiency} %", '', ''],
+def _table_style_common():
+    return [
+        ('BACKGROUND',     (0, 0), (-1, 0),  DARK_BLUE),
+        ('TEXTCOLOR',      (0, 0), (-1, 0),  colors.white),
+        ('FONTNAME',       (0, 0), (-1, 0),  'VeraBd'),
+        ('FONTSIZE',       (0, 0), (-1, 0),  7.5),
+        ('ALIGN',          (0, 0), (-1, 0),  'CENTER'),
+        ('FONTNAME',       (0, 1), (-1, -1), 'Vera'),
+        ('FONTSIZE',       (0, 1), (-1, -1), 7.5),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, BAR_ACCENT]),
+        ('GRID',           (0, 0), (-1, -1), 0.3, colors.lightgrey),
+        ('TOPPADDING',     (0, 0), (-1, -1), 2.5),
+        ('BOTTOMPADDING',  (0, 0), (-1, -1), 2.5),
+        ('LEFTPADDING',    (0, 0), (-1, -1), 3),
+        ('RIGHTPADDING',   (0, 0), (-1, -1), 3),
     ]
-    summary_table = Table(summary_data, colWidths=[32*mm, 53*mm, 37*mm, 53*mm])
-    summary_table.setStyle(TableStyle([
+
+
+def _cut_table(cuts: list, waste_mm) -> Table:
+    col_w = [8*mm, 17*mm, 18*mm, 34*mm, 17*mm, 14*mm, 20*mm, 20*mm, 7*mm, 7*mm, 18*mm]
+    header = ['#', 'Başlangıç', 'Resim No', 'Parça adı', 'Boy (mm)',
+              'Profil', 'Sol açı', 'Sağ açı', 'D', 'B', 'İş No']
+    rows = [header]
+    for i, cut in enumerate(cuts, start=1):
+        rows.append([
+            str(i),
+            _fmt_num(cut.get('offset_mm', 0)),
+            cut.get('image_no') or '—',
+            cut.get('label', ''),
+            _fmt_num(cut.get('nominal_mm', cut.get('effective_mm', 0))),
+            _fmt_num(cut.get('profile_height_mm') or 0, 0) if cut.get('profile_height_mm') else '—',
+            _fmt_angle(cut.get('angle_left_deg', 0)),
+            _fmt_angle(cut.get('angle_right_deg', 0)),
+            'D' if cut.get('flipped') else '—',
+            'B' if cut.get('requires_bending') else '—',
+            cut.get('job_no', '') or '—',
+        ])
+    rows.append(['', '', '', 'FİRE', f"{waste_mm} mm", '', '', '', '', '', ''])
+
+    t = Table(rows, colWidths=col_w, repeatRows=1)
+    style = _table_style_common() + [
+        ('BACKGROUND',    (0, -1), (-1, -1), LIGHT_GREY),
+        ('FONTNAME',      (0, -1), (-1, -1), 'VeraIt'),
+        ('TEXTCOLOR',     (0, -1), (-1, -1), colors.grey),
+        ('ALIGN',         (0, 1), (0, -1), 'CENTER'),
+        ('ALIGN',         (1, 1), (1, -1), 'RIGHT'),
+        ('ALIGN',         (4, 1), (5, -1), 'RIGHT'),
+        ('ALIGN',         (6, 1), (9, -1), 'CENTER'),
+    ]
+    t.setStyle(TableStyle(style))
+    return t
+
+
+def _pass_table(passes: list) -> Table:
+    col_w = [13*mm, 26*mm, 24*mm, 24*mm, 24*mm, 49*mm]
+    header = ['Kesim', 'Tür', 'Açı', 'Ayar Alt (mm)', 'Ayar Üst (mm)', 'Çıkan Parça']
+    rows = [header]
+    for p in passes:
+        rows.append([
+            str(p.get('seq', '')),
+            PASS_KIND_TR.get(p.get('kind'), p.get('kind', '')),
+            _fmt_pass_angle(p),
+            _fmt_num(p.get('stop_near_mm')),
+            _fmt_num(p.get('stop_far_mm')),
+            p.get('releases') or 'fire parçası',
+        ])
+    t = Table(rows, colWidths=col_w, repeatRows=1)
+    style = _table_style_common() + [
+        ('ALIGN', (0, 1), (0, -1), 'CENTER'),
+        ('ALIGN', (2, 1), (2, -1), 'CENTER'),
+        ('ALIGN', (3, 1), (4, -1), 'RIGHT'),
+    ]
+    t.setStyle(TableStyle(style))
+    return t
+
+
+def _render_bar(bar: dict, styles: dict, usable_width: float,
+                kerf_mm: float, header_text: str) -> list:
+    """Story elements for one bar: header, diagram, legend, tables."""
+    story = []
+    cuts = bar.get('cuts') or []
+    waste = bar.get('waste_mm', 0)
+
+    story.append(Paragraph(header_text, styles['bar_header']))
+    story.append(BarDiagram(bar, _CUT_COLORS, usable_width, kerf_mm))
+
+    legend_parts = []
+    for i, cut in enumerate(cuts):
+        color_hex = _CUT_COLORS[i % len(_CUT_COLORS)].hexval()
+        legend_parts.append(
+            f'<font color="{color_hex}">&bull;</font> <b>{i+1}.</b> {cut.get("label","")}'
+        )
+    story.append(Paragraph('    '.join(legend_parts), styles['legend']))
+    story.append(Spacer(1, 1.5 * mm))
+
+    story.append(Paragraph('Parçalar', styles['section']))
+    story.append(_cut_table(cuts, waste))
+
+    passes = bar.get('passes') or []
+    if passes:
+        story.append(Spacer(1, 1.5 * mm))
+        story.append(Paragraph('Kesim Sırası', styles['section']))
+        story.append(_pass_table(passes))
+    story.append(Spacer(1, 3 * mm))
+    return story
+
+
+def _bar_header_text(bar, material: str) -> str:
+    bar_idx = bar.get('global_bar_index', bar.get('bar_index'))
+    stock = bar.get('stock_length_mm', 0)
+    waste = bar.get('waste_mm', 0)
+    eff = round((1 - waste / stock) * 100, 1) if stock else 0
+    src = '  |  <font color="#B98900">STOKTAN</font>' if bar.get('is_remnant') else ''
+    mat = f"  |  <font color='grey'>{material}</font>" if material else ''
+    return (f"Çubuk #{bar_idx}  –  {stock} mm{src}{mat}"
+            f"  |  Fire: {waste} mm  |  Verim: {eff} %")
+
+
+def _info_table(data):
+    t = Table(data, colWidths=[32*mm, 53*mm, 37*mm, 53*mm])
+    t.setStyle(TableStyle([
         ('FONTNAME',      (0, 0), (-1, -1), 'Vera'),
         ('FONTNAME',      (0, 0), (0,  -1), 'VeraBd'),
         ('FONTNAME',      (2, 0), (2,  -1), 'VeraBd'),
@@ -361,108 +469,49 @@ def _render_group(group: dict, part_lookup: dict, styles: dict, usable_width: fl
         ('TOPPADDING',    (0, 0), (-1, -1), 2),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
     ]))
-    story.append(summary_table)
+    return t
+
+
+def _render_group(group: dict, styles: dict, usable_width: float) -> list:
+    story = []
+    item_name    = group.get('item_name', '—')
+    item_code    = group.get('item_code', '')
+    stock_len    = group.get('stock_length_mm', 0)
+    kerf_mm      = float(group.get('kerf_mm', 0) or 0)
+    bars         = group.get('bars', [])
+
+    header_text = f"{item_name}"
+    if item_code:
+        header_text += f"  <font size='9' color='grey'>({item_code})</font>"
+    story.append(Paragraph(header_text, styles['group_header']))
+
+    saved = group.get('material_saved_by_nesting_mm', 0)
+    summary_data = [
+        ['Stok boyu', f"{stock_len} mm",
+         'Testere payı', f"{kerf_mm:g} mm"],
+        ['Yeni çubuk', str(group.get('bars_needed', 0)),
+         'Stoktan çubuk', str(group.get('remnant_bars_used', 0))],
+        ['Toplam fire', f"{group.get('total_waste_mm', 0)} mm",
+         'Verimlilik', f"{group.get('efficiency_pct', 0)} %"],
+        ['Toplam kesim', str(group.get('total_pass_count', '—')),
+         'Ortak kesim kazancı', f"{saved:g} mm" if saved else '—'],
+        ['Açı ayar değişimi', str(group.get('saw_setup_changes', '—')), '', ''],
+    ]
+    story.append(_info_table(summary_data))
     story.append(Spacer(1, 3 * mm))
 
-    # ── Per-bar sections ──────────────────────────────────────────────────
     for bar in bars:
-        bar_idx   = bar.get('global_bar_index', bar['bar_index'])
-        waste     = bar['waste_mm']
-        bar_stock = bar['stock_length_mm']
-        eff       = round((1 - waste / bar_stock) * 100, 1) if bar_stock else 0
-        cuts      = bar['cuts']
-
-        bar_material = bar.get('item_name') or group.get('item_name', '')
-        mat_part = f"  |  <font color='grey'>{bar_material}</font>" if bar_material else ''
-        story.append(Paragraph(
-            f"Çubuk #{bar_idx}  –  {bar_stock} mm"
-            f"{mat_part}"
-            f"  |  Fire: {waste} mm  |  Verimlilik: {eff} %",
-            styles['bar_header'],
+        story.extend(_render_bar(
+            bar, styles, usable_width, kerf_mm,
+            _bar_header_text(bar, bar.get('item_name') or item_name),
         ))
-
-        # Visual bar diagram
-        story.append(BarDiagram(bar, _CUT_COLORS, usable_width))
-
-        # Color legend
-        legend_parts = []
-        for i, cut in enumerate(cuts):
-            color_hex = _CUT_COLORS[i % len(_CUT_COLORS)].hexval()
-            legend_parts.append(
-                f'<font color="{color_hex}">&#9632;</font> {i+1}. {cut.get("label","")}'
-            )
-        story.append(Paragraph('    '.join(legend_parts), styles['legend']))
-        story.append(Spacer(1, 2 * mm))
-
-        # Cut table
-        header_row = [
-            '#', 'Ofset (mm)', 'Resim No', 'Parça adı',
-            'Nominal (mm)', 'Efektif (mm)', 'Profil (mm)',
-            'Sol açı', 'Sağ açı', 'İş No',
-        ]
-        rows = [header_row]
-
-        for i, cut in enumerate(cuts, start=1):
-            part        = part_lookup.get(cut.get('part_id'))
-            angle_left  = cut.get('angle_left_deg')
-            angle_right = cut.get('angle_right_deg')
-            if angle_left is None:
-                angle_left  = float(part.angle_left_deg)  if part else 0
-            if angle_right is None:
-                angle_right = float(part.angle_right_deg) if part else 0
-
-            rows.append([
-                str(i),
-                str(round(cut.get('offset_mm', 0), 1)),
-                cut.get('image_no') or (part.image_no if part else '') or '—',
-                cut.get('label', ''),
-                str(cut.get('nominal_mm', '')),
-                str(round(cut.get('effective_mm', cut.get('nominal_mm', 0)), 1)),
-                str(cut.get('profile_height_mm') or '') or '—',
-                _fmt_angle(angle_left),
-                _fmt_angle(angle_right),
-                cut.get('job_no', '') or '—',
-            ])
-
-        # Fire (waste) row
-        rows.append(['', '', '', '⟶ FİRE', f"{waste} mm", '', '', '', '', ''])
-        cut_table = Table(rows, colWidths=col_w, repeatRows=1)
-        cut_table.setStyle(TableStyle([
-            ('BACKGROUND',     (0, 0), (-1, 0),  DARK_BLUE),
-            ('TEXTCOLOR',      (0, 0), (-1, 0),  colors.white),
-            ('FONTNAME',       (0, 0), (-1, 0),  'VeraBd'),
-            ('FONTSIZE',       (0, 0), (-1, 0),  8),
-            ('ALIGN',          (0, 0), (-1, 0),  'CENTER'),
-            ('LINEBELOW',      (0, 0), (-1, 0),  1, DARK_BLUE),
-            ('FONTNAME',       (0, 1), (-1, -2), 'Vera'),
-            ('FONTSIZE',       (0, 1), (-1, -2), 8),
-            ('ROWBACKGROUNDS', (0, 1), (-1, -2), [colors.white, BAR_ACCENT]),
-            ('BACKGROUND',     (0, -1), (-1, -1), LIGHT_GREY),
-            ('FONTNAME',       (0, -1), (-1, -1), 'VeraIt'),
-            ('FONTSIZE',       (0, -1), (-1, -1), 8),
-            ('TEXTCOLOR',      (0, -1), (-1, -1), colors.grey),
-            ('GRID',           (0, 0), (-1, -1), 0.3, colors.lightgrey),
-            ('TOPPADDING',     (0, 0), (-1, -1), 3),
-            ('BOTTOMPADDING',  (0, 0), (-1, -1), 3),
-            ('LEFTPADDING',    (0, 0), (-1, -1), 4),
-            ('RIGHTPADDING',   (0, 0), (-1, -1), 4),
-            ('ALIGN',          (0, 1), (0, -1), 'CENTER'),
-            ('ALIGN',          (1, 1), (1, -1), 'RIGHT'),
-            ('ALIGN',          (4, 1), (5, -1), 'RIGHT'),
-            ('ALIGN',          (7, 1), (8, -1), 'CENTER'),
-        ]))
-        story.append(cut_table)
-        story.append(Spacer(1, 3 * mm))
-
     return story
 
 
 def build_cutting_list_pdf(session) -> bytes:
     """
-    Build and return a Turkish-language PDF cutting list for the given
-    LinearCuttingSession (must have optimization_result populated).
-
-    One section per item group, separated by page breaks.
+    Turkish-language PDF cutting list for a LinearCuttingSession
+    (requires optimization_result). One section per item group.
     """
     result = session.optimization_result or {}
     groups = result.get('groups', [])
@@ -476,61 +525,39 @@ def build_cutting_list_pdf(session) -> bytes:
         title=f"Kesim Listesi – {session.key}",
     )
 
-    USABLE_WIDTH = A4[0] - 30 * mm   # 175 mm
+    USABLE_WIDTH = A4[0] - 30 * mm
     styles = _make_styles()
-
-    # Part lookup for angle fallback
-    part_lookup = {p.id: p for p in session.parts.all()}
 
     prepared_by = session.created_by.get_full_name() if session.created_by else '—'
     total_bars  = sum(g.get('bars_needed', 0) for g in groups)
 
     story = []
-
-    # ── Document title ────────────────────────────────────────────────────────
     story.append(Paragraph(f"Kesim Listesi – {session.key}", styles['title']))
     story.append(Paragraph(session.title, styles['subtitle']))
 
-    # ── Document-level info ───────────────────────────────────────────────────
-    doc_info_data = [
+    story.append(_info_table([
         ['Toplam çubuk', str(total_bars),
          'Profil grubu', str(len(groups))],
         ['Testere payı', f"{session.kerf_mm} mm",
          'Tarih', str(date.today())],
         ['Hazırlayan', prepared_by, '', ''],
-    ]
-    doc_info_table = Table(doc_info_data, colWidths=[32*mm, 53*mm, 37*mm, 53*mm])
-    doc_info_table.setStyle(TableStyle([
-        ('FONTNAME',      (0, 0), (-1, -1), 'Vera'),
-        ('FONTNAME',      (0, 0), (0,  -1), 'VeraBd'),
-        ('FONTNAME',      (2, 0), (2,  -1), 'VeraBd'),
-        ('FONTSIZE',      (0, 0), (-1, -1), 8),
-        ('TEXTCOLOR',     (0, 0), (0,  -1), DARK_BLUE),
-        ('TEXTCOLOR',     (2, 0), (2,  -1), DARK_BLUE),
-        ('ROWBACKGROUNDS',(0, 0), (-1, -1), [LIGHT_GREY, colors.white]),
-        ('GRID',          (0, 0), (-1, -1), 0.3, colors.lightgrey),
-        ('TOPPADDING',    (0, 0), (-1, -1), 2),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
     ]))
-    story.append(doc_info_table)
-    story.append(Spacer(1, 4 * mm))
+    story.append(Spacer(1, 2 * mm))
+    story.append(Paragraph(_CONVENTION_NOTE, styles['legend']))
+    story.append(Paragraph(_STOP_NOTE, styles['legend']))
+    story.append(Spacer(1, 2 * mm))
     story.append(HRFlowable(width='100%', thickness=1.5, color=DARK_BLUE))
 
-    # ── One section per item group ────────────────────────────────────────────
     for idx, group in enumerate(groups):
         if idx > 0:
             story.append(PageBreak())
-
-        group_story = _render_group(group, part_lookup, styles, USABLE_WIDTH)
-        story.extend(group_story)
-
-        # Group footer
+        story.extend(_render_group(group, styles, USABLE_WIDTH))
         story.append(HRFlowable(width='100%', thickness=0.5, color=colors.grey))
         story.append(Spacer(1, 2 * mm))
         story.append(Paragraph(
-            f"{group.get('bars_needed', 0)} çubuk × {group.get('stock_length_mm', 0)} mm  |  "
+            f"{group.get('bars_needed', 0)} yeni + {group.get('remnant_bars_used', 0)} stoktan çubuk  |  "
             f"Toplam fire: {group.get('total_waste_mm', 0)} mm  |  "
-            f"Verimlilik: {group.get('efficiency_pct', 0)}\u00a0%",
+            f"Verimlilik: {group.get('efficiency_pct', 0)} %",
             styles['small'],
         ))
 
@@ -539,29 +566,30 @@ def build_cutting_list_pdf(session) -> bytes:
 
 
 def build_task_pdf(task) -> bytes:
-    """
-    Build a single-bar work-order PDF for one LinearCuttingTask.
-    """
+    """Single-bar work-order PDF for one LinearCuttingTask."""
     USABLE_WIDTH = A4[0] - 30 * mm
     styles = _make_styles()
+    session = task.session
+    kerf_mm = float(session.kerf_mm or 0)
 
-    # Build a synthetic bar dict from the task's stored fields
     bar = {
         'bar_index': task.bar_index,
         'global_bar_index': task.bar_index,
         'stock_length_mm': task.stock_length_mm,
         'waste_mm': task.waste_mm,
+        'is_remnant': task.is_remnant_bar,
         'cuts': task.layout_json or [],
     }
+    # Recompute passes only for layouts produced by the current model —
+    # legacy layout_json (pre-redesign tasks) lacks shared_right/end_mm and
+    # would yield wrong operator instructions.
+    new_schema = bool(bar['cuts']) and all(
+        isinstance(c, dict) and 'shared_right' in c for c in bar['cuts']
+    )
+    bar['passes'] = task.passes_json or (
+        passes_for_bar(bar, kerf_mm) if new_schema else []
+    )
 
-    # Part lookup for angle fallback
-    part_ids = [c.get('part_id') for c in bar['cuts'] if c.get('part_id')]
-    from .models import LinearCuttingPart
-    part_lookup = {
-        p.id: p for p in LinearCuttingPart.objects.filter(id__in=part_ids)
-    }
-
-    session = task.session
     prepared_by = session.created_by.get_full_name() if session.created_by else '—'
     eff = round((1 - task.waste_mm / task.stock_length_mm) * 100, 1) if task.stock_length_mm else 0
 
@@ -575,101 +603,24 @@ def build_task_pdf(task) -> bytes:
     )
 
     story = []
-
-    # ── Header ────────────────────────────────────────────────────────────────
     story.append(Paragraph(f"İş Emri – {task.key}", styles['title']))
     story.append(Paragraph(task.name, styles['subtitle']))
 
-    info_data = [
-        ['Malzeme',    task.material,         'Stok boyu',  f"{task.stock_length_mm} mm"],
-        ['Oturum',     session.key,            'Fire',       f"{task.waste_mm} mm"],
-        ['Verimlilik', f"{eff} %",             'Tarih',      str(date.today())],
-        ['Hazırlayan', prepared_by,            '', ''],
-    ]
-    info_table = Table(info_data, colWidths=[32*mm, 53*mm, 37*mm, 53*mm])
-    info_table.setStyle(TableStyle([
-        ('FONTNAME',      (0, 0), (-1, -1), 'Vera'),
-        ('FONTNAME',      (0, 0), (0,  -1), 'VeraBd'),
-        ('FONTNAME',      (2, 0), (2,  -1), 'VeraBd'),
-        ('FONTSIZE',      (0, 0), (-1, -1), 8),
-        ('TEXTCOLOR',     (0, 0), (0,  -1), DARK_BLUE),
-        ('TEXTCOLOR',     (2, 0), (2,  -1), DARK_BLUE),
-        ('ROWBACKGROUNDS',(0, 0), (-1, -1), [LIGHT_GREY, colors.white]),
-        ('GRID',          (0, 0), (-1, -1), 0.3, colors.lightgrey),
-        ('TOPPADDING',    (0, 0), (-1, -1), 2),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+    story.append(_info_table([
+        ['Malzeme',    task.material,
+         'Stok boyu',  f"{task.stock_length_mm} mm"
+                       + (' (stoktan)' if task.is_remnant_bar else '')],
+        ['Oturum',     session.key,  'Fire', f"{task.waste_mm} mm"],
+        ['Verimlilik', f"{eff} %",   'Tarih', str(date.today())],
+        ['Hazırlayan', prepared_by,  'Testere payı', f"{kerf_mm:g} mm"],
     ]))
-    story.append(info_table)
-    story.append(Spacer(1, 4 * mm))
+    story.append(Spacer(1, 2 * mm))
+    story.append(Paragraph(_CONVENTION_NOTE, styles['legend']))
+    story.append(Paragraph(_STOP_NOTE, styles['legend']))
+    story.append(Spacer(1, 2 * mm))
     story.append(HRFlowable(width='100%', thickness=1.5, color=DARK_BLUE))
-    story.append(Spacer(1, 3 * mm))
 
-    # ── Bar diagram ───────────────────────────────────────────────────────────
-    story.append(BarDiagram(bar, _CUT_COLORS, USABLE_WIDTH))
-
-    # Color legend
-    legend_parts = []
-    for i, cut in enumerate(bar['cuts']):
-        color_hex = _CUT_COLORS[i % len(_CUT_COLORS)].hexval()
-        legend_parts.append(
-            f'<font color="{color_hex}">&#9632;</font> {i+1}. {cut.get("label","")}'
-        )
-    story.append(Paragraph('    '.join(legend_parts), styles['legend']))
-    story.append(Spacer(1, 3 * mm))
-
-    # ── Cut table ─────────────────────────────────────────────────────────────
-    col_w = [10*mm, 17*mm, 50*mm, 20*mm, 20*mm, 17*mm, 17*mm, 24*mm]
-    col_w = [8*mm, 14*mm, 18*mm, 38*mm, 18*mm, 18*mm, 14*mm, 15*mm, 15*mm, 17*mm]
-    rows = [['#', 'Ofset (mm)', 'Resim No', 'Parça adı', 'Nominal (mm)', 'Efektif (mm)', 'Profil (mm)', 'Sol açı', 'Sağ açı', 'İş No']]
-    for i, cut in enumerate(bar['cuts'], start=1):
-        part        = part_lookup.get(cut.get('part_id'))
-        angle_left  = cut.get('angle_left_deg')
-        angle_right = cut.get('angle_right_deg')
-        if angle_left is None:
-            angle_left  = float(part.angle_left_deg)  if part else 0
-        if angle_right is None:
-            angle_right = float(part.angle_right_deg) if part else 0
-
-        rows.append([
-            str(i),
-            str(round(cut.get('offset_mm', 0), 1)),
-            cut.get('image_no') or (part.image_no if part else '') or '—',
-            cut.get('label', ''),
-            str(cut.get('nominal_mm', '')),
-            str(round(cut.get('effective_mm', cut.get('nominal_mm', 0)), 1)),
-            str(cut.get('profile_height_mm') or '') or '—',
-            _fmt_angle(angle_left),
-            _fmt_angle(angle_right),
-            cut.get('job_no', '') or '—',
-        ])
-    rows.append(['', '', '', '⟶ FİRE', f"{task.waste_mm} mm", '', '', '', '', ''])
-
-    cut_table = Table(rows, colWidths=col_w, repeatRows=1)
-    cut_table.setStyle(TableStyle([
-        ('BACKGROUND',     (0, 0), (-1, 0),  DARK_BLUE),
-        ('TEXTCOLOR',      (0, 0), (-1, 0),  colors.white),
-        ('FONTNAME',       (0, 0), (-1, 0),  'VeraBd'),
-        ('FONTSIZE',       (0, 0), (-1, 0),  8),
-        ('ALIGN',          (0, 0), (-1, 0),  'CENTER'),
-        ('LINEBELOW',      (0, 0), (-1, 0),  1, DARK_BLUE),
-        ('FONTNAME',       (0, 1), (-1, -2), 'Vera'),
-        ('FONTSIZE',       (0, 1), (-1, -2), 8),
-        ('ROWBACKGROUNDS', (0, 1), (-1, -2), [colors.white, BAR_ACCENT]),
-        ('BACKGROUND',     (0, -1), (-1, -1), LIGHT_GREY),
-        ('FONTNAME',       (0, -1), (-1, -1), 'VeraIt'),
-        ('FONTSIZE',       (0, -1), (-1, -1), 8),
-        ('TEXTCOLOR',      (0, -1), (-1, -1), colors.grey),
-        ('GRID',           (0, 0), (-1, -1), 0.3, colors.lightgrey),
-        ('TOPPADDING',     (0, 0), (-1, -1), 3),
-        ('BOTTOMPADDING',  (0, 0), (-1, -1), 3),
-        ('LEFTPADDING',    (0, 0), (-1, -1), 4),
-        ('RIGHTPADDING',   (0, 0), (-1, -1), 4),
-        ('ALIGN',          (0, 1), (0, -1), 'CENTER'),
-        ('ALIGN',          (1, 1), (1, -1), 'RIGHT'),
-        ('ALIGN',          (4, 1), (5, -1), 'RIGHT'),
-        ('ALIGN',          (7, 1), (8, -1), 'CENTER'),
-    ]))
-    story.append(cut_table)
+    story.extend(_render_bar(bar, styles, USABLE_WIDTH, kerf_mm, ''))
 
     doc.build(story)
     return buffer.getvalue()

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from django.db import transaction
+from django.utils import timezone
 from django.contrib.auth.models import User
 from approvals.models import ApprovalPolicy, ApprovalWorkflow
 from approvals.resolvers import resolve_approvers_for_stage
@@ -280,3 +281,55 @@ def decide(ot: OvertimeRequest, user, approve: bool, comment: str = ""):
         return wf
 
     return wf
+
+
+# --------- Retract entries after approval ---------
+def _notify_requester_entries_removed(ot: OvertimeRequest, count: int, comment: str = ""):
+    title = f"Mesai talebi güncellendi (#{ot.id})"
+    body = f"{count} kişi/kalem onaylı mesaiden çıkarıldı."
+    if comment:
+        body += f" Açıklama: {comment}"
+    notify(
+        user=ot.requester,
+        notification_type=Notification.OT_REJECTED,
+        title=title,
+        body=body,
+        link=_ot_frontend_url(ot),
+        source_type='overtime_request',
+        source_id=ot.id,
+    )
+
+
+@transaction.atomic
+def reject_entries(ot: OvertimeRequest, user, entry_ids, comment: str = ""):
+    """
+    Reject individual participant entries on an already-decided request (used by
+    approvers to retract people after approval). Only entries not already
+    rejected are affected. If every entry ends rejected the whole request flips
+    to 'rejected'; otherwise it stays approved with fewer participants and HR is
+    re-notified so payroll stays in sync.
+
+    Returns (ot, number_of_entries_rejected).
+    """
+    updated = (
+        ot.entries.filter(id__in=entry_ids)
+        .exclude(status="rejected")
+        .update(status="rejected", decided_by=user, decided_at=timezone.now())
+    )
+    if not updated:
+        return ot, 0
+
+    total = ot.entries.count()
+    rejected = ot.entries.filter(status="rejected").count()
+
+    if total > 0 and rejected == total:
+        if ot.status != "rejected":
+            ot.status = "rejected"
+            ot.save(update_fields=["status"])
+        _notify_requester(ot, "Reddedildi", comment or "(Tüm kalemler reddedildi)")
+    else:
+        _notify_requester_entries_removed(ot, updated, comment)
+        if ot.status == "approved":
+            _notify_hr_on_approved(ot)  # re-send updated approved/rejected breakdown
+
+    return ot, updated
