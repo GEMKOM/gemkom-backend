@@ -65,6 +65,33 @@ class IsAdminOrStaff(BasePermission):
         return bool(u and u.is_authenticated and (u.is_staff or u.is_superuser))
 
 
+def _in_user_group(user, slug: str) -> bool:
+    """True if *user* belongs to the active UserGroup with the given slug."""
+    from organization.models import UserGroup
+    try:
+        group = UserGroup.objects.get(slug=slug, is_active=True)
+    except UserGroup.DoesNotExist:
+        return False
+    return group.get_members().filter(pk=user.pk).exists()
+
+
+class IsPlanningOrAdmin(BasePermission):
+    """
+    Django staff / superusers, or members of the 'planlama' UserGroup.
+
+    Mirrors the frontend's canEditJobOrders() gate so users who see the
+    action button are actually allowed to perform it.
+    """
+
+    def has_permission(self, request, view):
+        u = request.user
+        if not (u and u.is_authenticated):
+            return False
+        if u.is_staff or u.is_superuser:
+            return True
+        return _in_user_group(u, 'planlama')
+
+
 class IsTopicOwnerOrReadOnly(permissions.BasePermission):
     """Only topic owner can edit/delete."""
 

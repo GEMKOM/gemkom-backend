@@ -64,7 +64,7 @@ from .serializers import (
 )
 from .permissions import (
     IsOfficeUser, IsTopicOwnerOrReadOnly, IsCommentAuthorOrReadOnly,
-    IsCostAuthorized, IsPlanning, IsAdminOrStaff,
+    IsCostAuthorized, IsPlanning, IsAdminOrStaff, IsPlanningOrAdmin,
 )
 
 
@@ -337,9 +337,13 @@ class JobOrderViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-    @action(detail=True, methods=['post'], permission_classes=[IsAdminOrStaff])
+    @action(detail=True, methods=['post'], permission_classes=[IsPlanningOrAdmin])
     def cancel(self, request, job_no=None):
-        """Cancel the job order and all dependent open records. Admin/staff only."""
+        """Cancel the job order and all dependent open records.
+
+        Allowed for staff/superusers and members of the 'planlama' UserGroup
+        (matches the frontend canEditJobOrders() gate).
+        """
         from django.core.exceptions import ValidationError as DjangoValidationError
         job_order = self.get_object()
         try:
