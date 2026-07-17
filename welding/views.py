@@ -8,6 +8,7 @@ from rest_framework.filters import OrderingFilter
 from django.db.models import Sum, Q
 from django.db import transaction
 from django.contrib.auth import get_user_model
+from django.shortcuts import get_object_or_404
 from collections import defaultdict
 from decimal import Decimal
 
@@ -428,6 +429,23 @@ class WeldingPlanAllocationViewSet(viewsets.ModelViewSet):
             qs = qs.filter(department_task__job_order_id=job_no)
         return qs
 
+    def destroy(self, request, *args, **kwargs):
+        # Serialize deletion with promotion. Without this lock, a DELETE racing a
+        # promotion can remove the plan row after the real assignment is created.
+        instance = self.get_object()
+        with transaction.atomic():
+            locked = get_object_or_404(
+                WeldingPlanAllocation.objects.select_for_update(),
+                pk=instance.pk,
+            )
+            if locked.is_promoted:
+                return Response(
+                    {'detail': 'Gerçek atamaya dönüştürülmüş tahsis silinemez.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            self.perform_destroy(locked)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
     # -- board ---------------------------------------------------------------
     def _append_committed_rows(self, alloc_by_resource, alloc_total_by_task, visible_task_ids=None):
         """Add read-only rows for real assignments made outside the planning flow.
@@ -686,8 +704,6 @@ class WeldingPlanAllocationViewSet(viewsets.ModelViewSet):
     # -- promote -------------------------------------------------------------
     @action(detail=True, methods=['post'], url_path='promote')
     def promote(self, request, pk=None):
-        from decimal import Decimal
-
         alloc = self.get_object()
         if alloc.is_promoted:
             return Response(
@@ -695,10 +711,22 @@ class WeldingPlanAllocationViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        main_task = alloc.department_task
-
         try:
             with transaction.atomic():
+                # Promotion creates a real production subtask and, for subcontractors,
+                # a billable assignment. Re-read under a row lock so concurrent retries
+                # cannot both pass the is_promoted check and create duplicate work.
+                alloc = get_object_or_404(
+                    WeldingPlanAllocation.objects.select_for_update(),
+                    pk=alloc.pk,
+                )
+                if alloc.is_promoted:
+                    return Response(
+                        {'detail': 'Bu tahsis zaten gerçek atamaya dönüştürülmüş.'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+                main_task = alloc.department_task
                 if alloc.team_id:
                     from .services.internal_team import create_internal_team_assignment
                     _, assignment = create_internal_team_assignment(
