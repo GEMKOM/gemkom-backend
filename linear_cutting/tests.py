@@ -138,15 +138,38 @@ class OptimizerPackingTests(unittest.TestCase):
 
     def test_v_notch_parts_not_falsely_nested(self):
         # Old algorithm paired |right|==|left| even when the faces were NOT
-        # coplanar (V notch) and charged no kerf. Must not happen.
+        # coplanar (V notch) and charged no kerf. Whatever arrangement the
+        # optimizer picks (it may reorder/rotate so angled ends face the bar
+        # ends), a shared boundary must never join two angled V-faces.
+        res = optimize(
+            [part('A', 1000, al=0, ar=45, h=100, allow_rotation=False),
+             part('B', 1000, al=45, ar=0, h=100, allow_rotation=False)],
+            6000, kerf_mm=3)
+        self.assertEqual(res['nest_pairs_formed'], 0)
+        cuts = all_cuts(res)
+        self.assertEqual(len(cuts), 2)
+        for bar in res['bars']:
+            for prev, nxt in zip(bar['cuts'], bar['cuts'][1:]):
+                if nxt['shared_left']:
+                    self.assertAlmostEqual(
+                        nxt['angle_left_deg'], -prev['angle_right_deg'],
+                        places=2)
+
+    def test_v_notch_resolved_by_pointing_angles_outward(self):
+        # With rotation allowed the V-notch pair is rearranged: angled ends
+        # moved to the bar ends (recess is free there), square shared cut
+        # between the pieces — never a fake shared 45° cut.
         res = optimize(
             [part('A', 1000, al=0, ar=45, h=100),
              part('B', 1000, al=45, ar=0, h=100)],
             6000, kerf_mm=3)
         self.assertEqual(res['nest_pairs_formed'], 0)
-        cuts = all_cuts(res)
-        self.assertEqual(len(cuts), 2)
-        self.assertFalse(cuts[1]['shared_left'])
+        bar = res['bars'][0]
+        self.assertLessEqual(bar['used_mm'], 2003.1)
+        cuts = bar['cuts']
+        self.assertEqual(cuts[0]['angle_right_deg'], 0.0)
+        self.assertEqual(cuts[1]['angle_left_deg'], 0.0)
+        self.assertTrue(cuts[1]['shared_left'])
 
     def test_remnant_used_before_new_bar(self):
         res = optimize(
@@ -366,6 +389,33 @@ class ProductionRegressionTests(unittest.TestCase):
             angles = {abs(c['angle_left_deg']) for c in bar['cuts']}
             angles |= {abs(c['angle_right_deg']) for c in bar['cuts']}
             self.assertIn(angles, ({0.0}, {45.0}))   # no mixed bars here
+
+    def test_within_bar_reorder_avoids_stranded_square(self):
+        # Real case (job 292-02): greedy order put the square POZ-15 AFTER
+        # the nested POZ-26 trapezoid pair -> a second wedge cut and an
+        # extra saw setting. Reordering the same pieces on the same bar
+        # ([squares..., 15, 26, 26f] or [26, 26f, squares...]) shares
+        # POZ-15's cut with the square chain: 1.2 mm less span, one fewer
+        # angle change. The reorder pass must find this.
+        parts = [
+            part('POZ-21', 1060, qty=3, job_no='292-02'),
+            part('POZ-26', 1015, qty=2, al=45, ar=45, h=70, job_no='292-02'),
+            part('POZ-15', 810, qty=1, job_no='292-02'),
+        ]
+        res = optimize(parts, 6000, kerf_mm=3)
+        self.assertEqual(res['bars_needed'], 1)
+        bar = res['bars'][0]
+        # optimal span: 3x1060 + 810 with 3 shared square kerfs, one wedge
+        # gap into the trapezoid pair, one shared interlocked diagonal
+        self.assertLessEqual(bar['used_mm'], 5967.6)
+        self.assertLessEqual(bar['saw_setup_changes'], 3)
+        # POZ-15 must not sit between the squares and the angled pair's tail
+        labels = [c['label'] for c in bar['cuts']]
+        first26 = labels.index('POZ-26')
+        self.assertTrue(
+            all(l != 'POZ-15' for l in labels[first26:first26 + 2]) and
+            (labels.index('POZ-15') < first26 or labels.index('POZ-15') > first26 + 1)
+        )
 
     def test_no_negative_zero_stops(self):
         res = optimize(self.PARTS, 6000, kerf_mm=3)

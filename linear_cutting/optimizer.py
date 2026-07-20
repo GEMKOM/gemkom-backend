@@ -161,6 +161,140 @@ def _pack(pieces: List[Piece], stock_length: float, kerf: float,
     return [b for b in bars if b.placements or not b.is_remnant]
 
 
+def _light_settings(bar: _BarState):
+    """(setup_changes, pass_count) computed arithmetically from placements —
+    mirrors passes_for_bar's pass sequence without building any dicts.
+    A saw setting is (|angle| rounded to 0.1°, physical lean of the plane).
+    """
+    def setting(ang, side):
+        if abs(ang) <= ANGLE_TOL_DEG:
+            return (0.0, 0)
+        if side == 'left':
+            lean = 1 if ang > 0 else -1
+        else:
+            lean = -1 if ang > 0 else 1
+        return (round(abs(ang), 1), lean)
+
+    settings = []
+    placements = bar.placements
+    first = placements[0][0]
+    if bar.is_remnant or abs(first.ang_l) > ANGLE_TOL_DEG:
+        settings.append(setting(first.ang_l, 'left'))
+    for i, (orient, _, _) in enumerate(placements):
+        is_last = (i == len(placements) - 1)
+        if is_last:
+            flush = (not bar.is_remnant
+                     and abs(orient.ang_r) <= ANGLE_TOL_DEG
+                     and abs(bar.cursor_end - bar.stock_length) < 0.05)
+            if not flush:
+                settings.append(setting(orient.ang_r, 'right'))
+        elif placements[i + 1][2]:          # next piece shares this cut
+            settings.append(setting(orient.ang_r, 'right'))
+        else:
+            settings.append(setting(orient.ang_r, 'right'))
+            settings.append(setting(placements[i + 1][0].ang_l, 'left'))
+    changes = sum(1 for a, b in zip(settings, settings[1:]) if a != b)
+    return changes, len(settings)
+
+
+def _bar_cost(bar: _BarState):
+    """Per-bar objective, aligned with the global score: consumed span in
+    1 cm buckets (less span = less kerf/wedge loss), then saw settings,
+    then pass count, then exact span."""
+    changes, pass_count = _light_settings(bar)
+    return (
+        round(bar.cursor_end / 10.0),
+        changes,
+        pass_count,
+        round(bar.cursor_end, 2),
+    )
+
+
+def _try_order(order: List[Piece], stock_length: float, is_remnant: bool,
+               stock_bar_id: int, kerf: float) -> Optional[_BarState]:
+    """Re-place the given pieces on a fresh bar in this exact order
+    (orientation re-chosen per boundary). None if the order doesn't fit."""
+    bar = _BarState(stock_length, is_remnant, stock_bar_id)
+    for piece in order:
+        cand = _candidate_for(bar, piece, kerf)
+        if cand is None:
+            return None
+        _place(bar, cand, kerf)
+    return bar
+
+
+def _piece_key(p: Piece):
+    """Interchangeability key: pieces of the same part are identical for
+    arrangement purposes (orientation is re-chosen at placement time)."""
+    return (p.part_id, p.label, round(p.length, 2), p.height,
+            round(min((p.ang_l, p.ang_r), (-p.ang_r, -p.ang_l))[0], 2),
+            round(min((p.ang_l, p.ang_r), (-p.ang_r, -p.ang_l))[1], 2),
+            p.allow_rotation, p.requires_bending)
+
+
+# Hard cap on candidate-order evaluations per bar — the neighborhood is
+# deduplicated by arrangement signature, so this is rarely reached; it
+# bounds the worst case deterministically.
+_MAX_REORDER_EVALS = 240
+
+
+def _improve_bar(bar: _BarState, kerf: float) -> _BarState:
+    """Within-bar local search: greedy packing appends pieces in a global
+    order and never reconsiders their arrangement on the bar, which can
+    leave e.g. a square piece stranded after an angled chain (an extra
+    wedge cut plus an extra saw setting).  Hill-climb over move-to-position
+    reorderings of this bar's own pieces, keeping strict improvements.
+
+    Identical pieces make most moves no-ops, so candidate orders are
+    deduplicated by their piece-key signature before any rebuild."""
+    if len(bar.placements) < 2:
+        return bar
+    # All-square bars are order-invariant for cost — skip the work.
+    if all(abs(o.ang_l) <= ANGLE_TOL_DEG and abs(o.ang_r) <= ANGLE_TOL_DEG
+           for o, _, _ in bar.placements):
+        return bar
+    keys0 = [_piece_key(o) for o, _, _ in bar.placements]
+    if len(set(keys0)) == 1:
+        return bar          # all pieces interchangeable — nothing to reorder
+
+    best, best_cost = bar, _bar_cost(bar)
+    seen = {tuple(keys0)}
+    evals = 0
+    for _ in range(4):
+        improved = False
+        pieces = [o for o, _, _ in best.placements]
+        keys = [_piece_key(o) for o in pieces]
+        n = len(pieces)
+        for i in range(n):
+            for j in range(n):
+                if i == j:
+                    continue
+                order_keys = keys.copy()
+                moved_key = order_keys.pop(i)
+                order_keys.insert(j, moved_key)
+                sig = tuple(order_keys)
+                if sig in seen:
+                    continue
+                seen.add(sig)
+                evals += 1
+                if evals > _MAX_REORDER_EVALS:
+                    return best
+                order = pieces.copy()
+                moved = order.pop(i)
+                order.insert(j, moved)
+                cand = _try_order(order, best.stock_length, best.is_remnant,
+                                  best.stock_bar_id, kerf)
+                if cand is None:
+                    continue
+                cost = _bar_cost(cand)
+                if cost < best_cost:
+                    best, best_cost = cand, cost
+                    improved = True
+        if not improved:
+            break
+    return best
+
+
 def _build_pieces(parts_data: list) -> List[Piece]:
     pieces: List[Piece] = []
     problems: List[str] = []
@@ -380,22 +514,24 @@ def optimize(
             bars = _pack(ordered, stock_length, kerf, stock_seed, policy)
             if bars is None:
                 continue
+            bars = [_improve_bar(b, kerf) for b in bars]
             solution = _solution_dict(bars, stock_length, kerf)
             # Material first (user priority #1), then cutting easiness
-            # (priority #2).  Waste is compared in 1 cm buckets so that
-            # sub-centimeter rounding noise never outvotes an extra
-            # saw-angle setting change; the precise value is a later
-            # tie-break to stay deterministic.
-            precise_waste = round(sum(
-                b['stock_length_mm'] - b['used_mm'] for b in solution['bars']
-            ), 1)
+            # (priority #2).  With the bar count fixed, the material metric
+            # is the CONSUMED SPAN (piece material is constant, so a smaller
+            # span means less kerf/wedge loss and a larger usable tail —
+            # minimizing leftover would reward the opposite).  Compared in
+            # 1 cm buckets so sub-centimeter noise never outvotes an extra
+            # saw-angle setting change; exact span is a later tie-break to
+            # stay deterministic.
+            total_used = round(sum(b['used_mm'] for b in solution['bars']), 1)
             score = (
                 solution['bars_needed'],
                 solution['remnant_bars_used'],
-                round(precise_waste / 10.0),
+                round(total_used / 10.0),
                 solution['saw_setup_changes'],
                 solution['total_pass_count'],
-                precise_waste,
+                total_used,
                 -max((b['waste_mm'] for b in solution['bars']), default=0),
             )
             if best is None or score < best[0]:
