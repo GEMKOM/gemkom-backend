@@ -1535,12 +1535,15 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         Returns job orders that have at least one shipping cost line.
         Supports the same filters as the list view.
         """
-        from django.db.models import Count
+        from django.db.models import Count, Sum
 
         qs = (
             JobOrder.objects
             .select_related('customer')
-            .annotate(shipping_line_count=Count('shipping_cost_lines'))
+            .annotate(
+                shipping_line_count=Count('shipping_cost_lines'),
+                shipping_total_eur=Sum('shipping_cost_lines__amount_eur'),
+            )
             .filter(shipping_line_count__gt=0, children__isnull=True)
             .exclude(job_no='LEGACY-ARCHIVE')
         )
@@ -3779,7 +3782,7 @@ class JobOrderQCCostLineViewSet(viewsets.ModelViewSet):
         from .serializers import JobOrderQCCostLineSerializer
         return JobOrderQCCostLineSerializer
 
-    @action(detail=False, methods=['post'], url_path='submit')
+    @action(detail=False, methods=['post'], url_path='submit', permission_classes=[permissions.IsAuthenticated])
     def submit(self, request):
         """Atomically replace all QC cost lines for a job order."""
         from .serializers import QCLinesSubmitSerializer, JobOrderQCCostLineSerializer

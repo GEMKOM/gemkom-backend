@@ -232,6 +232,7 @@ class JobOrderListSerializer(serializers.ModelSerializer):
     revision_count = serializers.IntegerField(read_only=True)
     previous_target_date_revision = serializers.DateField(read_only=True, default=None)
     target_date_revisions_count = serializers.IntegerField(read_only=True)
+    shipping_total_eur = serializers.DecimalField(max_digits=16, decimal_places=2, read_only=True, default=None)
     last_week_progress = serializers.SerializerMethodField()
     daily_avg_progress = serializers.SerializerMethodField()
     estimated_completion_by_last_week = serializers.SerializerMethodField()
@@ -249,6 +250,7 @@ class JobOrderListSerializer(serializers.ModelSerializer):
             'ncr_count',
             'revision_count',
             'target_date_revisions_count',
+            'shipping_total_eur',
             'general_expenses_rate',
             'source_offer',
             'phase_number', 'source_job_order', 'is_phase_job', 'has_phases',
