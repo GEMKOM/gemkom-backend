@@ -330,6 +330,12 @@ _CONVENTION_NOTE = (
     "<b>b</b> = büküm var (boy açınım boyudur). Koyu bantlar testere kesimini, taralı alanlar fireyi gösterir."
 )
 
+_PASS_KIND_NOTE = (
+    "Tür — <b>Ortak kesim:</b> tek geçiş iki parçaya hizmet eder (bıçağın iki tarafı da parça). "
+    "<b>Parça ayırma:</b> parçayı bitirir; kesimin öbür tarafı parça yüzeyi değildir. "
+    "<b>Baş kesim:</b> parça çıkmaz, bir sonraki parçanın yüzeyini hazırlar (çıkan küçük parça firedir)."
+)
+
 _STOP_NOTE = (
     "Ayar mesafeleri kalan barın <b>taze kesilmiş kenarından</b> ölçülür ve boy dayamasına "
     "doğrudan girilebilir. Alt/Üst: barın alt (yakın) ve üst (uzak) kenarı boyunca ölçü. "
@@ -440,6 +446,8 @@ def _render_bar(bar: dict, styles: dict, usable_width: float,
         story.append(Spacer(1, 1.5 * mm))
         story.append(Paragraph('Kesim Sırası', styles['section']))
         story.append(_pass_table(passes))
+        story.append(Spacer(1, 1 * mm))
+        story.append(Paragraph(_PASS_KIND_NOTE, styles['legend']))
     story.append(Spacer(1, 3 * mm))
     return story
 
@@ -451,7 +459,7 @@ def _bar_header_text(bar, material: str) -> str:
     eff = round((1 - waste / stock) * 100, 1) if stock else 0
     src = '  |  <font color="#B98900">STOKTAN</font>' if bar.get('is_remnant') else ''
     mat = f"  |  <font color='grey'>{material}</font>" if material else ''
-    return (f"Çubuk #{bar_idx}  –  {stock} mm{src}{mat}"
+    return (f"Bar #{bar_idx}  –  {stock} mm{src}{mat}"
             f"  |  Fire: {waste} mm  |  Verim: {eff} %")
 
 
@@ -472,40 +480,30 @@ def _info_table(data):
     return t
 
 
-def _render_group(group: dict, styles: dict, usable_width: float) -> list:
-    story = []
-    item_name    = group.get('item_name', '—')
-    item_code    = group.get('item_code', '')
-    stock_len    = group.get('stock_length_mm', 0)
-    kerf_mm      = float(group.get('kerf_mm', 0) or 0)
-    bars         = group.get('bars', [])
-
-    header_text = f"{item_name}"
-    if item_code:
-        header_text += f"  <font size='9' color='grey'>({item_code})</font>"
-    story.append(Paragraph(header_text, styles['group_header']))
-
-    saved = group.get('material_saved_by_nesting_mm', 0)
-    summary_data = [
-        ['Stok boyu', f"{stock_len} mm",
-         'Testere payı', f"{kerf_mm:g} mm"],
-        ['Yeni çubuk', str(group.get('bars_needed', 0)),
-         'Stoktan çubuk', str(group.get('remnant_bars_used', 0))],
-        ['Toplam fire', f"{group.get('total_waste_mm', 0)} mm",
-         'Verimlilik', f"{group.get('efficiency_pct', 0)} %"],
-        ['Toplam kesim', str(group.get('total_pass_count', '—')),
-         'Ortak kesim kazancı', f"{saved:g} mm" if saved else '—'],
-        ['Açı ayar değişimi', str(group.get('saw_setup_changes', '—')), '', ''],
+def _group_overview_table(groups: list) -> Table:
+    """Cover-page overview: one row per profile group."""
+    header = ['Profil', 'Kod', 'Stok (mm)', 'Yeni bar', 'Stoktan',
+              'Fire (mm)', 'Verim %', 'Kesim', 'Açı değişimi']
+    rows = [header]
+    for g in groups:
+        rows.append([
+            g.get('item_name', '—'),
+            g.get('item_code', '') or '—',
+            str(g.get('stock_length_mm', 0)),
+            str(g.get('bars_needed', 0)),
+            str(g.get('remnant_bars_used', 0)),
+            str(g.get('total_waste_mm', 0)),
+            str(g.get('efficiency_pct', 0)),
+            str(g.get('total_pass_count', '—')),
+            str(g.get('saw_setup_changes', '—')),
+        ])
+    t = Table(rows, colWidths=[46*mm, 28*mm, 17*mm, 14*mm, 14*mm,
+                               16*mm, 14*mm, 12*mm, 19*mm], repeatRows=1)
+    style = _table_style_common() + [
+        ('ALIGN', (2, 1), (-1, -1), 'CENTER'),
     ]
-    story.append(_info_table(summary_data))
-    story.append(Spacer(1, 3 * mm))
-
-    for bar in bars:
-        story.extend(_render_bar(
-            bar, styles, usable_width, kerf_mm,
-            _bar_header_text(bar, bar.get('item_name') or item_name),
-        ))
-    return story
+    t.setStyle(TableStyle(style))
+    return t
 
 
 def build_cutting_list_pdf(session) -> bytes:
@@ -535,8 +533,9 @@ def build_cutting_list_pdf(session) -> bytes:
     story.append(Paragraph(f"Kesim Listesi – {session.key}", styles['title']))
     story.append(Paragraph(session.title, styles['subtitle']))
 
+    # ── Page 1: cover — session info, conventions, group overview ────────
     story.append(_info_table([
-        ['Toplam çubuk', str(total_bars),
+        ['Toplam bar', str(total_bars),
          'Profil grubu', str(len(groups))],
         ['Testere payı', f"{session.kerf_mm} mm",
          'Tarih', str(date.today())],
@@ -547,19 +546,29 @@ def build_cutting_list_pdf(session) -> bytes:
     story.append(Paragraph(_STOP_NOTE, styles['legend']))
     story.append(Spacer(1, 2 * mm))
     story.append(HRFlowable(width='100%', thickness=1.5, color=DARK_BLUE))
+    story.append(Spacer(1, 3 * mm))
+    story.append(Paragraph('Profil Grupları', styles['group_header']))
+    story.append(_group_overview_table(groups))
 
-    for idx, group in enumerate(groups):
-        if idx > 0:
+    # ── One page per bar ─────────────────────────────────────────────────
+    for group in groups:
+        item_name = group.get('item_name', '—')
+        item_code = group.get('item_code', '')
+        kerf_mm = float(group.get('kerf_mm', 0) or 0)
+        context = f"{item_name}"
+        if item_code:
+            context += f"  <font size='9' color='grey'>({item_code})</font>"
+        context += (f"  <font size='8' color='grey'>|  Stok: "
+                    f"{group.get('stock_length_mm', 0)} mm  |  "
+                    f"Testere payı: {kerf_mm:g} mm  |  {session.key}</font>")
+        for bar in group.get('bars', []):
             story.append(PageBreak())
-        story.extend(_render_group(group, styles, USABLE_WIDTH))
-        story.append(HRFlowable(width='100%', thickness=0.5, color=colors.grey))
-        story.append(Spacer(1, 2 * mm))
-        story.append(Paragraph(
-            f"{group.get('bars_needed', 0)} yeni + {group.get('remnant_bars_used', 0)} stoktan çubuk  |  "
-            f"Toplam fire: {group.get('total_waste_mm', 0)} mm  |  "
-            f"Verimlilik: {group.get('efficiency_pct', 0)} %",
-            styles['small'],
-        ))
+            story.append(Paragraph(context, styles['group_header']))
+            story.append(HRFlowable(width='100%', thickness=0.8, color=DARK_BLUE))
+            story.extend(_render_bar(
+                bar, styles, USABLE_WIDTH, kerf_mm,
+                _bar_header_text(bar, ''),
+            ))
 
     doc.build(story)
     return buffer.getvalue()

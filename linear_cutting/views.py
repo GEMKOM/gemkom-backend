@@ -288,7 +288,7 @@ class ConfirmView(APIView):
                 pr = PlanningRequest(
                     title=f"Profil/Boru Kesim – {session.key} {session.title}",
                     description=(
-                        f"Toplam {total_bars} çubuk, {len(groups)} farklı profil. "
+                        f"Toplam {total_bars} bar, {len(groups)} farklı profil. "
                         f"Testere payı: {session.kerf_mm} mm."
                     ),
                     needed_date=needed_date,
