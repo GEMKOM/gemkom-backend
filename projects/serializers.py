@@ -2445,10 +2445,15 @@ class CostTableRowSerializer(serializers.Serializer):
     target_completion_date = serializers.DateField(allow_null=True)
     created_at = serializers.DateTimeField()
 
+    # True when the job has a manufacturing (İmalat) department task;
+    # False means it was not manufactured in-house.
+    is_manufactured = serializers.SerializerMethodField()
+
     # From JobOrderCostSummary
     selling_price = serializers.SerializerMethodField()
     selling_price_currency = serializers.SerializerMethodField()
     price_per_kg = serializers.SerializerMethodField()
+    selling_price_per_kg = serializers.SerializerMethodField()
     margin_eur = serializers.SerializerMethodField()
     margin_pct = serializers.SerializerMethodField()
     last_updated = serializers.SerializerMethodField()
@@ -2473,6 +2478,23 @@ class CostTableRowSerializer(serializers.Serializer):
         if not obj.customer:
             return None
         return obj.customer.short_name or obj.customer.name
+
+    def get_is_manufactured(self, obj):
+        flag = getattr(obj, '_is_manufactured', None)
+        if flag is None:
+            from django.db.models import Q
+            from projects.models import JobOrderDepartmentTask
+            flag = JobOrderDepartmentTask.objects.filter(
+                department='manufacturing',
+            ).exclude(
+                status__in=['skipped', 'cancelled'],
+            ).filter(
+                Q(job_order_id=obj.pk)
+                | Q(job_order__parent_id=obj.pk)
+                | Q(job_order__job_no__startswith=f'{obj.pk}-')
+                | Q(job_order__job_no__startswith=f'{obj.pk}/')
+            ).exists()
+        return flag
 
     def get_labor_cost(self, obj):
         s = self._summary(obj)
@@ -2605,6 +2627,19 @@ class CostTableRowSerializer(serializers.Serializer):
         if not total:
             return None
         return str((total / Decimal(str(weight))).quantize(Decimal('0.01')))
+
+    def get_selling_price_per_kg(self, obj):
+        """selling_price ÷ total_weight_kg (EUR only; null if price or weight missing)."""
+        from decimal import Decimal
+        if self.get_selling_price_currency(obj) != 'EUR':
+            return None
+        weight = self._effective_weight(obj)
+        if not weight:
+            return None
+        price = Decimal(self.get_selling_price(obj))
+        if not price:
+            return None
+        return str((price / Decimal(str(weight))).quantize(Decimal('0.01')))
 
     def get_margin_eur(self, obj):
         from decimal import Decimal

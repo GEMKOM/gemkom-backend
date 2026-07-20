@@ -157,6 +157,10 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         'priority': ['exact', 'in'],
         'customer': ['exact'],
         'parent': ['exact', 'isnull'],
+        # Date ranges (used by the cost table's date filter, YYYY-MM-DD)
+        'target_completion_date': ['exact', 'gte', 'lte'],
+        'created_at': ['date__gte', 'date__lte'],
+        'cost_summary__last_updated': ['date__gte', 'date__lte'],
     }
 
     def get_serializer_class(self):
@@ -933,7 +937,8 @@ class JobOrderViewSet(viewsets.ModelViewSet):
 
     @staticmethod
     def _cost_table_base_queryset():
-        from django.db.models import Exists, OuterRef, Prefetch
+        from django.db.models import Exists, OuterRef, Prefetch, Q, Value
+        from django.db.models.functions import Concat
         from sales.models import SalesOfferPriceRevision
 
         # Masters split into production phases: they have phase mirrors that
@@ -945,10 +950,31 @@ class JobOrderViewSet(viewsets.ModelViewSet):
             .exclude(parent_id=OuterRef('pk'))
         )
 
+        # Jobs with no manufacturing (İmalat) department task anywhere in their
+        # subtree were not manufactured in-house (e.g. trading / fully
+        # outsourced items). Checked on self plus descendants via the
+        # hierarchical job_no prefix ('-' children, '/' phase jobs), so parent
+        # containers and phased masters roll up from their leaves. The
+        # parent_id clause covers phase nodes, whose allocation children
+        # (270-01-01/P1 under 270-01/P1) do not share the node's prefix.
+        manufacturing_task_sq = JobOrderDepartmentTask.objects.filter(
+            department='manufacturing',
+        ).exclude(
+            status__in=['skipped', 'cancelled'],
+        ).filter(
+            Q(job_order_id=OuterRef('pk'))
+            | Q(job_order__parent_id=OuterRef('pk'))
+            | Q(job_order__job_no__startswith=Concat(OuterRef('pk'), Value('-')))
+            | Q(job_order__job_no__startswith=Concat(OuterRef('pk'), Value('/')))
+        )
+
         return (
             JobOrder.objects
             .select_related('cost_summary', 'customer', 'source_offer', 'source_job_order')
-            .annotate(_is_phased_master=Exists(phased_master_sq))
+            .annotate(
+                _is_phased_master=Exists(phased_master_sq),
+                _is_manufactured=Exists(manufacturing_task_sq),
+            )
             .prefetch_related(
                 Prefetch(
                     'source_offer__price_revisions',
@@ -1058,6 +1084,12 @@ class JobOrderViewSet(viewsets.ModelViewSet):
             base_qs = base_qs.filter(job_no__istartswith='RM')
         elif facility == 'meltshop':
             base_qs = base_qs.exclude(job_no__istartswith='RM')
+
+        # ?manufactured=true → only jobs with a manufacturing (İmalat) task;
+        # ?manufactured=false → only jobs without one (not manufactured in-house).
+        manufactured = request.query_params.get('manufactured')
+        if manufactured in ('true', 'false'):
+            base_qs = base_qs.filter(_is_manufactured=(manufactured == 'true'))
 
         # Filter by catalog item (OfferTemplateNode). Accepts ?template_node=1 or
         # ?template_node=1,2,3. Includes all descendants of each selected node.
