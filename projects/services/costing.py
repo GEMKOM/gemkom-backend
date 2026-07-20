@@ -123,6 +123,111 @@ def phase_share_amount(job_order, offer_price_amount: Decimal):
     return offer_price_amount * share
 
 
+def phase_quantity_fraction(job_order):
+    """
+    Fraction of the product master's quantity carried by a production-phase
+    allocation (e.g. 270-01-01/P1 with qty 1 of master qty 3 -> 1/3), or
+    ``None`` when the job is not a phase allocation or the fraction cannot be
+    computed.
+
+    Phase *nodes* (270-01/P1, whose source_job_order is also their parent) are
+    excluded — they are delivery containers, not product quantity carriers.
+    Allocation quantities are validated to sum to the master's quantity on
+    creation, so the fractions across phases always sum to 1.
+    """
+    source_id = getattr(job_order, 'source_job_order_id', None)
+    if source_id is None or source_id == job_order.parent_id:
+        return None
+    master = job_order.source_job_order
+    if master is None or not master.quantity:
+        return None
+    return Decimal(job_order.quantity or 0) / Decimal(master.quantity)
+
+
+def is_phase_node(job_order) -> bool:
+    """
+    True for delivery phase nodes (270-01/P1): phase jobs whose
+    source_job_order is also their parent (the engineering root).
+    """
+    return (
+        job_order.source_job_order_id is not None
+        and job_order.source_job_order_id == job_order.parent_id
+    )
+
+
+def phase_node_selling_price(phase_node):
+    """
+    Effective selling price of a phase node as the sum of its allocation
+    children's effective prices (each already quantity-split).
+
+    Returns ``{'amount': Decimal, 'currency': str, 'amount_eur': Decimal}``
+    with the sum in the children's shared original currency (falling back to
+    the EUR totals when currencies are mixed), or ``None`` when the job is not
+    a phase node or no child carries a price.
+    """
+    if not is_phase_node(phase_node):
+        return None
+
+    from projects.models import JobOrderCostSummary
+    from sales.models import SalesOfferPriceRevision
+
+    children = list(
+        phase_node.children
+        .select_related('source_offer', 'source_job_order', 'cost_summary')
+        .prefetch_related('source_offer__items')
+    )
+    if not children:
+        return None
+
+    offer_ids = {c.source_offer_id for c in children if c.source_offer_id}
+    price_map: dict = {}
+    if offer_ids:
+        for rev in SalesOfferPriceRevision.objects.filter(offer_id__in=offer_ids, is_current=True):
+            price_map[rev.offer_id] = rev
+    ctx = {'current_price_map': price_map}
+
+    total_original = Decimal('0.00')
+    total_eur = Decimal('0.00')
+    currencies: set = set()
+    for child in children:
+        # Phase jobs cannot be split again, so skip the per-child EXISTS query.
+        child._is_phased_master = False
+        try:
+            summary = child.cost_summary
+        except JobOrderCostSummary.DoesNotExist:
+            summary = None
+        eff = _effective_selling_price(child, summary, ctx)
+        amount = Decimal(eff['original_amount'])
+        if not amount:
+            continue
+        total_original += amount
+        total_eur += Decimal(eff['amount_eur'])
+        currencies.add(eff['original_currency'])
+
+    if not currencies:
+        return None
+    if len(currencies) == 1:
+        return {'amount': q2(total_original), 'currency': currencies.pop(), 'amount_eur': q2(total_eur)}
+    return {'amount': q2(total_eur), 'currency': 'EUR', 'amount_eur': q2(total_eur)}
+
+
+def is_phased_master(job_order) -> bool:
+    """
+    True when this product master has been split into production phases (its
+    phase mirrors are allocations living under phase nodes, e.g. 270-01-01 with
+    270-01-01/P1..P3). The selling price is then carried by the allocations, so
+    the master itself should not repeat it.
+
+    Roots whose only mirrors are their own phase nodes (270-01 -> 270-01/P1)
+    are not phased masters. Uses the ``_is_phased_master`` annotation when the
+    queryset provides it to avoid per-row queries.
+    """
+    flag = getattr(job_order, '_is_phased_master', None)
+    if flag is not None:
+        return flag
+    return job_order.phase_mirrors.exclude(parent_id=job_order.pk).exists()
+
+
 def _effective_selling_price(job_order, summary=None, ctx=None) -> dict:
     """
     Return the best known selling price converted to EUR.
@@ -131,6 +236,20 @@ def _effective_selling_price(job_order, summary=None, ctx=None) -> dict:
     commercial source there. The manual summary price remains the fallback.
     """
     today = date.today()
+
+    # Phase nodes (270-01/P1) have no offer link of their own — their price is
+    # the sum of their allocations' quantity-split prices. Allocations are
+    # never phase nodes themselves, so this cannot recurse.
+    node_price = phase_node_selling_price(job_order)
+    if node_price is not None:
+        return {
+            'amount_eur': _decimal_str(node_price['amount_eur']),
+            'currency': 'EUR',
+            'original_amount': _decimal_str(node_price['amount']),
+            'original_currency': node_price['currency'],
+            'source': 'phase_children_sum',
+        }
+
     offer_price = None
     if getattr(job_order, 'source_offer_id', None):
         if ctx is not None:
@@ -138,7 +257,14 @@ def _effective_selling_price(job_order, summary=None, ctx=None) -> dict:
         else:
             offer_price = job_order.source_offer.current_price
 
-    if offer_price:
+    if offer_price and is_phased_master(job_order):
+        # Split masters carry no cost of their own — their allocations hold
+        # the quantity-split prices, so repeating the full price here would
+        # double-count the subtree.
+        original_amount = Decimal('0.00')
+        original_currency = offer_price.currency
+        source = 'phased_master'
+    elif offer_price:
         original_currency = offer_price.currency
         phase_amount = phase_share_amount(job_order, offer_price.amount)
         if phase_amount is not None:
@@ -147,6 +273,13 @@ def _effective_selling_price(job_order, summary=None, ctx=None) -> dict:
         else:
             original_amount = offer_price.amount
             source = 'sales_offer_current_price'
+        # Production-phase allocations (270-01-01/P1) inherit the master's
+        # offer link; scale to this phase's quantity share so the price is
+        # divided across phases instead of repeated in full on each one.
+        qty_fraction = phase_quantity_fraction(job_order)
+        if qty_fraction is not None:
+            original_amount = original_amount * qty_fraction
+            source += '_qty_split'
     elif summary:
         original_amount = summary.selling_price
         original_currency = summary.selling_price_currency

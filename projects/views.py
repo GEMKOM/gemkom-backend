@@ -933,12 +933,22 @@ class JobOrderViewSet(viewsets.ModelViewSet):
 
     @staticmethod
     def _cost_table_base_queryset():
-        from django.db.models import Prefetch
+        from django.db.models import Exists, OuterRef, Prefetch
         from sales.models import SalesOfferPriceRevision
+
+        # Masters split into production phases: they have phase mirrors that
+        # live under phase nodes (parent != master). Their selling price is
+        # suppressed in favour of the allocations' quantity-split prices.
+        phased_master_sq = (
+            JobOrder.objects
+            .filter(source_job_order_id=OuterRef('pk'))
+            .exclude(parent_id=OuterRef('pk'))
+        )
 
         return (
             JobOrder.objects
-            .select_related('cost_summary', 'customer', 'source_offer')
+            .select_related('cost_summary', 'customer', 'source_offer', 'source_job_order')
+            .annotate(_is_phased_master=Exists(phased_master_sq))
             .prefetch_related(
                 Prefetch(
                     'source_offer__price_revisions',

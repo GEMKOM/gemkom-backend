@@ -2547,21 +2547,48 @@ class CostTableRowSerializer(serializers.Serializer):
             cache[offer.id] = offer_phase_shares(offer)
         return cache[offer.id]
 
+    def _phase_node_price(self, obj):
+        """Cached phase-node price roll-up ({'amount', 'currency'} or None)."""
+        from projects.services.costing import is_phase_node, phase_node_selling_price
+        if not is_phase_node(obj):
+            return None
+        cache = self.context.setdefault('_phase_node_prices', {})
+        if obj.job_no not in cache:
+            cache[obj.job_no] = phase_node_selling_price(obj)
+        return cache[obj.job_no]
+
     def get_selling_price(self, obj):
         from decimal import Decimal
+        from projects.services.costing import is_phased_master, phase_quantity_fraction
+        node_price = self._phase_node_price(obj)
+        if node_price is not None:
+            return str(node_price['amount'])
         offer_price = self._offer_price(obj)
         if offer_price is not None:
+            # Split masters carry no cost of their own — the quantity-split
+            # prices live on their phase allocations.
+            if is_phased_master(obj):
+                return '0.00'
+            amount = offer_price.amount
             item_id = getattr(obj, 'source_offer_item_id', None)
             offer = getattr(obj, 'source_offer', None)
             if item_id is not None and offer is not None:
                 share = self._phase_shares(offer).get(item_id)
                 if share is not None:
-                    return str((offer_price.amount * share).quantize(Decimal('0.01')))
-            return str(offer_price.amount)
+                    amount = amount * share
+            # Production-phase allocations inherit the master's offer link;
+            # divide the price across phases by quantity share.
+            qty_fraction = phase_quantity_fraction(obj)
+            if qty_fraction is not None:
+                amount = amount * qty_fraction
+            return str(amount.quantize(Decimal('0.01')))
         s = self._summary(obj)
         return str(s.selling_price) if s else '0.00'
 
     def get_selling_price_currency(self, obj):
+        node_price = self._phase_node_price(obj)
+        if node_price is not None:
+            return node_price['currency']
         offer_price = self._offer_price(obj)
         if offer_price is not None:
             return offer_price.currency
