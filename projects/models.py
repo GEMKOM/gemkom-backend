@@ -2183,6 +2183,10 @@ class JobOrderCostSummary(models.Model):
         max_digits=16, decimal_places=2, default=Decimal('0.00'),
         help_text='other expenses'
     )
+    machine_rental_cost = models.DecimalField(
+        max_digits=16, decimal_places=2, default=Decimal('0.00'),
+        help_text='Completed crane/platform rental requests (EUR, completion-date FX)'
+    )
     actual_total_cost = models.DecimalField(
         max_digits=16, decimal_places=2, default=Decimal('0.00'),
         help_text='Sum of all cost components (EUR)'

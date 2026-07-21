@@ -261,6 +261,7 @@ class JobOrderListSerializer(serializers.ModelSerializer):
     previous_target_date_revision = serializers.DateField(read_only=True, default=None)
     target_date_revisions_count = serializers.IntegerField(read_only=True)
     shipping_total_eur = serializers.DecimalField(max_digits=16, decimal_places=2, read_only=True, default=None)
+    qc_total_eur = serializers.DecimalField(max_digits=16, decimal_places=2, read_only=True, default=None)
     last_week_progress = serializers.SerializerMethodField()
     daily_avg_progress = serializers.SerializerMethodField()
     estimated_completion_by_last_week = serializers.SerializerMethodField()
@@ -279,6 +280,7 @@ class JobOrderListSerializer(serializers.ModelSerializer):
             'revision_count',
             'target_date_revisions_count',
             'shipping_total_eur',
+            'qc_total_eur',
             'general_expenses_rate',
             'source_offer',
             'phase_number', 'source_job_order', 'is_phase_job', 'has_phases',
@@ -2160,7 +2162,7 @@ class JobOrderCostSummarySerializer(serializers.ModelSerializer):
             'job_order',
             'total_weight_kg',
             'labor_cost', 'material_cost', 'subcontractor_cost',
-            'paint_cost', 'qc_cost', 'shipping_cost',
+            'paint_cost', 'qc_cost', 'shipping_cost', 'machine_rental_cost',
             'paint_material_rate', 'paint_material_cost',
             'general_expenses_rate', 'general_expenses_cost',
             'employee_overhead_rate', 'employee_overhead_cost',
@@ -2174,7 +2176,7 @@ class JobOrderCostSummarySerializer(serializers.ModelSerializer):
             'job_order',
             'total_weight_kg',
             'labor_cost', 'material_cost', 'subcontractor_cost',
-            'paint_cost', 'qc_cost', 'shipping_cost',
+            'paint_cost', 'qc_cost', 'shipping_cost', 'machine_rental_cost',
             'paint_material_cost',
             'general_expenses_rate', 'general_expenses_cost',
             'employee_overhead_cost',
@@ -2268,6 +2270,7 @@ class JobOrderNodeHistorySerializer(serializers.ModelSerializer):
             'paint_cost': str(cs.paint_cost),
             'qc_cost': str(cs.qc_cost),
             'shipping_cost': str(cs.shipping_cost),
+            'machine_rental_cost': str(cs.machine_rental_cost),
             'paint_material_cost': str(cs.paint_material_cost),
             'general_expenses_cost': str(cs.general_expenses_cost),
             'employee_overhead_cost': str(cs.employee_overhead_cost),
@@ -2462,6 +2465,7 @@ class CostTableRowSerializer(serializers.Serializer):
     paint_cost = serializers.SerializerMethodField()
     qc_cost = serializers.SerializerMethodField()
     shipping_cost = serializers.SerializerMethodField()
+    machine_rental_cost = serializers.SerializerMethodField()
     paint_material_cost = serializers.SerializerMethodField()
     general_expenses_cost = serializers.SerializerMethodField()
     employee_overhead_rate = serializers.SerializerMethodField()
@@ -2488,6 +2492,11 @@ class CostTableRowSerializer(serializers.Serializer):
     margin_eur = serializers.SerializerMethodField()
     margin_pct = serializers.SerializerMethodField()
     last_updated = serializers.SerializerMethodField()
+
+    # Planning marked the job as cost-not-applicable. Such rows are hidden
+    # unless ?include_not_applicable=true, so the flag lets the frontend grey
+    # them out / badge them instead of them silently missing from the report.
+    cost_not_applicable = serializers.SerializerMethodField()
 
     def _effective_weight(self, obj):
         """Own total_weight_kg, or aggregated descendants' weight for parent jobs."""
@@ -2550,6 +2559,10 @@ class CostTableRowSerializer(serializers.Serializer):
     def get_shipping_cost(self, obj):
         s = self._summary(obj)
         return str(s.shipping_cost) if s else '0.00'
+
+    def get_machine_rental_cost(self, obj):
+        s = self._summary(obj)
+        return str(s.machine_rental_cost) if s else '0.00'
 
     def get_paint_material_cost(self, obj):
         s = self._summary(obj)
@@ -2698,3 +2711,7 @@ class CostTableRowSerializer(serializers.Serializer):
     def get_last_updated(self, obj):
         s = self._summary(obj)
         return s.last_updated.isoformat() if s else None
+
+    def get_cost_not_applicable(self, obj):
+        s = self._summary(obj)
+        return bool(s.cost_not_applicable) if s else False

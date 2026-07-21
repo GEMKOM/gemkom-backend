@@ -34,16 +34,47 @@ def _dt_to_epoch_ms(dt) -> int:
     return int(dt.timestamp() * 1000)
 
 
-def _bucket_multiplier(bucket: str, wage: dict, *, is_holiday: bool = False) -> Decimal:
-    # Public holidays are priced at the Sunday rate (2x) — matching the existing
-    # welding convention (WeldingTimeEntry: 'holiday' == "Holiday / Sunday (2x)").
-    if is_holiday:
+# Overtime rate buckets. Overtime is by definition worked outside normal hours,
+# so there is no 1x bucket here: every hour carries a premium.
+OVERTIME_BUCKETS = ("weekday", "saturday", "sunday", "holiday")
+
+
+def classify_overtime_day(d, holiday_dates) -> str:
+    """
+    Which overtime rate bucket a local calendar date falls in.
+
+    Deliberately date-based, not time-of-day based: an overtime request is
+    already outside working hours by definition, so the 07:30-17:00 window that
+    `split_timer_by_local_day_and_bucket` applies to regular timer logs must not
+    be used to discount it.
+
+    A public holiday that falls on a Sunday is reported as 'holiday' (checked
+    first). The two carry the same multiplier, so only the attribution differs.
+    """
+    if d in holiday_dates:
+        return "holiday"
+    dow = d.weekday()  # Mon=0 ... Sun=6
+    if dow == 6:
+        return "sunday"
+    if dow == 5:
+        return "saturday"
+    return "weekday"
+
+
+def overtime_multiplier(bucket: str, wage: dict) -> Decimal:
+    """
+    weekday   -> after_hours_multiplier (1.5x default)
+    saturday  -> after_hours_multiplier (1.5x default)
+    sunday    -> sunday_multiplier      (2x default)
+    holiday   -> sunday_multiplier      (2x default)
+
+    Reads the per-user WageRate multipliers, so individual overrides still apply.
+    Saturday and weekday share a rate but stay separate buckets so the report can
+    report them apart; likewise sunday and holiday.
+    """
+    if bucket in ("sunday", "holiday"):
         return Decimal(str(wage["sunday_multiplier"]))
-    if bucket == "after_hours":
-        return Decimal(str(wage["after_hours_multiplier"]))
-    if bucket == "sunday":
-        return Decimal(str(wage["sunday_multiplier"]))
-    return Decimal("1")  # weekday_work — normal rate (overtime rarely lands here)
+    return Decimal(str(wage["after_hours_multiplier"]))
 
 
 def _holiday_dates_for_window(start_at, end_at) -> set:
@@ -62,21 +93,31 @@ def _holiday_dates_for_window(start_at, end_at) -> set:
     )
 
 
+def hours_by_local_day(start_at, end_at) -> "OrderedDict":
+    """
+    {local date -> Decimal hours} for the window. Uses the shared day splitter
+    for the midnight boundaries but collapses its time-of-day buckets, which do
+    not apply to overtime (see classify_overtime_day).
+    """
+    per_day: "OrderedDict[object, Decimal]" = OrderedDict()
+    for seg in split_timer_by_local_day_and_bucket(
+        _dt_to_epoch_ms(start_at), _dt_to_epoch_ms(end_at), tz="Europe/Istanbul"
+    ):
+        hours = Decimal(seg["seconds"]) / Decimal(3600)
+        if hours > 0:
+            per_day[seg["date"]] = per_day.get(seg["date"], Decimal("0")) + hours
+    return per_day
+
+
 def compute_entry_overtime_cost_eur(user_id: int, start_at, end_at, *, pick_wage, fx, holiday_dates=None) -> Decimal:
     """
     Cost in EUR of a single operator working the [start_at, end_at] window,
-    priced with their effective wage and the day/bucket split. Dates in
-    ``holiday_dates`` are charged at the holiday (Sunday) multiplier.
+    priced with their effective wage and the per-day overtime multiplier.
     """
     if holiday_dates is None:
         holiday_dates = _holiday_dates_for_window(start_at, end_at)
-    segments = split_timer_by_local_day_and_bucket(
-        _dt_to_epoch_ms(start_at), _dt_to_epoch_ms(end_at), tz="Europe/Istanbul"
-    )
     total = Decimal("0")
-    for seg in segments:
-        d = seg["date"]
-        hours = Decimal(seg["seconds"]) / Decimal(3600)
+    for d, hours in hours_by_local_day(start_at, end_at).items():
         wage = pick_wage(user_id, d)
         if not wage:
             continue
@@ -84,7 +125,7 @@ def compute_entry_overtime_cost_eur(user_id: int, start_at, end_at, *, pick_wage
         if try_to_eur == 0:
             continue
         base_hourly = Decimal(str(wage["base_monthly"])) / WAGE_MONTH_HOURS
-        mult = _bucket_multiplier(seg["bucket"], wage, is_holiday=(d in holiday_dates))
+        mult = overtime_multiplier(classify_overtime_day(d, holiday_dates), wage)
         total += hours * base_hourly * mult * try_to_eur
     return total
 
@@ -96,13 +137,20 @@ def compute_request_cost_impact(request, *, only_approved: bool = False) -> dict
     overtime cost across all jobs.
 
     ``only_approved`` restricts the calculation to entries with status='approved'
-    (used after a decision); otherwise all entries are considered.
+    (used after a decision); otherwise every entry that has not been rejected is
+    counted.
+
+    Rejected entries are always excluded: someone retracted during partial
+    approval does not work the overtime, so they cost nothing. Excluding rather
+    than filtering on 'approved' matches OvertimeUsersForDateView — entries
+    created before per-entry decisions existed still carry the default
+    status='pending' and must keep counting.
     """
     # Local import avoids a hard dependency at module import time.
     from projects.models import JobOrder
     from projects.services.costing import build_job_cost_payload
 
-    entries = list(request.entries.all())
+    entries = [e for e in request.entries.all() if e.status != "rejected"]
     if only_approved:
         entries = [e for e in entries if e.status == "approved"]
 
@@ -131,6 +179,9 @@ def compute_request_cost_impact(request, *, only_approved: bool = False) -> dict
         row = {
             "job_no": job_no,
             "title": None,
+            "customer_name": None,
+            "customer_code": None,
+            "target_completion_date": None,
             "job_order_found": False,
             "entry_count": agg["count"],
             "current_selling_price_eur": None,
@@ -146,7 +197,7 @@ def compute_request_cost_impact(request, *, only_approved: bool = False) -> dict
         job_order = None
         if job_no:
             job_order = (
-                JobOrder.objects.select_related("cost_summary")
+                JobOrder.objects.select_related("cost_summary", "customer")
                 .filter(job_no=job_no)
                 .first()
             )
@@ -159,9 +210,15 @@ def compute_request_cost_impact(request, *, only_approved: bool = False) -> dict
             projected_cost = current_cost + overtime_cost
             projected_profit = selling - projected_cost
 
+            customer = getattr(job_order, "customer", None)
+            target_date = getattr(job_order, "target_completion_date", None)
+
             row.update(
                 {
                     "title": getattr(job_order, "title", None) or getattr(job_order, "name", None),
+                    "customer_name": getattr(customer, "name", None) if customer else None,
+                    "customer_code": getattr(customer, "code", None) if customer else None,
+                    "target_completion_date": target_date.isoformat() if target_date else None,
                     "job_order_found": True,
                     "current_selling_price_eur": str(_q2(selling)),
                     "current_cost_eur": str(_q2(current_cost)),

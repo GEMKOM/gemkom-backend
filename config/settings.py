@@ -109,6 +109,7 @@ INSTALLED_APPS = [
     'teams',
     'vacation_requests',
     'finance.apps.FinanceConfig',
+    'cranes',
 ]
 
 MIDDLEWARE = [

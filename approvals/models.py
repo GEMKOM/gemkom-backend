@@ -65,6 +65,7 @@ class ApprovalPolicy(models.Model):
         ("ncr",                           "NCR"),
         ("sales_offer",                   "Sales Offer"),
         ("department_request",            "Department Request"),
+        ("crane_request",                 "Crane Request"),
     ]
 
     name = models.CharField(max_length=200, unique=True)

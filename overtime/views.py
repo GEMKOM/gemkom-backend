@@ -55,6 +55,7 @@ from rest_framework import permissions
 
 from users.permissions import user_has_role_perm
 from .services.cost import compute_request_cost_impact
+from .services.cost_report import build_overtime_cost_report
 from .services.report import build_machining_overtime_report
 
 
@@ -338,6 +339,40 @@ class OvertimeRequestViewSet(viewsets.ModelViewSet):
         page = self.paginate_queryset(queryset)
         ser = self.get_serializer(page if page is not None else queryset, many=True, context=self.get_serializer_context())
         return self.get_paginated_response(ser.data) if page is not None else Response(ser.data)
+
+    @action(detail=False, methods=["get"], permission_classes=[permissions.IsAuthenticated], url_path="cost_report")
+    def cost_report(self, request):
+        """
+        Total overtime cost over a period, broken down by team / person / job,
+        with a per-request drill-down (each request carries its entries).
+
+        Query params:
+          start_date, end_date  YYYY-MM-DD (default: current month to date)
+          status                repeatable or comma-separated (default: approved)
+          team, user, job_no    optional filters
+
+        Restricted to users with cost visibility (`view_job_costs`), same gate
+        as the per-request `cost_impact` action.
+        """
+        if not user_has_role_perm(request.user, "view_job_costs"):
+            return Response({"detail": "Maliyet görüntüleme yetkiniz yok."}, status=403)
+
+        params = request.query_params
+        raw_statuses = params.getlist("status") or []
+        statuses = [s.strip() for chunk in raw_statuses for s in chunk.split(",") if s.strip()]
+
+        try:
+            data = build_overtime_cost_report(
+                start_date=params.get("start_date") or None,
+                end_date=params.get("end_date") or None,
+                statuses=statuses or None,
+                team=params.get("team") or None,
+                user_id=params.get("user") or None,
+                job_no=params.get("job_no") or None,
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
+        return Response(data)
 
     @action(detail=False, methods=["get"], permission_classes=[permissions.IsAuthenticated], url_path="machining_operators")
     def machining_operators(self, request):

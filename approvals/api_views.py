@@ -28,6 +28,7 @@ SUBJECT_TYPE_DESCRIPTIONS = [
     {"value": "ncr",                           "label": "Uygunsuzluk Raporu (NCR)"},
     {"value": "sales_offer",                   "label": "Satış Teklifi"},
     {"value": "department_request",            "label": "Departman Talebi"},
+    {"value": "crane_request",                 "label": "Vinç Talebi"},
 ]
 
 

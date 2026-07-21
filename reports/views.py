@@ -243,6 +243,7 @@ def _costs_section(date_from: datetime.date, date_to: datetime.date) -> dict:
         total_sub=Sum('subcontractor_cost'),
         total_mat=Sum('material_cost'),
         total_labor=Sum('labor_cost'),
+        total_machine_rental=Sum('machine_rental_cost'),
     )
 
     jobs_with_price_agg = summaries.filter(selling_price__gt=0).aggregate(
@@ -268,6 +269,7 @@ def _costs_section(date_from: datetime.date, date_to: datetime.date) -> dict:
         'total_subcontractor_cost_eur': _q2(agg['total_sub']),
         'total_material_cost_eur': _q2(agg['total_mat']),
         'total_labor_cost_eur': _q2(agg['total_labor']),
+        'total_machine_rental_cost_eur': _q2(agg['total_machine_rental']),
         'avg_margin_pct': _q2(avg_margin),
     }
 

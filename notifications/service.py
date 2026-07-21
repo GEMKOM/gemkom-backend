@@ -83,6 +83,10 @@ NOTIFICATION_DEFAULTS: dict[str, tuple[bool, bool]] = {
     Notification.VR_CANCELLATION_REQUESTED: (True,  True),
     Notification.VR_CANCELLATION_APPROVED:  (True,  True),
     Notification.VR_CANCELLATION_REJECTED:  (True,  True),
+    Notification.CRANE_APPROVAL_REQUESTED:  (True,  True),
+    Notification.CRANE_APPROVED:            (True,  True),
+    Notification.CRANE_REJECTED:            (True,  True),
+    Notification.CRANE_COMPLETED:           (True,  True),
 }
 
 
@@ -747,6 +751,74 @@ NOTIFICATION_CONFIG_DEFAULTS: dict[str, dict] = {
         'vars': [
             'vr_id', 'vr_title', 'requestor', 'team',
             'start_date', 'end_date', 'duration_days', 'link',
+        ],
+    },
+    Notification.CRANE_APPROVAL_REQUESTED: {
+        'title': '[Onay Gerekli] Vinç Talebi {request_number}',
+        'body': (
+            'Vinç/platform talebi ({request_number}) için onayınız bekleniyor.\n'
+            'Aşama: {stage_name} (Gerekli onay sayısı: {required_approvals})\n'
+            'Talep Eden: {requestor}\n'
+            'Ekipman: {crane_type}\n'
+            'İş Emri: {job_no}\n'
+            'Tarih: {needed_date}\n'
+            'Tahmini Maliyet: {estimated_cost}\n'
+            'Öncelik: {priority}\n\n'
+            '{link}'
+        ),
+        'link': f'{_BASE_URL}/general/crane-requests/pending/',
+        'vars': [
+            'cr_id', 'request_number', 'stage_name', 'required_approvals',
+            'requestor', 'crane_type', 'job_no', 'needed_date',
+            'estimated_cost', 'priority', 'link',
+        ],
+    },
+    Notification.CRANE_APPROVED: {
+        'title': '[Vinç Talebi Onaylandı] {request_number}',
+        'body': (
+            'Vinç/platform talebi ({request_number}) onaylandı.\n'
+            'Talep Eden: {requestor}\n'
+            'Ekipman: {crane_type}\n'
+            'İş Emri: {job_no}\n'
+            'Tarih: {needed_date}\n'
+            'Tahmini Maliyet: {estimated_cost}\n'
+            '{comment}\n\n'
+            '{link}'
+        ),
+        'link': f'{_BASE_URL}/general/crane-requests/list/',
+        'vars': [
+            'cr_id', 'request_number', 'requestor', 'crane_type', 'job_no',
+            'needed_date', 'estimated_cost', 'comment', 'link',
+        ],
+    },
+    Notification.CRANE_REJECTED: {
+        'title': '[Vinç Talebi Reddedildi] {request_number}',
+        'body': (
+            'Vinç/platform talebiniz ({request_number}) reddedildi.\n'
+            'Ekipman: {crane_type}\n'
+            'İş Emri: {job_no}\n'
+            '{comment}\n\n'
+            '{link}'
+        ),
+        'link': f'{_BASE_URL}/general/crane-requests/list/',
+        'vars': [
+            'cr_id', 'request_number', 'requestor', 'crane_type', 'job_no',
+            'needed_date', 'estimated_cost', 'comment', 'link',
+        ],
+    },
+    Notification.CRANE_COMPLETED: {
+        'title': '[Vinç Talebi Tamamlandı] {request_number}',
+        'body': (
+            'Vinç/platform talebiniz ({request_number}) tamamlandı.\n'
+            'Ekipman: {crane_type}\n'
+            'İş Emri: {job_no}\n'
+            'Fiili Maliyet: {actual_cost}\n\n'
+            '{link}'
+        ),
+        'link': f'{_BASE_URL}/general/crane-requests/list/',
+        'vars': [
+            'cr_id', 'request_number', 'requestor', 'crane_type', 'job_no',
+            'actual_cost', 'link',
         ],
     },
 }

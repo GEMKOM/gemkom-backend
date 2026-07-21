@@ -24,20 +24,32 @@ class IsProcurementCostAuthorized(BasePermission):
 
 
 class IsQCCostAuthorized(BasePermission):
-    """QC cost lines."""
+    """
+    QC cost lines: quality control staff, plus anyone with full cost visibility.
+
+    QC staff are identified by the page permission backing
+    /quality-control/cost-lines/ — the older view_qc_costs codename was dropped
+    in users.0027_rebuild_permissions and no longer exists.
+    """
 
     def has_permission(self, request, view):
-        return user_has_role_perm(request.user, 'view_job_costs')
+        return (
+            user_has_role_perm(request.user, 'access_quality_control_cost_lines')
+            or user_has_role_perm(request.user, 'view_job_costs')
+        )
 
     def has_object_permission(self, request, view, obj):
         return self.has_permission(request, view)
 
 
 class IsShippingCostAuthorized(BasePermission):
-    """Shipping cost lines."""
+    """Shipping cost lines: logistics staff (/logistics/cost-lines/), plus full cost visibility."""
 
     def has_permission(self, request, view):
-        return user_has_role_perm(request.user, 'view_job_costs')
+        return (
+            user_has_role_perm(request.user, 'access_logistics_cost_lines')
+            or user_has_role_perm(request.user, 'view_job_costs')
+        )
 
     def has_object_permission(self, request, view, obj):
         return self.has_permission(request, view)

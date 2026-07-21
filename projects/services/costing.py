@@ -776,6 +776,7 @@ def build_job_cost_payload(job_order, _ctx=None) -> dict:
         'employee_overhead_cost': employee_overhead_estimate,
         'qc_cost': _own_rolled_up_component(summary, 'qc_cost', child_summaries),
         'shipping_cost': _own_rolled_up_component(summary, 'shipping_cost', child_summaries),
+        'machine_rental_cost': _own_rolled_up_component(summary, 'machine_rental_cost', child_summaries),
         'general_expenses_cost': general_expenses_estimate,
         'material_cost': material_estimate,
     }
@@ -811,6 +812,7 @@ def build_job_cost_payload(job_order, _ctx=None) -> dict:
         'employee_overhead_cost': summary.employee_overhead_cost,
         'qc_cost': summary.qc_cost,
         'shipping_cost': summary.shipping_cost,
+        'machine_rental_cost': summary.machine_rental_cost,
         'general_expenses_cost': summary.general_expenses_cost,
         'other_cost': summary.other_cost,
     }
@@ -868,6 +870,7 @@ _ESTIMATED_COMPONENT_ORDER = (
     'employee_overhead_cost',
     'qc_cost',
     'shipping_cost',
+    'machine_rental_cost',
     'general_expenses_cost',
     'material_cost',
 )
@@ -880,6 +883,7 @@ _ESTIMATED_COMPONENT_LABELS = {
     'employee_overhead_cost': 'Personel Genel Giderleri',
     'qc_cost': 'Kalite Kontrol',
     'shipping_cost': 'Sevkiyat',
+    'machine_rental_cost': 'Makine Kirası',
     'general_expenses_cost': 'Genel Giderler',
     'material_cost': 'Malzeme',
 }
@@ -1060,6 +1064,16 @@ def build_estimated_cost_breakdown(job_order) -> dict:
         },
     ))
 
+    component_details.append(_detail(
+        'machine_rental_cost',
+        _ESTIMATED_COMPONENT_LABELS['machine_rental_cost'],
+        components['machine_rental_cost'],
+        'Tamamlanan vinç/platform kiralama taleplerinin toplamı (tahmin = mevcut).' + child_note,
+        {
+            'actual_machine_rental_cost_eur': actual_components.get('machine_rental_cost'),
+        },
+    ))
+
     general_expenses_rate = Decimal(str(assumptions.get('general_expenses_rate') or 0))
     component_details.append(_detail(
         'general_expenses_cost',
@@ -1200,6 +1214,7 @@ def recompute_job_cost_summary(job_no: str) -> None:
     from welding.models import WeldingJobCostAgg
     from tasks.models import PartCostAgg
     from subcontracting.models import SubcontractingAssignment, SubcontractorStatementLine, SubcontractorStatementAdjustment
+    from cranes.models import CraneRequest
     from projects.models import (
         JobOrder, JobOrderCostSummary,
         JobOrderProcurementLine, JobOrderQCCostLine, JobOrderShippingCostLine,
@@ -1342,6 +1357,21 @@ def recompute_job_cost_summary(job_no: str) -> None:
     )
 
     # ------------------------------------------------------------------
+    # 5b. Machine rental = completed crane/platform rental requests
+    #     (invoice amounts → EUR at completion-date FX)
+    # ------------------------------------------------------------------
+    machine_rental = Decimal('0')
+    rental_rows = (
+        CraneRequest.objects
+        .filter(job_no=job_no, status='completed', actual_cost__isnull=False)
+        .values_list('actual_cost', 'actual_cost_currency', 'completed_at')
+    )
+    for amount, currency, completed_at in rental_rows:
+        fx_date = completed_at.date() if completed_at else today
+        machine_rental += convert_to_eur(amount, currency or 'TRY', fx_date)
+    machine_rental = q2(machine_rental)
+
+    # ------------------------------------------------------------------
     # 6. Paint material cost = paint_material_rate (TRY/kg) × total_weight_kg → EUR
     #    Only if job has at least one non-skipped painting task
     #    Preserve user-customized rate; fall back to default 4.00
@@ -1404,13 +1434,14 @@ def recompute_job_cost_summary(job_no: str) -> None:
         paint_material    += sum(s.paint_material_cost    for s in children_summaries)
         general_expenses  += sum(s.general_expenses_cost  for s in children_summaries)
         employee_overhead += sum(s.employee_overhead_cost for s in children_summaries)
+        machine_rental    += sum(s.machine_rental_cost    for s in children_summaries)
 
     # ------------------------------------------------------------------
     # 10. Total and upsert
     # ------------------------------------------------------------------
     total = q2(
         labor + material + subcontractor + paint + qc + shipping
-        + paint_material + general_expenses + employee_overhead
+        + paint_material + general_expenses + employee_overhead + machine_rental
     )
 
     JobOrderCostSummary.objects.update_or_create(
@@ -1425,6 +1456,7 @@ def recompute_job_cost_summary(job_no: str) -> None:
             'paint_material_cost': q2(paint_material),
             'general_expenses_cost': q2(general_expenses),
             'employee_overhead_cost': q2(employee_overhead),
+            'machine_rental_cost': q2(machine_rental),
             'actual_total_cost': total,
         },
     )

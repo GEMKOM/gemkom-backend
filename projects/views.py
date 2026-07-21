@@ -64,7 +64,8 @@ from .serializers import (
 )
 from .permissions import (
     IsOfficeUser, IsTopicOwnerOrReadOnly, IsCommentAuthorOrReadOnly,
-    IsCostAuthorized, IsPlanning, IsAdminOrStaff, IsPlanningOrAdmin,
+    IsCostAuthorized, IsQCCostAuthorized, IsShippingCostAuthorized,
+    IsPlanning, IsAdminOrStaff, IsPlanningOrAdmin,
 )
 
 
@@ -988,8 +989,20 @@ class JobOrderViewSet(viewsets.ModelViewSet):
                 'source_offer__items',
             )
             .exclude(job_no='LEGACY-ARCHIVE')
-            .exclude(cost_summary__cost_not_applicable=True)
         )
+
+    @staticmethod
+    def _apply_not_applicable_filter(qs, request):
+        """
+        Jobs flagged cost_not_applicable by planning are hidden from the cost
+        table by default, but stay visible with ?include_not_applicable=true so
+        the report can account for them (they are only meant to be dropped from
+        the department cost *pending* queues). The exclude() form keeps rows
+        that have no cost summary at all.
+        """
+        if request.query_params.get('include_not_applicable') == 'true':
+            return qs
+        return qs.exclude(cost_summary__cost_not_applicable=True)
 
     @staticmethod
     def _serialize_cost_rows(jobs, jobs_with_children, context):
@@ -1019,6 +1032,10 @@ class JobOrderViewSet(viewsets.ModelViewSet):
 
         'count' in the pagination envelope is the total number of roots.
         Filters promote jobs to roots when their parent is excluded.
+
+        Jobs flagged cost_not_applicable are hidden unless
+        ?include_not_applicable=true; each row carries the flag so they can be
+        shown greyed out / badged when included.
         """
         from django.db.models import ExpressionWrapper, DecimalField, F, Value
         from django.db.models.functions import NullIf
@@ -1079,7 +1096,9 @@ class JobOrderViewSet(viewsets.ModelViewSet):
             '-price_per_kg':('price_per_kg_order', price_per_kg_expr, True),
         }
 
-        base_qs = self._cost_table_base_queryset()
+        base_qs = self._apply_not_applicable_filter(
+            self._cost_table_base_queryset(), request
+        )
 
         facility = request.query_params.get('facility')
         if facility == 'rolling_mill':
@@ -1177,9 +1196,14 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         Returns direct children of the given job order with cost breakdown.
         Each row includes has_children so the frontend knows whether to show
         a further expand button.
+
+        Honours ?include_not_applicable=true the same way cost_table does, so
+        an expanded subtree matches the visibility of the list it came from.
         """
         children = list(
-            self._cost_table_base_queryset()
+            self._apply_not_applicable_filter(
+                self._cost_table_base_queryset(), request
+            )
             .filter(parent_id=job_no)
             .order_by('job_no')
         )
@@ -1514,12 +1538,15 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         Returns job orders that have at least one QC cost line.
         Supports the same filters as the list view.
         """
-        from django.db.models import Count
+        from django.db.models import Count, Sum
 
         qs = (
             JobOrder.objects
             .select_related('customer')
-            .annotate(qc_line_count=Count('qc_cost_lines'))
+            .annotate(
+                qc_line_count=Count('qc_cost_lines'),
+                qc_total_eur=Sum('qc_cost_lines__amount_eur'),
+            )
             .filter(qc_line_count__gt=0, children__isnull=True)
             .exclude(job_no='LEGACY-ARCHIVE')
         )
@@ -3770,7 +3797,7 @@ class JobOrderQCCostLineViewSet(viewsets.ModelViewSet):
     POST /qc-cost-lines/submit/
          Atomically replace all QC lines for a job order.
     """
-    permission_classes = [IsCostAuthorized]
+    permission_classes = [IsQCCostAuthorized]
     filter_backends = [DjangoFilterBackend, OrderingFilter]
     filterset_fields = {'job_order': ['exact']}
     ordering = ['-date', 'id']
@@ -3784,7 +3811,7 @@ class JobOrderQCCostLineViewSet(viewsets.ModelViewSet):
         from .serializers import JobOrderQCCostLineSerializer
         return JobOrderQCCostLineSerializer
 
-    @action(detail=False, methods=['post'], url_path='submit', permission_classes=[permissions.IsAuthenticated])
+    @action(detail=False, methods=['post'], url_path='submit')
     def submit(self, request):
         """Atomically replace all QC cost lines for a job order."""
         from .serializers import QCLinesSubmitSerializer, JobOrderQCCostLineSerializer
@@ -3828,7 +3855,7 @@ class JobOrderShippingCostLineViewSet(viewsets.ModelViewSet):
     POST /shipping-cost-lines/submit/
          Atomically replace all shipping lines for a job order.
     """
-    permission_classes = [IsCostAuthorized]
+    permission_classes = [IsShippingCostAuthorized]
     filter_backends = [DjangoFilterBackend, OrderingFilter]
     filterset_fields = {'job_order': ['exact']}
     ordering = ['-date', 'id']
@@ -3842,7 +3869,7 @@ class JobOrderShippingCostLineViewSet(viewsets.ModelViewSet):
         from .serializers import JobOrderShippingCostLineSerializer
         return JobOrderShippingCostLineSerializer
 
-    @action(detail=False, methods=['post'], url_path='submit', permission_classes=[permissions.IsAuthenticated])
+    @action(detail=False, methods=['post'], url_path='submit')
     def submit(self, request):
         """Atomically replace all shipping cost lines for a job order."""
         from .serializers import ShippingLinesSubmitSerializer, JobOrderShippingCostLineSerializer

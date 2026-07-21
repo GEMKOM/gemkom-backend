@@ -75,6 +75,11 @@ class Notification(models.Model):
     VR_CANCELLATION_REJECTED   = 'vr_cancellation_rejected'
     # Job Orders
     JOB_CANCELLED            = 'job_cancelled'
+    # Crane Rental Requests
+    CRANE_APPROVAL_REQUESTED = 'crane_approval_requested'
+    CRANE_APPROVED           = 'crane_approved'
+    CRANE_REJECTED           = 'crane_rejected'
+    CRANE_COMPLETED          = 'crane_completed'
     # Auth
     PASSWORD_RESET           = 'password_reset'
 
@@ -144,6 +149,10 @@ class Notification(models.Model):
         TASK_ASSIGNED:            CATEGORY_GENERAL,
         SALES_CONSULT_COMPLETED:  CATEGORY_SALES,
         LC_STOCK_ENTRY_COMPLETE:  CATEGORY_PLANNING,
+        CRANE_APPROVAL_REQUESTED: CATEGORY_GENERAL,
+        CRANE_APPROVED:           CATEGORY_GENERAL,
+        CRANE_REJECTED:           CATEGORY_GENERAL,
+        CRANE_COMPLETED:          CATEGORY_GENERAL,
         PASSWORD_RESET:           CATEGORY_GENERAL,
     }
 
@@ -212,6 +221,10 @@ class Notification(models.Model):
         (VR_CANCELLATION_REQUESTED,  'İzin İptal Talebi Bekliyor'),
         (VR_CANCELLATION_APPROVED,   'İzin İptal Talebi Onaylandı'),
         (VR_CANCELLATION_REJECTED,   'İzin İptal Talebi Reddedildi'),
+        (CRANE_APPROVAL_REQUESTED,   'Vinç Talebi Onay Bekliyor'),
+        (CRANE_APPROVED,             'Vinç Talebi Onaylandı'),
+        (CRANE_REJECTED,             'Vinç Talebi Reddedildi'),
+        (CRANE_COMPLETED,            'Vinç Talebi Tamamlandı'),
         (PASSWORD_RESET,           'Parola Sıfırlama Talebi'),
     ]
 
