@@ -7,8 +7,30 @@ from .geometry import ANGLE_TOL_DEG, MAX_ANGLE_DEG
 from tasks.serializers import BaseTimerSerializer
 
 
+def resequence_session_parts(session):
+    """Normalize a session's part display order to a clean 1..n.
+
+    Ties (two parts saved with the same order) resolve by id, i.e. payload /
+    creation order. Called after every part create/update/delete so duplicate
+    order numbers can never persist."""
+    parts = list(
+        LinearCuttingPart.objects.filter(session=session).order_by('order', 'id')
+    )
+    changed = []
+    for i, part in enumerate(parts, start=1):
+        if part.order != i:
+            part.order = i
+            changed.append(part)
+    if changed:
+        LinearCuttingPart.objects.bulk_update(changed, ['order'])
+
+
 def _validate_part_geometry(attrs, instance=None):
-    """Shared angle/height validation for part serializers (PATCH-aware)."""
+    """Shared angle validation for part serializers (PATCH-aware).
+
+    The profile dimension is NOT required per part: it is a property of the
+    material, entered once on any row and inherited by same-item parts at
+    optimize time (see OptimizeView)."""
     def current(field, default=0):
         if field in attrs:
             return attrs[field]
@@ -18,18 +40,12 @@ def _validate_part_geometry(attrs, instance=None):
 
     angle_l = float(current('angle_left_deg') or 0)
     angle_r = float(current('angle_right_deg') or 0)
-    height = float(current('profile_height_mm') or 0)
 
     for side, ang in (('Sol', angle_l), ('Sağ', angle_r)):
         if abs(ang) > MAX_ANGLE_DEG:
             raise serializers.ValidationError(
                 f"{side} açı en fazla ±{MAX_ANGLE_DEG:g}° olabilir."
             )
-    has_angle = abs(angle_l) > ANGLE_TOL_DEG or abs(angle_r) > ANGLE_TOL_DEG
-    if has_angle and height <= 0:
-        raise serializers.ValidationError(
-            "Açılı kesim için profil ölçüsü (açı düzlemindeki kesit boyu, mm) girilmelidir."
-        )
     return attrs
 
 
@@ -177,6 +193,7 @@ class LinearCuttingSessionDetailSerializer(serializers.ModelSerializer):
                 if 'order' not in part:
                     part['order'] = i
                 LinearCuttingPart.objects.create(session=session, **part)
+            resequence_session_parts(session)
 
         return session
 

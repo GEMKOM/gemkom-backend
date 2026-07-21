@@ -23,6 +23,7 @@ from .serializers import (
     LinearCuttingTaskDetailSerializer,
     LinearCuttingTimerSerializer,
     LinearCuttingStockBarSerializer,
+    resequence_session_parts,
 )
 from .optimizer import optimize
 from .pdf import build_cutting_list_pdf, build_task_pdf
@@ -139,6 +140,38 @@ class OptimizeView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # The profile dimension is a property of the MATERIAL: entering it on
+        # any one row is enough — same-item parts inherit it here.
+        height_by_item: dict[int, float] = {}
+        conflict_items = set()
+        for p in parts_qs:
+            h = float(p.profile_height_mm or 0)
+            if h > 0:
+                prev = height_by_item.get(p.item_id)
+                if prev is not None and abs(prev - h) > 0.5:
+                    conflict_items.add(p.item.name if p.item else str(p.item_id))
+                height_by_item[p.item_id] = max(prev or 0, h)
+        if conflict_items:
+            return Response(
+                {'error': 'Aynı malzeme için farklı kesit ölçüleri girilmiş: '
+                          + ', '.join(sorted(conflict_items))
+                          + '. Malzeme başına tek bir Kesit (mm) değeri kullanın.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        missing_height = sorted({
+            (p.item.name if p.item else str(p.item_id))
+            for p in parts_qs
+            if (abs(float(p.angle_left_deg)) > 0.05 or abs(float(p.angle_right_deg)) > 0.05)
+            and float(p.profile_height_mm or 0) <= 0
+            and p.item_id not in height_by_item
+        })
+        if missing_height:
+            return Response(
+                {'error': 'Açılı parçalar için Kesit (mm) gerekli — malzeme başına '
+                          'bir satırda girilmesi yeterli: ' + ', '.join(missing_height)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         # Group parts by (item_id, effective stock_length_mm)
         # Each group key is (item_id, stock_length_mm_for_group)
         groups_map = defaultdict(list)
@@ -163,7 +196,10 @@ class OptimizeView(APIView):
                     'quantity': p.quantity,
                     'angle_left_deg': float(p.angle_left_deg),
                     'angle_right_deg': float(p.angle_right_deg),
-                    'profile_height_mm': p.profile_height_mm,
+                    'profile_height_mm': (
+                        float(p.profile_height_mm or 0)
+                        or height_by_item.get(p.item_id, 0)
+                    ),
                     'allow_rotation': p.allow_rotation,
                     'requires_bending': p.requires_bending,
                     'image_no': p.image_no,
@@ -214,7 +250,29 @@ class OptimizeView(APIView):
                 'bars': result['bars'],
             })
 
+        # Plausibility guard: a tiny profile size on angled parts almost
+        # always means bad data (e.g. "1" typed to pass a form) — the angle
+        # geometry, stop distances and nesting savings all scale with it.
+        warnings = []
+        for item_id, h in height_by_item.items():
+            if 0 < h <= 5 and any(
+                p.item_id == item_id
+                and (abs(float(p.angle_left_deg)) > 0.05
+                     or abs(float(p.angle_right_deg)) > 0.05)
+                for p in parts_qs
+            ):
+                name = next((p.item.name for p in parts_qs
+                             if p.item_id == item_id and p.item), str(item_id))
+                warnings.append(
+                    f"«{name}» için Kesit (mm) = {h:g} girilmiş. Bu değer açı "
+                    f"geometrisini ölçeklendirir — boru için dış çapı, profil için "
+                    f"açı düzlemindeki kesit ölçüsünü girin (örn. 90*8 boru için 90). "
+                    f"Küçük bir değer kesim ölçülerini ve ayar mesafelerini bozar."
+                )
+
         optimization_result = {'groups': groups}
+        if warnings:
+            optimization_result['warnings'] = warnings
 
         session.kerf_mm = kerf_mm
         session.optimization_result = optimization_result
@@ -533,6 +591,36 @@ class LinearCuttingPartViewSet(ModelViewSet):
                 self.perform_create(serializer)
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return super().create(request, *args, **kwargs)
+
+    # ── Display order is self-maintaining: choosing an existing number
+    #    inserts the part at that position, and the sequence renormalizes
+    #    to 1..n after every write (duplicates can never persist). ──────
+
+    def _insert_at_order(self, instance):
+        LinearCuttingPart.objects.filter(
+            session=instance.session, order__gte=instance.order
+        ).exclude(pk=instance.pk).update(order=models.F('order') + 1)
+
+    def perform_create(self, serializer):
+        with transaction.atomic():
+            instances = serializer.save()
+            items = instances if isinstance(instances, list) else [instances]
+            if not isinstance(instances, list) and items:
+                self._insert_at_order(items[0])
+            for session in {p.session for p in items}:
+                resequence_session_parts(session)
+
+    def perform_update(self, serializer):
+        with transaction.atomic():
+            instance = serializer.save()
+            self._insert_at_order(instance)
+            resequence_session_parts(instance.session)
+
+    def perform_destroy(self, instance):
+        session = instance.session
+        with transaction.atomic():
+            instance.delete()
+            resequence_session_parts(session)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
