@@ -165,6 +165,24 @@ def _pct_before(logs, boundary):
     return next((float(l.new_pct) for l in reversed(logs) if l.logged_at < boundary), None)
 
 
+def _baseline_pct(logs):
+    """
+    Completion % in effect before the very first log — the value to fall back on
+    when a window opens earlier than any log. Reads `old_pct` of the first log
+    rather than assuming 0, so jobs whose logging started mid-flight aren't
+    credited with progress they made before the log begins.
+    """
+    if not logs:
+        return 0.0
+    return float(logs[0].old_pct)
+
+
+def _pct_at(logs, boundary, baseline):
+    """`_pct_before` with the pre-history baseline substituted for None."""
+    pct = _pct_before(logs, boundary)
+    return baseline if pct is None else pct
+
+
 def _last_week_boundaries():
     """
     Rolling last-7-days window aligned to the daily 20:00 boundary.
@@ -185,11 +203,21 @@ def _daily_series(logs):
         {'date': the day whose 20:00 snapshot closes the window, 'completion_pct': pct at that snapshot, 'delta': day's gain}
     A window running Jul 5 20:00 → Jul 6 20:00 is labelled Jul 6 (the snapshot day).
     Idle days (no change) appear with delta 0.0, since the last known pct carries forward.
+
+    The series starts at the window *containing* the first log, not the one
+    opening on its date — a job first logged at 07:44 belongs to the window that
+    opened at 20:00 the previous day, so progress made on that first partial day
+    is attributed to it instead of being dropped. This keeps the deltas summing
+    to the job's total gain (and `daily_avg` consistent with `last_week_progress`).
     """
     if not logs:
         return []
 
-    day = logs[0].logged_at.astimezone(MEETING_TZ).date()
+    baseline = _baseline_pct(logs)
+    first_local = logs[0].logged_at.astimezone(MEETING_TZ)
+    day = first_local.date()
+    if first_local < _meeting_cutoff(day):
+        day -= timedelta(days=1)
     last_closed_cutoff = _last_closed_cutoff()
 
     series = []
@@ -201,11 +229,11 @@ def _daily_series(logs):
 
         pct_at_end = _pct_before(logs, day_end)
         if pct_at_end is not None:
-            pct_at_start = _pct_before(logs, day_start)
+            pct_at_start = _pct_at(logs, day_start, baseline)
             series.append({
                 'date': (day + timedelta(days=1)).isoformat(),
                 'completion_pct': pct_at_end,
-                'delta': round(pct_at_end - (pct_at_start or 0.0), 2),
+                'delta': round(pct_at_end - pct_at_start, 2),
             })
 
         day += timedelta(days=1)
@@ -279,10 +307,11 @@ class JobOrderListSerializer(serializers.ModelSerializer):
         logs = list(getattr(obj, '_prefetched_progress_logs', None) or [])
         window_start, window_end = _last_week_boundaries()
 
-        pct_at_start = _pct_before(logs, window_start)
+        baseline = _baseline_pct(logs)
+        pct_at_start = _pct_at(logs, window_start, baseline)
         pct_at_end = _pct_before(logs, window_end)
 
-        last_week_delta = round(pct_at_end - (pct_at_start or 0.0), 2) if pct_at_end is not None else None
+        last_week_delta = round(pct_at_end - pct_at_start, 2) if pct_at_end is not None else None
 
         deltas = _compute_daily_deltas(logs)
         daily_avg = round(sum(deltas) / len(deltas), 2) if deltas else None
@@ -427,7 +456,7 @@ class JobOrderDetailSerializer(serializers.ModelSerializer):
         ).prefetch_related(
             Prefetch(
                 'progress_logs',
-                queryset=JobOrderProgressLog.objects.only('job_order_id', 'new_pct', 'logged_at').order_by('logged_at'),
+                queryset=JobOrderProgressLog.objects.only('job_order_id', 'old_pct', 'new_pct', 'logged_at').order_by('logged_at'),
                 to_attr='_prefetched_progress_logs',
             )
         ).order_by('job_no')

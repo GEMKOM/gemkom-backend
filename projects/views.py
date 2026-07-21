@@ -200,7 +200,7 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         ).prefetch_related(
             Prefetch(
                 'progress_logs',
-                queryset=JobOrderProgressLog.objects.only('job_order_id', 'new_pct', 'logged_at').order_by('logged_at'),
+                queryset=JobOrderProgressLog.objects.only('job_order_id', 'old_pct', 'new_pct', 'logged_at').order_by('logged_at'),
                 to_attr='_prefetched_progress_logs',
             )
         ).exclude(job_no='LEGACY-ARCHIVE')
@@ -403,11 +403,12 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         Also includes daily_avg across all days and the rolling last-7-days progress.
         """
         from projects.serializers import (
-            _daily_series, _last_week_boundaries, _pct_before, _meeting_now,
+            _daily_series, _last_week_boundaries, _pct_before, _pct_at,
+            _baseline_pct, _meeting_now,
         )
 
         job_order = self.get_object()
-        logs = list(job_order.progress_logs.order_by('logged_at').only('new_pct', 'logged_at'))
+        logs = list(job_order.progress_logs.order_by('logged_at').only('old_pct', 'new_pct', 'logged_at'))
         if not logs:
             return Response({
                 'days': [],
@@ -422,9 +423,10 @@ class JobOrderViewSet(viewsets.ModelViewSet):
 
         # Rolling last-7-days progress (aligned to the daily 20:00 boundary)
         window_start, window_end = _last_week_boundaries()
-        pct_at_start = _pct_before(logs, window_start)
+        baseline = _baseline_pct(logs)
+        pct_at_start = _pct_at(logs, window_start, baseline)
         pct_at_end = _pct_before(logs, window_end)
-        last_week_progress = round(pct_at_end - (pct_at_start or 0.0), 2) if pct_at_end is not None else None
+        last_week_progress = round(pct_at_end - pct_at_start, 2) if pct_at_end is not None else None
 
         current_pct = float(job_order.completion_percentage)
         remaining = 100.0 - current_pct
