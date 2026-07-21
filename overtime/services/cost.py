@@ -148,7 +148,8 @@ def compute_request_cost_impact(request, *, only_approved: bool = False) -> dict
     """
     # Local import avoids a hard dependency at module import time.
     from projects.models import JobOrder
-    from projects.services.costing import build_job_cost_payload
+    from projects.services.costing import build_job_cost_payload, build_payload_context_for
+    from projects.services.selling_price import DerivedSellingPriceResolver
 
     entries = [e for e in request.entries.all() if e.status != "rejected"]
     if only_approved:
@@ -170,6 +171,26 @@ def compute_request_cost_impact(request, *, only_approved: bool = False) -> dict
         )
         bucket["count"] += 1
 
+    wanted_job_nos = [j.strip() for j in by_job if (j or "").strip()]
+
+    # One resolver for every job on the request — building it per job would walk
+    # each tree separately.
+    price_resolver = DerivedSellingPriceResolver(wanted_job_nos)
+
+    # Resolve every job order in one query, then build ONE payload context
+    # spanning all of them. Both build_job_cost_payload and the context walk are
+    # per-tree, so doing this per job re-ran the same batched prefetches once for
+    # each row (101 queries / ~6s on a 10-job request).
+    job_orders = {
+        jo.job_no: jo
+        for jo in JobOrder.objects
+        .select_related("cost_summary", "customer", "source_offer")
+        .filter(job_no__in=wanted_job_nos)
+    }
+    payload_ctx = (
+        build_payload_context_for(list(job_orders.values())) if job_orders else None
+    )
+
     jobs = []
     total_overtime_cost = Decimal("0")
     for job_no, agg in by_job.items():
@@ -184,6 +205,9 @@ def compute_request_cost_impact(request, *, only_approved: bool = False) -> dict
             "target_completion_date": None,
             "job_order_found": False,
             "entry_count": agg["count"],
+            "selling_price_source": None,
+            "selling_price_is_derived": False,
+            "selling_price_derived_basis": None,
             "current_selling_price_eur": None,
             "current_cost_eur": None,
             "current_profit_eur": None,
@@ -194,17 +218,17 @@ def compute_request_cost_impact(request, *, only_approved: bool = False) -> dict
             "projected_margin_pct": None,
         }
 
-        job_order = None
-        if job_no:
-            job_order = (
-                JobOrder.objects.select_related("cost_summary", "customer")
-                .filter(job_no=job_no)
-                .first()
-            )
+        job_order = job_orders.get(job_no) if job_no else None
 
         if job_order is not None:
-            payload = build_job_cost_payload(job_order)
-            selling = Decimal(str(payload.get("selling_price_eur") or "0"))
+            payload = build_job_cost_payload(
+                job_order, payload_ctx, derived_resolver=price_resolver
+            )
+            # Use the display price: a child job that carries no price of its own
+            # would otherwise show its full cost against zero revenue and read as
+            # a total loss (see projects.services.selling_price).
+            selling = Decimal(str(payload.get("selling_price_display_eur")
+                                  or payload.get("selling_price_eur") or "0"))
             current_cost = Decimal(str(payload["actual"]["total_cost"] or "0"))
             current_profit = selling - current_cost
             projected_cost = current_cost + overtime_cost
@@ -220,6 +244,9 @@ def compute_request_cost_impact(request, *, only_approved: bool = False) -> dict
                     "customer_code": getattr(customer, "code", None) if customer else None,
                     "target_completion_date": target_date.isoformat() if target_date else None,
                     "job_order_found": True,
+                    "selling_price_source": payload.get("selling_price_display_source"),
+                    "selling_price_is_derived": bool(payload.get("selling_price_is_derived")),
+                    "selling_price_derived_basis": payload.get("selling_price_derived_basis"),
                     "current_selling_price_eur": str(_q2(selling)),
                     "current_cost_eur": str(_q2(current_cost)),
                     "current_profit_eur": str(_q2(current_profit)),

@@ -1,36 +1,52 @@
 from __future__ import annotations
 
+from bisect import bisect_right
 from datetime import date
 from decimal import Decimal
 from functools import lru_cache
 
 from django.db import transaction
-from django.db.models import Q, Sum
+from django.db.models import F, Q, Sum
 from django.db.models.functions import Coalesce
 
 
 q2 = lambda x: Decimal(x).quantize(Decimal('0.01'))  # noqa: E731
 
 
-@lru_cache(maxsize=128)
-def _fetch_rates(on_date: date) -> dict:
+@lru_cache(maxsize=4)
+def _rate_table(_cache_day: date) -> tuple:
     """
-    Return the rates dict from the CurrencyRateSnapshot nearest to on_date.
-    Cached per date — historical rates never change, and 'today' becomes a
-    different cache key each calendar day so it always fetches fresh data.
+    Every CurrencyRateSnapshot as an ascending ((date, rates), ...) tuple.
+
+    ``_cache_day`` is only a cache key: passing today's date means the table is
+    fetched once per process per calendar day, so newly added snapshots appear
+    the next day exactly as the old per-date cache behaved.
     """
     from core.models import CurrencyRateSnapshot
 
-    snap = (
-        CurrencyRateSnapshot.objects
-        .filter(date__lte=on_date)
-        .order_by('-date')
-        .values('rates')
-        .first()
+    return tuple(
+        (r['date'], r['rates'] or {})
+        for r in CurrencyRateSnapshot.objects.order_by('date').values('date', 'rates')
     )
-    if snap is None:
-        snap = CurrencyRateSnapshot.objects.order_by('date').values('rates').first()
-    return snap['rates'] if snap else {}
+
+
+def _fetch_rates(on_date: date) -> dict:
+    """
+    Rates dict from the snapshot nearest to on_date: the last one on/before it,
+    falling back to the earliest.
+
+    Resolved in memory against the whole table rather than one query per date —
+    callers such as resolve_planning_item_price convert at each line's own date,
+    so a per-date cache never hit and every distinct date cost a round-trip
+    (15 queries in a single overtime cost-impact response).
+    """
+    table = _rate_table(date.today())
+    if not table:
+        return {}
+    idx = bisect_right([d for d, _ in table], on_date) - 1
+    if idx < 0:
+        idx = 0  # on_date precedes every snapshot — use the earliest
+    return table[idx][1]
 
 
 def convert_to_eur(amount: Decimal, currency: str, on_date: date) -> Decimal:
@@ -568,17 +584,36 @@ def _build_payload_context(root_job_order) -> dict:
     additional DB work (matters when the DB is remote: each query costs a
     network round-trip).
     """
+    return build_payload_context_for([root_job_order])
+
+
+def build_payload_context_for(root_job_orders) -> dict:
+    """
+    Same as ``_build_payload_context`` but spanning several trees at once.
+
+    Every map in the context is keyed by job_no and the global lookups (historical
+    paint rates) do not depend on the root at all, so covering N roots costs the
+    same fixed number of queries as covering one. Callers reporting on a handful
+    of unrelated job orders (the overtime cost-impact popup) should build one
+    context and pass it to each ``build_job_cost_payload`` call — building one per
+    job made that endpoint issue 101 queries where 12 suffice.
+    """
     from subcontracting.models import SubcontractingAssignment
     from sales.models import SalesOfferPriceRevision
     from projects.models import (
         JobOrder, JobOrderCostSummary, JobOrderDepartmentTask, JobOrderProcurementLine,
     )
 
-    # Subtree walk, one query per depth level
+    # Subtree walk, one query per depth level, across all roots at once.
     children_map: dict[str, list] = {}
-    nodes = [root_job_order]
-    frontier = [root_job_order.job_no]
-    all_nos = [root_job_order.job_no]
+    nodes: list = []
+    seen: set = set()
+    for root in root_job_orders:
+        if root is not None and root.job_no not in seen:
+            seen.add(root.job_no)
+            nodes.append(root)
+    all_nos = list(seen)
+    frontier = list(seen)
     while frontier:
         level = list(
             JobOrder.objects
@@ -589,11 +624,17 @@ def _build_payload_context(root_job_order) -> dict:
         )
         if not level:
             break
+        next_frontier = []
         for child in level:
             children_map.setdefault(child.parent_id, []).append(child)
-        frontier = [c.job_no for c in level]
-        all_nos.extend(frontier)
-        nodes.extend(level)
+            # A root can also be a descendant of another root; keep the
+            # parent->child link but do not walk or count it twice.
+            if child.job_no not in seen:
+                seen.add(child.job_no)
+                all_nos.append(child.job_no)
+                nodes.append(child)
+                next_frontier.append(child.job_no)
+        frontier = next_frontier
 
     summaries = {
         s.job_order_id: s
@@ -669,6 +710,18 @@ def _build_payload_context(root_job_order) -> dict:
         for rev in SalesOfferPriceRevision.objects.filter(offer_id__in=offer_ids, is_current=True):
             current_price_map[rev.offer_id] = rev
 
+    # is_phased_master() falls back to an EXISTS query per node unless the
+    # `_is_phased_master` annotation is present — 18 queries in a single
+    # cost-impact response. Resolve the whole set in one go instead.
+    phased_masters = set(
+        JobOrder.objects
+        .filter(source_job_order_id__in=all_nos)
+        .exclude(parent_id=F('source_job_order_id'))
+        .values_list('source_job_order_id', flat=True)
+    )
+    for n in nodes:
+        n._is_phased_master = n.job_no in phased_masters
+
     return {
         'children_map': children_map,
         'summaries': summaries,
@@ -694,7 +747,7 @@ def _own_rolled_up_component(parent_summary, field: str, child_summaries: list) 
     return q2(own)
 
 
-def build_job_cost_payload(job_order, _ctx=None) -> dict:
+def build_job_cost_payload(job_order, _ctx=None, derived_resolver=None) -> dict:
     """
     Build the endpoint payload for current actual cost and estimated full cost.
 
@@ -706,6 +759,15 @@ def build_job_cost_payload(job_order, _ctx=None) -> dict:
     """
     if _ctx is None:
         _ctx = _build_payload_context(job_order)
+
+    # Resolved up front because the child recursion below needs to pass it on.
+    # Callers handling several jobs should build one resolver and pass it in —
+    # each one walks a whole tree, so building it per job multiplies the work.
+    resolver = derived_resolver or _ctx.get('derived_price_resolver')
+    if resolver is None:
+        from projects.services.selling_price import DerivedSellingPriceResolver
+        resolver = DerivedSellingPriceResolver([job_order.job_no])
+        _ctx['derived_price_resolver'] = resolver
 
     job_no = job_order.job_no
     summary = _get_summary(_ctx, job_no, job_order)
@@ -786,7 +848,7 @@ def build_job_cost_payload(job_order, _ctx=None) -> dict:
 
     child_payloads = []
     for child in direct_children:
-        child_payload = build_job_cost_payload(child, _ctx)
+        child_payload = build_job_cost_payload(child, _ctx, derived_resolver=resolver)
         child_payloads.append({
             'job_order': child.job_no,
             'estimated_total_cost': child_payload['estimated']['total_cost'],
@@ -818,6 +880,14 @@ def build_job_cost_payload(job_order, _ctx=None) -> dict:
     }
 
     selling_price = _effective_selling_price(job_order, summary, _ctx)
+
+    # Representative price for jobs that carry no price of their own — split down
+    # from a priced ancestor by weight, or summed up from priced descendants.
+    # `selling_price*` above stays the authoritative entered value so revenue
+    # sums cannot double-count; only `selling_price_display_*` may be derived.
+    # (`resolver` is set at the top of this function.)
+    display = resolver.display(job_order.job_no, selling_price['amount_eur'])
+
     return {
         'job_order': job_order.job_no,
         'total_weight_kg': str(total_weight) if job_order.total_weight_kg is not None else None,
@@ -827,6 +897,10 @@ def build_job_cost_payload(job_order, _ctx=None) -> dict:
         'selling_price_currency': 'EUR',
         'selling_price_eur': selling_price['amount_eur'],
         'selling_price_effective': selling_price,
+        'selling_price_display_eur': display['amount_eur'],
+        'selling_price_display_source': display['source'],
+        'selling_price_is_derived': display['is_derived'],
+        'selling_price_derived_basis': display['basis'],
         'actual': {
             'currency': 'EUR',
             'total_cost': _decimal_str(summary.actual_total_cost),

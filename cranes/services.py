@@ -385,26 +385,33 @@ def cancel_crane_request(cr: CraneRequest, user):
 def complete_crane_request(cr: CraneRequest, user, actual_quantity, actual_cost, currency: str = 'TRY'):
     """
     Coordination team records the rental's actual quantity (hours or days)
-    and cost. The caller (view) triggers the job-cost recompute AFTER this
-    transaction commits.
+    and cost. Also allowed on already-completed requests to CORRECT the
+    actuals (e.g. planned 3 hours became 8, or a late invoice differs);
+    corrections keep the original completion date so the FX conversion of
+    the job cost stays stable. The caller (view) triggers the job-cost
+    recompute AFTER this transaction commits.
     """
     if not user_can_complete(user):
         raise PermissionError("Fiili maliyet girme yetkiniz yok (Vinç Koordinasyon).")
-    if cr.status != 'approved':
-        raise ValueError("Sadece onaylanmış talepler tamamlanabilir.")
+    if cr.status not in ('approved', 'completed'):
+        raise ValueError("Fiili değerler sadece onaylanmış veya tamamlanmış taleplere girilebilir.")
     if actual_cost is None or Decimal(str(actual_cost)) < 0:
         raise ValidationError("Fiili maliyet zorunludur ve negatif olamaz.")
+
+    is_correction = cr.status == 'completed'
 
     cr.actual_quantity = actual_quantity
     cr.actual_cost = Decimal(str(actual_cost))
     cr.actual_cost_currency = currency or 'TRY'
     cr.completed_by = user
-    cr.completed_at = timezone.now()
+    if not is_correction or cr.completed_at is None:
+        cr.completed_at = timezone.now()
     cr.status = 'completed'
     cr.save(update_fields=[
         'actual_quantity', 'actual_cost', 'actual_cost_currency',
         'completed_by', 'completed_at', 'status',
     ])
 
-    _notify_requestor_on_completed(cr)
+    if not is_correction:
+        _notify_requestor_on_completed(cr)
     return cr

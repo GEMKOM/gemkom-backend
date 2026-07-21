@@ -173,7 +173,8 @@ class CraneRequestViewSet(viewsets.ModelViewSet):
     def complete(self, request, pk=None):
         """
         Coordination team records actual quantity + cost; the actual cost
-        flows into the job cost summary.
+        flows into the job cost summary. Callable again on a completed
+        request to correct the actuals — the job cost is re-summed.
         """
         from .services import complete_crane_request
 

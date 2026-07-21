@@ -2487,6 +2487,14 @@ class CostTableRowSerializer(serializers.Serializer):
     # From JobOrderCostSummary
     selling_price = serializers.SerializerMethodField()
     selling_price_currency = serializers.SerializerMethodField()
+    # Representative price (EUR) for rows carrying none of their own: split down
+    # from a priced ancestor by weight, or summed up from priced descendants.
+    # `selling_price` above stays the entered value — sum that, never this one,
+    # or a parent and its children both contribute and revenue doubles.
+    selling_price_display = serializers.SerializerMethodField()
+    selling_price_display_source = serializers.SerializerMethodField()
+    selling_price_is_derived = serializers.SerializerMethodField()
+    selling_price_derived_basis = serializers.SerializerMethodField()
     price_per_kg = serializers.SerializerMethodField()
     selling_price_per_kg = serializers.SerializerMethodField()
     margin_eur = serializers.SerializerMethodField()
@@ -2661,6 +2669,53 @@ class CostTableRowSerializer(serializers.Serializer):
         s = self._summary(obj)
         return s.selling_price_currency if s else 'EUR'
 
+    # ----- representative price for rows carrying none of their own -----
+
+    def _display_price(self, obj):
+        """
+        {'amount_eur', 'source', 'is_derived', 'basis'} from the request-scoped
+        resolver, or None when the view did not supply one (keeps this
+        serializer usable outside the cost-table actions).
+        """
+        resolver = self.context.get('derived_price_resolver')
+        if resolver is None:
+            return None
+        cache = self.context.setdefault('_display_prices', {})
+        if obj.job_no not in cache:
+            cache[obj.job_no] = resolver.display_for(obj.job_no)
+        return cache[obj.job_no]
+
+    def get_selling_price_display(self, obj):
+        d = self._display_price(obj)
+        return d['amount_eur'] if d else None
+
+    def get_selling_price_display_source(self, obj):
+        d = self._display_price(obj)
+        return d['source'] if d else None
+
+    def get_selling_price_is_derived(self, obj):
+        d = self._display_price(obj)
+        return bool(d['is_derived']) if d else False
+
+    def get_selling_price_derived_basis(self, obj):
+        d = self._display_price(obj)
+        return d['basis'] if d else None
+
+    def _margin_price_eur(self, obj):
+        """
+        Price to compute margin against, in EUR: the row's own price when it has
+        one, otherwise its representative price. Returns None when neither is
+        usable (non-EUR own price, or no price anywhere).
+        """
+        from decimal import Decimal
+        d = self._display_price(obj)
+        if d and d['is_derived']:
+            return Decimal(d['amount_eur'])
+        if self.get_selling_price_currency(obj) != 'EUR':
+            return None
+        price = Decimal(self.get_selling_price(obj))
+        return price if price else None
+
     def get_price_per_kg(self, obj):
         """actual_total_cost ÷ total_weight_kg (null if weight is zero or missing)."""
         from decimal import Decimal
@@ -2687,24 +2742,20 @@ class CostTableRowSerializer(serializers.Serializer):
 
     def get_margin_eur(self, obj):
         from decimal import Decimal
-        currency = self.get_selling_price_currency(obj)
-        if currency != 'EUR':
-            return None
-        price = Decimal(self.get_selling_price(obj))
-        if price == 0:
+        price = self._margin_price_eur(obj)
+        if price is None:
             return None
         total_at100 = Decimal(self.get_actual_total_cost(obj))
         return str(price - total_at100)
 
     def get_margin_pct(self, obj):
         from decimal import Decimal
-        currency = self.get_selling_price_currency(obj)
-        if currency != 'EUR':
-            return None
         total_at100 = Decimal(self.get_actual_total_cost(obj))
         if total_at100 == 0:
             return None
-        price = Decimal(self.get_selling_price(obj))
+        price = self._margin_price_eur(obj)
+        if price is None:
+            return None
         pct = (price - total_at100) / total_at100 * 100
         return str(pct.quantize(Decimal('0.01')))
 

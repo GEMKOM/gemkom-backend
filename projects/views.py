@@ -902,6 +902,16 @@ class JobOrderViewSet(viewsets.ModelViewSet):
     # -------------------------------------------------------------------------
 
     @staticmethod
+    def _derived_price_resolver(job_nos):
+        """
+        Resolver for representative prices on rows that carry none of their own
+        (see projects.services.selling_price). Built once per response so the
+        tree walk happens a single time rather than per row.
+        """
+        from projects.services.selling_price import DerivedSellingPriceResolver
+        return DerivedSellingPriceResolver(job_nos)
+
+    @staticmethod
     def _compute_aggregated_weights(parent_nos):
         """
         For each job_no in parent_nos, recursively sum total_weight_kg of all
@@ -1183,7 +1193,11 @@ class JobOrderViewSet(viewsets.ModelViewSet):
 
         parent_root_nos = {j.job_no for j in root_jobs if j.job_no in jobs_with_children}
         aggregated_weights = self._compute_aggregated_weights(parent_root_nos)
-        ctx = {**self.get_serializer_context(), 'aggregated_weights': aggregated_weights}
+        ctx = {
+            **self.get_serializer_context(),
+            'aggregated_weights': aggregated_weights,
+            'derived_price_resolver': self._derived_price_resolver([j.job_no for j in root_jobs]),
+        }
         data = self._serialize_cost_rows(root_jobs, jobs_with_children, ctx)
 
         if page is not None:
@@ -1216,7 +1230,11 @@ class JobOrderViewSet(viewsets.ModelViewSet):
             .distinct()
         )
         aggregated_weights = self._compute_aggregated_weights(grandchild_parent_nos)
-        ctx = {**self.get_serializer_context(), 'aggregated_weights': aggregated_weights}
+        ctx = {
+            **self.get_serializer_context(),
+            'aggregated_weights': aggregated_weights,
+            'derived_price_resolver': self._derived_price_resolver([c.job_no for c in children]),
+        }
         data = self._serialize_cost_rows(children, grandchild_parent_nos, ctx)
         return Response(data)
 

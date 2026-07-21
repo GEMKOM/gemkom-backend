@@ -153,8 +153,9 @@ class CraneRequestSerializer(serializers.ModelSerializer):
         return PROCUREMENT_ITEM_CODE
 
     def get_can_complete(self, obj):
+        # True also for completed requests: coordinators may correct actuals.
         request = self.context.get('request')
-        if not request or obj.status != 'approved':
+        if not request or obj.status not in ('approved', 'completed'):
             return False
         return user_can_complete(request.user)
 
