@@ -4,6 +4,7 @@ from decimal import Decimal
 from datetime import timedelta
 from zoneinfo import ZoneInfo
 from django.contrib.auth import get_user_model
+from organization.services import is_org_supervisor
 from .models import (
     Customer, JobOrder, JobOrderFile,
     DepartmentTaskTemplate, DepartmentTaskTemplateItem,
@@ -1512,15 +1513,20 @@ class DepartmentTaskUpdateSerializer(serializers.ModelSerializer):
                     "Tamamlanmış veya atlanan görevler güncellenemez."
                 )
 
-        # Block editing by non-assignees (assignment changes are always allowed)
+        # Block editing by non-assignees (assignment changes are always allowed).
+        # The assignee's org-tree supervisors and superusers may edit too.
         if instance:
             non_assignment_fields = {k for k in attrs if k != 'assigned_to'}
             if non_assignment_fields:
                 request = self.context.get('request')
                 user = request.user if request else None
-                if user and instance.assigned_to_id and instance.assigned_to_id != user.id:
+                if (
+                    user and instance.assigned_to_id and instance.assigned_to_id != user.id
+                    and not user.is_superuser
+                    and not is_org_supervisor(user, instance.assigned_to)
+                ):
                     raise serializers.ValidationError(
-                        "Bu görevi düzenleyemezsiniz. Yalnızca görevin atandığı kişi düzenleyebilir."
+                        "Bu görevi düzenleyemezsiniz. Yalnızca görevin atandığı kişi veya organizasyondaki üstleri düzenleyebilir."
                     )
 
         return attrs

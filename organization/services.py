@@ -65,6 +65,39 @@ def resolve_chain_approvers(position, climb: int) -> list[int]:
     return []
 
 
+def is_org_supervisor(supervisor_user, subordinate_user) -> bool:
+    """
+    True if supervisor_user holds an active position that is an ancestor of
+    subordinate_user's position in the org tree (any number of levels up).
+
+    Users without a position, peers (same position), and the user themself
+    all return False.
+    """
+    if not supervisor_user or not subordinate_user:
+        return False
+    if supervisor_user.pk == subordinate_user.pk:
+        return False
+
+    sup_pos = _position_of(supervisor_user)
+    sub_pos = _position_of(subordinate_user)
+    if sup_pos is None or sub_pos is None or not sup_pos.is_active:
+        return False
+
+    seen = set()
+    pos = sub_pos
+    while pos.parent_id and pos.parent_id not in seen:
+        if pos.parent_id == sup_pos.pk:
+            return True
+        seen.add(pos.parent_id)
+        pos = pos.parent
+    return False
+
+
+def _position_of(user):
+    profile = getattr(user, 'profile', None)
+    return profile.position if profile else None
+
+
 def get_dept_members(dept_code: str):
     """
     Return a queryset of active users whose position has the given department_code tag.

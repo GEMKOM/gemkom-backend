@@ -1,4 +1,4 @@
-from rest_framework.permissions import BasePermission, SAFE_METHODS
+from rest_framework.permissions import BasePermission
 
 
 # ---------------------------------------------------------------------------
@@ -57,37 +57,11 @@ class IsOfficeUserOrAdmin(BasePermission):
 # HR / wage rate permissions
 # ---------------------------------------------------------------------------
 
-def _required_perm_for(method: str) -> str:
-    app_label = 'users'
-    model_codename = 'wagerate'
-    if method in SAFE_METHODS:
-        action = 'view'
-    elif method == 'POST':
-        action = 'add'
-    elif method in ('PUT', 'PATCH'):
-        action = 'change'
-    elif method == 'DELETE':
-        action = 'delete'
-    else:
-        action = 'view'
-    return f'{app_label}.{action}_{model_codename}'
-
-
 class IsHRorAuthorized(BasePermission):
-    """
-    Allow superusers.
-    Otherwise require BOTH:
-      (A) user has the specific model permission for the action, AND
-      (B) user has the manage_hr role permission.
-    """
+    """Allow superusers and users with the manage_hr role permission."""
 
     def has_permission(self, request, view):
-        u = request.user
-        if not u or not u.is_authenticated:
-            return False
-        if getattr(u, 'is_superuser', False):
-            return True
-        return u.has_perm(_required_perm_for(request.method)) and user_has_role_perm(u, 'manage_hr')
+        return user_has_role_perm(request.user, 'manage_hr')
 
     def has_object_permission(self, request, view, obj):
         return self.has_permission(request, view)
