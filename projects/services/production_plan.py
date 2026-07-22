@@ -4,22 +4,46 @@ Full-subtree production plan for a job order.
 Builds the payload for ``GET /projects/job-orders/{job_no}/production-plan/``:
 every department task (main tasks + subtasks) of the job order and all of its
 descendant job orders — including phase nodes and allocations — with planned
-vs. actual dates, working-day lateness and per-node / overall rollups.
+vs. actual dates, working-day lateness, a progress-aware schedule forecast,
+and per-node / overall rollups.
 
-Read-only. Query cost is ~(tree depth + 5) regardless of tree size: one
-JobOrder query per depth level, one query for phased-master detection, one
-for all tasks (+2 prefetches), one for the holiday calendar.
+Lateness (backward-looking): end/start variance for completed tasks, overdue
+working days for open tasks past their target.
+
+Forecast (forward-looking, read-only overlay — target dates are never
+modified):
+* Started tasks project their end from the observed work rate
+  (elapsed working days / progress).
+* Not-yet-started tasks are re-anchored to max(today, target start, and the
+  projected end of their predecessors) — explicit ``depends_on`` edges where
+  present, otherwise the previous main task by ``sequence`` within the same
+  job order. A predecessor that binds the start marks the task as pushed
+  (``pushed_by``).
+* Open tasks projected to finish after their target are classified
+  ``at_risk``.
+
+Read-only. Query cost stays bounded: one JobOrder query per depth level, one
+for phased-master detection, one for all tasks (+2 prefetches), one for the
+holiday calendar, plus the real-progress lookups for currently OPEN
+CNC/machining/procurement tasks (a handful per tree; completed ones are 100%
+by definition and use the cheap path).
 """
 from collections import defaultdict
+from decimal import Decimal
 
 from django.utils import timezone
 
 from projects.models import JobOrder, JobOrderDepartmentTask
 from projects.services.schedule import (
+    ZERO,
+    add_working_days,
     load_holiday_calendar,
     local_date,
+    next_working_day,
+    span_end,
     today_local,
     working_day_delta,
+    working_days_inclusive,
 )
 
 _JOB_STATUS_DISPLAY = dict(JobOrder.STATUS_CHOICES)
@@ -30,9 +54,16 @@ _NODE_VALUES = (
 )
 
 CLASSIFICATION_KEYS = (
-    'completed_on_time', 'completed_late', 'overdue',
+    'completed_on_time', 'completed_late', 'overdue', 'at_risk',
     'in_progress', 'not_started', 'unplanned', 'excluded',
 )
+
+# Safety caps for the forecast walk
+MAX_REMAINING_WD = Decimal('260')      # ~a working year
+DEFAULT_DURATION_WD = Decimal('1')     # tasks without a planned window
+CALENDAR_LOOKAHEAD_DAYS = 400          # holidays loaded this far past today
+
+OPEN_STATUSES = ('pending', 'blocked', 'in_progress', 'on_hold')
 
 
 def _job_no_sort_key(job_no):
@@ -114,7 +145,7 @@ def _fetch_tasks(job_nos):
     """All department tasks (mains + subtasks) of the given jobs, one query."""
     return list(
         JobOrderDepartmentTask.objects.filter(job_order_id__in=job_nos)
-        .select_related('assigned_to')
+        .select_related('assigned_to', 'job_order')
         .prefetch_related('subtasks', 'depends_on')
         .order_by('job_order_id', 'sequence', 'id')
     )
@@ -140,8 +171,131 @@ def _ordered_tasks(job_tasks):
     return ordered
 
 
+def _is_special_task(task):
+    """CNC / machining / procurement tasks compute progress from their own
+    domain data (parts, operations, purchase items)."""
+    return (
+        task.task_type in ('cnc_cutting', 'machining')
+        or task.title in ('CNC Kesim', 'Talaşlı İmalat')
+        or task.department == 'procurement'
+    )
+
+
+def _task_domain(task):
+    """Which first-progress evidence stream applies to this task, if any."""
+    if task.task_type == 'cnc_cutting' or task.title == 'CNC Kesim':
+        return 'cnc'
+    if task.task_type == 'machining' or task.title == 'Talaşlı İmalat':
+        return 'machining'
+    if task.task_type == 'welding' or task.title == 'Kaynaklı İmalat':
+        return 'welding'
+    if task.department == 'procurement':
+        return 'procurement'
+    if task.department == 'design':
+        return 'design'
+    return None
+
+
+def _ms_to_local_date(ms):
+    from datetime import datetime, timezone as dt_timezone
+    if not ms:
+        return None
+    return local_date(datetime.fromtimestamp(ms / 1000, tz=dt_timezone.utc))
+
+
+def _first_progress_evidence(job_nos):
+    """Earliest real work evidence per job, per domain — one query each.
+
+    ``started_at`` is stamped by the dependency auto-start (often the day the
+    task tree was created), so "Gerçek Başlangıç" prefers actual activity:
+    first machining timer, first cut CNC part, first welding time entry,
+    first purchase request, first drawing release.
+    """
+    from django.db.models import Min
+
+    evidence = {key: {} for key in ('cnc', 'machining', 'welding', 'procurement', 'design')}
+    if not job_nos:
+        return evidence
+
+    from cnc_cutting.models import CncPart
+    for row in (CncPart.objects
+                .filter(job_no__in=job_nos, cnc_task__completion_date__isnull=False)
+                .values('job_no').annotate(first=Min('cnc_task__completion_date'))):
+        evidence['cnc'][row['job_no']] = _ms_to_local_date(row['first'])
+
+    from tasks.models import Operation
+    for row in (Operation.objects
+                .filter(part__job_no__in=job_nos, timers__start_time__isnull=False)
+                .values('part__job_no').annotate(first=Min('timers__start_time'))):
+        evidence['machining'][row['part__job_no']] = _ms_to_local_date(row['first'])
+
+    from welding.models import WeldingTimeEntry
+    for row in (WeldingTimeEntry.objects
+                .filter(job_no__in=job_nos)
+                .values('job_no').annotate(first=Min('date'))):
+        evidence['welding'][row['job_no']] = row['first']
+
+    from procurement.models import PurchaseRequestItem
+    for row in (PurchaseRequestItem.objects
+                .filter(planning_request_item__job_no__in=job_nos)
+                .values('planning_request_item__job_no')
+                .annotate(first=Min('purchase_request__created_at'))):
+        evidence['procurement'][row['planning_request_item__job_no']] = local_date(row['first'])
+
+    from projects.models import TechnicalDrawingRelease
+    for row in (TechnicalDrawingRelease.objects
+                .filter(job_order_id__in=job_nos)
+                .values('job_order_id').annotate(first=Min('released_at'))):
+        evidence['design'][row['job_order_id']] = local_date(row['first'])
+
+    return evidence
+
+
+def _effective_start_map(tasks, evidence):
+    """Evidence-based first-progress date per task id (None when no evidence).
+
+    Main tasks additionally inherit the earliest evidence of their subtasks —
+    evidence only, never a subtask's auto-stamped ``started_at``.
+    """
+    own = {}
+    for task in tasks:
+        domain = _task_domain(task)
+        date = evidence.get(domain, {}).get(task.job_order_id) if domain else None
+        own[task.id] = date
+
+    child_min = defaultdict(lambda: None)
+    for task in tasks:
+        if task.parent_id is not None and own[task.id] is not None:
+            current = child_min[task.parent_id]
+            if current is None or own[task.id] < current:
+                child_min[task.parent_id] = own[task.id]
+
+    effective = {}
+    for task in tasks:
+        candidates = [d for d in (own[task.id], child_min.get(task.id)) if d is not None]
+        effective[task.id] = min(candidates) if candidates else None
+    return effective
+
+
+def _compute_progress_map(tasks):
+    """Real completion percentage per task id.
+
+    Open special tasks get the full (query-backed) computation so the
+    forecast works from real progress instead of the flat 50%% placeholder;
+    everything else uses the cheap prefetch-aware path.
+    """
+    progress = {}
+    for task in tasks:
+        expensive = task.status in OPEN_STATUSES and _is_special_task(task)
+        progress[task.id] = task.get_completion_percentage(
+            skip_expensive_calculations=not expensive
+        )
+    return progress
+
+
 def _build_calendar(tasks, today):
-    """One holiday query spanning every date the lateness math can touch."""
+    """One holiday query spanning every date the lateness AND forecast math
+    can touch (projections walk into the future)."""
     dates = []
     for task in tasks:
         for d in (
@@ -155,7 +309,8 @@ def _build_calendar(tasks, today):
     if not dates:
         return {}
     dates.append(today)
-    return load_holiday_calendar(min(dates), max(dates))
+    from datetime import timedelta
+    return load_holiday_calendar(min(dates), max(dates) + timedelta(days=CALENDAR_LOOKAHEAD_DAYS))
 
 
 def _classify(status, target_end, end_variance, overdue):
@@ -174,8 +329,10 @@ def _classify(status, target_end, end_variance, overdue):
     return 'not_started'  # pending / blocked
 
 
-def _task_dict(task, calendar, today):
-    actual_start = local_date(task.started_at)
+def _task_dict(task, calendar, today, completion_percentage, effective_start=None):
+    # Prefer real work evidence over started_at (auto-stamped on creation /
+    # dependency clearance, so it usually predates any actual work).
+    actual_start = effective_start or local_date(task.started_at)
     actual_end = local_date(task.completed_at)
     target_end = task.target_completion_date
 
@@ -207,7 +364,7 @@ def _task_dict(task, calendar, today):
         'weight': task.weight,
         'assigned_to': task.assigned_to_id,
         'assigned_to_name': task.assigned_to.get_full_name() if task.assigned_to else None,
-        'completion_percentage': float(task.get_completion_percentage(skip_expensive_calculations=True)),
+        'completion_percentage': float(completion_percentage),
         'depends_on': [dep.id for dep in task.depends_on.all()],
         'target_start_date': task.target_start_date,
         'target_completion_date': target_end,
@@ -220,8 +377,147 @@ def _task_dict(task, calendar, today):
             'end_variance_wd': float(end_variance) if end_variance is not None else None,
             'overdue_wd': float(overdue) if overdue is not None else None,
             'classification': _classify(task.status, target_end, end_variance, overdue),
+            # Filled by _compute_forecast for open tasks:
+            'projected_start_date': None,
+            'projected_end_date': None,
+            'projected_variance_wd': None,
+            'pushed_by': None,
         },
     }
+
+
+def _planned_duration(td, calendar):
+    """Planned working-day length of the task's target window (>= default)."""
+    duration = working_days_inclusive(
+        td['target_start_date'], td['target_completion_date'], calendar
+    )
+    if duration is not None and duration > 0:
+        return duration
+    return DEFAULT_DURATION_WD
+
+
+def _forecast_order(task_dicts, preds):
+    """Kahn's topological order over the predecessor graph; any cycle
+    leftovers are appended in stable (job, sequence, id) order and simply
+    ignore their not-yet-projected predecessors."""
+    indegree = {td['id']: 0 for td in task_dicts}
+    successors = defaultdict(list)
+    for tid, plist in preds.items():
+        for pid in plist:
+            successors[pid].append(tid)
+            indegree[tid] += 1
+
+    queue = [tid for tid, deg in indegree.items() if deg == 0]
+    order = []
+    while queue:
+        tid = queue.pop()
+        order.append(tid)
+        for succ in successors[tid]:
+            indegree[succ] -= 1
+            if indegree[succ] == 0:
+                queue.append(succ)
+
+    if len(order) < len(indegree):
+        by_id = {td['id']: td for td in task_dicts}
+        seen = set(order)
+        leftover = [tid for tid in indegree if tid not in seen]
+        leftover.sort(key=lambda tid: (by_id[tid]['job_no'], by_id[tid]['sequence'], tid))
+        order.extend(leftover)
+    return order
+
+
+def _compute_forecast(task_dicts, today, calendar):
+    """Progress-aware schedule forecast + push propagation (mutates the
+    ``schedule`` sub-dicts in place; never touches the database).
+
+    Predecessors: explicit ``depends_on`` edges within the plan; main tasks
+    without any fall back to the previous main task (by sequence) of the same
+    job order — the department pipeline order.
+    """
+    by_id = {td['id']: td for td in task_dicts}
+
+    mains_by_job = defaultdict(list)
+    for td in task_dicts:
+        if td['parent'] is None:
+            mains_by_job[td['job_no']].append(td)
+
+    implicit_pred = {}
+    for mains in mains_by_job.values():
+        ordered = sorted(mains, key=lambda t: (t['sequence'], t['id']))
+        for prev, cur in zip(ordered, ordered[1:]):
+            implicit_pred[cur['id']] = prev['id']
+
+    preds = {}
+    for td in task_dicts:
+        explicit = [pid for pid in td['depends_on'] if pid in by_id]
+        if not explicit and td['id'] in implicit_pred:
+            explicit = [implicit_pred[td['id']]]
+        preds[td['id']] = explicit
+
+    projected_end = {}
+    for tid in _forecast_order(task_dicts, preds):
+        td = by_id[tid]
+        sched = td['schedule']
+        status = td['status']
+        classification = sched['classification']
+
+        if classification == 'excluded':
+            projected_end[tid] = None
+            continue
+        if status == 'completed':
+            # Fixed point for successors; nothing to forecast.
+            projected_end[tid] = sched['actual_end_date']
+            continue
+
+        pushed_by = None
+        started = status in ('in_progress', 'on_hold') and sched['actual_start_date'] is not None
+
+        if started:
+            # Project from the observed work rate.
+            proj_start = sched['actual_start_date']
+            progress = Decimal(str(td['completion_percentage'] or 0))
+            elapsed = working_day_delta(proj_start, today, calendar) or ZERO
+            if progress >= 100:
+                end = today
+            elif progress > 0 and elapsed > 0:
+                remaining = min(
+                    elapsed * (Decimal('100') - progress) / progress,
+                    MAX_REMAINING_WD,
+                )
+                end = add_working_days(today, remaining, calendar)
+            else:
+                # No usable rate yet: assume the planned duration from today.
+                end = span_end(today, _planned_duration(td, calendar), calendar)
+        else:
+            # Not started: re-anchor to today / target start / predecessors.
+            base = max(today, td['target_start_date'] or today)
+            dep_best_end, dep_src = None, None
+            for pid in preds[tid]:
+                pend = projected_end.get(pid)
+                if pend is not None and (dep_best_end is None or pend > dep_best_end):
+                    dep_best_end, dep_src = pend, pid
+            proj_start = base
+            if dep_best_end is not None:
+                dep_clear = next_working_day(dep_best_end, calendar)
+                if dep_clear > base:
+                    proj_start = dep_clear
+                    pushed_by = dep_src
+            end = span_end(proj_start, _planned_duration(td, calendar), calendar)
+
+        projected_end[tid] = end
+        sched['projected_start_date'] = proj_start
+        sched['projected_end_date'] = end
+        sched['pushed_by'] = pushed_by
+
+        target_end = td['target_completion_date']
+        if target_end is not None and end is not None:
+            variance = working_day_delta(target_end, end, calendar)
+            sched['projected_variance_wd'] = float(variance) if variance is not None else None
+            if (
+                variance is not None and variance > 0
+                and classification in ('in_progress', 'not_started')
+            ):
+                sched['classification'] = 'at_risk'
 
 
 def _min_date(current, candidate):
@@ -241,7 +537,8 @@ def _summarize(task_dicts):
     summary['total'] = len(task_dicts)
     summary['max_end_variance_wd'] = None
     summary['max_overdue_wd'] = None
-    planned_start = planned_end = actual_start = actual_end = None
+    summary['max_projected_variance_wd'] = None
+    planned_start = planned_end = actual_start = actual_end = projected_end = None
 
     for td in task_dicts:
         sched = td['schedule']
@@ -252,15 +549,78 @@ def _summarize(task_dicts):
         if sched['overdue_wd'] is not None:
             summary['max_overdue_wd'] = max(
                 summary['max_overdue_wd'] or 0, sched['overdue_wd'])
+        if sched['projected_variance_wd'] is not None and sched['projected_variance_wd'] > 0:
+            summary['max_projected_variance_wd'] = max(
+                summary['max_projected_variance_wd'] or 0, sched['projected_variance_wd'])
         if sched['classification'] != 'excluded':
             planned_start = _min_date(planned_start, td['target_start_date'])
             planned_end = _max_date(planned_end, td['target_completion_date'])
             actual_start = _min_date(actual_start, sched['actual_start_date'])
             actual_end = _max_date(actual_end, sched['actual_end_date'])
+            projected_end = _max_date(projected_end, sched['projected_end_date'])
 
     summary['planned_window'] = {'start': planned_start, 'end': planned_end}
     summary['actual_window'] = {'start': actual_start, 'end': actual_end}
+    # When the whole set finishes, everything is actual and this equals the
+    # last actual end; while work is open it is the latest projected end.
+    summary['projected_completion'] = _max_date(projected_end, actual_end)
     return summary
+
+
+def _job_order_forecast(status, completed_at_date, target, task_dicts, calendar):
+    """Will this job order finish on time?
+
+    The job finishes when its last task finishes, so the projected completion
+    is the latest per-task end (projected for open tasks, actual for
+    completed ones) across the whole subtree. Verdicts:
+
+    * ``finished_on_time`` / ``finished_late`` — the job is already completed.
+    * ``on_track`` / ``late_risk`` — open job with a target date.
+    * ``no_target`` — open job without a target date (projection still given).
+    * ``unknown`` — nothing to project (no tasks).
+    """
+    forecast = {
+        'target_completion_date': target,
+        'projected_completion_date': None,
+        'variance_wd': None,
+        'verdict': 'unknown',
+        'unplanned_open_tasks': sum(
+            1 for td in task_dicts
+            if td['schedule']['classification'] == 'unplanned'
+            and td['status'] in OPEN_STATUSES
+        ),
+    }
+
+    if status == 'completed':
+        forecast['projected_completion_date'] = completed_at_date
+        variance = working_day_delta(target, completed_at_date, calendar)
+        forecast['variance_wd'] = float(variance) if variance is not None else None
+        forecast['verdict'] = (
+            'finished_late' if variance is not None and variance > 0 else 'finished_on_time'
+        )
+        return forecast
+
+    ends = []
+    for td in task_dicts:
+        sched = td['schedule']
+        if sched['classification'] == 'excluded':
+            continue
+        end = sched['projected_end_date'] or sched['actual_end_date']
+        if end is not None:
+            ends.append(end)
+    if not ends:
+        return forecast
+
+    projected = max(ends)
+    forecast['projected_completion_date'] = projected
+    if target is None:
+        forecast['verdict'] = 'no_target'
+        return forecast
+
+    variance = working_day_delta(target, projected, calendar)
+    forecast['variance_wd'] = float(variance) if variance is not None else None
+    forecast['verdict'] = 'late_risk' if variance is not None and variance > 0 else 'on_track'
+    return forecast
 
 
 def build_production_plan(root):
@@ -270,19 +630,30 @@ def build_production_plan(root):
     tasks = _fetch_tasks(job_nos)
     today = today_local()
     calendar = _build_calendar(tasks, today)
+    progress_map = _compute_progress_map(tasks)
+    effective_starts = _effective_start_map(tasks, _first_progress_evidence(job_nos))
 
     tasks_by_job = defaultdict(list)
     for task in tasks:
         tasks_by_job[task.job_order_id].append(task)
 
+    # Build every task dict first (forecast pushes across job orders), keeping
+    # the per-node association for the node summaries.
     all_task_dicts = []
+    node_task_dicts = {}
     for node in nodes:
-        node_dicts = [
-            _task_dict(task, calendar, today)
+        dicts = [
+            _task_dict(task, calendar, today, progress_map[task.id],
+                       effective_starts.get(task.id))
             for task in _ordered_tasks(tasks_by_job.get(node['job_no'], []))
         ]
-        node['summary'] = _summarize(node_dicts)
-        all_task_dicts.extend(node_dicts)
+        node_task_dicts[node['job_no']] = dicts
+        all_task_dicts.extend(dicts)
+
+    _compute_forecast(all_task_dicts, today, calendar)
+
+    for node in nodes:
+        node['summary'] = _summarize(node_task_dicts[node['job_no']])
 
     overall = _summarize(all_task_dicts)
     overall['node_count'] = len(nodes)
@@ -299,6 +670,10 @@ def build_production_plan(root):
             'target_completion_date': root.target_completion_date,
             'started_at': root.started_at,
             'completed_at': root.completed_at,
+            'forecast': _job_order_forecast(
+                root.status, local_date(root.completed_at),
+                root.target_completion_date, all_task_dicts, calendar,
+            ),
         },
         'nodes': nodes,
         'tasks': all_task_dicts,

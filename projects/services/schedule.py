@@ -88,3 +88,68 @@ def working_day_delta(planned, actual, calendar):
         total += day_value(current, calendar)
         current += timedelta(days=1)
     return sign * total
+
+
+# Hard bound for forward walks (~3 calendar years) so a degenerate input can
+# never loop forever.
+_MAX_WALK_DAYS = 1100
+
+
+def working_days_inclusive(start, end, calendar):
+    """Working-day length of the closed interval [start, end].
+
+    None if either date is missing or the interval is reversed.
+    """
+    if start is None or end is None or end < start:
+        return None
+    total = ZERO
+    current = start
+    while current <= end:
+        total += day_value(current, calendar)
+        current += timedelta(days=1)
+    return total
+
+
+def next_working_day(d, calendar):
+    """First date after d with a non-zero working-day value."""
+    current = d
+    for _ in range(_MAX_WALK_DAYS):
+        current += timedelta(days=1)
+        if day_value(current, calendar) > 0:
+            return current
+    return current
+
+
+def add_working_days(start, working_days, calendar):
+    """Date reached after accumulating `working_days` of value AFTER start.
+
+    The start day itself does not count. wd <= 0 returns start unchanged.
+    """
+    if working_days is None or working_days <= 0:
+        return start
+    total = ZERO
+    current = start
+    for _ in range(_MAX_WALK_DAYS):
+        current += timedelta(days=1)
+        total += day_value(current, calendar)
+        if total >= working_days:
+            return current
+    return current
+
+
+def span_end(start, duration_wd, calendar):
+    """End date of a task of `duration_wd` working days starting ON `start`.
+
+    The start day counts toward the duration (a 1-workday task starting
+    Monday ends Monday). A start on a weekend/holiday rolls forward.
+    """
+    if duration_wd is None or duration_wd <= 0:
+        return start
+    total = day_value(start, calendar)
+    current = start
+    for _ in range(_MAX_WALK_DAYS):
+        if total >= duration_wd:
+            return current
+        current += timedelta(days=1)
+        total += day_value(current, calendar)
+    return current
