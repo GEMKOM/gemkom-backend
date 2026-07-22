@@ -122,9 +122,12 @@ class OperationFilter(django_filters.FilterSet):
     - completion_date__isnull: boolean (true for incomplete, false for completed)
     - machine_fk: machine ID
     - part__key: part key
+    - search: free-text search across operation key/name and part
+      key/name/task_key/job_no/image_no/position_no
     """
     completion_date__isnull = django_filters.BooleanFilter(field_name='completion_date', lookup_expr='isnull')
     job_no = django_filters.CharFilter(field_name='part__job_no', lookup_expr='exact')
+    search = django_filters.CharFilter(method='filter_search')
 
     class Meta:
         model = Operation
@@ -137,3 +140,26 @@ class OperationFilter(django_filters.FilterSet):
             'interchangeable',
             'plan_locked',
         ]
+
+    def filter_search(self, queryset, name, value):
+        """
+        Free-text search across operation and part identifiers.
+        Used by the operator task list, where the paginated list endpoint
+        makes client-side filtering unreliable.
+        """
+        from django.db.models import Q
+
+        value = value.strip()
+        if not value:
+            return queryset
+
+        return queryset.filter(
+            Q(key__icontains=value) |
+            Q(name__icontains=value) |
+            Q(part__key__icontains=value) |
+            Q(part__name__icontains=value) |
+            Q(part__task_key__icontains=value) |
+            Q(part__job_no__icontains=value) |
+            Q(part__image_no__icontains=value) |
+            Q(part__position_no__icontains=value)
+        )
