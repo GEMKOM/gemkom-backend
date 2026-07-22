@@ -498,6 +498,17 @@ class JobOrderViewSet(viewsets.ModelViewSet):
 
         return Response(build_tree(root))
 
+    @action(detail=True, methods=['get'], url_path='production-plan',
+            permission_classes=[permissions.IsAuthenticated])
+    def production_plan(self, request, job_no=None):
+        """
+        Full-subtree production plan: every department task (mains + subtasks)
+        of this job order and all descendant job orders, with planned vs.
+        actual dates and working-day lateness. See services/production_plan.py.
+        """
+        from .services.production_plan import build_production_plan
+        return Response(build_production_plan(self.get_object()))
+
     # -------------------------------------------------------------------------
     # Production phases
     # -------------------------------------------------------------------------
@@ -619,20 +630,6 @@ class JobOrderViewSet(viewsets.ModelViewSet):
             'updated_at': job_order.updated_at,
         }
         return Response(data)
-
-    @action(detail=True, methods=['get'])
-    def department_tasks(self, request, job_no=None):
-        """
-        Tab 2: Department tasks with progress.
-        Returns main tasks with their subtasks nested.
-        """
-        job_order = self.get_object()
-        tasks = job_order.department_tasks.filter(
-            parent__isnull=True
-        ).select_related('assigned_to').prefetch_related('subtasks').order_by('sequence')
-
-        from .serializers import JobOrderDepartmentTaskNestedSerializer
-        return Response(JobOrderDepartmentTaskNestedSerializer(tasks, many=True).data)
 
     @action(detail=True, methods=['get'])
     def subtasks(self, request, job_no=None):
@@ -1727,6 +1724,14 @@ class DepartmentTaskTemplateViewSet(viewsets.ModelViewSet):
         return Response([
             {'value': choice[0], 'label': choice[1]}
             for choice in DEPARTMENT_CHOICES
+        ])
+
+    @action(detail=False, methods=['get'])
+    def task_type_choices(self, request):
+        """Get available task type choices for template items."""
+        return Response([
+            {'value': choice[0], 'label': choice[1]}
+            for choice in DepartmentTaskTemplateItem.TASK_TYPE_CHOICES
         ])
 
 

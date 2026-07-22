@@ -1450,7 +1450,7 @@ class DepartmentTaskCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = JobOrderDepartmentTask
         fields = [
-            'job_order', 'department', 'title', 'description',
+            'job_order', 'department', 'title', 'task_type', 'description',
             'assigned_to', 'target_start_date', 'target_completion_date',
             'depends_on', 'sequence', 'weight',
             'parent', 'notes'
@@ -1496,7 +1496,7 @@ class DepartmentTaskUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = JobOrderDepartmentTask
         fields = [
-            'title', 'description', 'assigned_to',
+            'title', 'task_type', 'description', 'assigned_to',
             'target_start_date', 'target_completion_date',
             'depends_on', 'sequence', 'weight', 'manual_progress', 'notes'
         ]
