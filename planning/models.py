@@ -670,15 +670,21 @@ class PlanningRequestItem(models.Model):
         if purchase_weight == Decimal('0.00'):
             return (earned, total)
 
-        # Purchase portion follows PO stages
-        pr_items = self.purchase_request_items.select_related(
-            'purchase_request'
-        ).prefetch_related(
-            'po_lines__po',
-            'offers__supplier_offer__supplier',
-        )
+        # Purchase portion follows PO stages. Batch callers (production plan
+        # overview) prefetch purchase_request_items with the full relation
+        # chain — iterate that cache instead of re-querying; standalone calls
+        # keep the optimized per-item queryset.
+        if 'purchase_request_items' in getattr(self, '_prefetched_objects_cache', {}):
+            pr_items = list(self.purchase_request_items.all())
+        else:
+            pr_items = list(self.purchase_request_items.select_related(
+                'purchase_request'
+            ).prefetch_related(
+                'po_lines__po',
+                'offers__supplier_offer__supplier',
+            ))
 
-        if not pr_items.exists():
+        if not pr_items:
             return (earned, total)
 
         purchase_earned = Decimal('0.00')
@@ -690,20 +696,30 @@ class PlanningRequestItem(models.Model):
             if pr_status in ('cancelled', 'rejected'):
                 continue
 
-            # Check PO lines
-            po_lines = pri.po_lines.all()
-            if po_lines.exists():
+            # Check PO lines (list() hits the prefetch cache; without a cache
+            # it costs the same single query the old exists()+iterate did)
+            po_lines = list(pri.po_lines.all())
+            if po_lines:
                 all_paid = all(line.po.status == 'paid' for line in po_lines)
                 if all_paid:
                     purchase_earned += item_weight * Decimal('0.8')    # 80%
                 else:
                     purchase_earned += item_weight * Decimal('0.5')    # 50%
             elif pr_status == 'approved':
-                # Check if the recommended supplier is DBS (no PO will be created)
-                is_dbs = pri.offers.filter(
-                    is_recommended=True,
-                    supplier_offer__supplier__has_dbs=True,
-                ).exists()
+                # Check if the recommended supplier is DBS (no PO will be created).
+                # Only walk the relation in Python when offers were prefetched —
+                # some callers prefetch purchase_request_items without the
+                # offers chain, and a Python walk there would N+1 per offer.
+                if 'offers' in getattr(pri, '_prefetched_objects_cache', {}):
+                    is_dbs = any(
+                        offer.is_recommended and offer.supplier_offer.supplier.has_dbs
+                        for offer in pri.offers.all()
+                    )
+                else:
+                    is_dbs = pri.offers.filter(
+                        is_recommended=True,
+                        supplier_offer__supplier__has_dbs=True,
+                    ).exists()
                 purchase_earned += item_weight * (Decimal('0.8') if is_dbs else Decimal('0.5'))
             elif pr_status == 'submitted':
                 purchase_earned += item_weight * Decimal('0.4')        # 40%

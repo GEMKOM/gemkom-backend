@@ -8,6 +8,9 @@ from projects.services.production_plan import (
     _compute_forecast,
     _effective_start_map,
     _job_order_forecast,
+    _natural_job_key,
+    _progress_from_domains,
+    _visible_task_dicts,
 )
 from projects.services.schedule import (
     ZERO,
@@ -273,3 +276,86 @@ class JobOrderForecastTests(SimpleTestCase):
         ]
         fc = _job_order_forecast('active', None, D(10), tasks, {})
         self.assertEqual(fc['unplanned_open_tasks'], 1)  # only the OPEN unplanned one
+
+
+class _StubManager:
+    def __init__(self, items):
+        self._items = list(items)
+
+    def all(self):
+        return self._items
+
+
+def special_task(job='J-01', task_type=None, title='', department='manufacturing',
+                 status='in_progress', manual=0, subtasks=()):
+    return SimpleNamespace(
+        job_order_id=job, task_type=task_type, title=title, department=department,
+        status=status, manual_progress=Decimal(str(manual)),
+        subtasks=_StubManager(subtasks),
+    )
+
+
+class BatchedProgressTests(SimpleTestCase):
+    """_progress_from_domains mirrors get_completion_percentage's special branches."""
+
+    def test_cnc_and_machining_ratio_capped_at_99(self):
+        domains = {'cnc': {'J-01': (Decimal('100'), Decimal('100'))},
+                   'machining': {'J-01': (Decimal('30'), Decimal('40'))},
+                   'procurement': {}}
+        self.assertEqual(
+            _progress_from_domains(special_task(task_type='cnc_cutting'), domains, {}),
+            Decimal('99.00'))  # 100% earned but open -> capped
+        self.assertEqual(
+            _progress_from_domains(special_task(title='Talaşlı İmalat'), domains, {}),
+            Decimal('75.00'))
+
+    def test_cnc_without_parts_is_zero(self):
+        domains = {'cnc': {}, 'machining': {}, 'procurement': {}}
+        self.assertEqual(
+            _progress_from_domains(special_task(task_type='cnc_cutting'), domains, {}),
+            Decimal('0.00'))
+
+    def test_procurement_without_items_falls_through_to_manual(self):
+        domains = {'cnc': {}, 'machining': {}, 'procurement': {}}
+        task = special_task(department='procurement', status='in_progress', manual=35)
+        self.assertEqual(_progress_from_domains(task, domains, {}), Decimal('35'))
+        # pending falls to zero, like the generic branch
+        pending = special_task(department='procurement', status='pending', manual=35)
+        self.assertEqual(_progress_from_domains(pending, domains, {}), Decimal('0.00'))
+
+    def test_procurement_with_items_uses_ratio_even_when_pending(self):
+        domains = {'cnc': {}, 'machining': {},
+                   'procurement': {'J-01': (Decimal('40'), Decimal('100'))}}
+        pending = special_task(department='procurement', status='pending')
+        self.assertEqual(_progress_from_domains(pending, domains, {}), Decimal('40.00'))
+
+    def test_procurement_fallthrough_weights_subtasks_full_path(self):
+        # No purchaseable items + subtasks: weight-weighted with partial
+        # credit, cancelled subtasks excluded (models.py full path, not the
+        # count-based skip path).
+        domains = {'cnc': {}, 'machining': {}, 'procurement': {}}
+        subs = [
+            SimpleNamespace(id=11, status='completed', weight=30),
+            SimpleNamespace(id=12, status='in_progress', weight=10),
+            SimpleNamespace(id=13, status='cancelled', weight=100),  # excluded
+        ]
+        task = special_task(department='procurement', status='in_progress', subtasks=subs)
+        progress = {11: Decimal('100.00'), 12: Decimal('40.00')}
+        # (100*30 + 40*10) / 40 = 85
+        self.assertEqual(_progress_from_domains(task, domains, progress), Decimal('85.00'))
+
+
+class OverviewHelperTests(SimpleTestCase):
+    def test_natural_job_key_ordering(self):
+        jobs = ['295-02', '295-01', '097-42', 'RM262-01', '9-1', '295-10']
+        ordered = sorted(jobs, key=_natural_job_key)
+        self.assertEqual(ordered, ['9-1', '097-42', '295-01', '295-02', '295-10', 'RM262-01'])
+
+    def test_visible_task_dicts_hides_parents_with_children(self):
+        dicts = [
+            {'id': 1, 'parent': None},
+            {'id': 2, 'parent': 1},
+            {'id': 3, 'parent': None},   # childless main stays
+        ]
+        visible = _visible_task_dicts(dicts)
+        self.assertEqual([td['id'] for td in visible], [2, 3])

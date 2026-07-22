@@ -1,6 +1,5 @@
 # overtime/serializers.py
 from django.contrib.contenttypes.models import ContentType
-from django.db.models import Q
 from approvals.models import ApprovalWorkflow
 from approvals.serializers import WorkflowSerializer
 from rest_framework import serializers
@@ -13,6 +12,51 @@ from tasks.models import Operation
 from .models import OvertimeRequest, OvertimeEntry
 
 User = get_user_model()
+
+
+def raise_if_overtime_clash(*, start_at, end_at, users, exclude_pk=None):
+    """
+    Reject the request when any of ``users`` is already booked on an overlapping
+    open/approved overtime request.
+
+    Rejected entries do **not** count. Someone retracted from a request during
+    partial approval is not working that overtime, so the slot is free and they
+    must be bookable again — otherwise rejecting a person permanently blocks
+    them for that time range.
+
+    Queried against OvertimeEntry rather than OvertimeRequest so the user and
+    status conditions provably apply to the *same* entry row; filtering a
+    multi-valued relation from the request side makes that easy to get wrong.
+    """
+    qs = (
+        OvertimeEntry.objects
+        .filter(
+            user__in=users,
+            request__status__in=["submitted", "approved"],
+            # overlap: existing.start < new.end AND existing.end > new.start
+            request__start_at__lt=end_at,
+            request__end_at__gt=start_at,
+        )
+        .exclude(status="rejected")
+        .select_related("user")
+    )
+    if exclude_pk is not None:
+        qs = qs.exclude(request_id=exclude_pk)
+
+    clashes: dict = {}
+    for entry in qs:
+        name = entry.user.get_full_name() or entry.user.username
+        clashes.setdefault(name, set()).add(entry.request_id)
+    if not clashes:
+        return
+
+    detail = "; ".join(
+        f"{name} (#{', #'.join(str(r) for r in sorted(ids))})"
+        for name, ids in sorted(clashes.items())
+    )
+    raise serializers.ValidationError(
+        f"Bu tarih aralığında zaten mesaide olan kullanıcılar: {detail}."
+    )
 
 
 def _create_entries_with_operations(ot, entries_data):
@@ -186,18 +230,10 @@ class OvertimeRequestCreateSerializer(serializers.ModelSerializer):
         """
         Disallow overlapping open/approved requests for the same user & time range.
         """
-        qs = OvertimeRequest.objects.filter(
-            status__in=["submitted", "approved"],
-            entries__user__in=entries_users,
-        ).distinct()
-
-        if instance:
-            qs = qs.exclude(pk=instance.pk)
-
-        # overlap condition: existing.start < new.end AND existing.end > new.start
-        qs = qs.filter(Q(start_at__lt=end_at) & Q(end_at__gt=start_at))
-        if qs.exists():
-            raise serializers.ValidationError("Bir veya daha fazla kullanıcı bu tarihler arasında mesaiye kalmaktadır.")
+        raise_if_overtime_clash(
+            start_at=start_at, end_at=end_at, users=entries_users,
+            exclude_pk=instance.pk if instance else None,
+        )
 
     def create(self, validated_data):
         request = self.context["request"]
@@ -261,15 +297,10 @@ class OvertimeRequestUpdateSerializer(serializers.ModelSerializer):
         return attrs
 
     def _validate_overlaps(self, *, start_at, end_at, entries_users, instance):
-        qs = OvertimeRequest.objects.filter(
-            status__in=["submitted", "approved"],
-            entries__user__in=entries_users,
-        ).exclude(pk=instance.pk).distinct()
-        qs = qs.filter(Q(start_at__lt=end_at) & Q(end_at__gt=start_at))
-        if qs.exists():
-            raise serializers.ValidationError(
-                "Bir veya daha fazla kullanıcı bu tarihler arasında mesaiye kalmaktadır."
-            )
+        raise_if_overtime_clash(
+            start_at=start_at, end_at=end_at, users=entries_users,
+            exclude_pk=instance.pk,
+        )
 
     def update(self, instance, validated_data):
         # Simple reason-only path for still-open requests.

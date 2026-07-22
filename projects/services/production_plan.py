@@ -28,6 +28,7 @@ holiday calendar, plus the real-progress lookups for currently OPEN
 CNC/machining/procurement tasks (a handful per tree; completed ones are 100%
 by definition and use the cheap path).
 """
+import re
 from collections import defaultdict
 from decimal import Decimal
 
@@ -277,19 +278,181 @@ def _effective_start_map(tasks, evidence):
     return effective
 
 
-def _compute_progress_map(tasks):
+def _batched_domain_progress(job_nos):
+    """(earned, total) per job for the three special domains, in a fixed
+    number of queries regardless of job count — the per-task
+    ``get_completion_percentage(skip_expensive_calculations=False)`` path is
+    N+1 and unusable at portfolio scale.
+    """
+    domains = {'cnc': {}, 'machining': {}, 'procurement': {}}
+    if not job_nos:
+        return domains
+
+    from django.db.models import (
+        DecimalField, ExpressionWrapper, F, FloatField, Prefetch, Q, Sum, Value,
+    )
+    from django.db.models.functions import Coalesce, NullIf
+
+    # CNC: weight-based part completion — parity with get_cnc_progress:
+    # (weight_kg or 0) * (quantity or 1) — note ``or 1`` maps BOTH None and 0
+    # to 1, hence NullIf before Coalesce; earned when the CncTask finished.
+    from cnc_cutting.models import CncPart
+    weight_expr = ExpressionWrapper(
+        Coalesce(F('weight_kg'), Value(Decimal('0'))) *
+        Coalesce(NullIf(F('quantity'), Value(0)), Value(1)),
+        output_field=DecimalField(max_digits=16, decimal_places=3),
+    )
+    for row in (
+        CncPart.objects.filter(job_no__in=job_nos)
+        .values('job_no')
+        .annotate(
+            total=Sum(weight_expr),
+            earned=Sum(weight_expr, filter=Q(cnc_task__completion_date__isnull=False)),
+        )
+    ):
+        domains['cnc'][row['job_no']] = (
+            row['earned'] or Decimal('0'), row['total'] or Decimal('0'))
+
+    # Machining: per-operation timer hours vs estimate — parity with
+    # get_machining_progress (skip est<=0; completed ops earn full credit;
+    # otherwise min(spent/est, 1) * est; all timer types counted).
+    from tasks.models import Operation
+    op_rows = (
+        Operation.objects.filter(part__job_no__in=job_nos)
+        .values('part__job_no', 'key', 'estimated_hours', 'completion_date')
+        .annotate(
+            spent=Coalesce(
+                ExpressionWrapper(
+                    Sum('timers__finish_time', filter=Q(timers__finish_time__isnull=False)) -
+                    Sum('timers__start_time', filter=Q(timers__finish_time__isnull=False)),
+                    output_field=FloatField(),
+                ) / 3600000.0,
+                Value(0.0),
+            )
+        )
+    )
+    machining_acc = defaultdict(lambda: [0.0, 0.0])  # job -> [earned, total]
+    for row in op_rows:
+        estimated = float(row['estimated_hours'] or 0)
+        if estimated <= 0:
+            continue
+        acc = machining_acc[row['part__job_no']]
+        acc[1] += estimated
+        if row['completion_date'] is not None:
+            acc[0] += estimated
+        else:
+            acc[0] += min((row['spent'] or 0.0) / estimated, 1.0) * estimated
+    for job_no, (earned, total) in machining_acc.items():
+        domains['machining'][job_no] = (
+            Decimal(str(round(earned, 4))), Decimal(str(round(total, 4))))
+
+    # Procurement: per-item stage logic (Python, not expressible as one
+    # aggregate) over a fully prefetched queryset — the refactored
+    # PlanningRequestItem.get_procurement_progress consumes these caches, so
+    # the whole batch costs a fixed ~7 queries.
+    from planning.models import PlanningRequestItem
+    from procurement.models import PurchaseRequestItem
+    items = (
+        PlanningRequestItem.objects
+        .filter(job_no__in=job_nos, quantity_to_purchase__gt=0)
+        .select_related('item')
+        .prefetch_related(Prefetch(
+            'purchase_request_items',
+            queryset=PurchaseRequestItem.objects
+            .select_related('purchase_request')
+            .prefetch_related('po_lines__po', 'offers__supplier_offer__supplier'),
+        ))
+    )
+    for item in items:
+        earned, total = item.get_procurement_progress()
+        current = domains['procurement'].get(item.job_no, (Decimal('0'), Decimal('0')))
+        domains['procurement'][item.job_no] = (current[0] + earned, current[1] + total)
+
+    return domains
+
+
+_MAX_IN_PROGRESS = Decimal('99.00')
+
+
+def _full_path_open_progress(task, domains, progress):
+    """The skip_expensive_calculations=False fallthrough for an open special
+    task whose domain has no data (procurement with no purchaseable items) —
+    mirrors models.py:1586 + 1624-1650: pending/blocked are 0; otherwise
+    weight-weighted subtask progress (skipped AND cancelled excluded, partial
+    credit) or manual_progress, capped at 99."""
+    if task.status in ('pending', 'blocked'):
+        return Decimal('0.00')
+    subtasks = list(task.subtasks.all())  # prefetched by _fetch_tasks
+    if subtasks:
+        total_weight = Decimal('0.00')
+        earned_weight = Decimal('0.00')
+        for subtask in subtasks:
+            if subtask.status in ('skipped', 'cancelled'):
+                continue
+            weight = Decimal(str(subtask.weight))
+            total_weight += weight
+            sub_pct = progress.get(subtask.id)
+            if sub_pct is None:
+                sub_pct = (
+                    _progress_from_domains(subtask, domains, progress)
+                    if subtask.status in OPEN_STATUSES and _is_special_task(subtask)
+                    else subtask.get_completion_percentage(skip_expensive_calculations=True)
+                )
+            earned_weight += (Decimal(str(sub_pct)) / 100) * weight
+        if total_weight > 0:
+            pct = ((earned_weight / total_weight) * 100).quantize(Decimal('0.01'))
+            return min(pct, _MAX_IN_PROGRESS)
+        return Decimal('0.00')
+    return min(task.manual_progress, _MAX_IN_PROGRESS)
+
+
+def _progress_from_domains(task, domains, progress):
+    """Percentage for an OPEN special task from the batched domain data —
+    branch-for-branch parity with get_completion_percentage(False)."""
+    is_cnc = task.task_type == 'cnc_cutting' or task.title == 'CNC Kesim'
+    is_machining = task.task_type == 'machining' or task.title == 'Talaşlı İmalat'
+
+    if is_cnc or is_machining:
+        earned, total = domains['cnc' if is_cnc else 'machining'].get(
+            task.job_order_id, (Decimal('0'), Decimal('0')))
+        if total > 0:
+            return min(((earned / total) * 100).quantize(Decimal('0.01')), _MAX_IN_PROGRESS)
+        return Decimal('0.00')
+
+    # Procurement: no purchaseable items -> the model falls through to the
+    # full manual/subtask path (NOT zero, and NOT the flat-50 skip path).
+    earned, total = domains['procurement'].get(
+        task.job_order_id, (Decimal('0'), Decimal('0')))
+    if total > 0:
+        return min(((earned / total) * 100).quantize(Decimal('0.01')), _MAX_IN_PROGRESS)
+    return _full_path_open_progress(task, domains, progress)
+
+
+def _compute_progress_map(tasks, domains=None):
     """Real completion percentage per task id.
 
-    Open special tasks get the full (query-backed) computation so the
-    forecast works from real progress instead of the flat 50%% placeholder;
-    everything else uses the cheap prefetch-aware path.
+    Open special tasks read the batched domain aggregates (real progress at a
+    fixed query cost); everything else uses the cheap prefetch-aware path.
+    Two passes so a special task's subtask-based fallthrough can reuse the
+    already-computed subtask percentages.
     """
+    if domains is None:
+        special_jobs = sorted({
+            task.job_order_id for task in tasks
+            if task.status in OPEN_STATUSES and _is_special_task(task)
+        })
+        domains = _batched_domain_progress(special_jobs)
+
     progress = {}
+    special_open = []
     for task in tasks:
-        expensive = task.status in OPEN_STATUSES and _is_special_task(task)
-        progress[task.id] = task.get_completion_percentage(
-            skip_expensive_calculations=not expensive
-        )
+        if task.status in OPEN_STATUSES and _is_special_task(task):
+            special_open.append(task)
+        else:
+            progress[task.id] = task.get_completion_percentage(
+                skip_expensive_calculations=True)
+    for task in special_open:
+        progress[task.id] = _progress_from_domains(task, domains, progress)
     return progress
 
 
@@ -621,6 +784,99 @@ def _job_order_forecast(status, completed_at_date, target, task_dicts, calendar)
     forecast['variance_wd'] = float(variance) if variance is not None else None
     forecast['verdict'] = 'late_risk' if variance is not None and variance > 0 else 'on_track'
     return forecast
+
+
+def _natural_job_key(job_no):
+    """Natural sort: 097-42 < 295-01 < 295-02, RM262-01 after numerics."""
+    return [int(part) if part.isdigit() else part
+            for part in re.split(r'(\d+)', job_no or '')]
+
+
+def _visible_task_dicts(task_dicts):
+    """Same rule as the frontend: a parent represented by its children is
+    hidden, so card summaries match the detail table."""
+    parent_ids = {td['parent'] for td in task_dicts if td['parent'] is not None}
+    return [td for td in task_dicts if td['id'] not in parent_ids]
+
+
+def build_production_plan_overview(status_filter='active'):
+    """Portfolio payload: one verdict per ROOT job order, all computed in a
+    fixed number of queries (~18) regardless of portfolio size.
+
+    ``status_filter``: a JobOrder status, or 'all'.
+    """
+    roots_qs = (JobOrder.objects.filter(parent__isnull=True)
+                .exclude(job_no='LEGACY-ARCHIVE')
+                .select_related('customer'))
+    if status_filter and status_filter != 'all':
+        roots_qs = roots_qs.filter(status=status_filter)
+    roots = sorted(roots_qs, key=lambda r: _natural_job_key(r.job_no))
+
+    # Whole-table parent map (one query) -> subtree job list per root.
+    children_map = defaultdict(list)
+    for job_no, parent_id in JobOrder.objects.values_list('job_no', 'parent_id'):
+        if parent_id:
+            children_map[parent_id].append(job_no)
+
+    subtree_jobs = {}
+    all_job_nos = []
+    for root in roots:
+        stack, subtree = [root.job_no], []
+        while stack:
+            current = stack.pop()
+            subtree.append(current)
+            stack.extend(children_map.get(current, []))
+        subtree_jobs[root.job_no] = subtree
+        all_job_nos.extend(subtree)
+
+    tasks = _fetch_tasks(all_job_nos)
+    today = today_local()
+    calendar = _build_calendar(tasks, today)
+    progress_map = _compute_progress_map(tasks)
+    effective_starts = _effective_start_map(tasks, _first_progress_evidence(all_job_nos))
+
+    task_dicts_by_job = defaultdict(list)
+    for task in tasks:
+        td = _task_dict(task, calendar, today, progress_map[task.id],
+                        effective_starts.get(task.id))
+        task_dicts_by_job[task.job_order_id].append(td)
+
+    items = []
+    for root in roots:
+        root_dicts = []
+        for job_no in subtree_jobs[root.job_no]:
+            root_dicts.extend(task_dicts_by_job.get(job_no, []))
+        # Per root — matches the single-job endpoint by construction (a global
+        # pass would honor cross-root depends_on edges the detail view drops).
+        _compute_forecast(root_dicts, today, calendar)
+        # Card meta counts follow the visible rule (parents represented by
+        # children are hidden), but the windows/projected completion come from
+        # ALL tasks, same as the detail hero timeline.
+        summary = _summarize(_visible_task_dicts(root_dicts))
+        full_summary = _summarize(root_dicts)
+        summary['planned_window'] = full_summary['planned_window']
+        summary['actual_window'] = full_summary['actual_window']
+        summary['projected_completion'] = full_summary['projected_completion']
+        summary['node_count'] = len(subtree_jobs[root.job_no])
+        items.append({
+            'job_no': root.job_no,
+            'title': root.title,
+            'customer_name': root.customer.name if root.customer_id else None,
+            'status': root.status,
+            'status_display': root.get_status_display(),
+            'completion_percentage': float(root.completion_percentage),
+            'forecast': _job_order_forecast(
+                root.status, local_date(root.completed_at),
+                root.target_completion_date, root_dicts, calendar,
+            ),
+            'summary': summary,
+        })
+
+    return {
+        'items': items,
+        'today': today,
+        'generated_at': timezone.now(),
+    }
 
 
 def build_production_plan(root):

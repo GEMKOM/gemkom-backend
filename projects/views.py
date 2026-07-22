@@ -509,6 +509,17 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         from .services.production_plan import build_production_plan
         return Response(build_production_plan(self.get_object()))
 
+    @action(detail=False, methods=['get'], url_path='production-plan-overview',
+            permission_classes=[permissions.IsAuthenticated])
+    def production_plan_overview(self, request):
+        """
+        Portfolio view: schedule verdict per ROOT job order (weekly review).
+        ?status=<job order status>|all — defaults to 'active'.
+        """
+        from .services.production_plan import build_production_plan_overview
+        status_filter = request.query_params.get('status', 'active')
+        return Response(build_production_plan_overview(status_filter))
+
     # -------------------------------------------------------------------------
     # Production phases
     # -------------------------------------------------------------------------

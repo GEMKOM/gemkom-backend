@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "white-app-static",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "8123", "--directory", "C:\\Users\\ocalık\\OneDrive - GEMKOM\\Masaüstü\\Jira Timer\\white-app"],
+      "port": 8123
+    }
+  ]
+}
