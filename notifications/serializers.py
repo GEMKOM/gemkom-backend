@@ -73,7 +73,7 @@ ALWAYS_NOTIFIED = {
     Notification.COMMENT_MENTION:        'Yorumda @etiketlenen kullanıcılar',
     Notification.NEW_COMMENT:            'Konuya daha önce yorum yapan veya konuyu açan kullanıcılar',
     # Drawing workflow
-    Notification.DRAWING_RELEASED:       'Konudaki @bahsedilen kullanıcılar',
+    Notification.DRAWING_RELEASED:       'Konudaki @bahsedilen kullanıcılar ve tasarım ekibi üyeleri',
     Notification.REVISION_REQUESTED:     'Tasarım görev sorumlusu ve mevcut yayımcı',
     Notification.REVISION_APPROVED:      'Revizyon talebini açan kişi',
     Notification.REVISION_COMPLETED:     'Orijinal revizyon talepcisi ve yeni sürüm konusunda @bahsedilen kullanıcılar',

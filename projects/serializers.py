@@ -16,29 +16,16 @@ from .models import (
     JobOrderTargetDateRevision,
 )
 
-# Departments whose members receive drawing release notifications
-DRAWING_RELEASE_STAKEHOLDER_DEPTS = [
-    'procurement',
-    'planning',
-    'manufacturing',
-    'qualitycontrol',
-    'logistics',
-    'sales',
-]
-
-
 def get_drawing_release_stakeholders():
     """
-    Return active users in the stakeholder departments for drawing release
-    notifications. Planning positions at L3 or above (manager+) are always
-    included; other depts include all active members.
+    Users subscribed to the release topic when technical drawings are published.
+    Resolved from the 'drawing_released' notification route (explicit users +
+    organization user groups on NotificationConfig), so the notification
+    settings UI is the single source of truth for who is subscribed.
     """
-    User = get_user_model()
-    return User.objects.filter(
-        is_active=True,
-        profile__position__department_code__in=DRAWING_RELEASE_STAKEHOLDER_DEPTS,
-        profile__position__is_active=True,
-    ).distinct()
+    from notifications.models import Notification
+    from notifications.service import get_route_users
+    return get_route_users(Notification.DRAWING_RELEASED)
 
 
 class CustomerListSerializer(serializers.ModelSerializer):
@@ -1501,16 +1488,21 @@ class DepartmentTaskUpdateSerializer(serializers.ModelSerializer):
             'depends_on', 'sequence', 'weight', 'manual_progress', 'notes'
         ]
 
+    # Fields that stay editable after a task is completed/skipped: weight
+    # (progress roll-up corrections) and the target dates (retroactive
+    # planning data entry — lateness reporting needs them backfilled).
+    TERMINAL_EDITABLE_FIELDS = {'weight', 'target_start_date', 'target_completion_date'}
+
     def validate(self, attrs):
-        """Prevent updates on completed/skipped tasks, except weight.
-        Also prevent editing by users who are not the task assignee,
-        unless they are only changing the assignment."""
+        """Prevent updates on completed/skipped tasks, except weight and
+        target dates. Also prevent editing by users who are not the task
+        assignee, unless they are only changing the assignment."""
         instance = self.instance
         if instance and instance.status in ['completed', 'skipped']:
-            non_weight = {k for k in attrs if k != 'weight'}
-            if non_weight:
+            blocked = {k for k in attrs if k not in self.TERMINAL_EDITABLE_FIELDS}
+            if blocked:
                 raise serializers.ValidationError(
-                    "Tamamlanmış veya atlanan görevler güncellenemez."
+                    "Tamamlanmış veya atlanan görevlerde yalnızca ağırlık ve hedef tarihler güncellenebilir."
                 )
 
         # Block editing by non-assignees (assignment changes are always allowed).
