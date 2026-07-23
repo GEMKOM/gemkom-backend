@@ -1,8 +1,12 @@
 # Meeting View (Sunum Modu) for Production Planning — Implementation Plan
 
-> **Status:** planned, not started (saved 2026-07-22). No code from this plan exists yet.
-> Scope spans two repos: this backend and the `white-app` frontend (sibling directory).
-> To resume: hand this file to Claude and say "implement the meeting view plan".
+> **Status:** IMPLEMENTED 2026-07-23 (backend + frontend + tests + browser-verified).
+> This file remains as the design record. Implementation notes beyond the plan:
+> `_procurement` uses two queries (PurchaseRequestItem-side exclude) instead of the
+> negated-Q filtered aggregate (mis-groups on the multivalued join); three legacy
+> data migrations (approvals 0002, vacation_requests 0002, users 0039) were given
+> defensive guards so fresh/stale test databases can migrate — `manage.py test`
+> now works with `--keepdb` against the `test_postgres` DB on the Supabase host.
 
 ## Context
 

@@ -7,7 +7,9 @@ def seed_default_policy(apps, schema_editor):
 
     policy, _ = ApprovalPolicy.objects.get_or_create(
         name="Default Policy",
-        defaults={"is_active": True, "selection_priority": 10, "priority_in": []},
+        # priority_in was only ever added in 0005 and removed in 0013; the
+        # historical model here (0001) has no such field.
+        defaults={"is_active": True, "selection_priority": 10},
     )
     lead_group, _ = Group.objects.get_or_create(name="Team Leads")
     finance_group, _ = Group.objects.get_or_create(name="Finance Approvers")

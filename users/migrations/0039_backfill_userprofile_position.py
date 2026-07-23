@@ -63,8 +63,15 @@ def _is_manager(user_groups_names: list[str], occupation: str) -> bool:
 
 def backfill_positions(apps, schema_editor):
     UserProfile = apps.get_model('users', 'UserProfile')
-    Position = apps.get_model('organization', 'Position')
-    Department = apps.get_model('organization', 'Department')
+    try:
+        Position = apps.get_model('organization', 'Position')
+        Department = apps.get_model('organization', 'Department')
+    except LookupError:
+        # These models were dropped from the organization app by later
+        # migrations. On a fresh database the migration plan reaches this
+        # point with the post-removal state — and with no users to backfill,
+        # skipping is equivalent to what production already ran.
+        return
     Permission = apps.get_model('auth', 'Permission')
     PermissionMeta = apps.get_model('users', 'PermissionMeta')
 

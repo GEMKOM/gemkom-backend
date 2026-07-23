@@ -520,6 +520,30 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         status_filter = request.query_params.get('status', 'active')
         return Response(build_production_plan_overview(status_filter))
 
+    @action(detail=True, methods=['get'], url_path='meeting-brief',
+            permission_classes=[permissions.IsAuthenticated])
+    def meeting_brief(self, request, job_no=None):
+        """
+        Meeting-view context for one ROOT job order's whole subtree: NCRs,
+        drawing/target-date revisions, procurement waiting, cuts waiting,
+        machining hours, welding resource assignments, files by source, and
+        (cost-visible users only) a financial verdict. See
+        services/meeting_brief.py.
+        """
+        from users.permissions import can_see_job_costs
+        from .services.meeting_brief import build_meeting_brief
+
+        job_order = self.get_object()
+        # The detail route also matches children and phase nodes; the brief is
+        # defined for roots only (all data covers the whole subtree).
+        if job_order.parent_id:
+            return Response(
+                {'detail': 'Toplantı özeti yalnızca kök iş emirleri için hazırlanır.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response(build_meeting_brief(
+            job_order, request, include_financial=can_see_job_costs(request.user)))
+
     # -------------------------------------------------------------------------
     # Production phases
     # -------------------------------------------------------------------------

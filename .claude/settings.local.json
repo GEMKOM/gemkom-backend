@@ -10,7 +10,9 @@
       "Bash(ls */Scripts/python.exe)",
       "Bash(venv/Scripts/python.exe manage.py shell -c ' *)",
       "Bash(venv/Scripts/python.exe -c \"import ast; ast.parse\\(open\\('machines/views.py',encoding='utf-8'\\).read\\(\\)\\); print\\('syntax OK'\\)\")",
-      "Bash(venv/Scripts/python.exe manage.py check)"
+      "Bash(venv/Scripts/python.exe manage.py check)",
+      "Read(//c/Users/ocalık/OneDrive - GEMKOM/Masaüstü/Jira Timer/white-app/manufacturing/cnc-cutting/**)",
+      "Read(//c/Users/ocalık/OneDrive - GEMKOM/Masaüstü/Jira Timer/white-app/manufacturing/cnc-cutting/cuts/**)"
     ]
   }
 }
