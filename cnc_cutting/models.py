@@ -3,6 +3,9 @@ from tasks.models import BaseTask
 from django.contrib.contenttypes.fields import GenericRelation
 from machines.models import Machine
 
+# Catalog item code prefixes that identify raw plate stock (kept in kg).
+PLATE_ITEM_CODE_PREFIXES = ('0100', '0101')
+
 
 class RemnantPlate(models.Model):
     thickness_mm = models.DecimalField(max_digits=7, decimal_places=2, null=True, blank=True)
@@ -79,6 +82,17 @@ class CncTask(BaseTask):
         through='RemnantPlateUsage',
         related_name='cnc_tasks',
         blank=True
+    )
+
+    # Plate stock line this cut consumes (alternative source to remnant plates).
+    # Ties the cut to procurement: item.is_delivered tells whether the plate arrived.
+    planning_request_item = models.ForeignKey(
+        'planning.PlanningRequestItem',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='cnc_tasks',
+        help_text="Plate stock line (item code 0100/0101) this cut consumes"
     )
 
     # This creates the reverse relationship from a CncTask back to all its Timers.

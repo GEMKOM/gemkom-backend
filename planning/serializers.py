@@ -320,6 +320,8 @@ class PlanningRequestItemDeliverySerializer(serializers.ModelSerializer):
     item_type = serializers.CharField(source='item.item_type', read_only=True)
     planning_request_number = serializers.CharField(source='planning_request.request_number', read_only=True)
     delivered_by_username = serializers.CharField(source='delivered_by.username', read_only=True, default=None)
+    consumed_by_username = serializers.CharField(source='consumed_by.username', read_only=True, default=None)
+    cnc_cuts_count = serializers.IntegerField(read_only=True, default=0)
 
     class Meta:
         model = PlanningRequestItem
@@ -328,6 +330,8 @@ class PlanningRequestItemDeliverySerializer(serializers.ModelSerializer):
             'job_no', 'quantity', 'quantity_to_purchase',
             'planning_request', 'planning_request_number',
             'is_delivered', 'delivered_at', 'delivered_by', 'delivered_by_username',
+            'is_consumed', 'consumed_at', 'consumed_by', 'consumed_by_username',
+            'cnc_cuts_count',
         ]
 
 
@@ -355,6 +359,8 @@ class PlanningRequestItemListSerializer(serializers.ModelSerializer):
     is_available_for_purchase = serializers.SerializerMethodField()
     planning_request_number = serializers.CharField(source='planning_request.request_number', read_only=True)
     delivered_by_username = serializers.CharField(source='delivered_by.username', read_only=True, default=None)
+    consumed_by_username = serializers.CharField(source='consumed_by.username', read_only=True, default=None)
+    cnc_cuts_count = serializers.IntegerField(read_only=True, default=0)
 
     class Meta:
         model = PlanningRequestItem
@@ -367,11 +373,14 @@ class PlanningRequestItemListSerializer(serializers.ModelSerializer):
             'is_converted', 'is_partially_converted', 'is_fully_from_inventory',
             'is_partially_from_inventory', 'is_available_for_purchase',
             'is_delivered', 'delivered_at', 'delivered_by', 'delivered_by_username',
+            'is_consumed', 'consumed_at', 'consumed_by', 'consumed_by_username',
+            'cnc_cuts_count',
             'latest_unit_price_eur', 'latest_unit_price_source', 'purchase_request_number',
             'planning_request', 'planning_request_number'
         ]
         read_only_fields = ['id', 'quantity_from_inventory', 'quantity_to_purchase',
-                            'is_delivered', 'delivered_at', 'delivered_by']
+                            'is_delivered', 'delivered_at', 'delivered_by',
+                            'is_consumed', 'consumed_at', 'consumed_by']
 
     def _price_requested(self, obj):
         return hasattr(obj, '_t2_price')
@@ -444,6 +453,8 @@ class PlanningRequestItemSerializer(serializers.ModelSerializer):
     purchase_request_info = serializers.SerializerMethodField()
     planning_request_number = serializers.CharField(source='planning_request.request_number', read_only=True)
     delivered_by_username = serializers.CharField(source='delivered_by.username', read_only=True, default=None)
+    consumed_by_username = serializers.CharField(source='consumed_by.username', read_only=True, default=None)
+    cnc_cuts_count = serializers.IntegerField(read_only=True, default=0)
 
     # For write operations
     item_id = serializers.IntegerField(write_only=True, required=False)
@@ -462,11 +473,14 @@ class PlanningRequestItemSerializer(serializers.ModelSerializer):
             'is_converted', 'is_partially_converted', 'is_fully_from_inventory',
             'is_partially_from_inventory', 'is_available_for_purchase',
             'is_delivered', 'delivered_at', 'delivered_by', 'delivered_by_username',
+            'is_consumed', 'consumed_at', 'consumed_by', 'consumed_by_username',
+            'cnc_cuts_count',
             'latest_unit_price_eur', 'latest_unit_price_source', 'converted_pr_number',
             'purchase_request_info', 'planning_request', 'planning_request_number'
         ]
         read_only_fields = ['id', 'quantity_from_inventory', 'quantity_to_purchase',
-                            'is_delivered', 'delivered_at', 'delivered_by']
+                            'is_delivered', 'delivered_at', 'delivered_by',
+                            'is_consumed', 'consumed_at', 'consumed_by']
 
     def validate_job_no(self, value):
         return validate_job_no_not_phased(value)

@@ -87,6 +87,11 @@ class PlanningRequestItemFilter(django_filters.FilterSet):
         label='Has latest unit price (has at least one PO line)'
     )
 
+    is_plate = django_filters.BooleanFilter(
+        method='filter_is_plate',
+        label='Is a raw plate item (item code starts with 0100/0101)'
+    )
+
     class Meta:
         model = PlanningRequestItem
         fields = {
@@ -94,7 +99,21 @@ class PlanningRequestItemFilter(django_filters.FilterSet):
             'item': ['exact'],
             'priority': ['exact'],
             'is_delivered': ['exact'],
+            'is_consumed': ['exact'],
         }
+
+    def filter_is_plate(self, queryset, name, value):
+        """Filter to (or away from) raw plate stock items by catalog code prefix."""
+        from django.db.models import Q
+        from cnc_cutting.models import PLATE_ITEM_CODE_PREFIXES
+
+        plate_q = Q()
+        for prefix in PLATE_ITEM_CODE_PREFIXES:
+            plate_q |= Q(item__code__startswith=prefix)
+
+        if value:
+            return queryset.filter(plate_q)
+        return queryset.exclude(plate_q)
 
     def filter_search(self, queryset, name, value):
         """

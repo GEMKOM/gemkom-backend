@@ -248,11 +248,21 @@ def _cutting(job_nos):
         output_field=DecimalField(max_digits=16, decimal_places=3),
     )
     cut = Q(cnc_task__completion_date__isnull=False)
+    # Uncut parts whose cut is tied to an undelivered plate stock line: the wait
+    # belongs to procurement, not CNC. Parts on cuts without a planning-item
+    # link stay plain "waiting".
+    waiting_material = (
+        Q(cnc_task__completion_date__isnull=True) &
+        Q(cnc_task__planning_request_item__isnull=False) &
+        Q(cnc_task__planning_request_item__is_delivered=False)
+    )
     agg = CncPart.objects.filter(job_no__in=job_nos).aggregate(
         parts_total=Sum(qty_expr),
         parts_cut=Sum(qty_expr, filter=cut),
         weight_total=Sum(weight_expr),
         weight_cut=Sum(weight_expr, filter=cut),
+        parts_waiting_material=Sum(qty_expr, filter=waiting_material),
+        weight_waiting_material=Sum(weight_expr, filter=waiting_material),
     )
     parts_total = agg['parts_total'] or 0
     parts_cut = agg['parts_cut'] or 0
@@ -266,6 +276,8 @@ def _cutting(job_nos):
         'weight_total': float(weight_total),
         'weight_cut': float(weight_cut),
         'weight_waiting': float(weight_total - weight_cut),
+        'parts_waiting_material': agg['parts_waiting_material'] or 0,
+        'weight_waiting_material': float(agg['weight_waiting_material'] or Decimal('0')),
     }
 
 
@@ -556,7 +568,36 @@ def _files(job_nos, request):
     return groups
 
 
-def _financial(root):
+def _delivered_uncosted_material(job_nos):
+    """Offer/historical-priced material sitting in the estimate for DELIVERED
+    items with no real cost (no saved procurement line, no actual PO price).
+
+    A delivered item has no purchase left to happen, so that portion of the
+    estimate is fiction the actuals can never catch up to (typically stock
+    material). The stored estimate itself stays untouched (user decision) —
+    the meeting verdict alone subtracts this before comparing against price.
+    """
+    from planning.price_utils import resolve_planning_item_price
+    from projects.models import JobOrderProcurementLine
+    from projects.services.costing import _planning_items_with_price_annotations
+
+    covered = set(
+        JobOrderProcurementLine.objects
+        .filter(job_order_id__in=job_nos, planning_request_item__isnull=False)
+        .values_list('planning_request_item_id', flat=True)
+    )
+    total = Decimal('0')
+    for pri in _planning_items_with_price_annotations(list(job_nos)).filter(is_delivered=True):
+        if pri.pk in covered:
+            continue
+        price = resolve_planning_item_price(pri)
+        if not price or price['price_source'] == 'po_line':
+            continue
+        total += Decimal(str(pri.quantity or 0)) * price['unit_price_eur']
+    return total
+
+
+def _financial(root, job_nos):
     """Traffic-light verdict, no amounts. Compares the PROJECTED full cost
     (max of actuals and the cached 100%-projection, which is built on top of
     actuals — so max, never sum) against the effective selling price.
@@ -590,7 +631,14 @@ def _financial(root):
                 'reason': 'Satış fiyatı girilmemiş; türetilebilir fiyat da yok.',
                 'price_is_derived': False}
 
-    cost_projected = max(actual, estimated)
+    # The verdict compares the PROJECTED cost against price. Estimated
+    # portions already realised cheaper are replaced by reality: fictional
+    # offer prices for delivered-but-uncosted items are subtracted first.
+    estimated_adjusted = estimated
+    if estimated > 0:
+        estimated_adjusted = max(
+            Decimal('0'), estimated - _delivered_uncosted_material(job_nos))
+    cost_projected = max(actual, estimated_adjusted)
     result = {'price_is_derived': derived}
     if actual >= price:
         result.update(verdict='critical',
@@ -647,12 +695,21 @@ def _cutting_detail(root, job_nos):
             'quantity': row['quantity'] or 1,
             'weight_kg': float(row['weight_kg'] or 0),
             'cut': row['cnc_task__completion_date'] is not None,
+            'material_pending': (
+                row['cnc_task__completion_date'] is None
+                and row['cnc_task__planning_request_item'] is not None
+                and row['cnc_task__planning_request_item__is_delivered'] is False
+            ),
+            'plate_item_code': row['cnc_task__planning_request_item__item__code'],
         }
         for row in (
             CncPart.objects
             .filter(job_no__in=job_nos)
             .values('image_no', 'position_no', 'job_no', 'cnc_task_id',
-                    'quantity', 'weight_kg', 'cnc_task__completion_date')
+                    'quantity', 'weight_kg', 'cnc_task__completion_date',
+                    'cnc_task__planning_request_item',
+                    'cnc_task__planning_request_item__is_delivered',
+                    'cnc_task__planning_request_item__item__code')
         )
     ]
     parts.sort(key=lambda p: (p['cut'], -p['weight_kg']))
@@ -741,5 +798,5 @@ def build_meeting_brief(root, request, include_financial):
         'files': _files(job_nos, request),
     }
     if include_financial:
-        brief['financial'] = _financial(root)
+        brief['financial'] = _financial(root, job_nos)
     return brief

@@ -371,6 +371,48 @@ def _batched_domain_progress(job_nos):
     return domains
 
 
+def _material_wait_map(job_nos):
+    """Per-job CNC material-wait signal, in two fixed queries: open cuts whose
+    linked plate stock line (PlanningRequestItem) has not been delivered, plus
+    undelivered plate items for the job regardless of cuts (material missing,
+    cuts not even created yet). Jobs with neither signal are absent from the map,
+    so callers can attach ``map.get(job_no)`` directly (None = no wait)."""
+    result = {}
+    if not job_nos:
+        return result
+
+    from django.db.models import Count, Q
+    from cnc_cutting.models import CncPart, PLATE_ITEM_CODE_PREFIXES
+    from planning.models import PlanningRequestItem
+
+    for row in (
+        CncPart.objects
+        .filter(
+            job_no__in=job_nos,
+            cnc_task__completion_date__isnull=True,
+            cnc_task__planning_request_item__isnull=False,
+            cnc_task__planning_request_item__is_delivered=False,
+        )
+        .values('job_no')
+        .annotate(cuts=Count('cnc_task_id', distinct=True))
+    ):
+        result[row['job_no']] = {'cuts_waiting': row['cuts'], 'plate_items_pending': 0}
+
+    plate_q = Q()
+    for prefix in PLATE_ITEM_CODE_PREFIXES:
+        plate_q |= Q(item__code__startswith=prefix)
+    for row in (
+        PlanningRequestItem.objects
+        .filter(plate_q, job_no__in=job_nos, is_delivered=False, quantity_to_purchase__gt=0)
+        .values('job_no')
+        .annotate(items=Count('id'))
+    ):
+        entry = result.setdefault(row['job_no'], {'cuts_waiting': 0, 'plate_items_pending': 0})
+        entry['plate_items_pending'] = row['items']
+
+    return result
+
+
 _MAX_IN_PROGRESS = Decimal('99.00')
 
 
@@ -492,7 +534,8 @@ def _classify(status, target_end, end_variance, overdue):
     return 'not_started'  # pending / blocked
 
 
-def _task_dict(task, calendar, today, completion_percentage, effective_start=None):
+def _task_dict(task, calendar, today, completion_percentage, effective_start=None,
+               material_wait=None):
     # Prefer real work evidence over started_at (auto-stamped on creation /
     # dependency clearance, so it usually predates any actual work).
     actual_start = effective_start or local_date(task.started_at)
@@ -540,6 +583,9 @@ def _task_dict(task, calendar, today, completion_percentage, effective_start=Non
             'end_variance_wd': float(end_variance) if end_variance is not None else None,
             'overdue_wd': float(overdue) if overdue is not None else None,
             'classification': _classify(task.status, target_end, end_variance, overdue),
+            # CNC tasks only: {'cuts_waiting', 'plate_items_pending'} when the job
+            # has undelivered plate material — the delay belongs to procurement.
+            'material_wait': material_wait,
             # Filled by _compute_forecast for open tasks:
             'projected_start_date': None,
             'projected_end_date': None,
@@ -893,6 +939,8 @@ def build_production_plan(root):
     for task in tasks:
         tasks_by_job[task.job_order_id].append(task)
 
+    material_map = _material_wait_map(job_nos)
+
     # Build every task dict first (forecast pushes across job orders), keeping
     # the per-node association for the node summaries.
     all_task_dicts = []
@@ -900,7 +948,9 @@ def build_production_plan(root):
     for node in nodes:
         dicts = [
             _task_dict(task, calendar, today, progress_map[task.id],
-                       effective_starts.get(task.id))
+                       effective_starts.get(task.id),
+                       material_wait=(material_map.get(task.job_order_id)
+                                      if _task_domain(task) == 'cnc' else None))
             for task in _ordered_tasks(tasks_by_job.get(node['job_no'], []))
         ]
         node_task_dicts[node['job_no']] = dicts

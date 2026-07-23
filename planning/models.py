@@ -477,6 +477,15 @@ class PlanningRequestItem(models.Model):
         related_name='delivered_planning_items'
     )
 
+    # Physical consumption tracking (plate items: stock is in kg, so the last
+    # plate can only be flagged manually; consumed items can't be picked for new CNC cuts)
+    is_consumed = models.BooleanField(default=False)
+    consumed_at = models.DateTimeField(null=True, blank=True)
+    consumed_by = models.ForeignKey(
+        User, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='consumed_planning_items'
+    )
+
     # Generic relation for file attachments (mapped from DepartmentRequest files or new uploads)
     files = GenericRelation(
         'planning.FileAttachment',

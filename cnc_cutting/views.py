@@ -146,7 +146,7 @@ class CncTaskViewSet(TaskFileMixin, ModelViewSet):
     Handles multipart/form-data for file uploads.
     """
     # Combine querysets for both list and detail views for efficiency
-    queryset = CncTask.objects.select_related('machine_fk').prefetch_related('issue_key', 'parts', 'files', 'plate_usage_records__remnant_plate').annotate(parts_count=Count('parts')).order_by('-key')
+    queryset = CncTask.objects.select_related('machine_fk', 'planning_request_item__item', 'planning_request_item__planning_request').prefetch_related('issue_key', 'parts', 'files', 'plate_usage_records__remnant_plate').annotate(parts_count=Count('parts')).order_by('-key')
     filter_backends = [DjangoFilterBackend, OrderingFilter]
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser] # Important for file uploads
@@ -167,7 +167,7 @@ class CncTaskViewSet(TaskFileMixin, ModelViewSet):
     def get_queryset(self):
         # 'issue_key' is the GenericRelation from tasks.Timer back to this Task
         # prefetch_related works seamlessly with it for great performance.
-        return CncTask.objects.select_related('machine_fk').prefetch_related('issue_key', 'parts', 'files', 'plate_usage_records__remnant_plate').annotate(parts_count=Count('parts')).filter(is_hold_task=False).order_by('-key')
+        return CncTask.objects.select_related('machine_fk', 'planning_request_item__item', 'planning_request_item__planning_request').prefetch_related('issue_key', 'parts', 'files', 'plate_usage_records__remnant_plate').annotate(parts_count=Count('parts')).filter(is_hold_task=False).order_by('-key')
 
 
 class CncHoldTaskViewSet(ModelViewSet):

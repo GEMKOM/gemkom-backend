@@ -295,6 +295,12 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
             ).annotate(
                 items_count=Count('items')
             )
+            # The main list shows each user only their own planning requests;
+            # superusers see everyone's. Detail views and procurement-facing
+            # actions (ready_for_procurement, warehouse_requests) stay open —
+            # other teams work with requests they didn't create.
+            if self.action == 'list' and not user.is_superuser:
+                qs = qs.filter(created_by=user)
         else:
             # For detail views, prefetch all related data
             from procurement.models import PurchaseRequestItem as PRItem
@@ -856,7 +862,9 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
             if simple:
                 # Lightweight: no subquery annotations needed
                 qs = PlanningRequestItem.objects.select_related(
-                    'planning_request', 'item', 'delivered_by'
+                    'planning_request', 'item', 'delivered_by', 'consumed_by'
+                ).annotate(
+                    cnc_cuts_count=Count('cnc_tasks', distinct=True),
                 )
             else:
                 # FK path subquery
@@ -883,9 +891,12 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
                 zero = Value(Decimal('0.00'))
 
                 qs = PlanningRequestItem.objects.select_related(
-                    'planning_request', 'item', 'delivered_by'
+                    'planning_request', 'item', 'delivered_by', 'consumed_by'
                 ).annotate(
-                    files_count=Count('files'),
+                    # distinct=True on both Counts: the cnc_tasks join would otherwise
+                    # fan out FileAttachment rows (and vice versa) and inflate the counts.
+                    files_count=Count('files', distinct=True),
+                    cnc_cuts_count=Count('cnc_tasks', distinct=True),
                     _qty_in_prs=Greatest(
                         Coalesce(Subquery(qty_via_fk), zero),
                         Coalesce(Subquery(qty_via_m2m), zero),
@@ -898,10 +909,11 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
         else:
             # For detail views, prefetch all related data
             qs = PlanningRequestItem.objects.select_related(
-                'planning_request', 'item', 'delivered_by'
+                'planning_request', 'item', 'delivered_by', 'consumed_by'
             ).prefetch_related(
                 Prefetch('files', queryset=FileAttachment.objects.select_related('asset', 'uploaded_by', 'source_attachment')),
             ).annotate(
+                cnc_cuts_count=Count('cnc_tasks', distinct=True),
                 _pr_request_number=Subquery(pr_number_sq),
             )
 
@@ -1087,6 +1099,68 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
         self._recompute_supplier_ratings_for_planning_items(affected_ids)
 
         items = PlanningRequestItem.objects.filter(id__in=ids).select_related('planning_request', 'item', 'delivered_by')
+        serializer = PlanningRequestItemDeliverySerializer(items, many=True)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['POST'], permission_classes=[IsAuthenticated], url_path='mark_consumed')
+    def mark_consumed(self, request, pk=None):
+        """
+        Mark a PlanningRequestItem's physical stock as used up (e.g. all plates cut).
+        Standalone — no CNC cut required, so legacy items that were cut before
+        cut↔item linkage existed can be retired too. Consumed items can't be
+        selected as the plate source of new CNC cuts.
+        """
+        from django.utils import timezone
+
+        item = self.get_object()
+        if item.is_consumed:
+            return Response({"detail": "Item is already marked as consumed."}, status=400)
+
+        item.is_consumed = True
+        item.consumed_at = timezone.now()
+        item.consumed_by = request.user
+        item.save(update_fields=['is_consumed', 'consumed_at', 'consumed_by'])
+
+        serializer = PlanningRequestItemDeliverySerializer(item)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['POST'], permission_classes=[IsAuthenticated], url_path='unmark_consumed')
+    def unmark_consumed(self, request, pk=None):
+        """Revert a mistaken consumed flag on a PlanningRequestItem."""
+        item = self.get_object()
+        if not item.is_consumed:
+            return Response({"detail": "Item is not marked as consumed."}, status=400)
+
+        item.is_consumed = False
+        item.consumed_at = None
+        item.consumed_by = None
+        item.save(update_fields=['is_consumed', 'consumed_at', 'consumed_by'])
+
+        serializer = PlanningRequestItemDeliverySerializer(item)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['POST'], permission_classes=[IsAuthenticated], url_path='bulk_mark_consumed')
+    def bulk_mark_consumed(self, request):
+        """
+        Mark multiple PlanningRequestItems as consumed (one-shot cleanup of
+        legacy already-cut items).
+
+        Request body:
+        {
+            "ids": [1, 2, 3]
+        }
+        """
+        from django.utils import timezone
+
+        ids = request.data.get('ids', [])
+        if not ids or not isinstance(ids, list):
+            return Response({"detail": "ids is required and must be a non-empty list."}, status=400)
+
+        now = timezone.now()
+        affected_items = PlanningRequestItem.objects.filter(id__in=ids, is_consumed=False)
+        affected_items.update(is_consumed=True, consumed_at=now, consumed_by=request.user)
+
+        items = PlanningRequestItem.objects.filter(id__in=ids).select_related('planning_request', 'item', 'delivered_by', 'consumed_by')
         serializer = PlanningRequestItemDeliverySerializer(items, many=True)
         return Response(serializer.data)
 

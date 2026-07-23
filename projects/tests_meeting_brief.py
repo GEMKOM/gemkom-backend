@@ -459,44 +459,44 @@ class FinancialLadderTests(MeetingBriefFixtureMixin, TestCase):
         return job
 
     def test_no_summary_is_no_data(self):
-        self.assertEqual(_financial(self.root)['verdict'], 'no_data')
+        self.assertEqual(_financial(self.root, [self.root.job_no, self.child.job_no])['verdict'], 'no_data')
 
     def test_zero_summary_is_no_data(self):
         job = self._summary(Decimal('0'), None)
-        self.assertEqual(_financial(job)['verdict'], 'no_data')
+        self.assertEqual(_financial(job, [self.root.job_no, self.child.job_no])['verdict'], 'no_data')
 
     def test_no_price_anywhere(self):
         job = self._summary(Decimal('100'), Decimal('200'), price=Decimal('0'))
-        self.assertEqual(_financial(job)['verdict'], 'no_price')
+        self.assertEqual(_financial(job, [self.root.job_no, self.child.job_no])['verdict'], 'no_price')
 
     def test_healthy(self):
         job = self._summary(Decimal('500'), Decimal('800'))
-        result = _financial(job)
+        result = _financial(job, [self.root.job_no, self.child.job_no])
         self.assertEqual(result['verdict'], 'healthy')
         self.assertFalse(result['price_is_derived'])
 
     def test_risky_ratio(self):
         job = self._summary(Decimal('920'), None)
-        self.assertEqual(_financial(job)['verdict'], 'risky')
+        self.assertEqual(_financial(job, [self.root.job_no, self.child.job_no])['verdict'], 'risky')
 
     def test_risky_budget_overrun(self):
         job = self._summary(Decimal('150'), Decimal('100'))
-        result = _financial(job)
+        result = _financial(job, [self.root.job_no, self.child.job_no])
         self.assertEqual(result['verdict'], 'risky')
         self.assertIn('bütçe', result['reason'].lower())
 
     def test_critical_projected_over_price(self):
         job = self._summary(Decimal('600'), Decimal('1100'))
-        self.assertEqual(_financial(job)['verdict'], 'critical')
+        self.assertEqual(_financial(job, [self.root.job_no, self.child.job_no])['verdict'], 'critical')
 
     def test_critical_actual_at_price(self):
         job = self._summary(Decimal('1000'), None)
-        self.assertEqual(_financial(job)['verdict'], 'critical')
+        self.assertEqual(_financial(job, [self.root.job_no, self.child.job_no])['verdict'], 'critical')
 
     def test_derived_price_from_child(self):
         job = self._summary(Decimal('100'), Decimal('200'), price=Decimal('0'))
         self._summary(Decimal('0'), None, price=Decimal('500'), job=self.child)
-        result = _financial(job)
+        result = _financial(job, [self.root.job_no, self.child.job_no])
         self.assertEqual(result['verdict'], 'healthy')
         self.assertTrue(result['price_is_derived'])
 
