@@ -8,6 +8,7 @@ from projects.services.production_plan import (
     _compute_forecast,
     _effective_start_map,
     _job_order_forecast,
+    _mark_completion_driver,
     _natural_job_key,
     _progress_from_domains,
     _visible_task_dicts,
@@ -26,13 +27,15 @@ TODAY = D(8)  # Wednesday
 
 
 def make_task(task_id, job='J-01', seq=1, parent=None, status='pending', pct=0.0,
-              ts=None, te=None, astart=None, aend=None, deps=(), cls='not_started'):
+              ts=None, te=None, astart=None, aend=None, deps=(), cls='not_started',
+              w=10):
     return {
         'id': task_id,
         'job_no': job,
         'parent': parent,
         'sequence': seq,
         'status': status,
+        'weight': w,
         'completion_percentage': pct,
         'depends_on': list(deps),
         'target_start_date': ts,
@@ -48,6 +51,10 @@ def make_task(task_id, job='J-01', seq=1, parent=None, status='pending', pct=0.0
             'projected_end_date': None,
             'projected_variance_wd': None,
             'pushed_by': None,
+            'projection_kind': None,
+            'projection_elapsed_wd': None,
+            'projection_remaining_wd': None,
+            'drives_completion': False,
         },
     }
 
@@ -69,6 +76,92 @@ class ScheduleWalkHelperTests(SimpleTestCase):
 
     def test_next_working_day_over_weekend(self):
         self.assertEqual(next_working_day(D(3), {}), D(6))  # after Fri -> Mon
+
+
+class WeightDurationTests(SimpleTestCase):
+    """Zero-progress tasks without planned dates are sized by their weight
+    share of the job's pace-extrapolated total duration (user design) —
+    instead of the 1-day placeholder."""
+
+    def test_started_zero_progress_uses_weight_share(self):
+        # Job at 60%: earliest work started Wed Jul 1, today Jul 8 -> 5 wd
+        # elapsed -> extrapolated total 5 * 100/60 = 8.33 wd. The 0% task owns
+        # 40/100 of the job -> ~3.33 wd from today -> Mon Jul 13.
+        done = make_task(1, status='completed', pct=100.0, astart=D(1), aend=D(7),
+                         w=60, cls='completed_on_time')
+        stalled = make_task(2, seq=2, status='in_progress', pct=0.0, astart=D(6),
+                            w=40, cls='unplanned')
+        _compute_forecast([done, stalled], TODAY, {}, {'J-01': 60.0})
+        sched = stalled['schedule']
+        self.assertEqual(sched['projected_end_date'], D(13))
+        self.assertEqual(sched['projection_kind'], 'weight')
+        self.assertAlmostEqual(sched['projection_remaining_wd'], 3.3, places=1)
+
+    def test_without_job_progress_keeps_placeholder(self):
+        done = make_task(1, status='completed', pct=100.0, astart=D(1), aend=D(7),
+                         w=60, cls='completed_on_time')
+        stalled = make_task(2, seq=2, status='in_progress', pct=0.0, astart=D(6),
+                            w=40, cls='unplanned')
+        _compute_forecast([done, stalled], TODAY, {})
+        self.assertEqual(stalled['schedule']['projected_end_date'], TODAY)
+        self.assertEqual(stalled['schedule']['projection_kind'], 'start')
+
+    def test_subtask_share_multiplies_parent_share(self):
+        # Parent main owns 40%; the 0% subtask owns half of that (w 5 of 10)
+        # -> 20% of the 8.33 wd total = 1.67 wd -> Thu Jul 9.
+        done = make_task(1, status='completed', pct=100.0, astart=D(1), aend=D(7),
+                         w=60, cls='completed_on_time')
+        parent = make_task(2, seq=2, status='in_progress', pct=50.0, astart=D(6),
+                           w=40, cls='unplanned')
+        sub = make_task(3, parent=2, status='in_progress', pct=0.0, astart=D(6),
+                        w=5, cls='unplanned')
+        sub2 = make_task(4, parent=2, status='in_progress', pct=90.0, astart=D(6),
+                         w=5, cls='unplanned')
+        _compute_forecast([done, parent, sub, sub2], TODAY, {}, {'J-01': 60.0})
+        sched = sub['schedule']
+        self.assertEqual(sched['projection_kind'], 'weight')
+        self.assertAlmostEqual(sched['projection_remaining_wd'], 1.7, places=1)
+        self.assertEqual(sched['projected_end_date'], D(9))
+
+    def test_parent_with_children_never_projects_its_own_share(self):
+        # The 0% parent's reality lives in its children; its own weight share
+        # must not inflate the forecast.
+        done = make_task(1, status='completed', pct=100.0, astart=D(1), aend=D(7),
+                         w=40, cls='completed_on_time')
+        parent = make_task(2, seq=2, status='in_progress', pct=0.0, astart=D(6),
+                           w=60, cls='unplanned')
+        sub = make_task(3, parent=2, status='in_progress', pct=90.0, astart=D(6),
+                        w=10, cls='unplanned')
+        _compute_forecast([done, parent, sub], TODAY, {}, {'J-01': 60.0})
+        self.assertEqual(parent['schedule']['projection_kind'], 'start')
+        self.assertEqual(parent['schedule']['projected_end_date'], TODAY)
+
+    def test_pushed_task_keeps_push_kind_with_weight_length(self):
+        # Predecessor runs to Jul 15; the 0% successor starts after it and
+        # runs its weight-share duration (40% of 8.33 = 3.33 wd from Jul 16).
+        pred = make_task(1, status='in_progress', pct=50.0, astart=D(1), w=60,
+                         cls='unplanned')
+        succ = make_task(2, seq=2, status='pending', pct=0.0, w=40,
+                         cls='unplanned')
+        _compute_forecast([pred, succ], TODAY, {}, {'J-01': 50.0})
+        sched = succ['schedule']
+        self.assertEqual(sched['pushed_by'], 1)
+        self.assertEqual(sched['projection_kind'], 'push')
+        self.assertGreater(sched['projection_remaining_wd'], 1)
+
+
+class CompletionDriverTests(SimpleTestCase):
+    def test_driver_flagged_and_reported(self):
+        early = make_task(1, status='in_progress', pct=50.0, astart=D(1),
+                          cls='unplanned')
+        late = make_task(2, seq=2, status='in_progress', pct=25.0, astart=D(1),
+                         cls='unplanned')
+        _compute_forecast([early, late], TODAY, {})
+        forecast = _job_order_forecast('active', None, None, [early, late], {})
+        _mark_completion_driver([early, late], forecast)
+        self.assertEqual(forecast['driver_task_id'], 2)
+        self.assertTrue(late['schedule']['drives_completion'])
+        self.assertFalse(early['schedule']['drives_completion'])
 
 
 class ForecastProjectionTests(SimpleTestCase):

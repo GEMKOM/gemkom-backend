@@ -148,6 +148,38 @@ class PlateSourceCreateTests(PlateFixtureMixin, TestCase):
         resp = self.create_cut(selected_plate_id=self.remnant.id, mark_item_consumed='true')
         self.assertEqual(resp.status_code, 400)
 
+    def test_parts_search_includes_plate_source(self):
+        resp = self.create_cut(
+            planning_request_item_id=self.pri.id,
+            parts_data=json.dumps([{'job_no': '900-01', 'image_no': 'IMG-1',
+                                    'position_no': 'P1', 'weight_kg': 12.5, 'quantity': 2}]))
+        self.assertEqual(resp.status_code, 201, resp.data)
+
+        resp = self.client.get('/cnc_cutting/parts/search/', {'image_no': 'IMG-1'})
+        self.assertEqual(resp.status_code, 200)
+        rows = resp.data['results'] if isinstance(resp.data, dict) and 'results' in resp.data else resp.data
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row['plate_item_name'], '5 mm ST 37-2 SAC')
+        self.assertEqual(row['plate_item_code'], self.item_plate.code)
+        self.assertTrue(row['plate_item_is_delivered'])
+        self.assertEqual(row['planning_request_item'], self.pri.id)
+        self.assertEqual(row['material'], '5 mm ST 37-2 SAC')
+        self.assertFalse(row['has_remnant_plate'])
+
+        # Remnant-sourced part carries the legacy/copied fields instead
+        resp = self.create_cut(
+            selected_plate_id=self.remnant.id,
+            parts_data=json.dumps([{'job_no': '900-01', 'image_no': 'IMG-2',
+                                    'weight_kg': 5, 'quantity': 1}]))
+        self.assertEqual(resp.status_code, 201, resp.data)
+        resp = self.client.get('/cnc_cutting/parts/search/', {'image_no': 'IMG-2'})
+        rows = resp.data['results'] if isinstance(resp.data, dict) and 'results' in resp.data else resp.data
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0]['has_remnant_plate'])
+        self.assertIsNone(rows[0]['planning_request_item'])
+        self.assertEqual(rows[0]['material'], 'ST 44-2')
+
     def test_explicit_fields_win_over_derivation(self):
         resp = self.create_cut(
             planning_request_item_id=self.pri.id,
@@ -307,13 +339,20 @@ class PlanningConsumedApiTests(PlateFixtureMixin, TestCase):
         self.assertIn(self.pri.id, ids)
 
     def test_cuts_count_and_files_count_no_fanout(self):
-        # Two cuts linked to the same item + one attached file.
+        # Two quantity-1 cuts + one Adet=3 cut linked to the same item, plus one
+        # attached file. Usage is quantity-weighted: 1 + 1 + 3 = 5.
         for _ in range(2):
             resp = self.client.post(TASKS_URL, {
                 'name': 'Kesim', 'nesting_id': 'N-x',
                 'planning_request_item_id': self.pri.id,
             }, format='multipart')
             self.assertEqual(resp.status_code, 201, resp.data)
+        resp = self.client.post(TASKS_URL, {
+            'name': 'Kesim', 'nesting_id': 'N-x3', 'quantity': '3',
+            'planning_request_item_id': self.pri.id,
+        }, format='multipart')
+        self.assertEqual(resp.status_code, 201, resp.data)
+        self.assertEqual(resp.data['plate_item']['cnc_cuts_count'], 5)
 
         asset = FileAsset.objects.create(file='attachments/test.pdf', uploaded_by=self.user)
         FileAttachment.objects.create(
@@ -321,17 +360,24 @@ class PlanningConsumedApiTests(PlateFixtureMixin, TestCase):
             content_type=ContentType.objects.get_for_model(PlanningRequestItem),
             object_id=self.pri.id)
 
-        # simple list carries the cut count
+        # simple list carries the quantity-weighted cut count
         resp = self.client.get(ITEMS_URL, {'fields': 'simple', 'item': self.item_plate.id})
         rows = {row['id']: row for row in self._results(resp)}
-        self.assertEqual(rows[self.pri.id]['cnc_cuts_count'], 2)
+        self.assertEqual(rows[self.pri.id]['cnc_cuts_count'], 5)
         self.assertIn('is_consumed', rows[self.pri.id])
 
-        # full list: files_count must not be inflated by the cnc_tasks join
+        # full list: files_count must not be inflated by cnc usage, nor the
+        # usage sum by the files join
         resp = self.client.get(ITEMS_URL, {'item': self.item_plate.id})
         rows = {row['id']: row for row in self._results(resp)}
         self.assertEqual(rows[self.pri.id]['files_count'], 1)
-        self.assertEqual(rows[self.pri.id]['cnc_cuts_count'], 2)
+        self.assertEqual(rows[self.pri.id]['cnc_cuts_count'], 5)
+
+        # Legacy cut with quantity=None counts as 1
+        CncTask.objects.create(key='LEG-Q1', name='legacy', planning_request_item=self.pri)
+        resp = self.client.get(ITEMS_URL, {'fields': 'simple', 'item': self.item_plate.id})
+        rows = {row['id']: row for row in self._results(resp)}
+        self.assertEqual(rows[self.pri.id]['cnc_cuts_count'], 6)
 
 
 class MaterialWaitServiceTests(TestCase):

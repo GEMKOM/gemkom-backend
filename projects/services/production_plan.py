@@ -591,6 +591,14 @@ def _task_dict(task, calendar, today, completion_percentage, effective_start=Non
             'projected_end_date': None,
             'projected_variance_wd': None,
             'pushed_by': None,
+            # How the projection was derived — the detail modal narrates it:
+            # 'rate' (work pace), 'weight' (weight-share of the job's pace-
+            # extrapolated duration), 'push' (anchored behind a predecessor),
+            # 'start' (anchor + placeholder duration), 'done'.
+            'projection_kind': None,
+            'projection_elapsed_wd': None,
+            'projection_remaining_wd': None,
+            'drives_completion': False,
         },
     }
 
@@ -635,15 +643,101 @@ def _forecast_order(task_dicts, preds):
     return order
 
 
-def _compute_forecast(task_dicts, today, calendar):
+def _weight_shares(task_dicts):
+    """Absolute share of each task within its JOB ORDER's total weight.
+
+    Mains split the job by their weights; a subtask owns its parent's share
+    times its weight fraction among siblings. Cancelled/skipped tasks carry
+    no share. This is the same weighting the progress rollup uses, so a
+    task's share of the job's DURATION mirrors its share of the WORK.
+    """
+    shares = {}
+    mains_by_job = defaultdict(list)
+    subs_by_parent = defaultdict(list)
+    for td in task_dicts:
+        if td['status'] in ('cancelled', 'skipped'):
+            continue
+        if td['parent'] is None:
+            mains_by_job[td['job_no']].append(td)
+        else:
+            subs_by_parent[td['parent']].append(td)
+
+    for mains in mains_by_job.values():
+        total = sum(Decimal(str(m['weight'] or 0)) for m in mains)
+        if not total:
+            continue
+        for main in mains:
+            share = Decimal(str(main['weight'] or 0)) / total
+            shares[main['id']] = share
+            children = subs_by_parent.get(main['id'], [])
+            sub_total = sum(Decimal(str(s['weight'] or 0)) for s in children)
+            if not sub_total:
+                continue
+            for sub in children:
+                shares[sub['id']] = share * Decimal(str(sub['weight'] or 0)) / sub_total
+    return shares
+
+
+def _job_pace_totals(task_dicts, today, calendar, job_progress):
+    """Pace-extrapolated TOTAL working-day duration per job order: the job
+    completed P% of its weight in E working days (since its first evidence of
+    work), so the whole job extrapolates to E x 100/P. None when a job shows
+    no progress yet — there is no pace to extrapolate from."""
+    if not job_progress:
+        return {}
+    earliest = {}
+    for td in task_dicts:
+        start = td['schedule']['actual_start_date']
+        if start:
+            job_no = td['job_no']
+            if job_no not in earliest or start < earliest[job_no]:
+                earliest[job_no] = start
+
+    totals = {}
+    for job_no, start in earliest.items():
+        pct = Decimal(str(job_progress.get(job_no) or 0))
+        if pct <= 0:
+            continue
+        elapsed = working_day_delta(start, today, calendar)
+        if elapsed is None or elapsed <= 0:
+            continue
+        totals[job_no] = min(elapsed * Decimal('100') / pct,
+                             elapsed + MAX_REMAINING_WD)
+    return totals
+
+
+def _compute_forecast(task_dicts, today, calendar, job_progress=None):
     """Progress-aware schedule forecast + push propagation (mutates the
     ``schedule`` sub-dicts in place; never touches the database).
 
     Predecessors: explicit ``depends_on`` edges within the plan; main tasks
     without any fall back to the previous main task (by sequence) of the same
     job order — the department pipeline order.
+
+    ``job_progress`` ({job_no: completion pct}) enables weight-based duration
+    estimates for zero-progress tasks WITHOUT a planned window: instead of a
+    1-day placeholder, such a task is sized as its weight share of the job's
+    pace-extrapolated total duration (user design — weights already encode
+    relative effort against siblings and parents).
     """
     by_id = {td['id']: td for td in task_dicts}
+    shares = _weight_shares(task_dicts) if job_progress else {}
+    pace_totals = _job_pace_totals(task_dicts, today, calendar, job_progress)
+    # A parent's reality lives in its children (its own cheap-path progress
+    # reads 0% until subtasks COMPLETE) — projecting its full weight share
+    # would double-count work the children are already carrying.
+    parent_ids = {td['parent'] for td in task_dicts if td['parent'] is not None}
+
+    def unplanned_duration(td):
+        """(duration, kind): planned window when one exists, else the
+        weight-share estimate for LEAF tasks, else the 1-day placeholder."""
+        if td['target_start_date'] or td['target_completion_date']:
+            return _planned_duration(td, calendar), 'start'
+        total = pace_totals.get(td['job_no'])
+        share = shares.get(td['id'])
+        if total and share and td['id'] not in parent_ids:
+            return max(total * share, DEFAULT_DURATION_WD), 'weight'
+        return DEFAULT_DURATION_WD, 'start'
 
     mains_by_job = defaultdict(list)
     for td in task_dicts:
@@ -688,15 +782,24 @@ def _compute_forecast(task_dicts, today, calendar):
             elapsed = working_day_delta(proj_start, today, calendar) or ZERO
             if progress >= 100:
                 end = today
+                sched['projection_kind'] = 'done'
+                sched['projection_remaining_wd'] = 0.0
             elif progress > 0 and elapsed > 0:
                 remaining = min(
                     elapsed * (Decimal('100') - progress) / progress,
                     MAX_REMAINING_WD,
                 )
                 end = add_working_days(today, remaining, calendar)
+                sched['projection_kind'] = 'rate'
+                sched['projection_remaining_wd'] = round(float(remaining), 1)
             else:
-                # No usable rate yet: assume the planned duration from today.
-                end = span_end(today, _planned_duration(td, calendar), calendar)
+                # No usable rate yet: weight-share (or planned) duration from
+                # today.
+                duration, kind = unplanned_duration(td)
+                end = span_end(today, duration, calendar)
+                sched['projection_kind'] = kind
+                sched['projection_remaining_wd'] = round(float(duration), 1)
+            sched['projection_elapsed_wd'] = float(elapsed)
         else:
             # Not started: re-anchor to today / target start / predecessors.
             base = max(today, td['target_start_date'] or today)
@@ -711,7 +814,10 @@ def _compute_forecast(task_dicts, today, calendar):
                 if dep_clear > base:
                     proj_start = dep_clear
                     pushed_by = dep_src
-            end = span_end(proj_start, _planned_duration(td, calendar), calendar)
+            duration, kind = unplanned_duration(td)
+            end = span_end(proj_start, duration, calendar)
+            sched['projection_kind'] = 'push' if pushed_by else kind
+            sched['projection_remaining_wd'] = round(float(duration), 1)
 
         projected_end[tid] = end
         sched['projected_start_date'] = proj_start
@@ -832,6 +938,25 @@ def _job_order_forecast(status, completed_at_date, target, task_dicts, calendar)
     return forecast
 
 
+def _mark_completion_driver(task_dicts, forecast):
+    """Flag the open task(s) whose projected end IS the job's projected
+    completion — the "why this date" pointer for the meeting detail."""
+    projected = forecast.get('projected_completion_date')
+    if not projected:
+        forecast['driver_task_id'] = None
+        return
+    driver_id = None
+    for td in task_dicts:
+        sched = td['schedule']
+        if sched['classification'] == 'excluded' or td['status'] not in OPEN_STATUSES:
+            continue
+        if sched['projected_end_date'] == projected:
+            sched['drives_completion'] = True
+            if driver_id is None:
+                driver_id = td['id']
+    forecast['driver_task_id'] = driver_id
+
+
 def _natural_job_key(job_no):
     """Natural sort: 097-42 < 295-01 < 295-02, RM262-01 after numerics."""
     return [int(part) if part.isdigit() else part
@@ -858,9 +983,13 @@ def build_production_plan_overview(status_filter='active'):
         roots_qs = roots_qs.filter(status=status_filter)
     roots = sorted(roots_qs, key=lambda r: _natural_job_key(r.job_no))
 
-    # Whole-table parent map (one query) -> subtree job list per root.
+    # Whole-table parent map (one query) -> subtree job list per root; the
+    # same rows carry per-job progress for weight-based duration estimates.
     children_map = defaultdict(list)
-    for job_no, parent_id in JobOrder.objects.values_list('job_no', 'parent_id'):
+    job_progress_all = {}
+    for job_no, parent_id, pct in JobOrder.objects.values_list(
+            'job_no', 'parent_id', 'completion_percentage'):
+        job_progress_all[job_no] = float(pct)
         if parent_id:
             children_map[parent_id].append(job_no)
 
@@ -894,7 +1023,7 @@ def build_production_plan_overview(status_filter='active'):
             root_dicts.extend(task_dicts_by_job.get(job_no, []))
         # Per root — matches the single-job endpoint by construction (a global
         # pass would honor cross-root depends_on edges the detail view drops).
-        _compute_forecast(root_dicts, today, calendar)
+        _compute_forecast(root_dicts, today, calendar, job_progress_all)
         # Card meta counts follow the visible rule (parents represented by
         # children are hidden), but the windows/projected completion come from
         # ALL tasks, same as the detail hero timeline.
@@ -904,6 +1033,11 @@ def build_production_plan_overview(status_filter='active'):
         summary['actual_window'] = full_summary['actual_window']
         summary['projected_completion'] = full_summary['projected_completion']
         summary['node_count'] = len(subtree_jobs[root.job_no])
+        forecast = _job_order_forecast(
+            root.status, local_date(root.completed_at),
+            root.target_completion_date, root_dicts, calendar,
+        )
+        _mark_completion_driver(root_dicts, forecast)
         items.append({
             'job_no': root.job_no,
             'title': root.title,
@@ -911,10 +1045,7 @@ def build_production_plan_overview(status_filter='active'):
             'status': root.status,
             'status_display': root.get_status_display(),
             'completion_percentage': float(root.completion_percentage),
-            'forecast': _job_order_forecast(
-                root.status, local_date(root.completed_at),
-                root.target_completion_date, root_dicts, calendar,
-            ),
+            'forecast': forecast,
             'summary': summary,
         })
 
@@ -956,7 +1087,8 @@ def build_production_plan(root):
         node_task_dicts[node['job_no']] = dicts
         all_task_dicts.extend(dicts)
 
-    _compute_forecast(all_task_dicts, today, calendar)
+    job_progress = {node['job_no']: node['completion_percentage'] for node in nodes}
+    _compute_forecast(all_task_dicts, today, calendar, job_progress)
 
     for node in nodes:
         node['summary'] = _summarize(node_task_dicts[node['job_no']])
@@ -964,6 +1096,12 @@ def build_production_plan(root):
     overall = _summarize(all_task_dicts)
     overall['node_count'] = len(nodes)
     overall['main_tasks'] = sum(1 for td in all_task_dicts if td['parent'] is None)
+
+    forecast = _job_order_forecast(
+        root.status, local_date(root.completed_at),
+        root.target_completion_date, all_task_dicts, calendar,
+    )
+    _mark_completion_driver(all_task_dicts, forecast)
 
     return {
         'job_order': {
@@ -976,10 +1114,7 @@ def build_production_plan(root):
             'target_completion_date': root.target_completion_date,
             'started_at': root.started_at,
             'completed_at': root.completed_at,
-            'forecast': _job_order_forecast(
-                root.status, local_date(root.completed_at),
-                root.target_completion_date, all_task_dicts, calendar,
-            ),
+            'forecast': forecast,
         },
         'nodes': nodes,
         'tasks': all_task_dicts,

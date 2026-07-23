@@ -316,7 +316,9 @@ class CncPartSearchView(ListAPIView):
 
         If no filters are provided, returns all parts (paginated).
         """
-        queryset = CncPart.objects.select_related('cnc_task').all().order_by('-id')
+        queryset = CncPart.objects.select_related(
+            'cnc_task__planning_request_item__item'
+        ).prefetch_related('cnc_task__plate_usage_records').all().order_by('-id')
 
         # Apply filters if provided
         job_no = self.request.query_params.get('job_no', None)

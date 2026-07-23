@@ -797,6 +797,17 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
             Q(purchase_request__status='cancelled')
         ).order_by('-id').values('purchase_request__request_number')[:1]
 
+        # Quantity-weighted CNC usage: a cut with Adet=3 consumed the line 3
+        # times (quantity None counts as 1). Subquery on purpose — a Sum over
+        # the cnc_tasks join would fan out against the files join.
+        from cnc_cutting.models import CncTask
+        cnc_cuts_sq = CncTask.objects.filter(
+            planning_request_item=OuterRef('pk')
+        ).values('planning_request_item').annotate(
+            total=Sum(Coalesce('quantity', Value(1)))
+        ).values('total')[:1]
+        cnc_cuts_count_expr = Coalesce(Subquery(cnc_cuts_sq), Value(0))
+
         # Tier 2 subquery: latest PO line via M2M path (raw values for Python-side EUR conversion)
         _pol_m2m_base = PurchaseOrderLine.objects.filter(
             purchase_request_item__purchase_request__planning_request_items=OuterRef('pk'),
@@ -860,11 +871,11 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
             simple = self.request.query_params.get('fields') == 'simple'
 
             if simple:
-                # Lightweight: no subquery annotations needed
+                # Lightweight: minimal annotations
                 qs = PlanningRequestItem.objects.select_related(
                     'planning_request', 'item', 'delivered_by', 'consumed_by'
                 ).annotate(
-                    cnc_cuts_count=Count('cnc_tasks', distinct=True),
+                    cnc_cuts_count=cnc_cuts_count_expr,
                 )
             else:
                 # FK path subquery
@@ -893,10 +904,10 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
                 qs = PlanningRequestItem.objects.select_related(
                     'planning_request', 'item', 'delivered_by', 'consumed_by'
                 ).annotate(
-                    # distinct=True on both Counts: the cnc_tasks join would otherwise
-                    # fan out FileAttachment rows (and vice versa) and inflate the counts.
+                    # distinct=True: multivalued joins would otherwise fan the
+                    # count out; cnc usage comes via subquery for the same reason.
                     files_count=Count('files', distinct=True),
-                    cnc_cuts_count=Count('cnc_tasks', distinct=True),
+                    cnc_cuts_count=cnc_cuts_count_expr,
                     _qty_in_prs=Greatest(
                         Coalesce(Subquery(qty_via_fk), zero),
                         Coalesce(Subquery(qty_via_m2m), zero),
@@ -913,7 +924,7 @@ class PlanningRequestItemViewSet(viewsets.ModelViewSet):
             ).prefetch_related(
                 Prefetch('files', queryset=FileAttachment.objects.select_related('asset', 'uploaded_by', 'source_attachment')),
             ).annotate(
-                cnc_cuts_count=Count('cnc_tasks', distinct=True),
+                cnc_cuts_count=cnc_cuts_count_expr,
                 _pr_request_number=Subquery(pr_number_sq),
             )
 

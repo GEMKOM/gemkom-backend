@@ -77,18 +77,32 @@ class CncPartSerializer(serializers.ModelSerializer):
 class CncPartSearchResultSerializer(serializers.ModelSerializer):
     """
     Serializer for CNC part search results.
-    Returns part information along with its parent CNC task details.
+    Returns part information along with its parent CNC task details,
+    including the plate source (planning item / remnant plate / legacy fields).
     """
     nesting_id = serializers.CharField(source='cnc_task.nesting_id', read_only=True)
     planned_start_ms = serializers.IntegerField(source='cnc_task.planned_start_ms', read_only=True)
     planned_end_ms = serializers.IntegerField(source='cnc_task.planned_end_ms', read_only=True)
     completion_date = serializers.IntegerField(source='cnc_task.completion_date', read_only=True)
+    material = serializers.CharField(source='cnc_task.material', read_only=True, allow_null=True)
+    thickness_mm = serializers.DecimalField(source='cnc_task.thickness_mm', max_digits=5, decimal_places=2, read_only=True, allow_null=True)
+    planning_request_item = serializers.IntegerField(source='cnc_task.planning_request_item_id', read_only=True, allow_null=True)
+    plate_item_code = serializers.CharField(source='cnc_task.planning_request_item.item.code', read_only=True, allow_null=True, default=None)
+    plate_item_name = serializers.CharField(source='cnc_task.planning_request_item.item.name', read_only=True, allow_null=True, default=None)
+    plate_item_is_delivered = serializers.BooleanField(source='cnc_task.planning_request_item.is_delivered', read_only=True, allow_null=True, default=None)
+    has_remnant_plate = serializers.SerializerMethodField()
+
+    def get_has_remnant_plate(self, obj):
+        return len(obj.cnc_task.plate_usage_records.all()) > 0
 
     class Meta:
         model = CncPart
         fields = [
             'id', 'job_no', 'image_no', 'position_no', 'weight_kg', 'quantity',
-            'nesting_id', 'planned_start_ms', 'planned_end_ms', 'completion_date'
+            'nesting_id', 'planned_start_ms', 'planned_end_ms', 'completion_date',
+            'material', 'thickness_mm', 'planning_request_item',
+            'plate_item_code', 'plate_item_name', 'plate_item_is_delivered',
+            'has_remnant_plate'
         ]
 
 
@@ -215,9 +229,15 @@ class CncTaskDetailSerializer(serializers.ModelSerializer):
         }
 
     def get_plate_item(self, obj):
+        from django.db.models import Sum, Value
+        from django.db.models.functions import Coalesce
+
         pri = obj.planning_request_item
         if not pri:
             return None
+        # Quantity-weighted usage: a cut with Adet=3 used the line 3 times.
+        cuts_total = pri.cnc_tasks.aggregate(
+            total=Sum(Coalesce('quantity', Value(1))))['total'] or 0
         return {
             'id': pri.id,
             'item_code': pri.item.code,
@@ -228,7 +248,7 @@ class CncTaskDetailSerializer(serializers.ModelSerializer):
             'planning_request_number': pri.planning_request.request_number,
             'is_delivered': pri.is_delivered,
             'is_consumed': pri.is_consumed,
-            'cnc_cuts_count': pri.cnc_tasks.count(),
+            'cnc_cuts_count': cuts_total,
         }
 
     def _get_planning_item(self, item_id, current_id=None):
