@@ -544,6 +544,24 @@ class JobOrderViewSet(viewsets.ModelViewSet):
         return Response(build_meeting_brief(
             job_order, request, include_financial=can_see_job_costs(request.user)))
 
+    @action(detail=True, methods=['get'],
+            url_path=r'meeting-brief/(?P<section>machining|cutting|quality|procurement|revisions)',
+            permission_classes=[permissions.IsAuthenticated])
+    def meeting_brief_section(self, request, job_no=None, section=None):
+        """
+        On-demand detail list for one meeting-view card (opened as a modal).
+        Kept out of the main brief so the per-slide payload stays small.
+        """
+        from .services.meeting_brief import build_meeting_brief_section
+
+        job_order = self.get_object()
+        if job_order.parent_id:
+            return Response(
+                {'detail': 'Toplantı özeti yalnızca kök iş emirleri için hazırlanır.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response(build_meeting_brief_section(job_order, section))
+
     # -------------------------------------------------------------------------
     # Production phases
     # -------------------------------------------------------------------------

@@ -15,7 +15,9 @@ from projects.models import (
     JobOrderDiscussionComment, JobOrderDiscussionTopic, JobOrderFile,
     JobOrderTargetDateRevision, TechnicalDrawingRelease,
 )
-from projects.services.meeting_brief import _financial, build_meeting_brief
+from projects.services.meeting_brief import (
+    _financial, build_meeting_brief, build_meeting_brief_section,
+)
 
 User = get_user_model()
 
@@ -46,6 +48,9 @@ class MeetingBriefFixtureMixin:
     def brief(self, include_financial=False, root=None):
         request = RequestFactory().get('/')
         return build_meeting_brief(root or self.root, request, include_financial)
+
+    def section(self, name, root=None):
+        return build_meeting_brief_section(root or self.root, name)
 
 
 class QualityRevisionTests(MeetingBriefFixtureMixin, TestCase):
@@ -105,6 +110,18 @@ class QualityRevisionTests(MeetingBriefFixtureMixin, TestCase):
         self.assertEqual(d['latest']['status'], 'in_revision')
         self.assertEqual(d['latest']['job_no'], self.root.job_no)
         self.assertIsNotNone(d['latest']['released_at'])
+
+    def test_section_details_fetched_on_demand(self):
+        # Heavy lists live in the section endpoint, not the main brief.
+        brief = self.brief()
+        self.assertNotIn('list', brief['quality'])
+        self.assertNotIn('releases', brief['revisions']['drawing'])
+
+        self.assertEqual(len(self.section('quality')['list']), 3)  # all statuses
+        detail = self.section('revisions')
+        self.assertEqual(len(detail['releases']), 3)
+        self.assertEqual(detail['releases'][0]['revision_code'], 'C1')
+        self.assertEqual(len(detail['target_date_revisions']), 2)  # root only
 
     def test_target_date_revisions_root_only(self):
         t = self.brief()['revisions']['target_date']
@@ -170,7 +187,10 @@ class ProcurementCuttingTests(MeetingBriefFixtureMixin, TestCase):
 
     def test_procurement_waiting_split(self):
         p = self.brief()['procurement']
-        self.assertEqual(p, {
+        counters = {k: p[k] for k in (
+            'items_total', 'items_delivered', 'items_waiting',
+            'requested_waiting', 'not_yet_requested')}
+        self.assertEqual(counters, {
             'items_total': 5,
             'items_delivered': 1,
             'items_waiting': 4,
@@ -187,6 +207,26 @@ class ProcurementCuttingTests(MeetingBriefFixtureMixin, TestCase):
         self.assertAlmostEqual(c['weight_total'], 25.0)
         self.assertAlmostEqual(c['weight_cut'], 5.0)
         self.assertAlmostEqual(c['weight_waiting'], 20.0)
+
+    def test_section_details_fetched_on_demand(self):
+        brief = self.brief()
+        self.assertNotIn('items', brief['procurement'])
+        self.assertNotIn('parts', brief['cutting'])
+
+        # ALL items come back, blockers first and delivered last.
+        items = self.section('procurement')['items']
+        self.assertEqual(len(items), 5)
+        self.assertEqual(items[0]['stage'], 'not_requested')
+        self.assertEqual(items[-1]['stage'], 'delivered')
+        self.assertEqual(sum(1 for w in items if w['stage'] == 'delivered'), 1)
+        self.assertEqual({w['item_code'] for w in items}, {'IT-1'})
+
+        # ALL parts with their cut state, uncut first.
+        parts = self.section('cutting')['parts']
+        self.assertEqual(len(parts), 2)
+        self.assertFalse(parts[0]['cut'])
+        self.assertEqual(parts[0]['quantity'], 2)
+        self.assertTrue(parts[1]['cut'])
 
 
 class MachiningWeldingTests(MeetingBriefFixtureMixin, TestCase):
@@ -341,6 +381,15 @@ class MachiningWeldingTests(MeetingBriefFixtureMixin, TestCase):
             'regular': 5.5, 'after_hours': 3.0, 'holiday': 2.0, 'total': 10.5,
         })
 
+    def test_machining_operations_section(self):
+        self.assertNotIn('operations', self.brief()['machining'])
+        operations = self.section('machining')['operations']
+        self.assertEqual(len(operations), 3)
+        # Open work first, biggest estimate up top
+        self.assertEqual(operations[0]['key'], 'OP-MB-1')
+        self.assertFalse(operations[0]['completed'])
+        self.assertAlmostEqual(operations[0]['hours_spent'], 4.0)
+
 
 class FilesTests(MeetingBriefFixtureMixin, TestCase):
     @classmethod
@@ -478,6 +527,26 @@ class MeetingBriefEndpointTests(MeetingBriefFixtureMixin, TestCase):
 
     def test_child_job_is_rejected(self):
         response = self._get(self.child.job_no, self.superuser)
+        self.assertEqual(response.status_code, 400)
+
+    def test_section_endpoint(self):
+        self.client.force_authenticate(user=self.superuser)
+        response = self.client.get(
+            f'/projects/job-orders/{self.root.job_no}/meeting-brief/machining/',
+            HTTP_HOST=self.host)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('operations', response.data)
+
+        # Unknown section never matches the route
+        response = self.client.get(
+            f'/projects/job-orders/{self.root.job_no}/meeting-brief/bogus/',
+            HTTP_HOST=self.host)
+        self.assertEqual(response.status_code, 404)
+
+        # Non-root guard applies to sections too
+        response = self.client.get(
+            f'/projects/job-orders/{self.child.job_no}/meeting-brief/machining/',
+            HTTP_HOST=self.host)
         self.assertEqual(response.status_code, 400)
 
     def test_query_count_stays_bounded(self):

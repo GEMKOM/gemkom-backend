@@ -67,21 +67,11 @@ def _quality(job_nos):
         open_major=Count('id', filter=Q(status__in=NCR_OPEN_STATUSES, severity='major')),
         open_critical=Count('id', filter=Q(status__in=NCR_OPEN_STATUSES, severity='critical')),
     )
+
     open_list = [
-        {
-            'ncr_number': n.ncr_number,
-            'title': n.title,
-            'severity': n.severity,
-            'severity_display': severity_display.get(n.severity, n.severity),
-            'status': n.status,
-            'status_display': status_display.get(n.status, n.status),
-            'job_no': n.job_order_id,
-            'created_at': n.created_at,
-        }
-        for n in (
-            NCR.objects.filter(job_order_id__in=job_nos, status__in=NCR_OPEN_STATUSES)
-            .order_by('-created_at')[:5]
-        )
+        _ncr_entry(n, severity_display, status_display) for n in
+        NCR.objects.filter(job_order_id__in=job_nos, status__in=NCR_OPEN_STATUSES)
+        .order_by('-created_at')[:5]
     ]
     return {
         'total': counts['total'],
@@ -95,10 +85,49 @@ def _quality(job_nos):
     }
 
 
-def _revisions(root, job_nos):
+def _ncr_entry(n, severity_display, status_display):
+    return {
+        'ncr_number': n.ncr_number,
+        'title': n.title,
+        'severity': n.severity,
+        'severity_display': severity_display.get(n.severity, n.severity),
+        'status': n.status,
+        'status_display': status_display.get(n.status, n.status),
+        'job_no': n.job_order_id,
+        'created_at': n.created_at,
+    }
+
+
+def _release_rows(job_nos, limit=None):
+    """Newest technical-drawing release rows of any status, display-ready."""
     from projects.models import TechnicalDrawingRelease
 
     status_display = dict(TechnicalDrawingRelease.STATUS_CHOICES)
+    rows = (
+        TechnicalDrawingRelease.objects
+        .filter(job_order_id__in=job_nos)
+        .order_by('-released_at', '-pk')
+        .values('revision_code', 'revision_number', 'status',
+                'released_at', 'job_order_id')
+    )
+    if limit is not None:
+        rows = rows[:limit]
+    return [
+        {
+            'revision_code': r['revision_code'],
+            'revision_number': r['revision_number'],
+            'status': r['status'],
+            'status_display': status_display.get(r['status'], r['status']),
+            'released_at': r['released_at'],
+            'job_no': r['job_order_id'],
+        }
+        for r in rows
+    ]
+
+
+def _revisions(root, job_nos):
+    from projects.models import TechnicalDrawingRelease
+
     drawing_counts = TechnicalDrawingRelease.objects.filter(
         job_order_id__in=job_nos
     ).aggregate(
@@ -115,16 +144,12 @@ def _revisions(root, job_nos):
         .values('revision_code', 'revision_number', 'released_at', 'job_order_id')
         .first()
     )
-    # Newest release event of ANY status — "when was it last revised". A new
-    # revision row is created at completion (released_at = creation), so this
-    # moves the moment the revised drawing lands, not when it gets approved.
-    latest = (
-        TechnicalDrawingRelease.objects
-        .filter(job_order_id__in=job_nos)
-        .order_by('-released_at', '-pk')
-        .values('revision_code', 'revision_number', 'status', 'released_at', 'job_order_id')
-        .first()
-    )
+
+    # Newest release row of ANY status = "when was it last revised": a new
+    # revision row is created at completion (released_at = creation time), so
+    # recency moves when the revised drawing lands, not when it gets approved.
+    latest = _release_rows(job_nos, limit=1)
+    latest = latest[0] if latest else None
 
     target_revisions = list(
         root.target_date_revisions.select_related('changed_by')
@@ -141,14 +166,7 @@ def _revisions(root, job_nos):
                 'released_at': current['released_at'],
                 'job_no': current['job_order_id'],
             },
-            'latest': latest and {
-                'revision_code': latest['revision_code'],
-                'revision_number': latest['revision_number'],
-                'status': latest['status'],
-                'status_display': status_display.get(latest['status'], latest['status']),
-                'released_at': latest['released_at'],
-                'job_no': latest['job_order_id'],
-            },
+            'latest': latest,
         },
         'target_date': {
             'count': root.target_date_revisions.count(),
@@ -167,41 +185,13 @@ def _revisions(root, job_nos):
 
 
 def _procurement(job_nos):
-    """Waiting split by delivery + purchase-request coverage.
-
-    ``quantity_remaining_for_purchase`` is deliberately avoided: its
-    non-prefetched branch runs an aggregate per item. One annotated query
-    gives the PR-covered quantity per item (historical M2M-only links read
-    as not-requested — accepted).
-    """
-    from planning.models import PlanningRequestItem
-    from procurement.models import PurchaseRequestItem
-
-    items = list(
-        PlanningRequestItem.objects
-        .filter(job_no__in=job_nos, quantity_to_purchase__gt=0)
-        .values_list('id', 'is_delivered', 'quantity_to_purchase')
-    )
-    # Negating a status Q across the multi-valued reverse relation inside a
-    # filtered aggregate mis-groups; from the PurchaseRequestItem side the
-    # exclude is single-valued and unambiguous.
-    requested = {
-        row['planning_request_item_id']: row['qty'] or Decimal('0')
-        for row in (
-            PurchaseRequestItem.objects
-            .filter(planning_request_item_id__in=[i[0] for i in items])
-            .exclude(purchase_request__status__in=('rejected', 'cancelled'))
-            .values('planning_request_item_id')
-            .annotate(qty=Sum('quantity'))
-        )
-    }
-
+    """Waiting split by delivery + purchase-request coverage."""
     total = delivered = requested_waiting = not_yet_requested = 0
-    for item_id, is_delivered, quantity_to_purchase in items:
+    for item in _procurement_rows(job_nos):
         total += 1
-        if is_delivered:
+        if item['is_delivered']:
             delivered += 1
-        elif requested.get(item_id, Decimal('0')) >= quantity_to_purchase:
+        elif item['requested_fully']:
             requested_waiting += 1
         else:
             not_yet_requested += 1
@@ -212,6 +202,39 @@ def _procurement(job_nos):
         'requested_waiting': requested_waiting,
         'not_yet_requested': not_yet_requested,
     }
+
+
+def _procurement_rows(job_nos):
+    """Purchaseable items with their PR-coverage flag resolved.
+
+    ``quantity_remaining_for_purchase`` is deliberately avoided (per-item
+    aggregate); and negating a status Q across the multi-valued reverse
+    relation inside a filtered aggregate mis-groups — from the
+    PurchaseRequestItem side the exclude is single-valued and unambiguous.
+    """
+    from planning.models import PlanningRequestItem
+    from procurement.models import PurchaseRequestItem
+
+    items = list(
+        PlanningRequestItem.objects
+        .filter(job_no__in=job_nos, quantity_to_purchase__gt=0)
+        .values('id', 'is_delivered', 'quantity_to_purchase',
+                'item__name', 'item__code', 'job_no')
+    )
+    requested = {
+        row['planning_request_item_id']: row['qty'] or Decimal('0')
+        for row in (
+            PurchaseRequestItem.objects
+            .filter(planning_request_item_id__in=[i['id'] for i in items])
+            .exclude(purchase_request__status__in=('rejected', 'cancelled'))
+            .values('planning_request_item_id')
+            .annotate(qty=Sum('quantity'))
+        )
+    }
+    for item in items:
+        item['requested_fully'] = (
+            requested.get(item['id'], Decimal('0')) >= item['quantity_to_purchase'])
+    return items
 
 
 def _cutting(job_nos):
@@ -235,6 +258,7 @@ def _cutting(job_nos):
     parts_cut = agg['parts_cut'] or 0
     weight_total = agg['weight_total'] or Decimal('0')
     weight_cut = agg['weight_cut'] or Decimal('0')
+
     return {
         'parts_total': parts_total,
         'parts_cut': parts_cut,
@@ -249,25 +273,11 @@ def _machining(job_nos):
     """Earned-hours math, parity with the batched machining progress branch:
     est<=0 skipped; completed ops earn full estimate; open ops earn
     min(spent/est, 1) * est."""
-    from tasks.models import Operation, Part
+    from tasks.models import Part
 
-    op_rows = (
-        Operation.objects.filter(part__job_no__in=job_nos)
-        .values('key', 'estimated_hours', 'completion_date')
-        .annotate(
-            spent=Coalesce(
-                ExpressionWrapper(
-                    Sum('timers__finish_time', filter=Q(timers__finish_time__isnull=False)) -
-                    Sum('timers__start_time', filter=Q(timers__finish_time__isnull=False)),
-                    output_field=FloatField(),
-                ) / 3600000.0,
-                Value(0.0),
-            )
-        )
-    )
     ops_total = ops_completed = 0
     est_total = spent_total = earned_total = 0.0
-    for row in op_rows:
+    for row in _machining_op_rows(job_nos):
         ops_total += 1
         completed = row['completion_date'] is not None
         if completed:
@@ -295,6 +305,27 @@ def _machining(job_nos):
         'parts_total': part_agg['total'],
         'parts_completed': part_agg['completed'],
     }
+
+
+def _machining_op_rows(job_nos):
+    """Per-operation rows with timer-spent hours annotated (one query)."""
+    from tasks.models import Operation
+
+    return list(
+        Operation.objects.filter(part__job_no__in=job_nos)
+        .values('key', 'name', 'part__name', 'part__job_no',
+                'estimated_hours', 'completion_date')
+        .annotate(
+            spent=Coalesce(
+                ExpressionWrapper(
+                    Sum('timers__finish_time', filter=Q(timers__finish_time__isnull=False)) -
+                    Sum('timers__start_time', filter=Q(timers__finish_time__isnull=False)),
+                    output_field=FloatField(),
+                ) / 3600000.0,
+                Value(0.0),
+            )
+        )
+    )
 
 
 def _welding(job_nos):
@@ -577,6 +608,121 @@ def _financial(root):
         result.update(verdict='healthy',
                       reason='Maliyet ile satış fiyatı dengesi sağlıklı görünüyor.')
     return result
+
+
+# ---------------------------------------------------------------------------
+# On-demand section details — fetched only when a card's modal opens, so the
+# main brief stays light (a subtree can hold hundreds of items/operations).
+# ---------------------------------------------------------------------------
+
+def _machining_detail(root, job_nos):
+    """Every operation in the subtree, open work first."""
+    operations = []
+    for row in _machining_op_rows(job_nos):
+        estimated = float(row['estimated_hours'] or 0)
+        operations.append({
+            'key': row['key'],
+            'name': row['name'],
+            'part_name': row['part__name'],
+            'job_no': row['part__job_no'],
+            'estimated_hours': round(estimated, 1),
+            'hours_spent': round(row['spent'] or 0.0, 1),
+            'completed': row['completion_date'] is not None,
+        })
+    # Open work first, biggest estimates up top — the modal's reading order.
+    operations.sort(key=lambda o: (o['completed'], -o['estimated_hours']))
+    return {'operations': operations}
+
+
+def _cutting_detail(root, job_nos):
+    """Every CNC part in the subtree with its cut state, uncut first."""
+    from cnc_cutting.models import CncPart
+
+    parts = [
+        {
+            'image_no': row['image_no'],
+            'position_no': row['position_no'],
+            'job_no': row['job_no'],
+            'nesting': row['cnc_task_id'],
+            'quantity': row['quantity'] or 1,
+            'weight_kg': float(row['weight_kg'] or 0),
+            'cut': row['cnc_task__completion_date'] is not None,
+        }
+        for row in (
+            CncPart.objects
+            .filter(job_no__in=job_nos)
+            .values('image_no', 'position_no', 'job_no', 'cnc_task_id',
+                    'quantity', 'weight_kg', 'cnc_task__completion_date')
+        )
+    ]
+    parts.sort(key=lambda p: (p['cut'], -p['weight_kg']))
+    return {'parts': parts}
+
+
+def _quality_detail(root, job_nos):
+    """Every NCR in the subtree, newest first, all statuses."""
+    from quality_control.models import NCR
+
+    severity_display = dict(NCR.SEVERITY_CHOICES)
+    status_display = dict(NCR.STATUS_CHOICES)
+    return {'list': [
+        _ncr_entry(n, severity_display, status_display) for n in
+        NCR.objects.filter(job_order_id__in=job_nos).order_by('-created_at')
+    ]}
+
+
+def _procurement_detail(root, job_nos):
+    """Every purchaseable item in the subtree — blockers, in-request and
+    delivered alike."""
+    items = [
+        {
+            'item_name': item['item__name'],
+            'item_code': item['item__code'],
+            'job_no': item['job_no'],
+            'quantity_to_purchase': float(item['quantity_to_purchase']),
+            'stage': ('delivered' if item['is_delivered']
+                      else 'requested' if item['requested_fully']
+                      else 'not_requested'),
+        }
+        for item in _procurement_rows(job_nos)
+    ]
+    # Blockers first, then in-request, delivered last; big quantities up top.
+    stage_order = {'not_requested': 0, 'requested': 1, 'delivered': 2}
+    items.sort(key=lambda w: (stage_order[w['stage']], -w['quantity_to_purchase']))
+    return {'items': items}
+
+
+def _revisions_detail(root, job_nos):
+    """Every drawing release and every target-date change."""
+    return {
+        'releases': _release_rows(job_nos, limit=None),
+        'target_date_revisions': [
+            {
+                'previous_date': r.previous_date,
+                'new_date': r.new_date,
+                'reason': r.reason,
+                'changed_by_name': _user_name(r.changed_by),
+                'changed_at': r.changed_at,
+            }
+            for r in root.target_date_revisions.select_related('changed_by')
+            .order_by('-changed_at')
+        ],
+    }
+
+
+MEETING_BRIEF_SECTIONS = {
+    'machining': _machining_detail,
+    'cutting': _cutting_detail,
+    'quality': _quality_detail,
+    'procurement': _procurement_detail,
+    'revisions': _revisions_detail,
+}
+
+
+def build_meeting_brief_section(root, section):
+    nodes = _collect_subtree_nodes(root)
+    job_nos = [n['job_no'] for n in nodes]
+    return MEETING_BRIEF_SECTIONS[section](root, job_nos)
 
 
 def build_meeting_brief(root, request, include_financial):

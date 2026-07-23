@@ -19,13 +19,13 @@ class TeamMemberSerializer(serializers.ModelSerializer):
 class TeamSerializer(serializers.ModelSerializer):
     foreman_name = serializers.SerializerMethodField()
     members_detail = TeamMemberSerializer(source='members', many=True, read_only=True)
-    member_count = serializers.SerializerMethodField()
+    members_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Team
         fields = [
             'id', 'name', 'foreman', 'foreman_name',
-            'members', 'members_detail', 'member_count',
+            'members', 'members_detail', 'members_count',
             'is_active', 'created_at', 'updated_at',
         ]
         read_only_fields = ['created_at', 'updated_at']
@@ -35,22 +35,28 @@ class TeamSerializer(serializers.ModelSerializer):
             return obj.foreman.get_full_name() or obj.foreman.username
         return None
 
-    def get_member_count(self, obj):
+    def get_members_count(self, obj):
         return obj.members.count()
 
 
 class TeamListSerializer(serializers.ModelSerializer):
     foreman_name = serializers.SerializerMethodField()
-    member_count = serializers.SerializerMethodField()
+    members_detail = TeamMemberSerializer(source='members', many=True, read_only=True)
+    members_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Team
-        fields = ['id', 'name', 'foreman', 'foreman_name', 'member_count', 'is_active']
+        fields = [
+            'id', 'name', 'foreman', 'foreman_name',
+            'members', 'members_detail', 'members_count', 'is_active',
+        ]
 
     def get_foreman_name(self, obj):
         if obj.foreman_id:
             return obj.foreman.get_full_name() or obj.foreman.username
         return None
 
-    def get_member_count(self, obj):
-        return obj.members.count()
+    def get_members_count(self, obj):
+        # Reuse the viewset's prefetch_related('members') cache instead of
+        # issuing a separate COUNT query per row.
+        return len(obj.members.all())
