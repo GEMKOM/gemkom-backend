@@ -92,6 +92,11 @@ class PlanningRequestItemFilter(django_filters.FilterSet):
         label='Is a raw plate item (item code starts with 0100/0101)'
     )
 
+    mine = django_filters.BooleanFilter(
+        method='filter_mine',
+        label="Only items from the requesting user's own planning requests"
+    )
+
     class Meta:
         model = PlanningRequestItem
         fields = {
@@ -101,6 +106,21 @@ class PlanningRequestItemFilter(django_filters.FilterSet):
             'is_delivered': ['exact'],
             'is_consumed': ['exact'],
         }
+
+    def filter_mine(self, queryset, name, value):
+        """Scope to items from the requesting user's own planning requests.
+
+        Opt-in only — the CNC cut-create modal passes ?mine=true so each user
+        picks a plate source from their own requests. The shared /planning/items/
+        list stays unscoped everywhere else. Superusers are exempt: they work
+        across every team's requests.
+        """
+        if not value:
+            return queryset
+        user = getattr(self.request, 'user', None)
+        if user is None or not user.is_authenticated or user.is_superuser:
+            return queryset
+        return queryset.filter(planning_request__created_by=user)
 
     def filter_is_plate(self, queryset, name, value):
         """Filter to (or away from) raw plate stock items by catalog code prefix."""

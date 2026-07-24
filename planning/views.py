@@ -286,7 +286,6 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         from django.db.models import Count
-        user = self.request.user
 
         # For list views and list-like actions, use minimal prefetching
         if self.action in ['list', 'ready_for_procurement', 'my_requests', 'warehouse_requests']:
@@ -295,12 +294,11 @@ class PlanningRequestViewSet(viewsets.ModelViewSet):
             ).annotate(
                 items_count=Count('items')
             )
-            # The main list shows each user only their own planning requests;
-            # superusers see everyone's. Detail views and procurement-facing
-            # actions (ready_for_procurement, warehouse_requests) stay open —
-            # other teams work with requests they didn't create.
-            if self.action == 'list' and not user.is_superuser:
-                qs = qs.filter(created_by=user)
+            # The plain list is shared across teams — planning management,
+            # warehouse inventory allocation, and department-request lookups all
+            # read it — so it is intentionally NOT scoped by creator. Callers
+            # that want an own-only view use the `my_requests` action (or pass
+            # ?created_by=<id>).
         else:
             # For detail views, prefetch all related data
             from procurement.models import PurchaseRequestItem as PRItem
